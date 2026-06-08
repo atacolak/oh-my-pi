@@ -95,6 +95,10 @@ const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
+const APP_VIEWPORT_MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
+const APP_VIEWPORT_MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
+const APP_VIEWPORT_SCROLLBAR_DOTS = [0x08, 0x10, 0x20, 0x80] as const;
+const APP_VIEWPORT_SCROLLBAR_BLANK = " ";
 
 type InputListenerResult = { consume?: boolean; data?: string } | undefined;
 type InputListener = (data: string) => InputListenerResult;
@@ -272,6 +276,24 @@ function getNativeScrollbackWidthEpoch(component: Component): NativeScrollbackWi
 
 function getNativeScrollbackWidthEpochRevision(component: Component): number | undefined {
 	return (component as Component & Partial<NativeScrollbackWidthEpoch>).getNativeScrollbackWidthEpochRevision?.();
+}
+
+/**
+ * Optional experimental app-owned transcript viewport seam. Components that
+ * implement it identify the root-line range that may scroll inside the app
+ * frame; siblings below that range are rendered as sticky chrome.
+ */
+export interface AppViewportScrollRegion {
+	getAppViewportScrollRegionStart(): number | undefined;
+	getAppViewportScrollRegionEnd(): number | undefined;
+}
+
+function getAppViewportScrollRegionStart(component: Component): number | undefined {
+	return (component as Component & Partial<AppViewportScrollRegion>).getAppViewportScrollRegionStart?.();
+}
+
+function getAppViewportScrollRegionEnd(component: Component): number | undefined {
+	return (component as Component & Partial<AppViewportScrollRegion>).getAppViewportScrollRegionEnd?.();
 }
 
 function isOverlayFocusTarget(owner: Component, component: Component | null): boolean {
@@ -1462,6 +1484,13 @@ export class TUI extends Container {
 	// {@link #resizeRepaintsInPlace} routes resizes through the in-place path.
 	#altToggleResizesInPlace = false;
 	#stopped = false;
+	#appViewportBackend = Bun.env.PI_TUI_RENDER_BACKEND === "app-viewport";
+	#appViewportActive = false;
+	#appViewportPreviousLines: string[] = [];
+	#appViewportPreviousWidth = 0;
+	#appViewportScrollRegionEnd: number | undefined;
+	#appViewportScrollTop = 0;
+	#appViewportFollow = true;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
@@ -1472,6 +1501,7 @@ export class TUI extends Container {
 	// normal-screen accounting field (#previousFrameLength, #viewportTopRow, …)
 	// untouched, so exiting reconciles cleanly against the terminal-restored
 	// normal screen. #altPreviousLines is the last alt frame, for repaint-skip.
+	// Disabled when the main app-viewport backend owns the alternate screen.
 	#altActive = false;
 	#altMouseTrackingActive = false;
 	#altPreviousLines: string[] = [];
@@ -1702,6 +1732,7 @@ export class TUI extends Container {
 		this.#nativeScrollbackLiveRegionStart = undefined;
 		this.#nativeScrollbackLiveRegionPinned = false;
 		this.#nativeScrollbackPinnedBoundary = undefined;
+		this.#appViewportScrollRegionEnd = undefined;
 		const children = this.children;
 		const previousSegments = this.#frameSegments;
 		const segments: FrameSegment[] = new Array(children.length);
@@ -1805,6 +1836,18 @@ export class TUI extends Container {
 				if (liveRegionPinned && this.#nativeScrollbackPinnedBoundary === undefined) {
 					this.#nativeScrollbackPinnedBoundary = offset + (liveRegionPinnedStart ?? liveLocalStart);
 				}
+			}
+			const appScrollStart = getAppViewportScrollRegionStart(child);
+			if (appScrollStart !== undefined) {
+				const boundedStart = Number.isFinite(appScrollStart)
+					? Math.max(0, Math.min(childLines.length, Math.trunc(appScrollStart)))
+					: 0;
+				const appScrollEnd = getAppViewportScrollRegionEnd(child);
+				const boundedEnd =
+					appScrollEnd !== undefined && Number.isFinite(appScrollEnd)
+						? Math.max(boundedStart, Math.min(childLines.length, Math.trunc(appScrollEnd)))
+						: childLines.length;
+				this.#appViewportScrollRegionEnd = offset + boundedEnd;
 			}
 			if (chainStable) {
 				if (previous !== undefined && previous.component === child && previous.start === offset) {
@@ -2443,9 +2486,26 @@ export class TUI extends Container {
 		this.#cursorEndSequence = enabled ? CURSOR_END : CURSOR_END_NO_SYNC;
 	}
 
+	#enterAppViewport(): void {
+		if (this.#appViewportActive) return;
+		this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${APP_VIEWPORT_MOUSE_TRACKING_ON}`);
+		setAltScreenActive(true);
+		this.terminal.hideCursor();
+		this.#appViewportActive = true;
+		this.#appViewportPreviousLines = [];
+		this.#appViewportPreviousWidth = 0;
+	}
 	stop(): void {
+		if (this.#appViewportActive) {
+			this.terminal.write(`${APP_VIEWPORT_MOUSE_TRACKING_OFF}\x1b[?1049l`);
+			setAltScreenActive(false);
+			this.#appViewportActive = false;
+			this.#previousWindow = [];
+			this.#appViewportPreviousLines = [];
+			this.#appViewportPreviousWidth = 0;
+		}
 		// Leave the resize alt buffer first so the teardown cursor math below runs
-		// against the restored normal screen (which #previousLines still describes).
+		// against the restored normal screen (which #previousWindow still describes).
 		if (this.#resizeAltActive) {
 			this.terminal.write(this.#leaveResizeAltSequence());
 		}
@@ -3025,16 +3085,60 @@ export class TUI extends Container {
 		}, delay);
 	}
 
-	/**
-	 * Wrap `#doRender()` so every path records the wall-clock frame cost that
-	 * feeds adaptive backpressure. Set `#lastRenderAt` first (some render code
-	 * reads it re-entrantly) and compute the cost once the paint returns.
-	 */
-	#executeRender(): void {
-		const start = this.#renderScheduler.now();
-		this.#lastRenderAt = start;
-		this.#doRender();
-		this.#lastFrameCostMs = this.#renderScheduler.now() - start;
+
+	#handleAppViewportInput(data: string): boolean {
+		if (!this.#appViewportBackend || this.hasOverlay()) return false;
+		if (data.startsWith("\x1b[<")) {
+			return this.#handleAppViewportMouse(data);
+		}
+		const page = Math.max(1, this.terminal.rows - 2);
+		if (matchesKey(data, "pageUp") || matchesKey(data, "alt+pageUp")) {
+			this.#scrollAppViewport(-page);
+			return true;
+		}
+		if (matchesKey(data, "pageDown") || matchesKey(data, "alt+pageDown")) {
+			this.#scrollAppViewport(page);
+			return true;
+		}
+		// Plain Home/End are editor line navigation; keep transcript absolute jumps
+		// on Alt+Home/Alt+End for this hidden backend demo.
+		if (matchesKey(data, "alt+home")) {
+			this.#scrollAppViewportToTop();
+			return true;
+		}
+		if (matchesKey(data, "alt+end")) {
+			this.#scrollAppViewportToBottom();
+			return true;
+		}
+		return false;
+	}
+
+	#handleAppViewportMouse(data: string): boolean {
+		const match = /^\x1b\[<(\d+);\d+;\d+([Mm])$/.exec(data);
+		if (!match) return true;
+		const button = Number(match[1]);
+		if (button & 64) {
+			this.#scrollAppViewport(button & 1 ? 3 : -3);
+		}
+		return true;
+	}
+
+	#scrollAppViewport(delta: number): void {
+		this.#appViewportScrollTop = Math.max(0, this.#appViewportScrollTop + delta);
+		this.#appViewportFollow = false;
+		this.requestRender(true);
+	}
+
+	#scrollAppViewportToTop(): void {
+		this.#appViewportScrollTop = 0;
+		this.#appViewportFollow = false;
+		this.requestRender(true);
+	}
+
+	#scrollAppViewportToBottom(): void {
+		this.#appViewportFollow = true;
+		this.requestRender(true);
+
 	}
 
 	#handleInput(data: string): void {
@@ -3072,6 +3176,7 @@ export class TUI extends Container {
 			return;
 		}
 
+		if (this.#handleAppViewportInput(data)) return;
 		// If focused component is an overlay, verify it's still visible
 		// (visibility can change due to terminal resize or visible() callback)
 		const focusedOverlay = this.overlayStack.find(o => o.component === this.#focusedComponent);
@@ -3351,6 +3456,7 @@ export class TUI extends Container {
 		if (resultWidth <= totalWidth) {
 			return result;
 		}
+
 		// Truncate with strict=true to ensure we don't exceed totalWidth
 		return sliceByColumn(result, 0, totalWidth, true);
 	}
@@ -3485,6 +3591,11 @@ export class TUI extends Container {
 		// requests made up to this frame, whichever path the frame takes.
 		const componentScopedOnly = this.#pendingRenderComponentsOnly;
 		this.#pendingRenderComponentsOnly = false;
+
+		if (this.#appViewportBackend) {
+			this.#renderAppViewportFrame(width, height);
+			return;
+		}
 
 		// Fullscreen alt-screen short-circuit. While the topmost visible overlay
 		// requests it, borrow the terminal's alternate buffer and paint only the
@@ -5185,6 +5296,7 @@ export class TUI extends Container {
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
 	}
+
 
 	/**
 	 * Compose and paint a single fullscreen overlay frame on the alt buffer.

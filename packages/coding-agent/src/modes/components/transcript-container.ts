@@ -1,4 +1,5 @@
 import {
+	type AppViewportScrollRegion,
 	type Component,
 	Container,
 	type NativeScrollbackCommittedRows,
@@ -173,6 +174,7 @@ export class TranscriptContainer
 		NativeScrollbackLiveRegion,
 		NativeScrollbackCommittedRows,
 		NativeScrollbackWidthEpoch,
+		AppViewportScrollRegion,
 		RenderStablePrefix,
 		ViewportTailProvider
 {
@@ -398,6 +400,14 @@ export class TranscriptContainer
 		if (this.#nativeScrollbackLiveRegionPinned) return;
 		this.#nativeScrollbackLiveRegionPinned = true;
 		this.#nativeScrollbackLiveRegionPinnedStart = pinAt;
+	}
+
+	getAppViewportScrollRegionStart(): number | undefined {
+		return 0;
+	}
+
+	getAppViewportScrollRegionEnd(): number | undefined {
+		return undefined;
 	}
 
 	/**

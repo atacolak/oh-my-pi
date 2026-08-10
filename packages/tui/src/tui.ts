@@ -2497,7 +2497,7 @@ export class TUI extends Container {
 	}
 	stop(): void {
 		if (this.#appViewportActive) {
-			this.terminal.write(`${APP_VIEWPORT_MOUSE_TRACKING_OFF}\x1b[?1049l`);
+			this.terminal.write(`${APP_VIEWPORT_MOUSE_TRACKING_OFF}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
 			setAltScreenActive(false);
 			this.#appViewportActive = false;
 			this.#previousWindow = [];
@@ -3126,11 +3126,10 @@ export class TUI extends Container {
 
 	#handleAppViewportMouse(data: string): boolean {
 		const match = /^\x1b\[<(\d+);\d+;\d+([Mm])$/.exec(data);
-		if (!match) return true;
+		if (!match) return false;
 		const button = Number(match[1]);
-		if (button & 64) {
-			this.#scrollAppViewport(button & 1 ? 3 : -3);
-		}
+		if ((button & 64) === 0) return false;
+		this.#scrollAppViewport(button & 1 ? 3 : -3);
 		return true;
 	}
 

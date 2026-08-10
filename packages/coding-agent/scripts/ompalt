@@ -28,9 +28,14 @@ XDG_STATE_HOME=${OMPALT_XDG_STATE_HOME:-$alt_home/.local/state}
 XDG_CACHE_HOME=${OMPALT_XDG_CACHE_HOME:-$alt_home/.cache}
 export HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
 
-if [ -z "${OMP_DEV_LAUNCH_DIR:-}" ]; then
-	OMP_DEV_LAUNCH_DIR=$alt_home/.dev-cwd
-	export OMP_DEV_LAUNCH_DIR
-fi
+# Explicit OMP/Pi path selectors outrank HOME. Drop inherited selectors so an
+# ambient profile/session override cannot route this test process back into the
+# user's normal state. API-key/provider env vars are intentionally preserved.
+unset PI_CODING_AGENT_DIR PI_CODING_AGENT_SESSION_DIR PI_CONFIG_DIR OMP_PROFILE PI_PROFILE
+
+# Ignore an ambient OMP_DEV_LAUNCH_DIR too; only the ompalt-namespaced override
+# may choose the bunfig-free launch directory for this isolated launcher.
+OMP_DEV_LAUNCH_DIR=${OMPALT_DEV_LAUNCH_DIR:-$alt_home/.dev-cwd}
+export OMP_DEV_LAUNCH_DIR
 
 exec "$scripts_dir/omp" --alt "$@"

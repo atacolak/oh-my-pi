@@ -17,6 +17,7 @@ describe("scripts/ompalt launcher", () => {
 		const argvLog = path.join(probeDir, "argv.log");
 		const cwdLog = path.join(probeDir, "cwd.log");
 		const homeLog = path.join(probeDir, "home.log");
+		const pathSelectorsLog = path.join(probeDir, "path-selectors.log");
 
 		// Capture the argv and cwd Bun would have seen. `ompalt` delegates to the
 		// canonical `scripts/omp` launcher, whose final exec resolves `bun` from PATH,
@@ -26,6 +27,7 @@ describe("scripts/ompalt launcher", () => {
 			`#!/bin/sh
 printf '%s\\n' "$PWD" > ${JSON.stringify(cwdLog)}
 printf '%s\\n' "$HOME" > ${JSON.stringify(homeLog)}
+printf '%s\\n' "$PI_CODING_AGENT_DIR" "$PI_CODING_AGENT_SESSION_DIR" "$PI_CONFIG_DIR" "$OMP_PROFILE" "$PI_PROFILE" > ${JSON.stringify(pathSelectorsLog)}
 printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 `,
 			{ mode: 0o755 },
@@ -39,7 +41,13 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 				PATH: `${probeDir}:${process.env.PATH ?? ""}`,
 				HOME: probeDir,
 				OMPALT_HOME: path.join(probeDir, "alt-home"),
-				OMP_DEV_LAUNCH_DIR: path.join(probeDir, "launch"),
+				OMPALT_DEV_LAUNCH_DIR: path.join(probeDir, "launch"),
+				OMP_DEV_LAUNCH_DIR: path.join(probeDir, "ambient-launch-must-not-win"),
+				PI_CODING_AGENT_DIR: "/home/operator/.omp/agent",
+				PI_CODING_AGENT_SESSION_DIR: "/home/operator/.omp/sessions",
+				PI_CONFIG_DIR: ".omp-real",
+				OMP_PROFILE: "work",
+				PI_PROFILE: "legacy",
 			},
 			stdout: "pipe",
 			stderr: "pipe",
@@ -65,6 +73,7 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 		const launchCwd = fs.readFileSync(cwdLog, "utf8").trim();
 		expect(launchCwd).toBe(path.join(probeDir, "launch"));
 		expect(fs.readFileSync(homeLog, "utf8").trim()).toBe(path.join(probeDir, "alt-home"));
+		expect(fs.readFileSync(pathSelectorsLog, "utf8")).toBe("\n\n\n\n\n");
 		// Launcher must not depend on the caller's cwd for resolving itself.
 		expect(fs.existsSync(path.join(scriptsDir, "ompalt"))).toBe(true);
 	});
@@ -85,6 +94,7 @@ printf '%s\\n' "$PWD" "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HO
 		fs.mkdirSync(isolatedTmp);
 		const env = { ...process.env };
 		delete env.OMP_DEV_LAUNCH_DIR;
+		delete env.OMPALT_DEV_LAUNCH_DIR;
 		delete env.OMPALT_HOME;
 		delete env.OMPALT_XDG_CONFIG_HOME;
 		delete env.OMPALT_XDG_DATA_HOME;

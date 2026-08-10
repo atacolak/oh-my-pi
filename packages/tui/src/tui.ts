@@ -1491,6 +1491,7 @@ export class TUI extends Container {
 	#appViewportScrollRegionEnd: number | undefined;
 	#appViewportScrollTop = 0;
 	#appViewportFollow = true;
+	#appViewportMouseTrackingActive = false;
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
@@ -2492,14 +2493,17 @@ export class TUI extends Container {
 		setAltScreenActive(true);
 		this.terminal.hideCursor();
 		this.#appViewportActive = true;
+		this.#appViewportMouseTrackingActive = true;
 		this.#appViewportPreviousLines = [];
 		this.#appViewportPreviousWidth = 0;
 	}
 	stop(): void {
 		if (this.#appViewportActive) {
-			this.terminal.write(`${APP_VIEWPORT_MOUSE_TRACKING_OFF}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			const mouseExit = this.#appViewportMouseTrackingActive ? APP_VIEWPORT_MOUSE_TRACKING_OFF : "";
+			this.terminal.write(`${mouseExit}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
 			setAltScreenActive(false);
 			this.#appViewportActive = false;
+			this.#appViewportMouseTrackingActive = false;
 			this.#previousWindow = [];
 			this.#appViewportPreviousLines = [];
 			this.#appViewportPreviousWidth = 0;
@@ -3098,7 +3102,7 @@ export class TUI extends Container {
 	}
 
 	#handleAppViewportInput(data: string): boolean {
-		if (!this.#appViewportBackend || this.hasOverlay()) return false;
+		if (!this.#appViewportBackend || this.hasOverlay() || !this.#appViewportMouseTrackingActive) return false;
 		if (data.startsWith("\x1b[<")) {
 			return this.#handleAppViewportMouse(data);
 		}
@@ -5308,6 +5312,12 @@ export class TUI extends Container {
 
 	#renderAppViewportFrame(width: number, height: number): void {
 		this.#enterAppViewport();
+		const topOverlay = this.#getTopmostVisibleOverlay();
+		const wantMouseTracking = topOverlay?.options?.fullscreen !== true || topOverlay.options?.mouseTracking !== false;
+		if (wantMouseTracking !== this.#appViewportMouseTrackingActive) {
+			this.terminal.write(wantMouseTracking ? APP_VIEWPORT_MOUSE_TRACKING_ON : APP_VIEWPORT_MOUSE_TRACKING_OFF);
+			this.#appViewportMouseTrackingActive = wantMouseTracking;
+		}
 		this.#imageBudget.beginPass();
 		const contentWidth = Math.max(1, width - 1);
 		const rawFrame = this.render(contentWidth);

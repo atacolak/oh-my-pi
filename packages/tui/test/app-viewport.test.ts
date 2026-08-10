@@ -232,6 +232,38 @@ describe("TUI app viewport backend", () => {
 		});
 	});
 
+	it("disables app mouse tracking for selection-first fullscreen overlays and restores it on close", async () => {
+		await withEnv("PI_TUI_RENDER_BACKEND", "app-viewport", async () => {
+			const term = new VirtualTerminal(40, 5);
+			const writes = captureWrites(term);
+			const tui = new TUI(term);
+			tui.addChild(new TranscriptComponent(["row-0", "row-1", "row-2", "row-3"]));
+
+			try {
+				tui.start();
+				await flushRender(term);
+				const initialWrites = writes.join("");
+				expect(initialWrites).toContain("\x1b[?1000h\x1b[?1006h");
+				const beforeOverlay = writes.join("").length;
+
+				const overlay = tui.showOverlay(new StaticLines(["selection"]), {
+					fullscreen: true,
+					mouseTracking: false,
+				});
+				tui.requestRender(true);
+				await flushRender(term);
+				expect(writes.join("").slice(beforeOverlay)).toContain("\x1b[?1006l\x1b[?1000l");
+
+				overlay.hide();
+				tui.requestRender(true);
+				await flushRender(term);
+				expect(writes.join("")).toContain("\x1b[?1000h\x1b[?1006h");
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
 	it("stays on the native renderer unless the app viewport backend is requested", async () => {
 		await withEnv("PI_TUI_RENDER_BACKEND", "", async () => {
 			const term = new VirtualTerminal(40, 5);

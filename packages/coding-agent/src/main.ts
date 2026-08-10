@@ -1382,6 +1382,19 @@ export async function runRootCommand(
 		// tree; declare it so headless subagent optimizations (e.g. skipping replan
 		// title refresh) can tell a focusable process from a print/RPC/eval one.
 		setInteractiveHost(isInteractive);
+		// Experimental app-viewport backend is interactive-only. Set the env early
+		// enough that InteractiveMode's TUI constructor observes it, and reject
+		// print/protocol (and other non-interactive) startups with a clean usage error.
+		if (parsedArgs.alt) {
+			if (!isInteractive) {
+				process.stderr.write(
+					`${chalk.red("Error: --alt is only supported in interactive mode (not with --print, --mode, or piped input)")}\n`,
+				);
+				process.stderr.write(`Run \`omp --help\` for available flags.\n`);
+				process.exit(2);
+			}
+			Bun.env.PI_TUI_RENDER_BACKEND = "app-viewport";
+		}
 		// Create AuthStorage upfront. A configured-but-unreachable auth broker throws
 		// here; convert it to an actionable stderr message + clean exit instead of a
 		// raw uncaught stack trace (issue #8096).

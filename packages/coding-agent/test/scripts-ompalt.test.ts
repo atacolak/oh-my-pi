@@ -17,9 +17,9 @@ describe("scripts/ompalt launcher", () => {
 		const argvLog = path.join(probeDir, "argv.log");
 		const cwdLog = path.join(probeDir, "cwd.log");
 
-		// Capture the argv and cwd Bun would have seen. The launcher `exec`s bun,
-		// so a PATH-shadowing shell script is enough to observe the call without
-		// starting the real CLI.
+		// Capture the argv and cwd Bun would have seen. `ompalt` delegates to the
+		// canonical `scripts/omp` launcher, whose final exec resolves `bun` from PATH,
+		// so a PATH-shadowing shell script observes the call without starting the CLI.
 		fs.writeFileSync(
 			fakeBun,
 			`#!/bin/sh
@@ -63,5 +63,35 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 		expect(launchCwd).toBe(path.join(probeDir, "launch"));
 		// Launcher must not depend on the caller's cwd for resolving itself.
 		expect(fs.existsSync(path.join(scriptsDir, "ompalt"))).toBe(true);
+	});
+
+	it("defaults its bunfig-free launch directory outside ~/.omp", async () => {
+		const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ompalt-home-probe-"));
+		const fakeBun = path.join(probeDir, "bun");
+		const cwdLog = path.join(probeDir, "cwd.log");
+		fs.writeFileSync(fakeBun, `#!/bin/sh\nprintf '%s\\n' "$PWD" > ${JSON.stringify(cwdLog)}\n`, { mode: 0o755 });
+
+		const isolatedTmp = path.join(probeDir, "tmp");
+		fs.mkdirSync(isolatedTmp);
+		const env = { ...process.env };
+		delete env.OMP_DEV_LAUNCH_DIR;
+		delete env.OMPALT_DEV_LAUNCH_DIR;
+		const proc = Bun.spawn(["sh", ompaltPath, "--version"], {
+			env: {
+				...env,
+				PATH: `${probeDir}:${env.PATH ?? ""}`,
+				HOME: probeDir,
+				TMPDIR: isolatedTmp,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const exitCode = await proc.exited;
+		expect(exitCode).toBe(0);
+
+		const launchCwd = fs.readFileSync(cwdLog, "utf8").trim();
+		expect(launchCwd).toBe(path.join(isolatedTmp, `ompalt-dev-cwd-${process.getuid?.() ?? 0}`));
+		expect(launchCwd.startsWith(path.join(probeDir, ".omp"))).toBe(false);
+		expect(fs.existsSync(path.join(probeDir, ".omp"))).toBe(false);
 	});
 });

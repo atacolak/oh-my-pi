@@ -2,9 +2,10 @@
 # Non-invasive dev launcher for the experimental app-viewport TUI (`--alt`).
 #
 # Delegate to the canonical repo-local `scripts/omp` launcher so bun/preload,
-# symlink resolution, timing, and Herdr behavior cannot drift. Override its
-# default launch directory with a temporary bunfig-free directory: trying the
-# experiment must not create or modify the user's normal ~/.omp state.
+# symlink resolution, timing, and Herdr behavior cannot drift. By default, run
+# with a separate HOME/XDG tree under /tmp: testing this branch must not read or
+# write the user's normal ~/.omp state. Set OMPALT_HOME explicitly when a stable
+# isolated test home is preferred; sharing the real HOME is always opt-in.
 set -e
 
 # Resolve this script's real location even when invoked through a symlink.
@@ -18,8 +19,17 @@ while [ -L "$self" ]; do
 done
 scripts_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)
 
+alt_home=${OMPALT_HOME:-${TMPDIR:-/tmp}/ompalt-home-$(id -u)}
+mkdir -p "$alt_home"
+HOME=$alt_home
+XDG_CONFIG_HOME=${OMPALT_XDG_CONFIG_HOME:-$alt_home/.config}
+XDG_DATA_HOME=${OMPALT_XDG_DATA_HOME:-$alt_home/.local/share}
+XDG_STATE_HOME=${OMPALT_XDG_STATE_HOME:-$alt_home/.local/state}
+XDG_CACHE_HOME=${OMPALT_XDG_CACHE_HOME:-$alt_home/.cache}
+export HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+
 if [ -z "${OMP_DEV_LAUNCH_DIR:-}" ]; then
-	OMP_DEV_LAUNCH_DIR=${OMPALT_DEV_LAUNCH_DIR:-${TMPDIR:-/tmp}/ompalt-dev-cwd-$(id -u)}
+	OMP_DEV_LAUNCH_DIR=$alt_home/.dev-cwd
 	export OMP_DEV_LAUNCH_DIR
 fi
 

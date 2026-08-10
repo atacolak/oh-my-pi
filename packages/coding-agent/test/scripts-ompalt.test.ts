@@ -16,6 +16,7 @@ describe("scripts/ompalt launcher", () => {
 		const fakeBun = path.join(probeDir, "bun");
 		const argvLog = path.join(probeDir, "argv.log");
 		const cwdLog = path.join(probeDir, "cwd.log");
+		const homeLog = path.join(probeDir, "home.log");
 
 		// Capture the argv and cwd Bun would have seen. `ompalt` delegates to the
 		// canonical `scripts/omp` launcher, whose final exec resolves `bun` from PATH,
@@ -24,6 +25,7 @@ describe("scripts/ompalt launcher", () => {
 			fakeBun,
 			`#!/bin/sh
 printf '%s\\n' "$PWD" > ${JSON.stringify(cwdLog)}
+printf '%s\\n' "$HOME" > ${JSON.stringify(homeLog)}
 printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 `,
 			{ mode: 0o755 },
@@ -36,6 +38,7 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 				...process.env,
 				PATH: `${probeDir}:${process.env.PATH ?? ""}`,
 				HOME: probeDir,
+				OMPALT_HOME: path.join(probeDir, "alt-home"),
 				OMP_DEV_LAUNCH_DIR: path.join(probeDir, "launch"),
 			},
 			stdout: "pipe",
@@ -61,21 +64,32 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 
 		const launchCwd = fs.readFileSync(cwdLog, "utf8").trim();
 		expect(launchCwd).toBe(path.join(probeDir, "launch"));
+		expect(fs.readFileSync(homeLog, "utf8").trim()).toBe(path.join(probeDir, "alt-home"));
 		// Launcher must not depend on the caller's cwd for resolving itself.
 		expect(fs.existsSync(path.join(scriptsDir, "ompalt"))).toBe(true);
 	});
 
-	it("defaults its bunfig-free launch directory outside ~/.omp", async () => {
+	it("defaults HOME, XDG state, and the bunfig-free launch directory outside the caller home", async () => {
 		const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ompalt-home-probe-"));
 		const fakeBun = path.join(probeDir, "bun");
-		const cwdLog = path.join(probeDir, "cwd.log");
-		fs.writeFileSync(fakeBun, `#!/bin/sh\nprintf '%s\\n' "$PWD" > ${JSON.stringify(cwdLog)}\n`, { mode: 0o755 });
+		const envLog = path.join(probeDir, "env.log");
+		fs.writeFileSync(
+			fakeBun,
+			`#!/bin/sh
+printf '%s\\n' "$PWD" "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" > ${JSON.stringify(envLog)}
+`,
+			{ mode: 0o755 },
+		);
 
 		const isolatedTmp = path.join(probeDir, "tmp");
 		fs.mkdirSync(isolatedTmp);
 		const env = { ...process.env };
 		delete env.OMP_DEV_LAUNCH_DIR;
-		delete env.OMPALT_DEV_LAUNCH_DIR;
+		delete env.OMPALT_HOME;
+		delete env.OMPALT_XDG_CONFIG_HOME;
+		delete env.OMPALT_XDG_DATA_HOME;
+		delete env.OMPALT_XDG_STATE_HOME;
+		delete env.OMPALT_XDG_CACHE_HOME;
 		const proc = Bun.spawn(["sh", ompaltPath, "--version"], {
 			env: {
 				...env,
@@ -89,9 +103,17 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 		const exitCode = await proc.exited;
 		expect(exitCode).toBe(0);
 
-		const launchCwd = fs.readFileSync(cwdLog, "utf8").trim();
-		expect(launchCwd).toBe(path.join(isolatedTmp, `ompalt-dev-cwd-${process.getuid?.() ?? 0}`));
-		expect(launchCwd.startsWith(path.join(probeDir, ".omp"))).toBe(false);
+		const [launchCwd, altHome, xdgConfig, xdgData, xdgState, xdgCache] = fs
+			.readFileSync(envLog, "utf8")
+			.trim()
+			.split("\n");
+		const expectedHome = path.join(isolatedTmp, `ompalt-home-${process.getuid?.() ?? 0}`);
+		expect(altHome).toBe(expectedHome);
+		expect(launchCwd).toBe(path.join(expectedHome, ".dev-cwd"));
+		expect(xdgConfig).toBe(path.join(expectedHome, ".config"));
+		expect(xdgData).toBe(path.join(expectedHome, ".local/share"));
+		expect(xdgState).toBe(path.join(expectedHome, ".local/state"));
+		expect(xdgCache).toBe(path.join(expectedHome, ".cache"));
 		expect(fs.existsSync(path.join(probeDir, ".omp"))).toBe(false);
 	});
 });

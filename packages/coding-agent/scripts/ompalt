@@ -107,4 +107,6 @@ EOF
 	exit 0
 fi
 
-exec "$scripts_dir/omp" --alt "$@"
+PI_TUI_RENDER_BACKEND=app-viewport
+export PI_TUI_RENDER_BACKEND
+exec "$scripts_dir/omp" "$@"

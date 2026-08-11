@@ -8,7 +8,7 @@ const scriptsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const ompaltPath = path.join(scriptsDir, "ompalt");
 
 describe("scripts/ompalt launcher", () => {
-	it("injects --alt and preserves the normal OMP environment from any cwd", async () => {
+	it("selects app viewport and preserves normal OMP argv/environment from any cwd", async () => {
 		const stat = fs.statSync(ompaltPath);
 		expect(stat.mode & 0o111).not.toBe(0);
 
@@ -25,7 +25,7 @@ describe("scripts/ompalt launcher", () => {
 			fakeBun,
 			`#!/bin/sh
 printf '%s\n' "$PWD" > ${JSON.stringify(cwdLog)}
-printf '%s\n' "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$PI_CODING_AGENT_DIR" "$PI_CODING_AGENT_SESSION_DIR" "$PI_CONFIG_DIR" "$OMP_PROFILE" "$PI_PROFILE" > ${JSON.stringify(envLog)}
+printf '%s\n' "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$PI_CODING_AGENT_DIR" "$PI_CODING_AGENT_SESSION_DIR" "$PI_CONFIG_DIR" "$OMP_PROFILE" "$PI_PROFILE" "$PI_TUI_RENDER_BACKEND" > ${JSON.stringify(envLog)}
 printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 `,
 			{ mode: 0o755 },
@@ -44,6 +44,7 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 			PI_CONFIG_DIR: path.join(probeDir, "pi-config"),
 			OMP_PROFILE: "work",
 			PI_PROFILE: "legacy",
+			PI_TUI_RENDER_BACKEND: "app-viewport",
 		};
 		const proc = Bun.spawn(["sh", ompaltPath, "--model", "opus", "hello world", "--print"], {
 			cwd: foreignCwd,
@@ -69,9 +70,8 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 			.toString("utf8")
 			.split("\0")
 			.filter(part => part.length > 0);
-		const altIndex = argv.indexOf("--alt");
-		expect(altIndex).toBeGreaterThan(-1);
-		expect(argv.slice(altIndex)).toEqual(["--alt", "--model", "opus", "hello world", "--print"]);
+		expect(argv).not.toContain("--alt");
+		expect(argv.slice(-4)).toEqual(["--model", "opus", "hello world", "--print"]);
 		expect(fs.readFileSync(cwdLog, "utf8").trim()).toBe(launchDir);
 		expect(fs.readFileSync(envLog, "utf8").trim().split("\n")).toEqual(Object.values(expectedEnv));
 	});

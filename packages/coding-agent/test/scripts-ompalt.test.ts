@@ -75,4 +75,19 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 		expect(fs.readFileSync(cwdLog, "utf8").trim()).toBe(launchDir);
 		expect(fs.readFileSync(envLog, "utf8").trim().split("\n")).toEqual(Object.values(expectedEnv));
 	});
+
+	it("documents the checkout-aware update path without invoking the network", async () => {
+		const proc = Bun.spawn(["sh", ompaltPath, "update", "--help"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(stdout).toContain("update the patched alt checkout from upstream");
+		expect(stdout).toContain("--check");
+	});
 });

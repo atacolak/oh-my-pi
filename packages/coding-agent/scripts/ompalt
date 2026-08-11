@@ -17,5 +17,94 @@ while [ -L "$self" ]; do
 	esac
 done
 scripts_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)
+repo_root=$(CDPATH= cd -- "$scripts_dir/../../.." && pwd -P)
+
+# `omp update` updates this one patched checkout in place. A failed rebase or
+# verification restores the previous commit, so the currently working alt build
+# remains available. Plugin-only updates still use OMP's normal implementation.
+if [ "${1:-}" = update ]; then
+	shift
+	check=0
+	force=0
+	plugins=0
+	for arg in "$@"; do
+		case $arg in
+		-c|--check) check=1 ;;
+		-f|--force) force=1 ;;
+		-l|--plugins) plugins=1 ;;
+		-h|--help)
+			cat <<'EOF'
+omp update - update the patched alt checkout from upstream
+
+options:
+  -c, --check     fetch and report whether upstream changes are available
+  -f, --force     rebase and verify even when no new upstream commits exist
+  -l, --plugins   run OMP's normal plugin updater instead
+EOF
+			exit 0
+			;;
+		*)
+			echo "omp update: unsupported option: $arg" >&2
+			exit 2
+			;;
+		esac
+	done
+
+	if [ "$plugins" -eq 1 ]; then
+		exec "$scripts_dir/omp" update --plugins
+	fi
+
+	cd "$repo_root"
+	if [ -n "$(git status --porcelain)" ]; then
+		echo "omp update: alt checkout has uncommitted changes; refusing to overwrite them" >&2
+		exit 1
+	fi
+
+	echo "checking upstream omp..."
+	git fetch origin main
+	behind=$(git rev-list --count HEAD..origin/main)
+	if [ "$check" -eq 1 ]; then
+		if [ "$behind" -eq 0 ]; then
+			echo "alt checkout already contains current upstream main"
+		else
+			echo "$behind upstream commit(s) available; run: omp update"
+		fi
+		exit 0
+	fi
+	if [ "$behind" -eq 0 ] && [ "$force" -eq 0 ]; then
+		echo "alt checkout already contains current upstream main"
+		exit 0
+	fi
+
+	original_head=$(git rev-parse HEAD)
+	if ! git rebase origin/main; then
+		git rebase --abort >/dev/null 2>&1 || true
+		echo "omp update: the alt patch conflicts with upstream; previous version restored" >&2
+		exit 1
+	fi
+
+	verify_update() {
+		bun install --frozen-lockfile &&
+			bun test \
+				packages/tui/test/app-viewport.test.ts \
+				packages/tui/test/app-viewport-stress.test.ts \
+				packages/coding-agent/test/cli-alt-flag.test.ts \
+				packages/coding-agent/test/cli-alt-mode-guard.test.ts \
+				packages/coding-agent/test/scripts-ompalt.test.ts &&
+			bun --cwd=packages/tui run check &&
+			bun --cwd=packages/coding-agent run check
+	}
+
+	if ! verify_update; then
+		echo "omp update: verification failed; restoring previous version" >&2
+		git reset --hard "$original_head"
+		bun install --frozen-lockfile >/dev/null 2>&1 || true
+		git reset --hard "$original_head" >/dev/null 2>&1 || true
+		exit 1
+	fi
+
+	echo "alt checkout updated and verified"
+	exit 0
+fi
 
 exec "$scripts_dir/omp" --alt "$@"

@@ -1,11 +1,10 @@
 #!/bin/sh
-# Non-invasive dev launcher for the experimental app-viewport TUI (`--alt`).
+# Daily launcher for the app-viewport TUI (`--alt`).
 #
 # Delegate to the canonical repo-local `scripts/omp` launcher so bun/preload,
-# symlink resolution, timing, and Herdr behavior cannot drift. By default, run
-# with a separate HOME/XDG tree under /tmp: testing this branch must not read or
-# write the user's normal ~/.omp state. Set OMPALT_HOME explicitly when a stable
-# isolated test home is preferred; sharing the real HOME is always opt-in.
+# symlink resolution, timing, and Herdr behavior cannot drift. Deliberately
+# preserve HOME, XDG paths, profile selectors, sessions, and provider settings:
+# this is normal OMP with the alternate renderer, not an isolated test install.
 set -e
 
 # Resolve this script's real location even when invoked through a symlink.
@@ -18,24 +17,5 @@ while [ -L "$self" ]; do
 	esac
 done
 scripts_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)
-
-alt_home=${OMPALT_HOME:-${TMPDIR:-/tmp}/ompalt-home-$(id -u)}
-mkdir -p "$alt_home"
-HOME=$alt_home
-XDG_CONFIG_HOME=${OMPALT_XDG_CONFIG_HOME:-$alt_home/.config}
-XDG_DATA_HOME=${OMPALT_XDG_DATA_HOME:-$alt_home/.local/share}
-XDG_STATE_HOME=${OMPALT_XDG_STATE_HOME:-$alt_home/.local/state}
-XDG_CACHE_HOME=${OMPALT_XDG_CACHE_HOME:-$alt_home/.cache}
-export HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
-
-# Explicit OMP/Pi path selectors outrank HOME. Drop inherited selectors so an
-# ambient profile/session override cannot route this test process back into the
-# user's normal state. API-key/provider env vars are intentionally preserved.
-unset PI_CODING_AGENT_DIR PI_CODING_AGENT_SESSION_DIR PI_CONFIG_DIR OMP_PROFILE PI_PROFILE
-
-# Ignore an ambient OMP_DEV_LAUNCH_DIR too; only the ompalt-namespaced override
-# may choose the bunfig-free launch directory for this isolated launcher.
-OMP_DEV_LAUNCH_DIR=${OMPALT_DEV_LAUNCH_DIR:-$alt_home/.dev-cwd}
-export OMP_DEV_LAUNCH_DIR
 
 exec "$scripts_dir/omp" --alt "$@"

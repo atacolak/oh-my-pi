@@ -139,6 +139,7 @@
 - `/retry` and `/handoff` now work over ACP, so editor clients (Zed) list them and can run them instead of sending the text to the model.
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
+- Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208), [#8211](https://github.com/can1357/oh-my-pi/pull/8211))
 - `hindsight.retainStrategy` (env `HINDSIGHT_RETAIN_STRATEGY`) — optional per-item Hindsight extraction strategy on auto-retain. Unset omits the field so the bank default applies; it is not written as a `strategy:*` tag.
 - `hindsight.recallTags` and `hindsight.recallTagsMatch` — extra recall tags and match mode. In `per-project-tagged`, configured tags are appended after the automatic `project:<repo>` tag and deduplicated. Default match remains `any`.
 

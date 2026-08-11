@@ -8,7 +8,7 @@ const scriptsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".
 const ompaltPath = path.join(scriptsDir, "ompalt");
 
 describe("scripts/ompalt launcher", () => {
-	it("selects app viewport and preserves normal OMP argv/environment from any cwd", async () => {
+	it("selects app viewport and forces the unnamed default agent from any cwd", async () => {
 		const stat = fs.statSync(ompaltPath);
 		expect(stat.mode & 0o111).not.toBe(0);
 
@@ -33,26 +33,25 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 
 		const foreignCwd = fs.mkdtempSync(path.join(os.tmpdir(), "ompalt-cwd-"));
 		const launchDir = path.join(probeDir, "launch");
-		const expectedEnv = {
+		const expectedPreservedEnv = {
 			HOME: path.join(probeDir, "home"),
 			XDG_CONFIG_HOME: path.join(probeDir, "config"),
 			XDG_DATA_HOME: path.join(probeDir, "data"),
 			XDG_STATE_HOME: path.join(probeDir, "state"),
 			XDG_CACHE_HOME: path.join(probeDir, "cache"),
-			PI_CODING_AGENT_DIR: path.join(probeDir, "agent"),
-			PI_CODING_AGENT_SESSION_DIR: path.join(probeDir, "sessions"),
-			PI_CONFIG_DIR: path.join(probeDir, "pi-config"),
-			OMP_PROFILE: "work",
-			PI_PROFILE: "legacy",
-			PI_TUI_RENDER_BACKEND: "app-viewport",
 		};
 		const proc = Bun.spawn(["sh", ompaltPath, "--model", "opus", "hello world", "--print"], {
 			cwd: foreignCwd,
 			env: {
 				...process.env,
-				...expectedEnv,
+				...expectedPreservedEnv,
 				PATH: `${probeDir}:${process.env.PATH ?? ""}`,
 				OMP_DEV_LAUNCH_DIR: launchDir,
+				PI_CODING_AGENT_DIR: path.join(probeDir, "agent"),
+				PI_CODING_AGENT_SESSION_DIR: path.join(probeDir, "sessions"),
+				PI_CONFIG_DIR: path.join(probeDir, "pi-config"),
+				OMP_PROFILE: "work",
+				PI_PROFILE: "legacy",
 			},
 			stdout: "pipe",
 			stderr: "pipe",
@@ -73,7 +72,16 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 		expect(argv).not.toContain("--alt");
 		expect(argv.slice(-4)).toEqual(["--model", "opus", "hello world", "--print"]);
 		expect(fs.readFileSync(cwdLog, "utf8").trim()).toBe(launchDir);
-		expect(fs.readFileSync(envLog, "utf8").trim().split("\n")).toEqual(Object.values(expectedEnv));
+		expect(fs.readFileSync(envLog, "utf8").split("\n")).toEqual([
+			...Object.values(expectedPreservedEnv),
+			"",
+			"",
+			"",
+			"",
+			"",
+			"app-viewport",
+			"",
+		]);
 	});
 
 	it("documents the checkout-aware update path without invoking the network", async () => {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed birch theme contrast on dark terminals: light painted surfaces (`selectedBg`, user/tool/custom message cards) used empty foreground tokens that inherit the terminal default, so selection chrome and chat cards could render light-on-light. Selection now uses `deepBark`; card titles/body ink use `forestFloor` while global `text` still inherits the terminal default for bare transcript chrome.
+
 ## [17.3.0] - 2026-08-13
 
 ### Breaking Changes

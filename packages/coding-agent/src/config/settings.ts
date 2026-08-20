@@ -2544,6 +2544,9 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"hindsight.bankIdPrefix": () => hindsightScopeSignal.fire(),
 	"hindsight.scoping": () => hindsightScopeSignal.fire(),
 	extendedContext: () => extendedContextSignal.fire(),
+	"hindsight.recallTags": () => hindsightScopeSignal.fire(),
+	"hindsight.recallTagsMatch": () => hindsightScopeSignal.fire(),
+	"hindsight.retainStrategy": () => hindsightScopeSignal.fire(),
 	"worktree.base": value => {
 		const dir = typeof value === "string" && value.trim() ? value : undefined;
 		// Always call so an unset/empty value clears a previously-applied override.

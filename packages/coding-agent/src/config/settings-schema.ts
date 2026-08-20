@@ -3304,6 +3304,18 @@ export const SETTINGS_SCHEMA = {
 	"hindsight.retainEveryNTurns": { type: "number", default: 3 },
 	"hindsight.retainOverlapTurns": { type: "number", default: 2 },
 	"hindsight.retainContext": { type: "string", default: "omp" },
+	"hindsight.retainStrategy": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Hindsight",
+			label: "Hindsight Retain Strategy",
+			description:
+				"Per-item Hindsight extraction strategy sent on auto-retain. When unset, the field is omitted and the bank's retain_default_strategy applies.",
+			condition: "hindsightActive",
+		},
+	},
 
 	"hindsight.recallBudget": {
 		type: "enum",
@@ -3314,6 +3326,12 @@ export const SETTINGS_SCHEMA = {
 	"hindsight.recallContextTurns": { type: "number", default: 1 },
 	"hindsight.recallMaxQueryChars": { type: "number", default: 800 },
 	"hindsight.recallTypes": { type: "array", default: HINDSIGHT_RECALL_TYPES_DEFAULT },
+	"hindsight.recallTags": { type: "array", default: [] as string[] },
+	"hindsight.recallTagsMatch": {
+		type: "enum",
+		values: ["any", "all", "any_strict", "all_strict"] as const,
+		default: "any",
+	},
 
 	"hindsight.debug": { type: "boolean", default: false },
 

@@ -31,6 +31,8 @@ export interface Args {
 	allowHome?: boolean;
 	provider?: string;
 	model?: string;
+	/** Discovered agent name for this root session (`--agent`). */
+	agent?: string;
 	config?: string[];
 	smol?: string;
 	slow?: string;

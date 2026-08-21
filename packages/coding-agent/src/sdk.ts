@@ -109,6 +109,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
 import {
+	buildSkillPromptMessage,
 	loadSkills as loadSkillsInternal,
 	type Skill,
 	type SkillWarning,
@@ -155,6 +156,7 @@ import {
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	replaceLlmImagesWithText,
+	SKILL_PROMPT_MESSAGE_TYPE,
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
@@ -369,6 +371,8 @@ export interface CreateAgentSessionOptions {
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
 	spawns?: string;
+	/** Skill names to inject as hidden autoload prompts before the first turn. */
+	autoloadSkills?: string[];
 
 	/** Auth storage for credentials. Default: discoverAuthStorage(agentDir) */
 	authStorage?: AuthStorage;
@@ -4100,6 +4104,26 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			await session.initializeCodeMode();
 		} catch (error) {
 			logger.warn("Code Mode initialization at session startup failed", { error: String(error) });
+		}
+
+		if (options.autoloadSkills?.length && skills.length > 0) {
+			for (const name of options.autoloadSkills) {
+				const skill = skills.find(entry => entry.name === name);
+				if (!skill) {
+					logger.warn("Autoload skill not found", { name });
+					continue;
+				}
+				const { message } = await buildSkillPromptMessage(skill, "", "autoload");
+				await session.sendCustomMessage(
+					{
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: message,
+						display: false,
+						details: { name: skill.name, path: skill.filePath },
+					},
+					{ triggerTurn: false },
+				);
+			}
 		}
 
 		return {

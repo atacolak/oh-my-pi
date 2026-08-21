@@ -145,6 +145,7 @@
 ### Changed
 
 - `per-project-tagged` auto-retain now sends `observation_scopes: [[project:<repo>]]` so observation consolidation follows the routing project instead of the server default (which could fragment on extra tags).
+- Hidden custom tools (`hidden: true`) stay out of the parent session's active set and `/tools` unless `--tools` or an agent `tools:` list names them. They used to be always-included.
 
 ## [17.4.0] - 2026-08-20
 

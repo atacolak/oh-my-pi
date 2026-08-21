@@ -950,8 +950,8 @@ export function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		name: tool.name,
 		label: tool.label,
 		description: tool.description,
-		parameters: tool.parameters,
 		hidden: tool.hidden,
+		defaultInactive: tool.defaultInactive === true || tool.hidden === true,
 		loadMode: defaultLoadModeForToolName(tool.name, tool.loadMode),
 		deferrable: tool.deferrable,
 		approval: typeof tool.approval === "function" ? tool.approval.bind(tool) : tool.approval,
@@ -3005,9 +3005,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 		const requestedToolNames = explicitlyRequestedToolNames ?? toolNamesFromRegistry;
 		const normalizedRequested = requestedToolNames.filter(name => toolRegistry.has(name));
-		const defaultInactiveToolNames = new Set(
-			registeredTools.filter(tool => tool.definition.defaultInactive).map(tool => tool.definition.name),
-		);
+		const defaultInactiveToolNames = new Set([
+			...registeredTools
+				.filter(tool => tool.definition.defaultInactive || tool.definition.hidden)
+				.map(tool => tool.definition.name),
+			...sdkCustomTools.filter(t => Boolean(t.hidden || t.defaultInactive)).map(t => t.name),
+		]);
 		const requestedActiveToolNames = normalizedRequested.filter(name => name !== "goal");
 		const explicitlyRequestedToolNameSet = explicitlyRequestedToolNames
 			? new Set(explicitlyRequestedToolNames)
@@ -3023,13 +3026,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: requestedActiveToolNames.filter(name => !defaultInactiveToolNames.has(name));
 		let initialToolNames = [...initialRequestedActiveToolNames];
 
-		// Custom tools and extension-registered tools are always included regardless of toolNames filter.
-		// Restricted callers own the list, so never widen it with registered tools.
+		// Custom tools and extension-registered tools are always included
+		// unless hidden / defaultInactive. Restricted callers own the list.
 		const alwaysInclude: string[] = restrictToolNames
 			? []
 			: [
-					...sdkCustomTools.map(t => (isCustomTool(t) ? t.name : t.name)),
-					...registeredTools.filter(t => !t.definition.defaultInactive).map(t => t.definition.name),
+					...sdkCustomTools
+						.filter(t => !(t.hidden || t.defaultInactive))
+						.map(t => t.name),
+					...registeredTools
+						.filter(t => !t.definition.defaultInactive && !t.definition.hidden)
+						.map(t => t.definition.name),
 				];
 		for (const name of alwaysInclude) {
 			if (toolRegistry.has(name) && !initialToolNames.includes(name)) {

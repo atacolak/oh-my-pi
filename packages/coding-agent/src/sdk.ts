@@ -950,6 +950,7 @@ export function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		name: tool.name,
 		label: tool.label,
 		description: tool.description,
+		parameters: tool.parameters,
 		hidden: tool.hidden,
 		defaultInactive: tool.defaultInactive === true || tool.hidden === true,
 		loadMode: defaultLoadModeForToolName(tool.name, tool.loadMode),

@@ -74,6 +74,7 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		mentalModelRefreshIntervalMs: 5 * 60 * 1000,
 		mentalModelMaxRenderChars: 16_000,
 		retainStrategy: null,
+		project: null,
 		recallTags: [],
 		recallTagsMatch: "any",
 		...overrides,
@@ -347,6 +348,45 @@ describe("retain.execute", () => {
 		expect(source).toBe("Hindsight");
 		expect(message).toContain("HTTP 503");
 		expect(message).toContain("1 memory");
+	});
+
+	it("routes a per-item project independently of the session default", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		registerState(client, settings, { retainTags: ["project:workspace"] });
+
+		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
+		await tool.execute("call-project", {
+			items: [
+				{ content: "browser-ops fact", project: "browser-ops" },
+				{ content: "cross-cutting fact", project: "global" },
+				{ content: "session default fact" },
+			],
+		});
+		await registeredState?.flushRetainQueue();
+
+		const items = retainBatchSpy.mock.calls[0][1] as Array<Record<string, unknown>>;
+		expect(items[0]).toEqual(
+			expect.objectContaining({
+				content: "browser-ops fact",
+				tags: ["project:browser-ops"],
+				observationScopes: [["project:browser-ops"]],
+			}),
+		);
+		expect(items[1]).toEqual(
+			expect.objectContaining({
+				content: "cross-cutting fact",
+				tags: ["project:global"],
+				observationScopes: [["project:global"]],
+			}),
+		);
+		expect(items[2]).toEqual(
+			expect.objectContaining({
+				content: "session default fact",
+				tags: ["project:workspace"],
+			}),
+		);
 	});
 
 	it("throws when no per-session state is registered", async () => {

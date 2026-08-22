@@ -69,6 +69,7 @@ const baseConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	mentalModelRefreshIntervalMs: 5 * 60 * 1000,
 	mentalModelMaxRenderChars: 16_000,
 	retainStrategy: null,
+		project: null,
 	recallTags: [],
 	recallTagsMatch: "any",
 	...overrides,
@@ -101,28 +102,34 @@ describe("computeBankScope", () => {
 	});
 
 	describe("scoping=per-project", () => {
-		it("appends the cwd basename to the base bank id", () => {
-			expect(computeBankScope(baseConfig({ scoping: "per-project" }), "/work/proj")).toEqual({
+		it("appends an explicit project override to the base bank id", () => {
+			expect(computeBankScope(baseConfig({ scoping: "per-project", project: "proj" }), "/work/elsewhere")).toEqual({
 				bankId: "omp-proj",
 			});
 		});
 
-		it("appends `unknown` for an empty cwd", () => {
-			expect(computeBankScope(baseConfig({ scoping: "per-project" }), "")).toEqual({
-				bankId: "omp-unknown",
+		it("stays on the base bank id when cwd is not a git repo", () => {
+			expect(computeBankScope(baseConfig({ scoping: "per-project" }), "/work/proj")).toEqual({
+				bankId: "omp",
 			});
 		});
 
-		it("lowercases the project segment so one checkout maps to one bank", () => {
-			expect(computeBankScope(baseConfig({ scoping: "per-project" }), "/work/General")).toEqual({
+		it("stays on the base bank id for an empty cwd", () => {
+			expect(computeBankScope(baseConfig({ scoping: "per-project" }), "")).toEqual({
+				bankId: "omp",
+			});
+		});
+
+		it("lowercases an explicit project override", () => {
+			expect(computeBankScope(baseConfig({ scoping: "per-project", project: "General" }), "/work")).toEqual({
 				bankId: "omp-general",
 			});
 		});
 
 		it("composes prefix + bankId + project", () => {
 			const scope = computeBankScope(
-				baseConfig({ scoping: "per-project", bankId: "team", bankIdPrefix: "prod" }),
-				"/work/cool-app",
+				baseConfig({ scoping: "per-project", bankId: "team", bankIdPrefix: "prod", project: "cool-app" }),
+				"/work/elsewhere",
 			);
 			expect(scope.bankId).toBe("prod-team-cool-app");
 		});
@@ -136,7 +143,7 @@ describe("computeBankScope", () => {
 
 	describe("scoping=per-project-tagged", () => {
 		it("keeps the base bank id and emits project tags with `any` match", () => {
-			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/work/proj")).toEqual({
+			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged", project: "proj" }), "/work/elsewhere")).toEqual({
 				bankId: "omp",
 				retainTags: ["project:proj"],
 				recallTags: ["project:proj"],
@@ -145,28 +152,49 @@ describe("computeBankScope", () => {
 			});
 		});
 
+		it("does not invent a project tag from a non-git cwd basename", () => {
+			const scope = computeBankScope(
+				baseConfig({ scoping: "per-project-tagged", recallTags: ["project:global"] }),
+				"/home/sf/workspace",
+			);
+			expect(scope).toEqual({
+				bankId: "omp",
+				recallTags: ["project:global"],
+				recallTagsMatch: "any",
+			});
+			expect(scope.retainTags).toBeUndefined();
+			expect(scope.observationScopes).toBeUndefined();
+		});
+
 		it("uses the same project label for retain and recall tags", () => {
-			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/repo/cool-app");
+			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged", project: "cool-app" }), "/repo");
 			expect(scope.retainTags).toEqual(["project:cool-app"]);
 			expect(scope.recallTags).toEqual(["project:cool-app"]);
 		});
 
-		it("falls back to project:unknown when cwd is empty", () => {
+		it("stays unscoped when cwd is empty and no project is set", () => {
 			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "");
-			expect(scope.retainTags).toEqual(["project:unknown"]);
-			expect(scope.recallTags).toEqual(["project:unknown"]);
+			expect(scope.retainTags).toBeUndefined();
+			expect(scope.recallTags).toBeUndefined();
+			expect(scope.observationScopes).toBeUndefined();
 		});
 
-		it("lowercases the project tag so casing cannot split one project in two", () => {
-			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/work/General");
+		it("lowercases an explicit project so casing cannot split one project in two", () => {
+			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged", project: "General" }), "/work");
 			expect(scope.retainTags).toEqual(["project:general"]);
 			expect(scope.recallTags).toEqual(["project:general"]);
 		});
 
+		it("honors project=global as explicit publication", () => {
+			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged", project: "global" }), "/work");
+			expect(scope.retainTags).toEqual(["project:global"]);
+			expect(scope.observationScopes).toEqual([["project:global"]]);
+		});
+
 		it("adds configured recallTags after the automatic project tag", () => {
 			const scope = computeBankScope(
-				baseConfig({ scoping: "per-project-tagged", recallTags: ["project:global"] }),
-				"/path/speech-core",
+				baseConfig({ scoping: "per-project-tagged", recallTags: ["project:global"], project: "speech-core" }),
+				"/path/elsewhere",
 			);
 			expect(scope.retainTags).toEqual(["project:speech-core"]);
 			expect(scope.recallTags).toEqual(["project:speech-core", "project:global"]);
@@ -176,8 +204,8 @@ describe("computeBankScope", () => {
 
 		it("does not let configured recallTags replace the automatic project tag", () => {
 			const scope = computeBankScope(
-				baseConfig({ scoping: "per-project-tagged", recallTags: ["project:global", "project:speech-core"] }),
-				"/path/speech-core",
+				baseConfig({ scoping: "per-project-tagged", recallTags: ["project:global", "project:speech-core"], project: "speech-core" }),
+				"/path/elsewhere",
 			);
 			expect(scope.recallTags).toEqual(["project:speech-core", "project:global"]);
 		});
@@ -187,22 +215,23 @@ describe("computeBankScope", () => {
 				baseConfig({
 					scoping: "per-project-tagged",
 					recallTags: ["project:speech-core", "project:global", "project:global"],
+					project: "speech-core",
 				}),
-				"/path/speech-core",
+				"/path/elsewhere",
 			);
 			expect(scope.recallTags).toEqual(["project:speech-core", "project:global"]);
 		});
 
 		it("forwards recallTagsMatch", () => {
 			const scope = computeBankScope(
-				baseConfig({ scoping: "per-project-tagged", recallTagsMatch: "any_strict" }),
-				"/work/proj",
+				baseConfig({ scoping: "per-project-tagged", recallTagsMatch: "any_strict", project: "proj" }),
+				"/work/elsewhere",
 			);
 			expect(scope.recallTagsMatch).toBe("any_strict");
 		});
 
 		it("scopes observations to the derived project tag only", () => {
-			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/path/speech-core");
+			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged", project: "speech-core" }), "/path");
 			expect(scope.observationScopes).toEqual([["project:speech-core"]]);
 			expect(JSON.stringify(scope.observationScopes)).not.toContain("role:");
 			expect(JSON.stringify(scope.observationScopes)).not.toContain("source:");
@@ -271,12 +300,10 @@ describe("computeBankScope", () => {
 			});
 		});
 
-		it("falls back to the cwd basename outside any repository", () => {
-			// The temp parent dir is not itself a repo — it just contains one.
-			// `mkdtemp` mixes case into the suffix, so fold it like the label does.
-			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), baseDir).retainTags).toEqual([
-				`project:${path.basename(baseDir).toLowerCase()}`,
-			]);
+		it("does not invent a project tag outside any repository", () => {
+			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), baseDir);
+			expect(scope.retainTags).toBeUndefined();
+			expect(scope.observationScopes).toBeUndefined();
 		});
 	});
 
@@ -324,7 +351,8 @@ describe("computeBankScope", () => {
 describe("deriveBankId (legacy wrapper)", () => {
 	it("returns the bankId field of the resolved scope", () => {
 		expect(deriveBankId(baseConfig({ bankId: "team", bankIdPrefix: "prod" }), "/cwd")).toBe("prod-team");
-		expect(deriveBankId(baseConfig({ scoping: "per-project" }), "/work/proj")).toBe("omp-proj");
+		expect(deriveBankId(baseConfig({ scoping: "per-project" }), "/work/proj")).toBe("omp");
+		expect(deriveBankId(baseConfig({ scoping: "per-project", project: "proj" }), "/work/proj")).toBe("omp-proj");
 		expect(deriveBankId(baseConfig({ scoping: "per-project-tagged" }), "/work/proj")).toBe("omp");
 	});
 });

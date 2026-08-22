@@ -48,6 +48,7 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	mentalModelRefreshIntervalMs: 5 * 60 * 1000,
 	mentalModelMaxRenderChars: 16_000,
 	retainStrategy: null,
+		project: null,
 	recallTags: [],
 	recallTagsMatch: "any",
 	...overrides,

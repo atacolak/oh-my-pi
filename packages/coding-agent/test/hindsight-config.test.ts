@@ -36,4 +36,13 @@ describe("loadHindsightConfig retain/recall seam", () => {
 	it("falls back to any when recallTagsMatch is invalid", () => {
 		expect(load({ "hindsight.recallTagsMatch": "tag_groups" }).recallTagsMatch).toBe("any");
 	});
+
+	it("omits project when unset", () => {
+		expect(load().project).toBeNull();
+	});
+
+	it("loads project from settings and prefers HINDSIGHT_PROJECT", () => {
+		expect(load({ "hindsight.project": "browser-ops" }).project).toBe("browser-ops");
+		expect(load({ "hindsight.project": "browser-ops" }, { HINDSIGHT_PROJECT: "global" }).project).toBe("global");
+	});
 });

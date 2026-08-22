@@ -3316,6 +3316,18 @@ export const SETTINGS_SCHEMA = {
 			condition: "hindsightActive",
 		},
 	},
+	"hindsight.project": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Hindsight",
+			label: "Hindsight Project",
+			description:
+				"Optional routing project for this session (repo name or global). Overrides the git-root default. Leave unset when the session is not about one repo — do not invent a folder name.",
+			condition: "hindsightActive",
+		},
+	},
 
 	"hindsight.recallBudget": {
 		type: "enum",

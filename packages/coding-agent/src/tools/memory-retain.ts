@@ -1,5 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { normalizeHindsightProject, projectRouting } from "../hindsight/bank";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -7,6 +8,9 @@ const memoryRetainSchema = type({
 	items: type({
 		content: type("string").describe("information to remember"),
 		"context?": type("string").describe("source context"),
+		"project?": type("string").describe(
+			"Routing project for this fact only: repo name or global. Omit to use the session default (git root, or unscoped outside a repo). Never infer global from content.",
+		),
 	})
 		.array()
 		.atLeastLength(1)
@@ -76,7 +80,13 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 		// its debounce timer fires. If the eventual batch fails, the queue
 		// surfaces a UI-only warning notice — the LLM is not informed.
 		for (const item of params.items) {
-			state.enqueueRetain(item.content, item.context);
+			const label = normalizeHindsightProject(item.project);
+			const routing = label ? projectRouting(label) : undefined;
+			state.enqueueRetain(
+				item.content,
+				item.context,
+				routing ? { tags: [routing.tag], observationScopes: routing.observationScopes } : undefined,
+			);
 		}
 
 		const count = params.items.length;

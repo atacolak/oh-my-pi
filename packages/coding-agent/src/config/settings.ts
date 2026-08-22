@@ -2693,6 +2693,7 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"hindsight.recallTags": () => hindsightScopeSignal.fire(),
 	"hindsight.recallTagsMatch": () => hindsightScopeSignal.fire(),
 	"hindsight.retainStrategy": () => hindsightScopeSignal.fire(),
+	"hindsight.project": () => hindsightScopeSignal.fire(),
 	"worktree.base": value => {
 		const dir = typeof value === "string" && value.trim() ? value : undefined;
 		// Always call so an unset/empty value clears a previously-applied override.

@@ -142,10 +142,12 @@
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208), [#8211](https://github.com/can1357/oh-my-pi/pull/8211))
 - `hindsight.retainStrategy` (env `HINDSIGHT_RETAIN_STRATEGY`) — optional per-item Hindsight extraction strategy on auto-retain. Unset omits the field so the bank default applies; it is not written as a `strategy:*` tag.
 - `hindsight.recallTags` and `hindsight.recallTagsMatch` — extra recall tags and match mode. In `per-project-tagged`, configured tags are appended after the automatic `project:<repo>` tag and deduplicated. Default match remains `any`.
+- `hindsight.project` (env `HINDSIGHT_PROJECT`) — optional session routing project. Overrides the git-root default. Unset + cwd outside a git repo no longer invents `project:<folder>` (so `~/workspace` is unscoped, not `project:workspace`).
+- `retain` items accept optional `project` (repo name or `global`) so one session can file facts into different projects. `project:global` stays explicit.
 
 ### Changed
 
-- `per-project-tagged` auto-retain now sends `observation_scopes: [[project:<repo>]]` so observation consolidation follows the routing project instead of the server default (which could fragment on extra tags).
+- `per-project-tagged` auto-retain now sends `observation_scopes: [[project:<repo>]]` so observation consolidation follows the routing project instead of the server default (which could fragment on extra tags). Sessions without a git root and without `hindsight.project` omit retain tags and observation scopes.
 - Hidden custom tools (`hidden: true`) stay out of the parent session's active set and `/tools` unless `--tools` or an agent `tools:` list names them. They used to be always-included.
 
 ## [17.4.0] - 2026-08-20

@@ -27,6 +27,8 @@ interface PendingRetainItem {
 	content: string;
 	context?: string;
 	timestamp: Date;
+	tags?: string[];
+	observationScopes?: string[][];
 }
 
 interface RecallOutcome {
@@ -83,11 +85,11 @@ export class HindsightRetainQueue {
 		return this.#items.length;
 	}
 
-	enqueue(content: string, context?: string): void {
+	enqueue(content: string, context?: string, routing?: Pick<PendingRetainItem, "tags" | "observationScopes">): void {
 		if (this.#closed) {
 			throw new Error("Hindsight retain queue is closed.");
 		}
-		this.#items.push({ content, context, timestamp: new Date() });
+		this.#items.push({ content, context, timestamp: new Date(), ...routing });
 
 		if (this.#items.length >= RETAIN_FLUSH_BATCH_SIZE) {
 			void this.flush();
@@ -160,10 +162,10 @@ export class HindsightRetainQueue {
 					session_id: sessionId,
 					...(retainStrategy ? { retain_strategy: retainStrategy } : {}),
 				},
-				tags: state.retainTags,
+				tags: item.tags ?? state.retainTags,
 				timestamp: item.timestamp,
 				strategy: retainStrategy,
-				observationScopes: state.observationScopes,
+				observationScopes: item.observationScopes ?? state.observationScopes,
 			}));
 			await state.client.retainBatch(state.bankId, batch, { async: true });
 			if (state.config.debug) {
@@ -293,8 +295,12 @@ export class HindsightSessionState {
 		this.#lastRetainedPrefixKey = "";
 	}
 
-	enqueueRetain(content: string, context?: string): void {
-		this.retainQueue.enqueue(content, context);
+	enqueueRetain(
+		content: string,
+		context?: string,
+		routing?: { tags?: string[]; observationScopes?: string[][] },
+	): void {
+		this.retainQueue.enqueue(content, context, routing);
 	}
 
 	async flushRetainQueue(): Promise<void> {

@@ -44,6 +44,12 @@ export interface HindsightConfig {
 	/** Extra recall tags merged after the automatic project tag in tagged mode. */
 	recallTags: string[];
 	recallTagsMatch: "any" | "all" | "any_strict" | "all_strict";
+	/**
+	 * Explicit routing project (`browser-ops`, `global`, or `project:browser-ops`).
+	 * When set, tagged/per-project scope uses this instead of the git root.
+	 * Unset + cwd outside a git repo: no invented `project:<folder>` tag.
+	 */
+	project: string | null;
 
 	debug: boolean;
 
@@ -155,6 +161,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 	const recallTimeoutMsEnv = envInt(env.HINDSIGHT_RECALL_TIMEOUT_MS);
 	const retainTimeoutMsEnv = envInt(env.HINDSIGHT_RETAIN_TIMEOUT_MS);
 	const retainStrategyEnv = envString(env.HINDSIGHT_RETAIN_STRATEGY);
+	const projectEnv = envString(env.HINDSIGHT_PROJECT);
 
 	// Read from settings (each falls back to its schema default).
 	const settingsRetainMode = pickRetainMode(settings.get("hindsight.retainMode"));
@@ -181,6 +188,9 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 			? settings.get("hindsight.retainStrategy")
 			: undefined,
 	);
+	const settingsProject = envString(
+		typeof settings.get("hindsight.project") === "string" ? settings.get("hindsight.project") : undefined,
+	);
 
 	const config: HindsightConfig = {
 		hindsightApiUrl: apiUrlEnv ?? settings.get("hindsight.apiUrl") ?? null,
@@ -200,6 +210,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 		retainOverlapTurns: settings.get("hindsight.retainOverlapTurns"),
 		retainContext: settings.get("hindsight.retainContext") ?? "omp",
 		retainStrategy: retainStrategyEnv ?? settingsRetainStrategy ?? null,
+		project: projectEnv ?? settingsProject ?? null,
 
 		recallBudget: recallBudgetEnv ?? settingsRecallBudget ?? "mid",
 		recallMaxTokens: recallMaxTokensEnv ?? settings.get("hindsight.recallMaxTokens"),

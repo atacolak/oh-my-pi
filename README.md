@@ -1,3 +1,14 @@
+> [!NOTE]
+> ## `wip/hindsight-explicit-project-routing` — parked project-routing experiment
+>
+> Parked follow-up from the dropped #9087 era: explicit Hindsight project routing / observation-scope experiments.
+>
+> - **Status:** unfinished WIP — not in [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime) and not part of `cap/hindsight`
+> - **Do not:** confuse with upstream #9365/#9366/#9367 or refresh routinely
+> - **Base tip:** `f0aace6e8e` on older upstream (`2b5eed286d`); mixed with historical local stacks
+>
+> Preserve until work resumes. Capability work stays on `cap/hindsight`.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

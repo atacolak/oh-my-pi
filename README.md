@@ -1,3 +1,14 @@
+> [!NOTE]
+> ## `wip/agent-flag` — unfinished `--agent` launch flag
+>
+> Parked experiment: start a root session from a discovered agent via `--agent`.
+>
+> - **Status:** unfinished WIP — not in [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Do not:** finish casually, open an upstream PR, or merge into a `cap/*` without an explicit promote
+> - **Base tip:** `f12f833749` on older upstream (`76a294cb19`), not current OMP 18.0.2
+>
+> Resume only when intentionally picking this work back up.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

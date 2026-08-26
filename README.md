@@ -1,3 +1,16 @@
+> [!NOTE]
+> ## `cap/extensions` — `/extensions` inspector
+>
+> Durable local capability: `/extensions` inspector with live MCP catalog join, toggles, and provenance.
+>
+> The inspector already landed upstream as [#9311](https://github.com/can1357/oh-my-pi/pull/9311); this cap is banner/composition only.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR:** [#9311](https://github.com/can1357/oh-my-pi/pull/9311) — overhaul the `/extensions` inspector
+> - **Upstream base:** [OMP 18.0.6 (`b4e8e856ad`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+>
+> This branch tracks `origin/main` plus this banner.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

@@ -1,3 +1,14 @@
+> [!NOTE]
+> ## `cap/settings-project-scope` — project-scoped `/settings`
+>
+> Durable local capability: `/settings` reads and writes the project settings layer correctly.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR:** [#9363](https://github.com/can1357/oh-my-pi/pull/9363) — respect project scope in `/settings`
+> - **Upstream base:** [OMP 18.0.6 (`b4e8e856ad`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+>
+> PR head `fix/settings-project-scope` stays independently reviewable without this banner.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

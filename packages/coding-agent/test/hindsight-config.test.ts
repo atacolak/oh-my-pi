@@ -17,3 +17,21 @@ describe("loadHindsightConfig retainUpdateMode", () => {
 		expect(load({ "hindsight.retainUpdateMode": "upsert" }).retainUpdateMode).toBe("replace");
 	});
 });
+
+describe("loadHindsightConfig retainStrategy", () => {
+	it("treats empty and whitespace retainStrategy as unset", () => {
+		expect(load({ "hindsight.retainStrategy": "" }).retainStrategy).toBeNull();
+		expect(load({ "hindsight.retainStrategy": "   " }).retainStrategy).toBeNull();
+		expect(load({}, { HINDSIGHT_RETAIN_STRATEGY: "  " }).retainStrategy).toBeNull();
+	});
+
+	it("loads retainStrategy from settings", () => {
+		expect(load({ "hindsight.retainStrategy": "personal_chat" }).retainStrategy).toBe("personal_chat");
+	});
+
+	it("prefers HINDSIGHT_RETAIN_STRATEGY over settings", () => {
+		expect(
+			load({ "hindsight.retainStrategy": "coding" }, { HINDSIGHT_RETAIN_STRATEGY: "personal_chat" }).retainStrategy,
+		).toBe("personal_chat");
+	});
+});

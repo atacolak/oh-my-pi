@@ -34,6 +34,8 @@ export interface HindsightConfig {
 	retainContext: string;
 	/** How full-session retains update the existing document. Default replace. */
 	retainUpdateMode: "replace" | "append";
+	/** Per-item Hindsight extraction strategy. Null/empty omits the request field. */
+	retainStrategy: string | null;
 
 	recallBudget: "low" | "mid" | "high";
 	recallMaxTokens: number;
@@ -138,6 +140,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 	const reflectTimeoutMsEnv = envInt(env.HINDSIGHT_REFLECT_TIMEOUT_MS);
 	const recallTimeoutMsEnv = envInt(env.HINDSIGHT_RECALL_TIMEOUT_MS);
 	const retainTimeoutMsEnv = envInt(env.HINDSIGHT_RETAIN_TIMEOUT_MS);
+	const retainStrategyEnv = envString(env.HINDSIGHT_RETAIN_STRATEGY);
 
 	// Read from settings (each falls back to its schema default).
 	const settingsRetainMode = pickRetainMode(settings.get("hindsight.retainMode"));
@@ -159,6 +162,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 			value: settings.get("hindsight.retainUpdateMode"),
 		});
 	}
+	const settingsRetainStrategy = envString(settings.get("hindsight.retainStrategy"));
 
 	const config: HindsightConfig = {
 		hindsightApiUrl: apiUrlEnv ?? settings.get("hindsight.apiUrl") ?? null,
@@ -178,6 +182,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 		retainOverlapTurns: settings.get("hindsight.retainOverlapTurns"),
 		retainContext: settings.get("hindsight.retainContext") ?? "omp",
 		retainUpdateMode: retainUpdateModeEnv ?? settingsRetainUpdateMode ?? "replace",
+		retainStrategy: retainStrategyEnv ?? settingsRetainStrategy ?? null,
 
 		recallBudget: recallBudgetEnv ?? settingsRecallBudget ?? "mid",
 		recallMaxTokens: recallMaxTokensEnv ?? settings.get("hindsight.recallMaxTokens"),

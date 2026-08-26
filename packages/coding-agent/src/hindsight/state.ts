@@ -170,6 +170,7 @@ export class HindsightRetainQueue {
 				metadata: { session_id: sessionId },
 				tags: state.retainTags,
 				timestamp: item.timestamp,
+				strategy: state.config.retainStrategy || undefined,
 			}));
 			await state.client.retainBatch(state.bankId, batch, { async: true });
 			if (state.config.debug) {
@@ -223,7 +224,7 @@ export class HindsightSessionState {
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	recallTags?: string[];
 	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
-	config: HindsightConfig;
+	#config: HindsightConfig;
 	session: AgentSession;
 	banksSet: Set<string>;
 	lastRetainedTurn: number;
@@ -274,7 +275,7 @@ export class HindsightSessionState {
 		this.retainTags = options.retainTags;
 		this.recallTags = options.recallTags;
 		this.recallTagsMatch = options.recallTagsMatch;
-		this.config = options.config;
+		this.#config = options.config;
 		this.session = options.session;
 		this.banksSet = options.banksSet;
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
@@ -289,6 +290,15 @@ export class HindsightSessionState {
 			this.session.loadedUserTurnCount ??
 			(this.session.sessionManager ? countRetainableUserTurns(this.session.sessionManager) : 0);
 		this.#captureLoadedBranchIdentity();
+	}
+
+	get config(): HindsightConfig {
+		return this.aliasOf?.config ?? this.#config;
+	}
+
+	set config(value: HindsightConfig) {
+		if (this.aliasOf) this.aliasOf.config = value;
+		else this.#config = value;
 	}
 
 	setSessionId(sessionId: string): void {
@@ -524,6 +534,7 @@ export class HindsightSessionState {
 			timestamp: sourceTimestamp,
 			async: true,
 			updateMode,
+			strategy: this.config.retainStrategy || undefined,
 		});
 		if (generation === this.#retainGeneration) {
 			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;

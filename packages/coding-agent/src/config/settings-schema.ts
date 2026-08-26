@@ -3367,6 +3367,18 @@ export const SETTINGS_SCHEMA = {
 			condition: "hindsightActive",
 		},
 	},
+	"hindsight.retainStrategy": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Hindsight",
+			label: "Hindsight Retain Strategy",
+			description:
+				"Named Hindsight extraction strategy sent as the per-item strategy field. Leave empty to use the bank default.",
+			condition: "hindsightActive",
+		},
+	},
 
 	"hindsight.recallBudget": {
 		type: "enum",

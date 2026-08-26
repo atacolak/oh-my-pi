@@ -1,11 +1,10 @@
 #!/bin/sh
-# Non-invasive dev launcher for the experimental app-viewport TUI (`--alt`).
+# Daily launcher for the app-viewport TUI (`--alt`).
 #
 # Delegate to the canonical repo-local `scripts/omp` launcher so bun/preload,
-# symlink resolution, timing, and Herdr behavior cannot drift. By default, run
-# with a separate HOME/XDG tree under /tmp: testing this branch must not read or
-# write the user's normal ~/.omp state. Set OMPALT_HOME explicitly when a stable
-# isolated test home is preferred; sharing the real HOME is always opt-in.
+# symlink resolution, timing, and Herdr behavior cannot drift. Preserve HOME,
+# XDG paths, and provider settings, but clear inherited profile/agent selectors:
+# a plain `omp` always boots the unnamed default agent at ~/.omp/agent.
 set -e
 
 # Resolve this script's real location even when invoked through a symlink.
@@ -18,19 +17,100 @@ while [ -L "$self" ]; do
 	esac
 done
 scripts_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)
+repo_root=$(CDPATH= cd -- "$scripts_dir/../../.." && pwd -P)
 
-alt_home=${OMPALT_HOME:-${TMPDIR:-/tmp}/ompalt-home-$(id -u)}
-mkdir -p "$alt_home"
-HOME=$alt_home
-XDG_CONFIG_HOME=${OMPALT_XDG_CONFIG_HOME:-$alt_home/.config}
-XDG_DATA_HOME=${OMPALT_XDG_DATA_HOME:-$alt_home/.local/share}
-XDG_STATE_HOME=${OMPALT_XDG_STATE_HOME:-$alt_home/.local/state}
-XDG_CACHE_HOME=${OMPALT_XDG_CACHE_HOME:-$alt_home/.cache}
-export HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+# Shells launched from a Pi/Herdr profile can inherit selectors such as
+# PI_PROFILE=orchestrator and PI_CODING_AGENT_DIR=.../.pi/profiles/orchestrator.
+# They must not change what the ordinary `omp` command means.
+unset OMP_PROFILE PI_PROFILE PI_CODING_AGENT_DIR PI_CODING_AGENT_SESSION_DIR PI_CONFIG_DIR
 
-if [ -z "${OMP_DEV_LAUNCH_DIR:-}" ]; then
-	OMP_DEV_LAUNCH_DIR=$alt_home/.dev-cwd
-	export OMP_DEV_LAUNCH_DIR
+# `omp update` updates this one patched checkout in place. A failed rebase or
+# verification restores the previous commit, so the currently working alt build
+# remains available. Plugin-only updates still use OMP's normal implementation.
+if [ "${1:-}" = update ]; then
+	shift
+	check=0
+	force=0
+	plugins=0
+	for arg in "$@"; do
+		case $arg in
+		-c|--check) check=1 ;;
+		-f|--force) force=1 ;;
+		-l|--plugins) plugins=1 ;;
+		-h|--help)
+			cat <<'EOF'
+omp update - update the patched alt checkout from upstream
+
+options:
+  -c, --check     fetch and report whether upstream changes are available
+  -f, --force     rebase and verify even when no new upstream commits exist
+  -l, --plugins   run OMP's normal plugin updater instead
+EOF
+			exit 0
+			;;
+		*)
+			echo "omp update: unsupported option: $arg" >&2
+			exit 2
+			;;
+		esac
+	done
+
+	if [ "$plugins" -eq 1 ]; then
+		exec "$scripts_dir/omp" update --plugins
+	fi
+
+	cd "$repo_root"
+	if [ -n "$(git status --porcelain)" ]; then
+		echo "omp update: alt checkout has uncommitted changes; refusing to overwrite them" >&2
+		exit 1
+	fi
+
+	echo "checking upstream omp..."
+	git fetch origin main
+	behind=$(git rev-list --count HEAD..origin/main)
+	if [ "$check" -eq 1 ]; then
+		if [ "$behind" -eq 0 ]; then
+			echo "alt checkout already contains current upstream main"
+		else
+			echo "$behind upstream commit(s) available; run: omp update"
+		fi
+		exit 0
+	fi
+	if [ "$behind" -eq 0 ] && [ "$force" -eq 0 ]; then
+		echo "alt checkout already contains current upstream main"
+		exit 0
+	fi
+
+	original_head=$(git rev-parse HEAD)
+	if ! git rebase origin/main; then
+		git rebase --abort >/dev/null 2>&1 || true
+		echo "omp update: the alt patch conflicts with upstream; previous version restored" >&2
+		exit 1
+	fi
+
+	verify_update() {
+		bun install --frozen-lockfile &&
+			bun test \
+				packages/tui/test/app-viewport.test.ts \
+				packages/coding-agent/test/cli-alt-flag.test.ts \
+				packages/coding-agent/test/cli-alt-mode-guard.test.ts \
+				packages/coding-agent/test/scripts-ompalt.test.ts &&
+			bun --cwd=packages/tui run check &&
+			bun --cwd=packages/coding-agent run check
+	}
+
+	if ! verify_update; then
+		echo "omp update: verification failed; restoring previous version" >&2
+		git reset --hard "$original_head"
+		bun install --frozen-lockfile >/dev/null 2>&1 || true
+		git reset --hard "$original_head" >/dev/null 2>&1 || true
+		exit 1
+	fi
+
+	echo "alt checkout updated and verified"
+	exit 0
 fi
 
-exec "$scripts_dir/omp" --alt "$@"
+PI_TUI_RENDER_BACKEND=app-viewport
+export PI_TUI_RENDER_BACKEND
+exec "$scripts_dir/omp" "$@"

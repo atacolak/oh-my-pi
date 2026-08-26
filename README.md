@@ -1,3 +1,14 @@
+> [!NOTE]
+> ## `cap/viewport` — app viewport + `ompalt` launcher
+>
+> Durable local capability: experimental app-viewport TUI renderer and the `--alt` / `ompalt` daily launcher.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Status:** fork-local (no upstream PR)
+> - **Upstream base:** [OMP 18.0.6 (`b4e8e85`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+>
+> Not stacked on other capabilities; merged into `runtime` independently.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

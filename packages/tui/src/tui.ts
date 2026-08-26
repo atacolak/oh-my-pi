@@ -798,6 +798,7 @@ export class TUI extends Container {
 	#appViewportScrollRegionEnd: number | undefined;
 	#appViewportScrollTop = 0;
 	#appViewportFollow = true;
+	#appViewportMouseTrackingActive = false;
 
 	// Always-on event-loop lag probe. The high default threshold keeps it quiet;
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
@@ -1582,9 +1583,11 @@ export class TUI extends Container {
 
 	stop(): void {
 		if (this.#appViewportActive) {
-			this.terminal.write(`${APP_VIEWPORT_MOUSE_TRACKING_OFF}\x1b[?1049l`);
+			const mouseExit = this.#appViewportMouseTrackingActive ? APP_VIEWPORT_MOUSE_TRACKING_OFF : "";
+			this.terminal.write(`${mouseExit}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
 			setAltScreenActive(false);
 			this.#appViewportActive = false;
+			this.#appViewportMouseTrackingActive = false;
 			this.#appViewportPreviousLines = [];
 			this.#appViewportPreviousWidth = 0;
 		}
@@ -2896,12 +2899,13 @@ export class TUI extends Container {
 		setAltScreenActive(true);
 		this.terminal.hideCursor();
 		this.#appViewportActive = true;
+		this.#appViewportMouseTrackingActive = true;
 		this.#appViewportPreviousLines = [];
 		this.#appViewportPreviousWidth = 0;
 	}
 
 	#handleAppViewportInput(data: string): boolean {
-		if (!this.#appViewportBackend || this.hasOverlay()) return false;
+		if (!this.#appViewportBackend || this.hasOverlay() || !this.#appViewportMouseTrackingActive) return false;
 		if (data.startsWith("\x1b[<")) {
 			return this.#handleAppViewportMouse(data);
 		}
@@ -2927,11 +2931,10 @@ export class TUI extends Container {
 
 	#handleAppViewportMouse(data: string): boolean {
 		const match = /^\x1b\[<(\d+);\d+;\d+([Mm])$/.exec(data);
-		if (!match) return true;
+		if (!match) return false;
 		const button = Number(match[1]);
-		if (button & 64) {
-			this.#scrollAppViewport(button & 1 ? 3 : -3);
-		}
+		if ((button & 64) === 0) return false;
+		this.#scrollAppViewport(button & 1 ? 3 : -3);
 		return true;
 	}
 
@@ -2958,12 +2961,16 @@ export class TUI extends Container {
 		const lines: string[] = [];
 		for (const child of children) {
 			const childLines = child.render(contentWidth);
-			const appScrollStart = (child as Component & Partial<AppViewportScrollRegion>).getAppViewportScrollRegionStart?.();
+			const appScrollStart = (
+				child as Component & Partial<AppViewportScrollRegion>
+			).getAppViewportScrollRegionStart?.();
 			if (appScrollStart !== undefined) {
 				const boundedStart = Number.isFinite(appScrollStart)
 					? Math.max(0, Math.min(childLines.length, Math.trunc(appScrollStart)))
 					: 0;
-				const appScrollEnd = (child as Component & Partial<AppViewportScrollRegion>).getAppViewportScrollRegionEnd?.();
+				const appScrollEnd = (
+					child as Component & Partial<AppViewportScrollRegion>
+				).getAppViewportScrollRegionEnd?.();
 				const boundedEnd =
 					appScrollEnd !== undefined && Number.isFinite(appScrollEnd)
 						? Math.max(boundedStart, Math.min(childLines.length, Math.trunc(appScrollEnd)))
@@ -2977,6 +2984,12 @@ export class TUI extends Container {
 
 	#renderAppViewportFrame(width: number, height: number): void {
 		this.#enterAppViewport();
+		const topOverlay = this.#getTopmostVisibleOverlay();
+		const wantMouseTracking = topOverlay?.options?.fullscreen !== true || topOverlay.options?.mouseTracking !== false;
+		if (wantMouseTracking !== this.#appViewportMouseTrackingActive) {
+			this.terminal.write(wantMouseTracking ? APP_VIEWPORT_MOUSE_TRACKING_ON : APP_VIEWPORT_MOUSE_TRACKING_OFF);
+			this.#appViewportMouseTrackingActive = wantMouseTracking;
+		}
 		this.#imageBudget.beginPass();
 		const contentWidth = Math.max(1, width - 1);
 		const rawFrame = this.#appViewportSourceLines(contentWidth);

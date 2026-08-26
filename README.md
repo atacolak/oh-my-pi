@@ -1,16 +1,15 @@
 > [!NOTE]
-> ## `cap/hindsight` — Hindsight retention capability
+> ## `runtime` — Ata's daily OMP
 >
-> Durable local capability: per-retain extraction strategy, conversation source timestamps, and append-mode session retention.
+> Composed daily checkout of selected capability branches on top of upstream OMP.
 >
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PRs:**
->   - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy
->   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps
->   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention
-> - **Upstream base:** [OMP 18.0.6 (`b4e8e85`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+> - **Upstream base:** [OMP 18.0.6 (`b4e8e856ad`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+> - **Capabilities:**
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retain strategy, conversation timestamps, append retention
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — `/settings` respects project scope
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental app-viewport renderer + `--alt` / `ompalt` launcher
 >
-> PR heads stay independently reviewable without this banner.
+> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

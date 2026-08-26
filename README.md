@@ -8,7 +8,7 @@
 >   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retain strategy, conversation timestamps, append retention
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — `/settings` respects project scope
 >   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental app-viewport renderer + `--alt` / `ompalt` launcher
->   - [`feat/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/feat/collab-autostart) — opt-in collab auto-host + writeLinkPath
+>   - [`feat/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/feat/collab-autostart) ([#9833](https://github.com/can1357/oh-my-pi/pull/9833)) — opt-in collab auto-host + writeLinkPath
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 

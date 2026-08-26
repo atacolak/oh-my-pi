@@ -32,6 +32,10 @@ export interface HindsightConfig {
 	retainEveryNTurns: number;
 	retainOverlapTurns: number;
 	retainContext: string;
+	/** How full-session retains update the existing document. Default replace. */
+	retainUpdateMode: "replace" | "append";
+	/** Per-item Hindsight extraction strategy. Null/empty omits the request field. */
+	retainStrategy: string | null;
 
 	recallBudget: "low" | "mid" | "high";
 	recallMaxTokens: number;
@@ -58,6 +62,7 @@ export interface HindsightConfig {
 }
 
 const VALID_RETAIN_MODES: HindsightConfig["retainMode"][] = ["full-session", "last-turn"];
+const VALID_RETAIN_UPDATE_MODES: HindsightConfig["retainUpdateMode"][] = ["replace", "append"];
 const VALID_BUDGETS: HindsightConfig["recallBudget"][] = ["low", "mid", "high"];
 const VALID_SCOPINGS: HindsightScoping[] = ["global", "per-project", "per-project-tagged"];
 
@@ -96,6 +101,12 @@ function pickRetainMode(value: unknown): HindsightConfig["retainMode"] | undefin
 		: undefined;
 }
 
+function pickRetainUpdateMode(value: unknown): HindsightConfig["retainUpdateMode"] | undefined {
+	return typeof value === "string" && (VALID_RETAIN_UPDATE_MODES as string[]).includes(value)
+		? (value as HindsightConfig["retainUpdateMode"])
+		: undefined;
+}
+
 function pickScoping(value: unknown): HindsightScoping | undefined {
 	return typeof value === "string" && (VALID_SCOPINGS as string[]).includes(value)
 		? (value as HindsightScoping)
@@ -115,6 +126,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 	const bankIdEnv = envString(env.HINDSIGHT_BANK_ID);
 	const bankMissionEnv = envString(env.HINDSIGHT_BANK_MISSION);
 	const retainModeEnv = pickRetainMode(env.HINDSIGHT_RETAIN_MODE);
+	const retainUpdateModeEnv = pickRetainUpdateMode(env.HINDSIGHT_RETAIN_UPDATE_MODE);
 	const recallBudgetEnv = pickBudget(env.HINDSIGHT_RECALL_BUDGET);
 	const autoRecallEnv = envBool(env.HINDSIGHT_AUTO_RECALL);
 	const autoRetainEnv = envBool(env.HINDSIGHT_AUTO_RETAIN);
@@ -128,6 +140,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 	const reflectTimeoutMsEnv = envInt(env.HINDSIGHT_REFLECT_TIMEOUT_MS);
 	const recallTimeoutMsEnv = envInt(env.HINDSIGHT_RECALL_TIMEOUT_MS);
 	const retainTimeoutMsEnv = envInt(env.HINDSIGHT_RETAIN_TIMEOUT_MS);
+	const retainStrategyEnv = envString(env.HINDSIGHT_RETAIN_STRATEGY);
 
 	// Read from settings (each falls back to its schema default).
 	const settingsRetainMode = pickRetainMode(settings.get("hindsight.retainMode"));
@@ -143,6 +156,13 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 			value: settings.get("hindsight.scoping"),
 		});
 	}
+	const settingsRetainUpdateMode = pickRetainUpdateMode(settings.get("hindsight.retainUpdateMode"));
+	if (settings.get("hindsight.retainUpdateMode") && !settingsRetainUpdateMode) {
+		logger.warn("Hindsight: invalid retainUpdateMode setting, falling back to replace", {
+			value: settings.get("hindsight.retainUpdateMode"),
+		});
+	}
+	const settingsRetainStrategy = envString(settings.get("hindsight.retainStrategy"));
 
 	const config: HindsightConfig = {
 		hindsightApiUrl: apiUrlEnv ?? settings.get("hindsight.apiUrl") ?? null,
@@ -161,6 +181,8 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 		retainEveryNTurns: retainEveryNTurnsEnv ?? settings.get("hindsight.retainEveryNTurns"),
 		retainOverlapTurns: settings.get("hindsight.retainOverlapTurns"),
 		retainContext: settings.get("hindsight.retainContext") ?? "omp",
+		retainUpdateMode: retainUpdateModeEnv ?? settingsRetainUpdateMode ?? "replace",
+		retainStrategy: retainStrategyEnv ?? settingsRetainStrategy ?? null,
 
 		recallBudget: recallBudgetEnv ?? settingsRecallBudget ?? "mid",
 		recallMaxTokens: recallMaxTokensEnv ?? settings.get("hindsight.recallMaxTokens"),

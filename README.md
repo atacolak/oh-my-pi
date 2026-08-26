@@ -1,3 +1,17 @@
+> [!NOTE]
+> ## `cap/hindsight` — Hindsight retention capability
+>
+> Durable local capability: per-retain extraction strategy, conversation source timestamps, and append-mode session retention.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PRs:**
+>   - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy
+>   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps
+>   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention
+> - **Upstream base:** [OMP 18.0.6 (`b4e8e85`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+>
+> PR heads stay independently reviewable without this banner.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

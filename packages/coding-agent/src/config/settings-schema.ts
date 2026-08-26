@@ -3342,6 +3342,43 @@ export const SETTINGS_SCHEMA = {
 	"hindsight.retainEveryNTurns": { type: "number", default: 3 },
 	"hindsight.retainOverlapTurns": { type: "number", default: 2 },
 	"hindsight.retainContext": { type: "string", default: "omp" },
+	"hindsight.retainUpdateMode": {
+		type: "enum",
+		values: ["replace", "append"] as const,
+		default: "replace",
+		ui: {
+			tab: "memory",
+			group: "Hindsight",
+			label: "Hindsight Retain Update Mode",
+			description:
+				"replace = rewrite the full session document; append = send only newly accumulated turns on the same document_id",
+			options: [
+				{
+					value: "replace",
+					label: "Replace",
+					description: "Resend the full session document on each retain (default)",
+				},
+				{
+					value: "append",
+					label: "Append",
+					description: "Append only new conversation turns to the existing session document",
+				},
+			],
+			condition: "hindsightActive",
+		},
+	},
+	"hindsight.retainStrategy": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Hindsight",
+			label: "Hindsight Retain Strategy",
+			description:
+				"Named Hindsight extraction strategy sent as the per-item strategy field. Leave empty to use the bank default.",
+			condition: "hindsightActive",
+		},
+	},
 
 	"hindsight.recallBudget": {
 		type: "enum",

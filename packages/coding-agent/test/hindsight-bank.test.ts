@@ -53,6 +53,8 @@ const baseConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	retainEveryNTurns: 3,
 	retainOverlapTurns: 2,
 	retainContext: "omp",
+	retainUpdateMode: "replace",
+	retainStrategy: null,
 	recallBudget: "mid",
 	recallMaxTokens: 1024,
 	recallTypes: ["world", "experience"],

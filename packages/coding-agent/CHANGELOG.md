@@ -5,6 +5,7 @@
 ### Added
 
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
+- Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output.
 
 ## [18.0.6] - 2026-08-26
 

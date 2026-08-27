@@ -2787,6 +2787,7 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"hindsight.bankId": () => hindsightScopeSignal.fire(),
 	"hindsight.bankIdPrefix": () => hindsightScopeSignal.fire(),
 	"hindsight.scoping": () => hindsightScopeSignal.fire(),
+	"hindsight.scopeTags": () => hindsightScopeSignal.fire(),
 	"hindsight.retainUpdateMode": () => hindsightScopeSignal.fire(),
 	"hindsight.retainStrategy": () => hindsightScopeSignal.fire(),
 	extendedContext: () => extendedContextSignal.fire(),
@@ -2856,16 +2857,14 @@ const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccen
  */
 export const onStatusLineSessionAccentChanged = (cb: () => void) => statusLineSessionAccentSignal.on(cb);
 
-/** Fires when any `hindsight.bankId` / `bankIdPrefix` / `scoping` / `retainStrategy` / `retainUpdateMode` value changes. */
+/** Fires when Hindsight bank routing, deterministic scope tags, or retain behavior changes. */
 const hindsightScopeSignal = new SettingSignal("hindsight scope");
 
 /**
- * Subscribe to changes in the Hindsight bank-scoping settings. Lets the
- * Hindsight backend rebuild the active `HindsightSessionState` when the
- * operator switches `hindsight.bankId`, `hindsight.bankIdPrefix`,
- * `hindsight.scoping`, `hindsight.retainStrategy`, or `hindsight.retainUpdateMode`
- * mid-session so subsequent retain/recall calls use the live bank routing,
- * update mode, and extraction strategy.
+ * Subscribe to changes in Hindsight bank routing, deterministic scope tags,
+ * or retain behavior. The backend re-reads settings and rebuilds the active
+ * state when the effective bank scope changes; otherwise it refreshes the
+ * live config snapshot.
  *
  * Returns an unsubscribe function. The callback receives no arguments — the
  * caller is expected to re-read the relevant settings via `Settings.get`.

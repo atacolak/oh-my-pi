@@ -16,6 +16,7 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	hindsightApiToken: null,
 	bankId: null,
 	bankIdPrefix: "",
+	scopeTags: [],
 	scoping: "global",
 	bankMission: "",
 	retainMission: null,

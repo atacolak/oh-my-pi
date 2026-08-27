@@ -35,3 +35,16 @@ describe("loadHindsightConfig retainStrategy", () => {
 		).toBe("personal_chat");
 	});
 });
+
+describe("loadHindsightConfig scopeTags", () => {
+	it("defaults scopeTags to an empty array", () => {
+		expect(load({}).scopeTags).toEqual([]);
+	});
+
+	it("loads and trims configured scopeTags", () => {
+		expect(load({ "hindsight.scopeTags": [" scope:coding ", "", 12, "scope:coding"] }).scopeTags).toEqual([
+			"scope:coding",
+			"scope:coding",
+		]);
+	});
+});

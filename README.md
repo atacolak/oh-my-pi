@@ -1,18 +1,17 @@
 > [!NOTE]
 > ## `runtime` — Ata's daily OMP
 >
-> Composed daily checkout of selected capability branches on top of upstream OMP.
+> Daily composition of selected local capabilities on current upstream main.
 >
-> - **Upstream base:** [OMP 18.0.6 (`b4e8e856ad`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+> - **Upstream base:** [OMP 18.0.6 (`b4e8e85`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
 > - **Capabilities:**
->   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retain strategy, conversation timestamps, append retention
->   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — `/settings` respects project scope
->   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental app-viewport renderer + `--alt` / `ompalt` launcher
->   - [`feat/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/feat/collab-autostart) ([#9833](https://github.com/can1357/oh-my-pi/pull/9833)) — opt-in collab auto-host + writeLinkPath
->   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — retention + locked `scope:personal` / `scope:coding` + `project:<repo>` seam
+>   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — /extensions inspector
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental `--alt` viewport
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
-
+>
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

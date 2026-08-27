@@ -106,6 +106,8 @@ export interface RetainOptions extends HindsightRequestOptions {
 	documentId?: string;
 	async?: boolean;
 	tags?: string[];
+	/** Exact deterministic observation consolidation scopes for this item. */
+	observationScopes?: string[][];
 	updateMode?: UpdateMode;
 	/** Per-item extraction strategy override. Omitted from the body when unset. */
 	strategy?: string;
@@ -269,6 +271,8 @@ export class HindsightApi {
 			metadata: options?.metadata,
 			documentId: options?.documentId,
 			tags: options?.tags,
+			observationScopes: options?.observationScopes,
+
 			updateMode: options?.updateMode,
 			strategy: options?.strategy,
 		});

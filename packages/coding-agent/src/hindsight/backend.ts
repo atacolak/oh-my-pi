@@ -58,6 +58,7 @@ export const hindsightBackend: MemoryBackend = {
 					retainTags: parent.retainTags,
 					recallTags: parent.recallTags,
 					recallTagsMatch: parent.recallTagsMatch,
+					observationScopes: parent.observationScopes,
 					config: parent.config,
 					session,
 					banksSet: parent.banksSet,
@@ -233,6 +234,7 @@ async function installPrimaryState(
 		retainTags: scope.retainTags,
 		recallTags: scope.recallTags,
 		recallTagsMatch: scope.recallTagsMatch,
+		observationScopes: scope.observationScopes,
 		config,
 		session,
 		banksSet,
@@ -318,13 +320,14 @@ function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): bo
  */
 function bankScopesEqual(
 	scope: BankScope,
-	state: Pick<HindsightSessionState, "bankId" | "retainTags" | "recallTags" | "recallTagsMatch">,
+	state: Pick<HindsightSessionState, "bankId" | "retainTags" | "recallTags" | "recallTagsMatch" | "observationScopes">,
 ): boolean {
 	return (
 		scope.bankId === state.bankId &&
 		stringArraysEqual(scope.retainTags, state.retainTags) &&
 		stringArraysEqual(scope.recallTags, state.recallTags) &&
-		scope.recallTagsMatch === state.recallTagsMatch
+		scope.recallTagsMatch === state.recallTagsMatch &&
+		stringArraysEqual(scope.observationScopes?.[0], state.observationScopes?.[0])
 	);
 }
 

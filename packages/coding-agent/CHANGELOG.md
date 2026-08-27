@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
 - Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output.
 

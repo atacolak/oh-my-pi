@@ -1089,7 +1089,7 @@ export async function buildSessionOptions(
 		}
 	}
 
-	const launchAgent = await resolveLaunchAgent(parsed.agent, options.cwd);
+	const launchAgent = await resolveLaunchAgent(parsed.agent, parsed.agentCwd ?? options.cwd);
 
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>
@@ -1562,7 +1562,6 @@ export async function runRootCommand(
 				slow: slowModel,
 				plan: planModel,
 			});
-
 		}
 
 		// --print-thoughts (single-shot print mode) must surface reasoning, so un-hide
@@ -1812,15 +1811,21 @@ export async function runRootCommand(
 			clearPluginRootsCache: clearPluginRootsAndCaches,
 		});
 
-		const sessionOptions = await logger.time(
-			"buildSessionOptions",
-			buildSessionOptions,
-			parsedArgs,
-			scopedModels,
-			sessionManager,
-			modelRegistry,
-			settingsInstance,
-		);
+		let sessionOptions: CreateAgentSessionOptions;
+		try {
+			sessionOptions = await logger.time(
+				"buildSessionOptions",
+				buildSessionOptions,
+				parsedArgs,
+				scopedModels,
+				sessionManager,
+				modelRegistry,
+				settingsInstance,
+			);
+		} catch (error) {
+			if (reportCliUsageError(error)) process.exit(2);
+			throw error;
+		}
 		sessionOptions.authStorage = authStorage;
 		sessionOptions.modelRegistry = modelRegistry;
 		sessionOptions.hasUI = isInteractive || mode === "rpc-ui";

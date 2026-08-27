@@ -1,13 +1,12 @@
 > [!NOTE]
-> ## `wip/agent-flag` — unfinished `--agent` launch flag
+> ## `wip/agent-flag` — root agent launch capability
 >
-> Parked experiment: start a root session from a discovered agent via `--agent`.
+> Root sessions can launch directly from discovered agent definitions through `--agent`.
 >
-> - **Status:** unfinished WIP — not in [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Do not:** finish casually, open an upstream PR, or merge into a `cap/*` without an explicit promote
-> - **Base tip:** `f12f833749` on older upstream (`76a294cb19`), not current OMP 18.0.2
->
-> Resume only when intentionally picking this work back up.
+> - **Runtime composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Role discovery:** `--agent-cwd` selects the agent-definition project without changing `--cwd`
+> - **Hidden roles:** `hide: true` keeps explicit automation identities out of ambient task rosters
+> - **Upstream base:** [OMP 18.0.7 (`d17c270090`)](https://github.com/can1357/oh-my-pi/tree/d17c270090562d730e4d42d1aa3fdd93b45cf41a)
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

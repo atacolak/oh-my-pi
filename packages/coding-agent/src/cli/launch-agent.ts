@@ -1,6 +1,8 @@
 /**
  * Resolve `--agent` against the same discovery surface as `task`.
  */
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { isSessionInheritedAgentPattern } from "../config/model-resolver";
 import { discoverAgents, getAgent } from "../task/discovery";
@@ -13,11 +15,16 @@ export async function resolveLaunchAgent(
 	cwd: string = getProjectDir(),
 ): Promise<AgentDefinition | undefined> {
 	if (name === undefined) return undefined;
+	const discoveryCwd = path.resolve(cwd);
+	const stat = await fs.stat(discoveryCwd).catch(() => null);
+	if (!stat?.isDirectory()) {
+		throw new CliUsageError(`Agent discovery root is not a directory: ${discoveryCwd}`);
+	}
 	const trimmed = name.trim();
 	if (!trimmed) {
 		throw new CliUsageError("--agent requires an agent name.");
 	}
-	const { agents } = await discoverAgents(cwd);
+	const { agents } = await discoverAgents(discoveryCwd);
 	const agent = getAgent(agents, trimmed);
 	if (!agent) {
 		const available = agents.map(entry => entry.name).sort();

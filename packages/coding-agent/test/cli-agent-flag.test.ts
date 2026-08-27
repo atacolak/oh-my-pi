@@ -25,9 +25,16 @@ const FLAG_PROBE_MD = [
 	'model: "@default"',
 	"thinking-level: medium",
 	"read-summarize: false",
+	"autoload-skills: proof-skill",
+	"spawns: scout, reviewer",
+	"advisor: true",
 	"---",
 	"you are flag-probe — a fixture for the root --agent flag.",
 ].join("\n");
+const HIDDEN_PROBE_MD = FLAG_PROBE_MD.replace("name: flag-probe", "name: hidden-probe").replace(
+	"thinking-level: medium",
+	"thinking-level: medium\nhide: true",
+);
 
 const SCOUT_MD = [
 	"---",
@@ -65,6 +72,16 @@ describe("parseArgs — --agent flag", () => {
 
 	it("parses --agent=name", () => {
 		expect(parseArgs(["--agent=scout", "hello"]).agent).toBe("scout");
+	});
+
+	it("parses --agent-cwd without changing --cwd", () => {
+		const result = parseArgs(["--agent", "flag-probe", "--agent-cwd", "/roles", "--cwd", "/work"]);
+		expect(result.agentCwd).toBe("/roles");
+		expect(result.cwd).toBe("/work");
+	});
+
+	it("registers --agent-cwd as a string value flag", () => {
+		expect(STRING_VALUE_FLAGS.has("--agent-cwd")).toBe(true);
 	});
 
 	it("does not leak the agent name into the prompt", () => {
@@ -145,6 +162,23 @@ describe("resolveLaunchAgent", () => {
 		}
 	});
 
+	it("resolves an explicitly named hidden project agent", async () => {
+		const cwd = await writeProjectAgent(HIDDEN_PROBE_MD);
+		try {
+			const agent = await resolveLaunchAgent("hidden-probe", cwd);
+			expect(agent?.hide).toBe(true);
+			expect(rootAgentToolNames(agent!)).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a missing agent discovery root", async () => {
+		await expect(resolveLaunchAgent("flag-probe", path.join(os.tmpdir(), "missing-agent-root"))).rejects.toThrow(
+			"Agent discovery root is not a directory",
+		);
+	});
+
 	it("rejects an unknown name with the available list", async () => {
 		try {
 			await resolveLaunchAgent("definitely-not-an-agent", os.tmpdir());
@@ -165,7 +199,7 @@ describe("buildSessionOptions — --agent", () => {
 		authStorage = undefined;
 	});
 
-	async function optionsFor(argv: string[], cwd?: string) {
+	async function optionsFor(argv: string[], cwd?: string, agentCwd?: string) {
 		authStorage = await AuthStorage.create(":memory:");
 		const registry = new ModelRegistry(authStorage);
 		const settings = Settings.isolated({
@@ -174,6 +208,7 @@ describe("buildSessionOptions — --agent", () => {
 		});
 		const parsed = parseArgs(argv);
 		if (cwd) parsed.cwd = cwd;
+		if (agentCwd) parsed.agentCwd = agentCwd;
 		return { parsed, options: await buildSessionOptions(parsed, [], undefined, registry, settings) };
 	}
 
@@ -189,6 +224,28 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.modelPattern).toBeUndefined();
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves role metadata from --agent-cwd while keeping execution cwd", async () => {
+		const roleRoot = await writeProjectAgent(HIDDEN_PROBE_MD);
+		const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-work-"));
+		try {
+			const { options } = await optionsFor(
+				["--agent", "hidden-probe", "--agent-cwd", roleRoot, "--cwd", executionCwd],
+				executionCwd,
+				roleRoot,
+			);
+			expect(options.cwd).toBe(executionCwd);
+			expect(options.toolNames).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
+			expect(options.customSystemPrompt).toContain("you are flag-probe");
+			expect(options.agentDisplayName).toBe("hidden-probe");
+			expect(options.thinkingLevel).toBe(ThinkingLevel.Medium);
+			expect(options.autoloadSkills).toEqual(["proof-skill"]);
+			expect(options.spawns).toBe("scout,reviewer");
+		} finally {
+			await fs.rm(roleRoot, { recursive: true, force: true });
+			await fs.rm(executionCwd, { recursive: true, force: true });
 		}
 	});
 

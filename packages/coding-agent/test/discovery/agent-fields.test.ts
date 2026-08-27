@@ -36,6 +36,10 @@ describe("parseAgentFields", () => {
 		expect(fields).toBeDefined();
 		expect(fields?.blocking).toBeUndefined();
 	});
+	test("parses hide from boolean frontmatter", () => {
+		expect(parseAgentFields({ name: "runtime-integrator", description: "desc", hide: true })?.hide).toBe(true);
+		expect(parseAgentFields({ name: "runtime-integrator", description: "desc", hide: false })?.hide).toBe(false);
+	});
 	test("parses legacy thinking key", () => {
 		const fields = parseAgentFields({
 			name: "reviewer",

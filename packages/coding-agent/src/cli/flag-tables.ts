@@ -137,6 +137,9 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--agent": (result, value) => {
 		result.agent = value;
 	},
+	"--agent-cwd": (result, value) => {
+		result.agentCwd = value;
+	},
 	"--smol": (result, value) => {
 		result.smol = value;
 	},

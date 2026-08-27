@@ -33,6 +33,8 @@ export interface Args {
 	model?: string;
 	/** Discovered agent name for this root session (`--agent`). */
 	agent?: string;
+	/** Project root used only for resolving the named root agent. */
+	agentCwd?: string;
 	config?: string[];
 	smol?: string;
 	slow?: string;

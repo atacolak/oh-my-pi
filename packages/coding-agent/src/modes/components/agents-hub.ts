@@ -294,7 +294,7 @@ export class AgentsHubComponent implements Component {
 			const prewalkOverrides = this.#settings.get("task.agentPrewalk") ?? {};
 			const advisorOverrides = this.#settings.get("task.agentAdvisor") ?? {};
 			this.#allAgents = agents
-				.slice()
+				.filter(agent => agent.hide !== true)
 				.sort((a, b) => {
 					const sourceCmp = SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source];
 					if (sourceCmp !== 0) return sourceCmp;

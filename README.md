@@ -9,6 +9,7 @@
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — `/settings` respects project scope
 >   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental app-viewport renderer + `--alt` / `ompalt` launcher
 >   - [`feat/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/feat/collab-autostart) ([#9833](https://github.com/can1357/oh-my-pi/pull/9833)) — opt-in collab auto-host + writeLinkPath
+>   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 

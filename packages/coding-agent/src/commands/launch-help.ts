@@ -21,6 +21,9 @@ export const launchHelp = {
 			description:
 				"Start this session as a discovered agent (user ~/.omp/agent/agents, project .omp/agents, or bundled)",
 		}),
+		"agent-cwd": Flags.string({
+			description: "Project root used only to discover --agent; the session still runs in --cwd",
+		}),
 		smol: Flags.string({ description: "Smol/fast model for lightweight tasks (or PI_SMOL_MODEL env)" }),
 		slow: Flags.string({ description: "Slow/reasoning model for thorough analysis (or PI_SLOW_MODEL env)" }),
 		plan: Flags.string({ description: "Plan model for architectural planning (or PI_PLAN_MODEL env)" }),

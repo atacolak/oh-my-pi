@@ -9,6 +9,7 @@
 >   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — /extensions inspector
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings
 >   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental `--alt` viewport
+>   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 >

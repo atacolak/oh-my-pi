@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { isEnoent, logger, once, untilAborted } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
+import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import { isPermissionDeniedError, writeFileWithFallback } from "../tools/file-write-fallback";
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "./client";
 import { getServersForFile } from "./config";
@@ -20,7 +21,6 @@ import { getConfig, notifyFileSaved, splitServers, syncFileContent } from "./ser
 import type { ServerConfig } from "./types";
 import { summarizeDiagnosticMessages } from "./utils";
 
-/** Options for creating the LSP writethrough callback */
 export interface WritethroughOptions {
 	/** Whether to format the file using LSP after writing */
 	enableFormat?: boolean;
@@ -32,6 +32,8 @@ export interface WritethroughOptions {
 	deferredSignal?: AbortSignal;
 	/** Transform diagnostics before surfacing them after a successful fetch. */
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
+	/** Additional session workspace directories used to bound nested project-root walks. */
+	additionalDirectories?: readonly string[];
 }
 
 /** Internal resolved form of {@link WritethroughOptions} that the writethrough machinery operates on. */
@@ -39,6 +41,7 @@ type ResolvedWritethroughOptions = {
 	enableFormat: boolean;
 	enableDiagnostics: boolean;
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
+	additionalDirectories?: readonly string[];
 };
 
 /** Per-file deferred LSP diagnostics wiring for {@link WritethroughCallback}. */
@@ -334,7 +337,7 @@ async function runLspWritethrough(
 	}
 
 	const config = getConfig(cwd);
-	const servers = getServersForFile(config, dst);
+	const servers = getServersForFile(config, dst, sessionWorkspaceDirectories(cwd, options.additionalDirectories));
 
 	if (servers.length === 0) {
 		await getWritePromise();
@@ -529,6 +532,7 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 		enableFormat: options?.enableFormat ?? false,
 		enableDiagnostics: options?.enableDiagnostics ?? false,
 		transformDiagnostics: options?.transformDiagnostics,
+		additionalDirectories: options?.additionalDirectories,
 	};
 	return async (
 		dst: string,

@@ -3262,6 +3262,18 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	"hindsight.bankIdPrefix": { type: "string", default: undefined },
+	"hindsight.scopeTags": {
+		type: "array",
+		default: [] as string[],
+		ui: {
+			tab: "memory",
+			group: "Hindsight",
+			label: "Hindsight Scope Tags",
+			description: "Deterministic tags applied to retain, recall, reflect, and observation consolidation scopes",
+			condition: "hindsightActive",
+		},
+	},
+
 	"hindsight.scoping": {
 		type: "enum",
 		values: ["global", "per-project", "per-project-tagged"] as const,

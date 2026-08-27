@@ -23,6 +23,7 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	hindsightApiToken: null,
 	bankId: "personal",
 	bankIdPrefix: "",
+	scopeTags: [],
 	scoping: "per-project-tagged",
 	bankMission: "",
 	retainMission: null,
@@ -73,7 +74,8 @@ describe("Hindsight retain strategy request bodies", () => {
 			sessionId: "sess-unset",
 			client,
 			bankId: "personal",
-			retainTags: ["project:speech-core"],
+			retainTags: ["scope:coding", "project:speech-core"],
+			observationScopes: [["scope:coding", "project:speech-core"]],
 			config: makeConfig(),
 			session: {
 				sessionId: "sess-unset",
@@ -86,7 +88,7 @@ describe("Hindsight retain strategy request bodies", () => {
 		const item = firstItem(bodies[0]);
 		expect(item).not.toHaveProperty("strategy");
 		expect(item.metadata).toEqual({ session_id: "sess-unset" });
-		expect(item.tags).toEqual(["project:speech-core"]);
+		expect(item.tags).toEqual(["scope:coding", "project:speech-core"]);
 		expect(JSON.stringify(item)).not.toContain("strategy:");
 	});
 
@@ -98,7 +100,8 @@ describe("Hindsight retain strategy request bodies", () => {
 			sessionId: "sess-1",
 			client,
 			bankId: "personal",
-			retainTags: ["project:speech-core"],
+			retainTags: ["scope:coding", "project:speech-core"],
+			observationScopes: [["scope:coding", "project:speech-core"]],
 			config: makeConfig({ retainStrategy: "personal_chat" }),
 			session: {
 				sessionId: "sess-1",
@@ -110,10 +113,10 @@ describe("Hindsight retain strategy request bodies", () => {
 		await state.retainSession(messages);
 		const item = firstItem(bodies[0]);
 		expect(item.strategy).toBe("personal_chat");
-		expect(item.tags).toEqual(["project:speech-core"]);
+		expect(item.tags).toEqual(["scope:coding", "project:speech-core"]);
 		expect(item.tags).not.toContain("strategy:personal_chat");
 		expect(item.metadata).toEqual({ session_id: "sess-1" });
-		expect(item).not.toHaveProperty("observation_scopes");
+		expect(item.observation_scopes).toEqual([["scope:coding", "project:speech-core"]]);
 	});
 
 	it("forwards retainStrategy on tool-initiated retain queue flushes", async () => {
@@ -123,7 +126,8 @@ describe("Hindsight retain strategy request bodies", () => {
 			sessionId: "sess-queue",
 			client,
 			bankId: "personal",
-			retainTags: ["project:speech-core"],
+			retainTags: ["scope:coding", "project:speech-core"],
+			observationScopes: [["scope:coding", "project:speech-core"]],
 			config: makeConfig({ retainStrategy: "personal_chat" }),
 			session: {
 				sessionId: "sess-queue",
@@ -140,6 +144,6 @@ describe("Hindsight retain strategy request bodies", () => {
 		expect(item.content).toBe("operator prefers tabs over spaces");
 		expect(item.tags).not.toContain("strategy:personal_chat");
 		expect(item.metadata).toEqual({ session_id: "sess-queue" });
-		expect(item).not.toHaveProperty("observation_scopes");
+		expect(item.observation_scopes).toEqual([["scope:coding", "project:speech-core"]]);
 	});
 });

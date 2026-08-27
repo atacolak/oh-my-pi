@@ -56,6 +56,8 @@ export interface HindsightSessionStateOptions {
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	recallTags?: string[];
 	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	/** Exact deterministic observation consolidation scopes applied to every retain. */
+	observationScopes?: string[][];
 	config: HindsightConfig;
 	session: AgentSession;
 	banksSet: Set<string>;
@@ -171,6 +173,7 @@ export class HindsightRetainQueue {
 				tags: state.retainTags,
 				timestamp: item.timestamp,
 				strategy: state.config.retainStrategy || undefined,
+				observationScopes: state.observationScopes,
 			}));
 			await state.client.retainBatch(state.bankId, batch, { async: true });
 			if (state.config.debug) {
@@ -224,6 +227,7 @@ export class HindsightSessionState {
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	recallTags?: string[];
 	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	observationScopes?: string[][];
 	#config: HindsightConfig;
 	session: AgentSession;
 	banksSet: Set<string>;
@@ -275,6 +279,7 @@ export class HindsightSessionState {
 		this.retainTags = options.retainTags;
 		this.recallTags = options.recallTags;
 		this.recallTagsMatch = options.recallTagsMatch;
+		this.observationScopes = options.observationScopes;
 		this.#config = options.config;
 		this.session = options.session;
 		this.banksSet = options.banksSet;
@@ -531,6 +536,7 @@ export class HindsightSessionState {
 			context: this.config.retainContext,
 			metadata: { session_id: sessionId },
 			tags: this.retainTags,
+			observationScopes: this.observationScopes,
 			timestamp: sourceTimestamp,
 			async: true,
 			updateMode,

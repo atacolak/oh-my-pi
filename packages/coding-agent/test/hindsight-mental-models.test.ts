@@ -273,19 +273,45 @@ describe("loadMentalModelsBlock", () => {
 		expect(block).toBeUndefined();
 	});
 
-	it("filters project-tagged models to the active project while keeping untagged models", async () => {
+	it("requires every model tag to be present in the active scope while keeping untagged models", async () => {
 		vi.spyOn(HindsightApiCtor.prototype, "listMentalModels").mockResolvedValue({
 			items: [
-				{ id: "u", bank_id: "b", name: "User Preferences", content: "global preference" },
-				{ id: "a", bank_id: "b", name: "Project A", tags: ["project:a"], content: "a convention" },
-				{ id: "b", bank_id: "b", name: "Project B", tags: ["project:b"], content: "b convention" },
+				{ id: "u", bank_id: "b", name: "Untagged", content: "global preference" },
+				{ id: "coding", bank_id: "b", name: "Coding Wide", tags: ["scope:coding"], content: "coding convention" },
+				{
+					id: "speech",
+					bank_id: "b",
+					name: "Speech Core",
+					tags: ["scope:coding", "project:speech-core"],
+					content: "speech convention",
+				},
+				{
+					id: "oh",
+					bank_id: "b",
+					name: "Oh My Pi",
+					tags: ["scope:coding", "project:oh-my-pi"],
+					content: "omp convention",
+				},
+				{ id: "personal", bank_id: "b", name: "Personal", tags: ["scope:personal"], content: "personal fact" },
 			],
 		});
 		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
-		const block = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, ["project:b"]);
-		expect(block).toContain("global preference");
-		expect(block).toContain("b convention");
-		expect(block).not.toContain("a convention");
+		const coding = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, [
+			"scope:coding",
+			"project:speech-core",
+		]);
+		expect(coding).toContain("global preference");
+		expect(coding).toContain("coding convention");
+		expect(coding).toContain("speech convention");
+		expect(coding).not.toContain("omp convention");
+		expect(coding).not.toContain("personal fact");
+
+		const personal = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, [
+			"scope:personal",
+		]);
+		expect(personal).toContain("global preference");
+		expect(personal).toContain("personal fact");
+		expect(personal).not.toContain("coding convention");
 	});
 
 	it("returns undefined on list failure rather than throwing (best-effort surface)", async () => {

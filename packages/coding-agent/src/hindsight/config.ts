@@ -22,6 +22,7 @@ export interface HindsightConfig {
 	bankId: string | null;
 	bankIdPrefix: string;
 	scoping: HindsightScoping;
+	scopeTags: string[];
 	bankMission: string;
 	retainMission: string | null;
 
@@ -113,6 +114,14 @@ function pickScoping(value: unknown): HindsightScoping | undefined {
 		: undefined;
 }
 
+function pickStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter((item): item is string => typeof item === "string")
+		.map(item => item.trim())
+		.filter(Boolean);
+}
+
 /**
  * Load the resolved Hindsight config.
  *
@@ -171,6 +180,7 @@ export function loadHindsightConfig(settings: Settings, env: NodeJS.ProcessEnv =
 		bankId: bankIdEnv ?? settings.get("hindsight.bankId") ?? null,
 		bankIdPrefix: settings.get("hindsight.bankIdPrefix") ?? "",
 		scoping: scopingEnv ?? settingsScoping ?? "per-project-tagged",
+		scopeTags: pickStringArray(settings.get("hindsight.scopeTags")),
 		bankMission: bankMissionEnv ?? settings.get("hindsight.bankMission") ?? "",
 		retainMission: settings.get("hindsight.retainMission") ?? null,
 

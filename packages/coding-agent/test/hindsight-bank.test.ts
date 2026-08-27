@@ -44,6 +44,7 @@ const baseConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	hindsightApiToken: null,
 	bankId: null,
 	bankIdPrefix: "",
+	scopeTags: [],
 	scoping: "global",
 	bankMission: "",
 	retainMission: null,
@@ -97,6 +98,19 @@ describe("computeBankScope", () => {
 			expect(scope.recallTags).toBeUndefined();
 			expect(scope.recallTagsMatch).toBeUndefined();
 		});
+
+		it("applies configured personal scope tags with all_strict retrieval", () => {
+			expect(
+				computeBankScope(baseConfig({ bankId: "personal", scopeTags: ["scope:personal"] }), "/work/proj"),
+			).toEqual({
+				bankId: "personal",
+				resolvedTags: ["scope:personal"],
+				retainTags: ["scope:personal"],
+				recallTags: ["scope:personal"],
+				recallTagsMatch: "all_strict",
+				observationScopes: [["scope:personal"]],
+			});
+		});
 	});
 
 	describe("scoping=per-project", () => {
@@ -134,12 +148,14 @@ describe("computeBankScope", () => {
 	});
 
 	describe("scoping=per-project-tagged", () => {
-		it("keeps the base bank id and emits project tags with `any` match", () => {
+		it("keeps the base bank id and emits project tags with all_strict match", () => {
 			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/work/proj")).toEqual({
 				bankId: "omp",
+				resolvedTags: ["project:proj"],
 				retainTags: ["project:proj"],
 				recallTags: ["project:proj"],
-				recallTagsMatch: "any",
+				recallTagsMatch: "all_strict",
+				observationScopes: [["project:proj"]],
 			});
 		});
 
@@ -153,6 +169,21 @@ describe("computeBankScope", () => {
 			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "");
 			expect(scope.retainTags).toEqual(["project:unknown"]);
 			expect(scope.recallTags).toEqual(["project:unknown"]);
+		});
+
+		it("prefixes configured coding scope tags before the project tag", () => {
+			const scope = computeBankScope(
+				baseConfig({ scoping: "per-project-tagged", bankId: "personal", scopeTags: ["scope:coding"] }),
+				"/work/speech-core",
+			);
+			expect(scope).toEqual({
+				bankId: "personal",
+				resolvedTags: ["scope:coding", "project:speech-core"],
+				retainTags: ["scope:coding", "project:speech-core"],
+				recallTags: ["scope:coding", "project:speech-core"],
+				recallTagsMatch: "all_strict",
+				observationScopes: [["scope:coding", "project:speech-core"]],
+			});
 		});
 
 		it("lowercases the project tag so casing cannot split one project in two", () => {

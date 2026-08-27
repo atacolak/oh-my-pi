@@ -1,0 +1,293 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
+import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
+import {
+	findServerRoot,
+	getServersForFile,
+	loadConfig,
+	resolveServersForFile,
+} from "@oh-my-pi/pi-coding-agent/lsp/config";
+import { discoverStartupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers";
+import type { LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import { createLspWritethrough } from "@oh-my-pi/pi-coding-agent/lsp/writethrough";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import * as piUtils from "@oh-my-pi/pi-utils";
+import { TempDir } from "@oh-my-pi/pi-utils";
+
+const settings = Settings.isolated();
+
+function makeLspSession(cwd: string, additionalDirectories?: string[]): ToolSession {
+	return { cwd, additionalDirectories, settings } as ToolSession;
+}
+
+function mockLspClient(config: ServerConfig, cwd: string): LspClient {
+	return {
+		name: config.command,
+		cwd: config.resolvedRoot ?? cwd,
+		config,
+		proc: {} as LspClient["proc"],
+		requestId: 0,
+		diagnostics: new Map(),
+		diagnosticsVersion: 0,
+		openFiles: new Map(),
+		pendingRequests: new Map(),
+		messageBuffer: new Uint8Array(),
+		isReading: false,
+		status: "ready",
+		lastActivity: Date.now(),
+		writeQueue: Promise.resolve(),
+		activeProgressTokens: new Set(),
+		projectLoaded: Promise.resolve(),
+		resolveProjectLoaded: () => {},
+		serverCapabilities: { hoverProvider: true },
+	} as unknown as LspClient;
+}
+
+function writePythonProject(
+	root: string,
+	relativeDir: string,
+	fileName: string,
+): { projectRoot: string; filePath: string } {
+	const projectRoot = path.join(root, relativeDir);
+	const srcDir = path.join(projectRoot, "src");
+	fs.mkdirSync(srcDir, { recursive: true });
+	fs.writeFileSync(path.join(projectRoot, "pyproject.toml"), '[project]\nname = "nested"\n');
+	const filePath = path.join(srcDir, fileName);
+	fs.writeFileSync(filePath, "def example():\n    return 1\n");
+	return { projectRoot, filePath };
+}
+
+function writeLocalPythonServer(projectRoot: string, command = "basedpyright-langserver"): string {
+	const binDir = path.join(projectRoot, ".venv", process.platform === "win32" ? "Scripts" : "bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	const resolved = process.platform === "win32" ? path.join(binDir, `${command}.exe`) : path.join(binDir, command);
+	fs.writeFileSync(resolved, "");
+	fs.chmodSync(resolved, 0o755);
+	return resolved;
+}
+
+let homeOverride: string | undefined;
+let originalHome: string | undefined;
+
+beforeEach(() => {
+	originalHome = process.env.HOME;
+	homeOverride = fs.mkdtempSync(path.join(os.tmpdir(), "omp-lsp-nested-home-"));
+	process.env.HOME = homeOverride;
+	vi.spyOn(os, "homedir").mockReturnValue(homeOverride);
+});
+
+afterEach(async () => {
+	await lspClient.shutdownAll();
+	vi.restoreAllMocks();
+	if (originalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = originalHome;
+	if (homeOverride) fs.rmSync(homeOverride, { recursive: true, force: true });
+	homeOverride = undefined;
+});
+
+describe("nested LSP project roots", () => {
+	it("does not auto-detect a nested language project at session cwd", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-startup-");
+		try {
+			writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.basedpyright).toBeUndefined();
+			expect(config.definitions?.basedpyright).toBeDefined();
+			expect(discoverStartupLspServers(tempDir.path()).map(server => server.name)).not.toContain("basedpyright");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("resolves a nested python project from a concrete file", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-python-");
+		try {
+			const { projectRoot, filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+
+			const config = loadConfig(tempDir.path());
+			const resolved = resolveServersForFile(config, filePath, [tempDir.path()]);
+			const basedpyright = resolved.find(server => server.name === "basedpyright");
+			expect(basedpyright?.root).toBe(projectRoot);
+			expect(basedpyright?.config.resolvedRoot).toBe(projectRoot);
+			expect(basedpyright?.config.resolvedCommand).toBe("/usr/bin/basedpyright-langserver");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("prefers a nested project-local executable over PATH", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-venv-");
+		try {
+			const { projectRoot, filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			const localBin = writeLocalPythonServer(projectRoot);
+			vi.spyOn(piUtils, "$which").mockReturnValue("/usr/bin/basedpyright-langserver");
+
+			const config = loadConfig(tempDir.path());
+			const resolved = resolveServersForFile(config, filePath, [tempDir.path()]);
+			expect(resolved.find(server => server.name === "basedpyright")?.config.resolvedCommand).toBe(localBin);
+			expect(piUtils.$which).not.toHaveBeenCalledWith("basedpyright-langserver");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("selects the nearest nested root over a parent project", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nearest-root-");
+		try {
+			fs.writeFileSync(path.join(tempDir.path(), "pyproject.toml"), '[project]\nname = "root"\n');
+			const nested = writePythonProject(tempDir.path(), "nested", "foo.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.basedpyright).toBeDefined();
+			const resolved = resolveServersForFile(config, nested.filePath, [tempDir.path()]);
+			expect(resolved.find(server => server.name === "basedpyright")?.root).toBe(nested.projectRoot);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("roots the same language server separately for sibling projects", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-multi-root-");
+		try {
+			const a = writePythonProject(tempDir.path(), "a", "a.py");
+			const b = writePythonProject(tempDir.path(), "b", "b.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+
+			const config = loadConfig(tempDir.path());
+			const resolvedA = resolveServersForFile(config, a.filePath, [tempDir.path()]);
+			const resolvedB = resolveServersForFile(config, b.filePath, [tempDir.path()]);
+			expect(resolvedA.find(server => server.name === "basedpyright")?.root).toBe(a.projectRoot);
+			expect(resolvedB.find(server => server.name === "basedpyright")?.root).toBe(b.projectRoot);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("keeps root-level auto-detect unchanged", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-root-level-");
+		try {
+			fs.writeFileSync(path.join(tempDir.path(), "pyproject.toml"), '[project]\nname = "root"\n');
+			const filePath = path.join(tempDir.path(), "src", "foo.py");
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "x = 1\n");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.basedpyright?.resolvedCommand).toBe("/usr/bin/basedpyright-langserver");
+			const resolved = resolveServersForFile(config, filePath, [tempDir.path()]);
+			expect(resolved.find(server => server.name === "basedpyright")?.root).toBe(tempDir.path());
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not walk ancestors above the session workspace", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-boundary-");
+		try {
+			fs.writeFileSync(path.join(tempDir.path(), "pyproject.toml"), '[project]\nname = "outside"\n');
+			const workspace = path.join(tempDir.path(), "workspace");
+			const filePath = path.join(workspace, "src", "foo.py");
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "x = 1\n");
+
+			expect(findServerRoot(filePath, ["pyproject.toml"], [workspace])).toBeNull();
+			const config = loadConfig(workspace);
+			expect(
+				resolveServersForFile(config, filePath, [workspace]).find(server => server.name === "basedpyright"),
+			).toBeUndefined();
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("starts a nested server from a concrete lsp tool call", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-tool-");
+		try {
+			const { projectRoot, filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const roots: string[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => {
+				roots.push(config.resolvedRoot ?? cwd);
+				return mockLspClient(config, cwd);
+			});
+			vi.spyOn(lspClient, "ensureFileOpen").mockResolvedValue();
+			vi.spyOn(lspClient, "sendRequest").mockResolvedValue({
+				contents: { kind: "markdown", value: "nested-root-hover" },
+			});
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("nested-hover", {
+				action: "hover",
+				file: filePath,
+				line: 1,
+				symbol: "example",
+			});
+			const text = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			expect(text).toContain("nested-root-hover");
+			expect(roots).toContain(projectRoot);
+			expect(discoverStartupLspServers(tempDir.path()).map(s => s.name)).not.toContain("basedpyright");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("routes nested edit/write diagnostics through the nested project root", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-write-");
+		try {
+			const { projectRoot, filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+
+			const roots: string[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => {
+				roots.push(config.resolvedRoot ?? cwd);
+				return mockLspClient(config, cwd);
+			});
+
+			const writethrough = createLspWritethrough(tempDir.path(), { enableDiagnostics: true, enableFormat: false });
+			await writethrough(filePath, "def example():\n    return 2\n");
+			expect(roots).toContain(projectRoot);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not change cwd-only getServersForFile matching", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-cwd-api-");
+		try {
+			writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const config = loadConfig(tempDir.path());
+			expect(getServersForFile(config, path.join(tempDir.path(), "python", "src", "example.py"))).toEqual([]);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+});

@@ -230,12 +230,22 @@ export function getLspServers(config: LspConfig): Array<[string, ServerConfig]> 
 	);
 }
 
-export function getLspServersForFile(config: LspConfig, filePath: string): Array<[string, ServerConfig]> {
-	return getServersForFile(config, filePath).filter(([, serverConfig]) => !isCustomLinter(serverConfig));
+export function getLspServersForFile(
+	config: LspConfig,
+	filePath: string,
+	workspaceRoots?: readonly string[],
+): Array<[string, ServerConfig]> {
+	return getServersForFile(config, filePath, workspaceRoots).filter(
+		([, serverConfig]) => !isCustomLinter(serverConfig),
+	);
 }
 
-export function getLspServerForFile(config: LspConfig, filePath: string): [string, ServerConfig] | null {
-	const servers = getLspServersForFile(config, filePath);
+export function getLspServerForFile(
+	config: LspConfig,
+	filePath: string,
+	workspaceRoots?: readonly string[],
+): [string, ServerConfig] | null {
+	const servers = getLspServersForFile(config, filePath, workspaceRoots);
 	return servers.length > 0 ? servers[0] : null;
 }
 

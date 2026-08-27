@@ -946,6 +946,7 @@ export async function getOrCreateClient(
 	initTimeoutMs?: number,
 	signal?: AbortSignal,
 ): Promise<LspClient> {
+	cwd = config.resolvedRoot ?? cwd;
 	const key = clientKey(config, cwd);
 	// Check if client already exists
 	const existingClient = clients.get(key);
@@ -1152,6 +1153,7 @@ export async function getActiveOrPendingClient(
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<LspClient | undefined> {
+	cwd = config.resolvedRoot ?? cwd;
 	throwIfAborted(signal);
 	const client = clients.get(clientKey(config, cwd));
 	if (client) {
@@ -1695,6 +1697,7 @@ export interface LspServerStatus {
 	name: string;
 	status: "connecting" | "ready" | "error";
 	fileTypes: string[];
+	cwd?: string;
 	error?: string;
 }
 
@@ -1706,6 +1709,7 @@ export function getActiveClients(): LspServerStatus[] {
 		name: client.config.command,
 		status: client.status,
 		fileTypes: client.config.fileTypes,
+		cwd: client.cwd,
 	}));
 }
 

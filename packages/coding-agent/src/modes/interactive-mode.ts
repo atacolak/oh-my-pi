@@ -710,6 +710,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	skillCommands: Map<string, Skill> = new Map();
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
 	collabHost?: CollabHost;
+	collabHostStart?: Promise<CollabHost>;
 	collabGuest?: CollabGuestLink;
 
 	#pendingCommandOutput: Component[] = [];

@@ -152,6 +152,7 @@ export interface InteractiveModeContext {
 	mcpManager?: MCPManager;
 	lspServers?: LspStartupServerInfo[];
 	collabHost?: CollabHost;
+	collabHostStart?: Promise<CollabHost>;
 	collabGuest?: CollabGuestLink;
 	eventController: EventController;
 	eventBus?: EventBus;

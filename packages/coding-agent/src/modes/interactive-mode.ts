@@ -713,6 +713,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	collabHost?: CollabHost;
 	collabHostStart?: Promise<CollabHost>;
 	collabGuest?: CollabGuestLink;
+	collabGuestStart?: Promise<CollabGuestLink>;
 
 	#pendingCommandOutput: Component[] = [];
 	#pendingCommandOutputSessionId: string | undefined;

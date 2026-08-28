@@ -1,8 +1,7 @@
 import { Spacer } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
-import { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
-import { resolveRelayUrl, startCollabHost } from "../collab/start";
+import { resolveRelayUrl, startCollabGuest, startCollabHost } from "../collab/start";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import { parseExportArgs } from "../export/html/args";
@@ -300,7 +299,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				}
 				return;
 			}
-			if (ctx.collabGuest) {
+			if (ctx.collabGuest || ctx.collabGuestStart) {
 				ctx.showError("Already in a collab session as a guest (/leave first)");
 				return;
 			}
@@ -353,16 +352,16 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				ctx.showError("Usage: /join <link>");
 				return;
 			}
-			if (ctx.collabHost) {
+			if (ctx.collabHost || ctx.collabHostStart) {
 				ctx.showError("Stop hosting first (/collab stop)");
 				return;
 			}
-			if (ctx.collabGuest) {
+			if (ctx.collabGuest || ctx.collabGuestStart) {
 				ctx.showError("Already in a collab session (/leave first)");
 				return;
 			}
 			try {
-				await new CollabGuestLink(ctx).join(link);
+				await startCollabGuest(ctx, link);
 			} catch (err) {
 				ctx.showError(`Failed to join collab session: ${errorMessage(err)}`);
 			}

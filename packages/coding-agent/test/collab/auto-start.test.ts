@@ -6,7 +6,7 @@ import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { COLLAB_PROTO, DEFAULT_RELAY_URL, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
-import { autoStartCollab, startCollabHost } from "@oh-my-pi/pi-coding-agent/collab/start";
+import { autoStartCollab, startCollabGuest, startCollabHost } from "@oh-my-pi/pi-coding-agent/collab/start";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
@@ -129,6 +129,41 @@ describe("collab auto-start", () => {
 			expect(ctx.collabHostStart).toBeUndefined();
 		} finally {
 			start.mockRestore();
+		}
+	});
+
+	it("blocks guest joins while host startup owns the collab role", async () => {
+		const ctx = context();
+		const gate = Promise.withResolvers<void>();
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async () => gate.promise);
+		try {
+			const pending = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			await expect(startCollabGuest(ctx, "invalid link")).rejects.toThrow("Stop hosting first");
+			expect(ctx.collabGuest).toBeUndefined();
+			gate.resolve();
+			await pending;
+		} finally {
+			await ctx.collabHost?.stop("test done");
+			start.mockRestore();
+		}
+	});
+
+	it("tears down a completed host if a guest appears during startup", async () => {
+		const ctx = context();
+		const gate = Promise.withResolvers<void>();
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async () => gate.promise);
+		const stop = spyOn(CollabHost.prototype, "stop").mockResolvedValue();
+		try {
+			const pending = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			ctx.collabGuest = {} as InteractiveModeContext["collabGuest"];
+			gate.resolve();
+			await expect(pending).rejects.toThrow("Cannot host while joined as a guest");
+			expect(stop).toHaveBeenCalledWith("guest joined while host was starting");
+			expect(ctx.collabHost).toBeUndefined();
+			expect(ctx.collabHostStart).toBeUndefined();
+		} finally {
+			start.mockRestore();
+			stop.mockRestore();
 		}
 	});
 

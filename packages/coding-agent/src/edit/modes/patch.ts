@@ -17,6 +17,7 @@ import {
 	type WritethroughDeferredHandle,
 } from "../../lsp";
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
+import { sessionWorkspaceDirectories } from "../../session/session-workspace";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFile } from "../../tools/auto-generated-guard";
@@ -1784,7 +1785,7 @@ class LspFileSystem implements FileSystem {
 		await deleteFileWithFallback(path, this.#getFile(path));
 		if (this.session.enableLsp ?? true) {
 			await notifyWorkspaceWatchedFiles(
-				this.session.cwd,
+				sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 				[{ filePath: path, type: FileChangeType.Deleted }],
 				this.signal,
 			);

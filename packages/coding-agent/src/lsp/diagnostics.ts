@@ -442,7 +442,7 @@ export async function getDiagnosticsForFile(
 				throwIfAborted(boundSignal);
 				// Use custom linter client if configured
 				if (serverConfig.createClient) {
-					const linterClient = getLinterClient(serverName, serverConfig, cwd);
+					const linterClient = getLinterClient(serverName, serverConfig, serverConfig.resolvedRoot ?? cwd);
 					const diagnostics = await linterClient.lint(absolutePath, boundSignal);
 					return { serverName, serverConfig, diagnostics };
 				}
@@ -566,7 +566,7 @@ export async function formatContent(
 			throwIfAborted(signal);
 			// Use custom linter client if configured
 			if (serverConfig.createClient) {
-				const linterClient = getLinterClient(serverName, serverConfig, cwd);
+				const linterClient = getLinterClient(serverName, serverConfig, serverConfig.resolvedRoot ?? cwd);
 				const formattedContent = await linterClient.format(absolutePath, content);
 				return { content: formattedContent, failed: false, unsupported: false };
 			}

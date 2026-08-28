@@ -308,6 +308,7 @@ async function runLspWritethrough(
 	const { enableFormat, enableDiagnostics } = options;
 	const contentAlreadyWritten = runOptions?.contentAlreadyWritten ?? false;
 
+	const workspaceRoots = sessionWorkspaceDirectories(cwd, options.additionalDirectories);
 	let finalContent = content;
 	const writeContent = async (value: string) => writeFileWithFallback(dst, value, file);
 	const getWritePromise = once(() =>
@@ -318,7 +319,7 @@ async function runLspWritethrough(
 		if (writeNotified) return;
 		writeNotified = true;
 		try {
-			await notifyWorkspaceWatchedFiles(cwd, [{ filePath: dst, type: changeType }], notifySignal);
+			await notifyWorkspaceWatchedFiles(workspaceRoots, [{ filePath: dst, type: changeType }], notifySignal);
 		} catch (error) {
 			if (notifySignal?.aborted && !signal?.aborted) {
 				// The operation budget died mid-notify while the caller is still
@@ -337,7 +338,7 @@ async function runLspWritethrough(
 	}
 
 	const config = getConfig(cwd);
-	const servers = getServersForFile(config, dst, sessionWorkspaceDirectories(cwd, options.additionalDirectories));
+	const servers = getServersForFile(config, dst, workspaceRoots);
 
 	if (servers.length === 0) {
 		await getWritePromise();

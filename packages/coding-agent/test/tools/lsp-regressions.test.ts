@@ -3951,6 +3951,124 @@ describe("lsp regressions", () => {
 		expect(output).not.toContain(lspHomeOverride);
 	});
 
+	it("workspace reload shuts down and allows rediscovery of a nested client below the session cwd", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-nested-client-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			fs.mkdirSync(nestedRoot);
+			const oldServer = installHandshakeLsp();
+			const oldConfig: ServerConfig = {
+				command: "nested-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			await lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000);
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, definitions: {} });
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("reload-nested-client", {
+				action: "reload",
+				file: "*",
+			});
+
+			expect(oldServer.received.map(message => message.method)).toContain("shutdown");
+			expect(oldServer.received.map(message => message.method)).toContain("exit");
+			expect(textResult(result)).toBe("No language server found for this action");
+			const rediscoveredServer = installHandshakeLsp();
+			const rediscovered = await lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000);
+			expect(rediscovered.cwd).toBe(nestedRoot);
+			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace edits refresh nested client overlays and watched files", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-edit-reconcile-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			fs.mkdirSync(nestedRoot);
+			const filePath = path.join(nestedRoot, "a.ts");
+			await Bun.write(filePath, "export const a = 1;\n");
+			const server = installHandshakeLsp();
+			const config: ServerConfig = {
+				command: "nested-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(client, filePath);
+			await server.waitFor(message => message.method === "textDocument/didOpen");
+
+			await lspClient.applyWorkspaceEditWithLsp(
+				{
+					changes: {
+						[fileToUri(filePath)]: [
+							{
+								range: { start: { line: 0, character: 17 }, end: { line: 0, character: 18 } },
+								newText: "2",
+							},
+						],
+					},
+				},
+				tempDir.path(),
+			);
+
+			const didChange = await server.waitFor(message => message.method === "textDocument/didChange");
+			const watched = await server.waitFor(message => message.method === "workspace/didChangeWatchedFiles");
+			expect(watched.params).toEqual({ changes: [{ uri: fileToUri(filePath), type: 2 }] });
+			expect(didChange.params).toMatchObject({
+				textDocument: { uri: fileToUri(filePath) },
+				contentChanges: [{ text: "export const a = 2;\n" }],
+			});
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
+		try {
+			const rootA = path.join(tempDir.path(), "a");
+			const rootB = path.join(tempDir.path(), "b");
+			fs.mkdirSync(rootA);
+			fs.mkdirSync(rootB);
+			const serverA = installHandshakeLsp();
+			const configA: ServerConfig = {
+				command: "nested-a",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: rootA,
+			};
+			await lspClient.getOrCreateClient(configA, tempDir.path(), 1_000);
+			const serverB = installHandshakeLsp();
+			const configB: ServerConfig = {
+				command: "nested-b",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: rootB,
+			};
+			await lspClient.getOrCreateClient(configB, tempDir.path(), 1_000);
+			const fileA = path.join(rootA, "deleted.ts");
+
+			await lspClient.notifyWorkspaceWatchedFiles(
+				[tempDir.path()],
+				[{ filePath: fileA, type: lspClient.FileChangeType.Deleted }],
+			);
+
+			const watchedA = await serverA.waitFor(message => message.method === "workspace/didChangeWatchedFiles");
+			expect(watchedA.params).toEqual({ changes: [{ uri: fileToUri(fileA), type: 3 }] });
+			expect(serverB.received.some(message => message.method === "workspace/didChangeWatchedFiles")).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload replaces a client whose process or initialization config changed", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-identity-");
 		try {
@@ -4248,6 +4366,30 @@ describe("lsp regressions", () => {
 
 		expect(output).toContain("rust-analyzer (configured, not started)");
 		expect(output).toContain("typescript-language-server (ready)");
+	});
+
+	it("status excludes active clients owned by another session workspace", async () => {
+		const workspaceA = TempDir.createSync("@omp-lsp-status-a-");
+		const workspaceB = TempDir.createSync("@omp-lsp-status-b-");
+		try {
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, definitions: {} });
+			vi.spyOn(lspClient, "getActiveClients").mockReturnValue([
+				{
+					name: "typescript-language-server",
+					status: "ready",
+					fileTypes: [".ts"],
+					cwd: workspaceA.path(),
+				},
+			]);
+
+			const result = await new LspTool(makeLspSession(workspaceB.path())).execute("status-isolated", {
+				action: "status",
+			});
+			expect(textResult(result)).toBe("No language servers configured for this project");
+		} finally {
+			workspaceA.removeSync();
+			workspaceB.removeSync();
+		}
 	});
 
 	it("reload * invalidates the per-cwd config cache so newly written .omp/lsp.json is observed", async () => {

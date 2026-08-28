@@ -10,6 +10,7 @@
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings
 >   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental `--alt` viewport
 >   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
+>   - [`fix/nested-lsp-roots`](https://github.com/can1357/oh-my-pi/pull/9969) — lazy nested LSP project roots (`#1648`)
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 >

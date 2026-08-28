@@ -143,6 +143,61 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("uses a hoisted workspace executable for a nested project", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-hoisted-bin-");
+		try {
+			fs.writeFileSync(path.join(tempDir.path(), "package.json"), "{}\n");
+			const nested = path.join(tempDir.path(), "packages", "app");
+			fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+			fs.writeFileSync(path.join(nested, "package.json"), "{}\n");
+			const filePath = path.join(nested, "src", "index.ts");
+			fs.writeFileSync(filePath, "export const value = 1;\n");
+			const binDir = path.join(tempDir.path(), "node_modules", ".bin");
+			fs.mkdirSync(binDir, { recursive: true });
+			const hoistedBin = path.join(binDir, "typescript-language-server");
+			fs.writeFileSync(hoistedBin, "");
+			fs.chmodSync(hoistedBin, 0o755);
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(hoistedBin);
+			const resolved = resolveServersForFile(config, filePath, [tempDir.path()]);
+			const typescript = resolved.find(server => server.name === "typescript-language-server");
+			expect(typescript?.root).toBe(nested);
+			expect(typescript?.config.resolvedCommand).toBe(hoistedBin);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("roots dot-marker server definitions at the containing workspace", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dot-marker-");
+		try {
+			const fileA = path.join(tempDir.path(), "src", "a.ts");
+			const fileB = path.join(tempDir.path(), "test", "b.ts");
+			fs.mkdirSync(path.dirname(fileA), { recursive: true });
+			fs.mkdirSync(path.dirname(fileB), { recursive: true });
+			fs.writeFileSync(fileA, "export const a = 1;\n");
+			fs.writeFileSync(fileB, "export const b = 1;\n");
+			const server: ServerConfig = {
+				command: "plugin-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: ["."],
+			};
+			const config = { servers: {}, definitions: { plugin: server } };
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "plugin-lsp" ? "/usr/bin/plugin-lsp" : null,
+			);
+
+			const resolvedA = resolveServersForFile(config, fileA, [tempDir.path()]);
+			const resolvedB = resolveServersForFile(config, fileB, [tempDir.path()]);
+			expect(resolvedA[0]?.root).toBe(tempDir.path());
+			expect(resolvedB[0]?.root).toBe(tempDir.path());
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("selects the nearest nested root over a parent project", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nearest-root-");
 		try {

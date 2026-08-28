@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Extensions can return a one-off `model` selector from `session.compacting` for that native compaction request only, without changing the active session model.
+- `ExtensionContext.getAgentSnapshot()` exposes a sanitized read-only roster of running and idle non-advisor agents.
+- Added a reusable hot-handoff extension that reconstructs semantic working state for opted-in projects (`.omp/HANDOFF.md`) using an independent `@handoff` author, a deterministic live-state capsule, and OMP's native compaction pipeline.
+
 ### Fixed
 
 - Fixed `import numpy` (and other native-extension imports) hanging indefinitely in the Python eval tool on Windows, where the runner's always-on background stdin reader deadlocked native DLL loading; Windows now reads the control channel serially between requests while POSIX keeps concurrent request dispatch ([#7985](https://github.com/can1357/oh-my-pi/issues/7985)).

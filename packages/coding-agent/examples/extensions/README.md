@@ -57,6 +57,7 @@ cp permission-gate.ts ~/.omp/agent/extensions/
 | ---------------------- | --------------------------------------------------------------------- |
 | `pirate.ts`            | Demonstrates `systemPromptAppend` to dynamically modify system prompt |
 | `custom-compaction.ts` | Custom compaction that summarizes entire conversation                 |
+| `hot-handoff/`         | Independent semantic hot-handoff compaction for opted-in projects     |
 
 ### External Dependencies
 

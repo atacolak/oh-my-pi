@@ -545,6 +545,7 @@ async function runInteractiveMode(
 		await logger.time("InteractiveMode.init", () =>
 			mode.init({
 				suppressWelcomeIntro: resuming || setupScenes.length > 0 || playStartupSplash,
+				autoStartCollab: joinLink === undefined,
 				clearInitialTerminalHistory: true,
 				recentSessions: startupLease?.recentSessions,
 			}),
@@ -1576,7 +1577,7 @@ export async function runRootCommand(
 
 		applyStartupComposerPreferences({
 			quiet: settingsInstance.get("startup.quiet"),
-			composerShape: settingsInstance.get("composer.shape") ?? "box",
+			composerShape: settingsInstance.get("composer.shape") ?? "band",
 			showHardwareCursor: settingsInstance.get("showHardwareCursor"),
 			maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
 			resizeScrollback: settingsInstance.get("tui.resizeScrollback"),

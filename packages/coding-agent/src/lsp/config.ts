@@ -571,9 +571,10 @@ export function resolveServersForFile(
 		if (!root) continue;
 
 		const localRoots = root === boundary ? [root] : [root, boundary];
+		const primaryResolvedCommand = boundary === workspace.cwd ? config.servers[name]?.resolvedCommand : undefined;
 		const resolvedCommand =
 			resolveCommand(definition.command, root, { localRoots }) ??
-			config.servers[name]?.resolvedCommand ??
+			primaryResolvedCommand ??
 			definition.resolvedCommand;
 		if (!resolvedCommand) continue;
 

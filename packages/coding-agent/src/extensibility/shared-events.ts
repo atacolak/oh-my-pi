@@ -388,6 +388,14 @@ export interface SessionCompactingResult {
 	prompt?: string;
 	/** Custom data to store in compaction entry */
 	preserveData?: Record<string, unknown>;
+	/**
+	 * Optional one-off model selector for this native compaction request.
+	 * Resolved through the same model-matching path as `--model` / `ctx.models.resolve()`.
+	 * MUST NOT mutate the active session model. Exclusive to this request: if the
+	 * selector cannot be resolved or authenticated, compaction fails instead of
+	 * silently using the working model with a custom prompt.
+	 */
+	model?: string;
 }
 
 /** Return type for `session_stop` handlers */

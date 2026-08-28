@@ -55,6 +55,7 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import type { ModelRegistry } from "../config/model-registry";
+import { getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
 import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { CompactionSettings as ConfiguredCompactionSettings, Settings } from "../config/settings";
 import type { ExtensionRunner, SessionBeforeCompactResult } from "../extensibility/extensions";
@@ -230,6 +231,20 @@ function mergeLlmCompactionPreserveData(
 ): Record<string, unknown> | undefined {
 	const preserveData = { ...(hookPreserveData ?? {}), ...(resultPreserveData ?? {}) };
 	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
+}
+
+function resolveCompactionOverrideSelector(
+	selector: string | undefined,
+	availableModels: Model[],
+	settings: Settings,
+): Model | undefined {
+	const trimmed = selector?.trim();
+	if (!trimmed) return undefined;
+	return resolveModelFromString(trimmed, availableModels, getModelMatchPreferences(settings));
+}
+
+function exclusiveCompactionCandidates(override: Model | undefined, fallback: Model[]): Model[] {
+	return override ? [override] : fallback;
 }
 
 /** Wrap a handoff document as a compaction summary: append the cumulative file-operations tag and derive entry details. */
@@ -792,7 +807,7 @@ export class SessionMaintenance {
 			const effectiveSettings = resolveMethodSettings(compactionSettings, selectedMethod);
 			const availableModels = this.#host.modelRegistry.getAvailable();
 			const requireProviderRemote = selectedMethod === "remote" && !effectiveSettings.remoteEndpoint;
-			const compactionCandidates = this.#getCompactionModelCandidates(
+			let compactionCandidates = this.#getCompactionModelCandidates(
 				availableModels,
 				requireProviderRemote
 					? candidate =>
@@ -844,6 +859,19 @@ export class SessionMaintenance {
 
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
 			if (compactionPrep.kind !== "fromHook") methodAttempted = true;
+			if (compactionPrep.kind === "needsLlm" && compactionPrep.hookModel) {
+				const override = resolveCompactionOverrideSelector(
+					compactionPrep.hookModel,
+					availableModels,
+					this.#host.settings,
+				);
+				if (!override) {
+					throw new Error(
+						`Compaction model override ${compactionPrep.hookModel} could not be resolved to an authenticated model.`,
+					);
+				}
+				compactionCandidates = exclusiveCompactionCandidates(override, compactionCandidates);
+			}
 
 			// Focus instructions require an LLM summary, so the preference resolver
 			// only selects snapcompact for an undirected manual compaction.
@@ -1349,14 +1377,24 @@ export class SessionMaintenance {
 			// No hookCompaction is passed above, so "fromHook" is unreachable;
 			// the guard just narrows the union.
 			if (compactionPrep.kind === "fromHook") return clear();
-			const candidates = this.#getCompactionModelCandidates(
-				this.#host.modelRegistry.getAvailable(),
+			const availableModels = this.#host.modelRegistry.getAvailable();
+			let candidates = this.#getCompactionModelCandidates(
+				availableModels,
 				method === "remote" && !effectiveSettings.remoteEndpoint
 					? candidate =>
 							candidate.provider === model.provider &&
 							shouldUseProviderNativeCompaction(candidate, effectiveSettings)
 					: undefined,
 			);
+			if (compactionPrep.hookModel) {
+				const override = resolveCompactionOverrideSelector(
+					compactionPrep.hookModel,
+					availableModels,
+					this.#host.settings,
+				);
+				if (!override) return clear();
+				candidates = exclusiveCompactionCandidates(override, candidates);
+			}
 			if (candidates.length === 0) return clear();
 			const codexCompaction = createCodexCompactionContext({
 				trigger: "auto",
@@ -2286,11 +2324,13 @@ export class SessionMaintenance {
 				hookContext: string[] | undefined;
 				hookPrompt: string | undefined;
 				preserveData: Record<string, unknown> | undefined;
+				hookModel?: string;
 		  }
 	> {
 		let hookContext: string[] | undefined;
 		let hookPrompt: string | undefined;
 		let preserveData: Record<string, unknown> | undefined;
+		let hookModel: string | undefined;
 
 		if (!hookCompaction && this.#host.extensionRunner?.hasHandlers("session.compacting")) {
 			const compactMessages = preparation.messagesToSummarize.concat(preparation.turnPrefixMessages);
@@ -2298,11 +2338,14 @@ export class SessionMaintenance {
 				type: "session.compacting",
 				sessionId: this.#host.sessionId(),
 				messages: compactMessages,
-			})) as { context?: string[]; prompt?: string; preserveData?: Record<string, unknown> } | undefined;
+			})) as
+				| { context?: string[]; prompt?: string; preserveData?: Record<string, unknown>; model?: string }
+				| undefined;
 
 			hookContext = result?.context;
 			hookPrompt = result?.prompt;
 			preserveData = result?.preserveData;
+			hookModel = result?.model;
 		}
 
 		const memoryBackendContext = await this.#collectMemoryBackendContext(preparation);
@@ -2323,7 +2366,7 @@ export class SessionMaintenance {
 			};
 		}
 
-		return { kind: "needsLlm", hookContext, hookPrompt, preserveData };
+		return { kind: "needsLlm", hookContext, hookPrompt, preserveData, hookModel };
 	}
 
 	/**
@@ -3449,7 +3492,7 @@ export class SessionMaintenance {
 				details = snapcompactResult.details;
 				preserveData = { ...(compactionPrep.preserveData ?? {}), ...(snapcompactResult.preserveData ?? {}) };
 			} else {
-				const candidates = this.#getCompactionModelCandidates(
+				let candidates = this.#getCompactionModelCandidates(
 					availableModels,
 					method === "remote" && !effectiveSettings.remoteEndpoint
 						? candidate =>
@@ -3457,6 +3500,19 @@ export class SessionMaintenance {
 								shouldUseProviderNativeCompaction(candidate, effectiveSettings)
 						: undefined,
 				);
+				if (compactionPrep.hookModel) {
+					const override = resolveCompactionOverrideSelector(
+						compactionPrep.hookModel,
+						availableModels,
+						this.#host.settings,
+					);
+					if (!override) {
+						throw new Error(
+							`Compaction model override ${compactionPrep.hookModel} could not be resolved to an authenticated model.`,
+						);
+					}
+					candidates = exclusiveCompactionCandidates(override, candidates);
+				}
 				const retrySettings = this.#host.settings.getGroup("retry");
 				const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
 				let compactResult: CompactionResult | undefined;

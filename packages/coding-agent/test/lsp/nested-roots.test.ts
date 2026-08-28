@@ -170,6 +170,34 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("does not reuse the primary workspace executable for an additional workspace", () => {
+		const primary = TempDir.createSync("@omp-lsp-primary-bin-");
+		const additional = TempDir.createSync("@omp-lsp-additional-bin-");
+		try {
+			fs.writeFileSync(path.join(primary.path(), "package.json"), "{}\n");
+			const binDir = path.join(primary.path(), "node_modules", ".bin");
+			fs.mkdirSync(binDir, { recursive: true });
+			const primaryBin = path.join(binDir, "typescript-language-server");
+			fs.writeFileSync(primaryBin, "");
+			fs.chmodSync(primaryBin, 0o755);
+
+			const nested = path.join(additional.path(), "packages", "app");
+			fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+			fs.writeFileSync(path.join(nested, "package.json"), "{}\n");
+			const filePath = path.join(nested, "src", "index.ts");
+			fs.writeFileSync(filePath, "export const value = 1;\n");
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+
+			const config = loadConfig(primary.path());
+			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(primaryBin);
+			const resolved = resolveServersForFile(config, filePath, [primary.path(), additional.path()]);
+			expect(resolved.find(server => server.name === "typescript-language-server")).toBeUndefined();
+		} finally {
+			primary.removeSync();
+			additional.removeSync();
+		}
+	});
+
 	it("roots dot-marker server definitions at the containing workspace", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-dot-marker-");
 		try {

@@ -742,6 +742,53 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[1]).content)).toContain("first reply is long enough");
 	});
 
+	it("does not carry a forced-retain cursor across a session rekey", async () => {
+		const gate = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		const bodies = captureBodies({ delay: gate.promise, onStart: () => started.resolve() });
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		let entries = [
+			userEntry("old-u1", null, "old turn one has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("old-a1", "old-u1", "old reply one has enough text", "2026-08-17T10:00:01.000Z"),
+			userEntry("old-u2", "old-a1", "old turn two has enough text", "2026-08-17T10:01:00.000Z"),
+			assistantEntry("old-a2", "old-u2", "old reply two has enough text", "2026-08-17T10:01:01.000Z"),
+		];
+		const state = new HindsightSessionState({
+			sessionId: "sess-force-old",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainEveryNTurns: 5, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-force-old",
+				sessionManager: {
+					getHeader: () => ({ type: "session", id: state.sessionId, timestamp: SESSION_START, cwd: "/tmp" }),
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		const forced = state.forceRetainCurrentSession();
+		await started.promise;
+		entries = [];
+		state.setSessionId("sess-force-new");
+		state.resetConversationTracking();
+		entries = [
+			userEntry("new-u1", null, "new turn one has enough text", "2026-08-17T11:00:00.000Z"),
+			assistantEntry("new-a1", "new-u1", "new reply one has enough text", "2026-08-17T11:00:01.000Z"),
+		];
+		gate.resolve();
+		await forced;
+		await state.drainOnClose();
+
+		expect(bodies).toHaveLength(2);
+		expect(firstItem(bodies[0]).document_id).toBe("sess-force-old");
+		expect(firstItem(bodies[1]).document_id).toBe("sess-force-new");
+		expect(String(firstItem(bodies[1]).content)).toContain("new turn one has enough text");
+	});
+
 	it("does not duplicate last-turn documents when close races an in-flight cadence retain", async () => {
 		const gate = Promise.withResolvers<void>();
 		const bodies = captureBodies({ delay: gate.promise });
@@ -856,6 +903,7 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
+			closeRetainBaselineTurns: 5,
 		});
 
 		await state.drainOnClose();
@@ -988,6 +1036,7 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
+			closeRetainBaselineTurns: 2,
 		});
 
 		await state.drainOnClose();
@@ -1023,6 +1072,7 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
+			closeRetainBaselineTurns: 2,
 		});
 
 		await state.drainOnClose();
@@ -1060,6 +1110,7 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
+			closeRetainBaselineTurns: 2,
 		});
 
 		await state.drainOnClose();
@@ -1094,6 +1145,7 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
+			closeRetainBaselineTurns: 0,
 		});
 
 		await state.drainOnClose();
@@ -1160,6 +1212,7 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
+			closeRetainBaselineTurns: 0,
 		});
 
 		state.enqueueRetain("user asked me to remember the deploy token rotation");
@@ -1283,6 +1336,7 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
+			closeRetainBaselineTurns: countRetainableUserTurns({ getEntries: () => [imageOnly] }),
 		});
 
 		await state.drainOnClose();

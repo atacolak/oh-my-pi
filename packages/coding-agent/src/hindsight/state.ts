@@ -286,7 +286,6 @@ export class HindsightSessionState {
 		this.retainQueue = new HindsightRetainQueue(this);
 		this.#closeRetainBaselineTurns =
 			options.closeRetainBaselineTurns ??
-			this.session.loadedUserTurnCount ??
 			(this.session.sessionManager ? countRetainableUserTurns(this.session.sessionManager) : 0);
 		this.#captureLoadedBranchIdentity();
 	}
@@ -595,6 +594,7 @@ export class HindsightSessionState {
 	}
 
 	async #forceRetainCurrentSessionLocked(): Promise<void> {
+		const generation = this.#retainGeneration;
 		const messages = extractMessages(this.session.sessionManager);
 		if (messages.length === 0) return;
 		// Forced retains are user-initiated rebuilds (`/memory enqueue`). The
@@ -604,7 +604,9 @@ export class HindsightSessionState {
 		// drains from emitting a duplicate last-turn document behind this call.
 		try {
 			await this.retainSession(messages, { forceReplace: true });
-			this.lastRetainedTurn = messages.filter(m => m.role === "user").length;
+			if (generation === this.#retainGeneration) {
+				this.lastRetainedTurn = messages.filter(m => m.role === "user").length;
+			}
 		} catch (err) {
 			logger.warn("Hindsight: forced retain failed", {
 				sessionId: this.sessionId,

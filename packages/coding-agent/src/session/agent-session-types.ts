@@ -72,6 +72,29 @@ export interface AsyncJobSnapshot {
 	delivery: AsyncJobDeliveryState;
 }
 
+/** Sanitized agent-roster status exposed to extensions. */
+export type AgentSnapshotStatus = "running" | "idle";
+
+/** Sanitized agent-roster kind exposed to extensions. Advisors are omitted. */
+export type AgentSnapshotKind = "main" | "sub";
+
+/** One sanitized agent-roster row. No session objects or mutators. */
+export interface AgentSnapshotItem {
+	id: string;
+	displayName: string;
+	kind: AgentSnapshotKind;
+	parentId?: string;
+	status: AgentSnapshotStatus;
+	activity?: string;
+}
+
+/** Read-only agent-roster snapshot for extensions. */
+export interface AgentSnapshot {
+	/** Registry id of the session that produced this snapshot, when known. */
+	selfId?: string;
+	agents: AgentSnapshotItem[];
+}
+
 export type { ShakeMode, ShakeResult } from "./shake-types";
 
 /**

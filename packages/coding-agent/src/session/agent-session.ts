@@ -178,6 +178,7 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
+import { AgentRegistry } from "../registry/agent-registry";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -228,6 +229,8 @@ import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-sessi
 import type {
 	AgentSessionConfig,
 	AgentSessionDisposeOptions,
+	AgentSnapshot,
+	AgentSnapshotItem,
 	AsyncJobSnapshot,
 	CommandMetadataChangedListener,
 	ContextUsageBreakdown,
@@ -1934,6 +1937,28 @@ export class AgentSession {
 		}));
 		const delivery = manager.getDeliveryState(ownerFilter);
 		return { running, recent, delivery };
+	}
+
+	/**
+	 * Sanitized read-only agent roster for extensions. Advisors, parked, and
+	 * aborted agents are omitted. No session objects or mutators.
+	 */
+	getAgentSnapshot(): AgentSnapshot {
+		const selfId = this.#agentId;
+		const agents: AgentSnapshotItem[] = [];
+		for (const ref of AgentRegistry.global().list()) {
+			if (ref.kind === "advisor") continue;
+			if (ref.status !== "running" && ref.status !== "idle") continue;
+			agents.push({
+				id: ref.id,
+				displayName: ref.displayName,
+				kind: ref.kind,
+				parentId: ref.parentId,
+				status: ref.status,
+				activity: ref.activity,
+			});
+		}
+		return { selfId, agents };
 	}
 
 	/**
@@ -6245,6 +6270,7 @@ export class AgentSession {
 			},
 			getContextUsage: () => this.getContextUsage(),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
+			getAgentSnapshot: () => this.getAgentSnapshot(),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { InteractiveModeContext } from "../modes/types";
 import { expandTilde } from "../tools/path-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
+import { CollabGuestLink } from "./guest";
 import { CollabHost } from "./host";
 import { DEFAULT_RELAY_URL } from "./protocol";
 
@@ -14,6 +15,7 @@ export interface StartCollabOptions {
 
 /** Start a host and attach it to the interactive context. */
 export async function startCollabHost(ctx: InteractiveModeContext, options: StartCollabOptions): Promise<CollabHost> {
+	if (ctx.collabGuest || ctx.collabGuestStart) throw new Error("Cannot host while joining as a guest");
 	if (ctx.collabHost) return ctx.collabHost;
 	if (ctx.collabHostStart) return ctx.collabHostStart;
 	const start = startCollabHostOnce(ctx, options);
@@ -25,9 +27,28 @@ export async function startCollabHost(ctx: InteractiveModeContext, options: Star
 	}
 }
 
+/** Join a guest session while reserving the collab role against host startup. */
+export async function startCollabGuest(ctx: InteractiveModeContext, link: string): Promise<CollabGuestLink> {
+	if (ctx.collabHost || ctx.collabHostStart) throw new Error("Stop hosting first (/collab stop)");
+	if (ctx.collabGuest) return ctx.collabGuest;
+	if (ctx.collabGuestStart) return ctx.collabGuestStart;
+	const guest = new CollabGuestLink(ctx);
+	const start = guest.join(link).then(() => guest);
+	ctx.collabGuestStart = start;
+	try {
+		return await start;
+	} finally {
+		if (ctx.collabGuestStart === start) ctx.collabGuestStart = undefined;
+	}
+}
+
 async function startCollabHostOnce(ctx: InteractiveModeContext, options: StartCollabOptions): Promise<CollabHost> {
 	const host = new CollabHost(ctx);
 	await host.start(options.relayUrl, options.webUrl ?? "");
+	if (ctx.collabGuest || ctx.collabGuestStart) {
+		await host.stop("guest joined while host was starting");
+		throw new Error("Cannot host while joined as a guest");
+	}
 	ctx.collabHost = host;
 	if (options.writeLinkPath?.trim()) {
 		try {

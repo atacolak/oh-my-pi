@@ -443,6 +443,51 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[0]).content)).toContain("turn two has enough text");
 	});
 
+	it("drops a queued forced retain when the session is rekeyed before it starts", async () => {
+		const gate = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		const bodies = captureBodies({ delay: gate.promise, onStart: () => started.resolve() });
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const original = [
+			userEntry("u1", null, "original turn has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "original reply has enough text", "2026-08-17T10:00:01.000Z"),
+		];
+		const replacement = [
+			userEntry("tu1", null, "replacement turn has enough text", "2026-08-17T11:00:00.000Z"),
+			assistantEntry("ta1", "tu1", "replacement reply has enough text", "2026-08-17T11:00:01.000Z"),
+		];
+		let entries = original;
+		const state = new HindsightSessionState({
+			sessionId: "sess-force-queued-old",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainEveryNTurns: 1, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-force-queued-old",
+				sessionManager: {
+					getHeader: () => ({ type: "session", id: state.sessionId, timestamp: SESSION_START, cwd: "/tmp" }),
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		const cadence = state.maybeRetainOnAgentEnd();
+		await started.promise;
+		const forced = state.forceRetainCurrentSession();
+		entries = replacement;
+		state.setSessionId("sess-force-queued-new");
+		state.resetConversationTracking();
+		gate.resolve();
+		await Promise.all([cadence, forced]);
+
+		expect(bodies).toHaveLength(1);
+		expect(firstItem(bodies[0]).document_id).toBe("sess-force-queued-old");
+		expect(String(firstItem(bodies[0]).content)).not.toContain("replacement turn has enough text");
+	});
+
 	it("serializes close with a forced retain scheduled during the shared queue flush", async () => {
 		const retainGate = Promise.withResolvers<void>();
 		const retainStarted = Promise.withResolvers<void>();
@@ -490,6 +535,57 @@ describe("Hindsight append-mode session retention", () => {
 
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).content)).toContain("turn one has enough text");
+	});
+
+	it("does not duplicate a completed last-turn retain after session-switch rollback", async () => {
+		const gate = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		const bodies = captureBodies({ delay: gate.promise, onStart: () => started.resolve() });
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const original = [
+			userEntry("u1", null, "home turn one has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "home reply one has enough text", "2026-08-17T10:00:01.000Z"),
+			userEntry("u2", "a1", "home turn two has enough text", "2026-08-17T10:01:00.000Z"),
+			assistantEntry("a2", "u2", "home reply two has enough text", "2026-08-17T10:01:01.000Z"),
+		];
+		const target = [
+			userEntry("tu1", null, "target turn has enough text", "2026-08-17T11:00:00.000Z"),
+			assistantEntry("ta1", "tu1", "target reply has enough text", "2026-08-17T11:00:01.000Z"),
+		];
+		let entries = original;
+		const state = new HindsightSessionState({
+			sessionId: "sess-lastturn-rollback",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 5, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-lastturn-rollback",
+				sessionManager: {
+					getHeader: () => ({ type: "session", id: state.sessionId, timestamp: SESSION_START, cwd: "/tmp" }),
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		const snapshot = state.captureConversationTracking();
+		const forced = state.forceRetainCurrentSession();
+		await started.promise;
+		entries = target;
+		state.setSessionId("sess-lastturn-target");
+		state.resetConversationTracking();
+		entries = original;
+		state.setSessionId("sess-lastturn-rollback");
+		state.restoreConversationTracking(snapshot);
+		gate.resolve();
+		await forced;
+		await state.drainOnClose();
+
+		expect(bodies).toHaveLength(1);
+		expect(String(firstItem(bodies[0]).content)).toContain("home turn two has enough text");
+		expect(String(firstItem(bodies[0]).content)).not.toContain("target turn has enough text");
 	});
 
 	it("restores the close baseline when a session switch rolls back", async () => {

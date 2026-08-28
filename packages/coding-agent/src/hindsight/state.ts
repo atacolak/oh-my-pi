@@ -245,6 +245,11 @@ export class HindsightSessionState {
 	#loadedMessageCount = 0;
 	#loadedPrefixKey = "";
 	#forceNextRetainReplace = false;
+	#lastCompletedLastTurnRetainBySession = new Map<
+		string,
+		{ messageCount: number; prefixKey: string; userTurns: number }
+	>();
+	#lastTurnRollbackSessions = new Set<string>();
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	/** Cached `<mental_models>` block injected into developer instructions. */
@@ -318,6 +323,8 @@ export class HindsightSessionState {
 		this.lastRecallSnippet = snapshot.lastRecallSnippet;
 		this.#loadedMessageCount = snapshot.loadedMessageCount;
 		this.#loadedPrefixKey = snapshot.loadedPrefixKey;
+		this.#lastTurnRollbackSessions.add(this.sessionId);
+		this.#reconcileCompletedLastTurnRetain();
 		// Rekeying fences any retain that was already in flight. It may still
 		// have reached Hindsight, so a pre-switch append cursor is no longer a
 		// trustworthy server boundary after rollback. Rebuild canonically next.
@@ -347,6 +354,28 @@ export class HindsightSessionState {
 		const loaded = this.session.sessionManager ? extractMessages(this.session.sessionManager) : [];
 		this.#loadedMessageCount = loaded.length;
 		this.#loadedPrefixKey = retentionPrefixKey(loaded, loaded.length);
+	}
+
+	#recordCompletedLastTurnRetain(sessionId: string, messages: HindsightMessage[]): void {
+		const completed = {
+			messageCount: messages.length,
+			prefixKey: retentionPrefixKey(messages, messages.length),
+			userTurns: messages.filter(message => message.role === "user").length,
+		};
+		this.#lastCompletedLastTurnRetainBySession.set(sessionId, completed);
+		if (this.#lastTurnRollbackSessions.has(sessionId)) this.#reconcileCompletedLastTurnRetain();
+	}
+
+	#reconcileCompletedLastTurnRetain(): void {
+		if (this.config.retainMode !== "last-turn") return;
+		if (!this.#lastTurnRollbackSessions.has(this.sessionId)) return;
+		const completed = this.#lastCompletedLastTurnRetainBySession.get(this.sessionId);
+		if (!completed || !this.session.sessionManager) return;
+		const active = extractMessages(this.session.sessionManager);
+		if (active.length < completed.messageCount) return;
+		if (retentionPrefixKey(active, completed.messageCount) !== completed.prefixKey) return;
+		this.lastRetainedTurn = Math.max(this.lastRetainedTurn, completed.userTurns);
+		this.#lastTurnRollbackSessions.delete(this.sessionId);
 	}
 
 	#scheduleSessionRetain(task: () => Promise<void>): Promise<void> {
@@ -544,6 +573,7 @@ export class HindsightSessionState {
 			async: true,
 			updateMode,
 		});
+		if (!retainFullWindow) this.#recordCompletedLastTurnRetain(sessionId, messages);
 		if (generation === this.#retainGeneration) {
 			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;
 			this.#lastRetainedMessageIndex = messages.length;
@@ -595,23 +625,28 @@ export class HindsightSessionState {
 	}
 
 	async forceRetainCurrentSession(): Promise<void> {
+		const generation = this.#retainGeneration;
 		await this.#scheduleSessionRetain(async () => {
+			// The command belongs to the session active when it was invoked. If it
+			// queued behind another retain and the session changed, do not flush or
+			// force-retain the replacement transcript.
+			if (generation !== this.#retainGeneration) return;
 			// Reserve the session-retain barrier before flushing tool items so a
 			// concurrent close cannot schedule a duplicate last-turn document.
 			await this.flushRetainQueue();
-			await this.#forceRetainCurrentSessionLocked();
+			if (generation !== this.#retainGeneration) return;
+			await this.#forceRetainCurrentSessionLocked(generation);
 		});
 	}
 
-	async #forceRetainCurrentSessionLocked(): Promise<void> {
-		const generation = this.#retainGeneration;
+	async #forceRetainCurrentSessionLocked(generation: number): Promise<void> {
+		if (generation !== this.#retainGeneration) return;
 		const messages = extractMessages(this.session.sessionManager);
 		if (messages.length === 0) return;
 		// Forced retains are user-initiated rebuilds (`/memory enqueue`). The
 		// incremental cache is dropped inside the serialized retain so an
 		// in-flight cadence retain cannot repopulate the cursor and suppress
-		// the canonical replace. Joining `#autoRetainInFlight` keeps close
-		// drains from emitting a duplicate last-turn document behind this call.
+		// the canonical replace.
 		try {
 			await this.retainSession(messages, { forceReplace: true });
 			if (generation === this.#retainGeneration) {

@@ -382,6 +382,9 @@ Can return:
 - `prompt` (override base summary prompt)
 - `context` (extra context lines injected into `<additional-context>`)
 - `preserveData` (stored on compaction entry)
+- `model` (optional one-off model selector for this native compaction request only; does not mutate the session model)
+
+For project-opted-in independent semantic working-state compaction, see [hot-handoff.md](./hot-handoff.md).
 
 ### `session_compact`
 

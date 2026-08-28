@@ -14,6 +14,8 @@ For discovery paths and filesystem loading rules, see [`extension-loading.md`](.
 
 For packaged user-facing extension CLIs/features, see [`user-facing-packages.md`](./user-facing-packages.md).
 
+For the reusable hot-handoff working-state compaction extension, see [`hot-handoff.md`](./hot-handoff.md).
+
 ## What an extension is
 
 An extension is a TS/JS module exporting a default factory. Factories may initialize synchronously or return a promise:
@@ -205,6 +207,7 @@ Handlers and tool `execute` receive `ctx` with:
 - `localProtocolOptions` (optional calling-session `local://` root mapping for external tool bridges)
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
+- `getAgentSnapshot()` returns a sanitized read-only roster of running/idle non-advisor agents (`id`, `displayName`, `kind`, `parentId`, `status`, `activity`)
 - `compact(...)`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
 - `shutdown()`

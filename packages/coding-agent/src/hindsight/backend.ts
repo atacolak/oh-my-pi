@@ -128,7 +128,6 @@ export const hindsightBackend: MemoryBackend = {
 		const state = session?.getHindsightSessionState();
 		const primary = state?.aliasOf ? undefined : state;
 		if (!primary) return;
-		await primary.flushRetainQueue();
 		await primary.forceRetainCurrentSession();
 	},
 

@@ -239,11 +239,12 @@ export class HindsightSessionState {
 	// cheaper than the re-formatting this cache avoids.
 	#lastRetainedPrefixKey: string = "";
 	#retainInFlight: Promise<void> = Promise.resolve();
-	#autoRetainInFlight: Promise<void> = Promise.resolve();
+	#sessionRetainInFlight: Promise<void> = Promise.resolve();
 	#retainGeneration = 0;
 	#closeRetainBaselineTurns = 0;
 	#loadedMessageCount = 0;
 	#loadedPrefixKey = "";
+	#forceNextRetainReplace = false;
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	/** Cached `<mental_models>` block injected into developer instructions. */
@@ -315,11 +316,13 @@ export class HindsightSessionState {
 		this.#closeRetainBaselineTurns = snapshot.closeRetainBaselineTurns;
 		this.hasRecalledForFirstTurn = snapshot.hasRecalledForFirstTurn;
 		this.lastRecallSnippet = snapshot.lastRecallSnippet;
-		this.#lastRetainedMessageIndex = snapshot.lastRetainedMessageIndex;
-		this.#cachedTranscript = snapshot.cachedTranscript;
-		this.#lastRetainedPrefixKey = snapshot.lastRetainedPrefixKey;
 		this.#loadedMessageCount = snapshot.loadedMessageCount;
 		this.#loadedPrefixKey = snapshot.loadedPrefixKey;
+		// Rekeying fences any retain that was already in flight. It may still
+		// have reached Hindsight, so a pre-switch append cursor is no longer a
+		// trustworthy server boundary after rollback. Rebuild canonically next.
+		this.#forceNextRetainReplace = true;
+		this.#invalidateRetainCache();
 	}
 
 	resetConversationTracking(closeRetainBaselineTurns?: number): void {
@@ -344,6 +347,15 @@ export class HindsightSessionState {
 		const loaded = this.session.sessionManager ? extractMessages(this.session.sessionManager) : [];
 		this.#loadedMessageCount = loaded.length;
 		this.#loadedPrefixKey = retentionPrefixKey(loaded, loaded.length);
+	}
+
+	#scheduleSessionRetain(task: () => Promise<void>): Promise<void> {
+		const run = this.#sessionRetainInFlight.then(task, task);
+		this.#sessionRetainInFlight = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
 	}
 
 	#retainedPrefixDiverged(messages: HindsightMessage[]): boolean {
@@ -372,8 +384,11 @@ export class HindsightSessionState {
 
 	async flushPendingSessionRetain(): Promise<void> {
 		if (this.aliasOf) return;
+		await this.#scheduleSessionRetain(() => this.#flushPendingSessionRetainLocked());
+	}
+
+	async #flushPendingSessionRetainLocked(): Promise<void> {
 		if (!this.config.autoRetain) return;
-		await this.#autoRetainInFlight;
 		await this.#retainInFlight;
 		const messages = extractMessages(this.session.sessionManager);
 		if (messages.length === 0) return;
@@ -404,10 +419,14 @@ export class HindsightSessionState {
 	}
 
 	async drainOnClose(): Promise<void> {
-		// Flush user-requested retain/learn items before the (potentially slow)
-		// session transcript retain so a dispose deadline cannot drop them.
-		await this.flushRetainQueue();
-		await this.flushPendingSessionRetain();
+		if (this.aliasOf) return;
+		await this.#scheduleSessionRetain(async () => {
+			// Reserve the same session-retain barrier as `/memory enqueue`
+			// before flushing tool items. Otherwise both callers can finish the
+			// shared flush and race while installing their transcript retains.
+			await this.flushRetainQueue();
+			await this.#flushPendingSessionRetainLocked();
+		});
 	}
 
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
@@ -464,7 +483,8 @@ export class HindsightSessionState {
 		opts: { forceReplace?: boolean; lastTurnWindow?: number } | undefined,
 		identity: { sessionId: string; generation: number },
 	): Promise<void> {
-		if (opts?.forceReplace) {
+		const forceReplace = opts?.forceReplace || this.#forceNextRetainReplace;
+		if (forceReplace) {
 			this.#lastRetainedMessageIndex = 0;
 			this.#cachedTranscript = "";
 			this.#lastRetainedPrefixKey = "";
@@ -496,13 +516,13 @@ export class HindsightSessionState {
 			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true, { includeTimestamps: true });
 			if (!newPart) return;
 			nextCachedTranscript = this.#cachedTranscript ? `${this.#cachedTranscript}\n\n${newPart}` : newPart;
-			const appendDelta = this.config.retainUpdateMode === "append" && start > 0 && !opts?.forceReplace;
+			const appendDelta = this.config.retainUpdateMode === "append" && start > 0 && !forceReplace;
 			if (appendDelta) {
 				transcript = newPart;
 				updateMode = "append";
 			} else {
 				transcript = nextCachedTranscript;
-				if (opts?.forceReplace || rebuiltDivergentPrefix) updateMode = "replace";
+				if (forceReplace || rebuiltDivergentPrefix) updateMode = "replace";
 			}
 		} else {
 			const windowTurns = opts?.lastTurnWindow ?? this.config.retainEveryNTurns + this.config.retainOverlapTurns;
@@ -528,20 +548,13 @@ export class HindsightSessionState {
 			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;
 			this.#lastRetainedMessageIndex = messages.length;
 			this.#lastRetainedPrefixKey = retentionPrefixKey(messages, messages.length);
+			this.#forceNextRetainReplace = false;
 		}
 	}
 
 	async maybeRetainOnAgentEnd(): Promise<void> {
 		const generation = this.#retainGeneration;
-		const run = this.#autoRetainInFlight.then(
-			() => this.#maybeRetainOnAgentEndLocked(generation),
-			() => this.#maybeRetainOnAgentEndLocked(generation),
-		);
-		this.#autoRetainInFlight = run.then(
-			() => undefined,
-			() => undefined,
-		);
-		await run;
+		await this.#scheduleSessionRetain(() => this.#maybeRetainOnAgentEndLocked(generation));
 	}
 
 	async #maybeRetainOnAgentEndLocked(generation: number): Promise<void> {
@@ -582,15 +595,12 @@ export class HindsightSessionState {
 	}
 
 	async forceRetainCurrentSession(): Promise<void> {
-		const run = this.#autoRetainInFlight.then(
-			() => this.#forceRetainCurrentSessionLocked(),
-			() => this.#forceRetainCurrentSessionLocked(),
-		);
-		this.#autoRetainInFlight = run.then(
-			() => undefined,
-			() => undefined,
-		);
-		await run;
+		await this.#scheduleSessionRetain(async () => {
+			// Reserve the session-retain barrier before flushing tool items so a
+			// concurrent close cannot schedule a duplicate last-turn document.
+			await this.flushRetainQueue();
+			await this.#forceRetainCurrentSessionLocked();
+		});
 	}
 
 	async #forceRetainCurrentSessionLocked(): Promise<void> {

@@ -443,6 +443,55 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[0]).content)).toContain("turn two has enough text");
 	});
 
+	it("serializes close with a forced retain scheduled during the shared queue flush", async () => {
+		const retainGate = Promise.withResolvers<void>();
+		const retainStarted = Promise.withResolvers<void>();
+		const flushGate = Promise.withResolvers<void>();
+		const flushStarted = Promise.withResolvers<void>();
+		const bodies = captureBodies({ delay: retainGate.promise, onStart: () => retainStarted.resolve() });
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const entries = [
+			userEntry("u1", null, "turn one has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "reply one has enough text", "2026-08-17T10:00:01.000Z"),
+		];
+		const state = new HindsightSessionState({
+			sessionId: "sess-lastturn-flush-race",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 5, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-lastturn-flush-race",
+				sessionManager: {
+					getHeader: () => ({
+						type: "session",
+						id: "sess-lastturn-flush-race",
+						timestamp: SESSION_START,
+						cwd: "/tmp",
+					}),
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+		vi.spyOn(state, "flushRetainQueue").mockImplementation(async () => {
+			flushStarted.resolve();
+			await flushGate.promise;
+		});
+
+		const close = state.drainOnClose();
+		await flushStarted.promise;
+		const forced = state.forceRetainCurrentSession();
+		flushGate.resolve();
+		await retainStarted.promise;
+		retainGate.resolve();
+		await Promise.all([close, forced]);
+
+		expect(bodies).toHaveLength(1);
+		expect(String(firstItem(bodies[0]).content)).toContain("turn one has enough text");
+	});
+
 	it("restores the close baseline when a session switch rolls back", async () => {
 		const bodies = captureBodies();
 		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
@@ -509,6 +558,85 @@ describe("Hindsight append-mode session retention", () => {
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).content)).toContain("home turn three has enough text");
 		expect(String(firstItem(bodies[0]).content)).not.toContain("target turn 10 has enough text");
+	});
+
+	it("replaces after rollback when an in-flight append retain superseded the saved cache", async () => {
+		const gate = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		const bodies: unknown[] = [];
+		let requestCount = 0;
+		const fetchMock: typeof globalThis.fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit | BunFetchRequestInit): Promise<Response> => {
+				requestCount++;
+				if (requestCount === 2) {
+					started.resolve();
+					await gate.promise;
+				}
+				bodies.push(JSON.parse(String(init?.body ?? "{}")));
+				return new Response("{}", { status: 200 });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const first = [
+			userEntry("u1", null, "home turn one has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "home reply one has enough text", "2026-08-17T10:00:01.000Z"),
+		];
+		const second = [
+			...first,
+			userEntry("u2", "a1", "home turn two has enough text", "2026-08-17T10:01:00.000Z"),
+			assistantEntry("a2", "u2", "home reply two has enough text", "2026-08-17T10:01:01.000Z"),
+		];
+		let entries = first;
+		const state = new HindsightSessionState({
+			sessionId: "sess-rollback-append",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainUpdateMode: "append", retainEveryNTurns: 1, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-rollback-append",
+				sessionManager: {
+					getHeader: () => ({
+						type: "session",
+						id: state.sessionId,
+						timestamp: SESSION_START,
+						cwd: "/tmp",
+					}),
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		await state.retainSession([
+			turn("user", "home turn one has enough text"),
+			turn("assistant", "home reply one has enough text"),
+		]);
+		const snapshot = state.captureConversationTracking();
+		entries = second;
+		const append = state.retainSession([
+			turn("user", "home turn one has enough text"),
+			turn("assistant", "home reply one has enough text"),
+			turn("user", "home turn two has enough text"),
+			turn("assistant", "home reply two has enough text"),
+		]);
+		await started.promise;
+		state.setSessionId("sess-rollback-target");
+		state.resetConversationTracking();
+		state.setSessionId("sess-rollback-append");
+		state.restoreConversationTracking(snapshot);
+		gate.resolve();
+		await append;
+		await state.drainOnClose();
+
+		expect(bodies).toHaveLength(3);
+		expect(firstItem(bodies[1]).update_mode).toBe("append");
+		expect(firstItem(bodies[2]).update_mode).toBe("replace");
+		expect(String(firstItem(bodies[2]).content)).toContain("home turn one has enough text");
+		expect(String(firstItem(bodies[2]).content)).toContain("home turn two has enough text");
 	});
 
 	it("force-rebuilds the full canonical transcript with replace", async () => {

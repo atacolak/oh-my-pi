@@ -13,6 +13,9 @@
 ### Changed
 
 - Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability
+- Extensions can return a one-off `model` selector from `session.compacting` for that native compaction request only, without changing the active session model.
+- `ExtensionContext.getAgentSnapshot()` exposes a sanitized read-only roster of running and idle non-advisor agents.
+- Added a reusable hot-handoff extension that reconstructs semantic working state for opted-in projects (`.omp/HANDOFF.md`) using an independent `@handoff` author, a deterministic live-state capsule, and OMP's native compaction pipeline.
 
 ### Fixed
 

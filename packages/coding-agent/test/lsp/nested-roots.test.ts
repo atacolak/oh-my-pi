@@ -11,8 +11,9 @@ import {
 	loadConfig,
 	resolveServersForFile,
 } from "@oh-my-pi/pi-coding-agent/lsp/config";
+import { formatContent, getDiagnosticsForFile } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
 import { discoverStartupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers";
-import type { LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import type { LinterClient, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
 import { createLspWritethrough } from "@oh-my-pi/pi-coding-agent/lsp/writethrough";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import * as piUtils from "@oh-my-pi/pi-utils";
@@ -272,6 +273,88 @@ describe("nested LSP project roots", () => {
 			const writethrough = createLspWritethrough(tempDir.path(), { enableDiagnostics: true, enableFormat: false });
 			await writethrough(filePath, "def example():\n    return 2\n");
 			expect(roots).toContain(projectRoot);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("roots custom linter diagnostics and formatting at each nested project", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-linter-");
+		try {
+			const projectA = path.join(tempDir.path(), "a");
+			const projectB = path.join(tempDir.path(), "b");
+			fs.mkdirSync(projectA);
+			fs.mkdirSync(projectB);
+			const fileA = path.join(projectA, "a.ts");
+			const fileB = path.join(projectB, "b.ts");
+			fs.writeFileSync(fileA, "const a = 1;\n");
+			fs.writeFileSync(fileB, "const b = 1;\n");
+			const createdRoots: string[] = [];
+			const createClient = (_config: ServerConfig, cwd: string): LinterClient => {
+				createdRoots.push(cwd);
+				return {
+					format: async (_filePath, content) => `${content}// ${path.basename(cwd)}\n`,
+					lint: async () => [],
+				};
+			};
+			const server: ServerConfig = {
+				command: "nested-linter",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				createClient,
+			};
+			const serverA: ServerConfig = { ...server, resolvedRoot: projectA };
+			const serverB: ServerConfig = { ...server, resolvedRoot: projectB };
+
+			await getDiagnosticsForFile(fileA, tempDir.path(), [["nested-linter", serverA]]);
+			const formattedA = await formatContent(fileA, "const a = 1;\n", tempDir.path(), [["nested-linter", serverA]]);
+			const formattedB = await formatContent(fileB, "const b = 1;\n", tempDir.path(), [["nested-linter", serverB]]);
+
+			expect(createdRoots).toEqual([projectA, projectB]);
+			expect(formattedA.content).toContain("// a");
+			expect(formattedB.content).toContain("// b");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("clears a nested initialization failure using the resolved root identity", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-failure-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "python");
+			fs.mkdirSync(nestedRoot);
+			const config: ServerConfig = {
+				command: "broken-nested-lsp",
+				fileTypes: ["py"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: {
+						write: () => Promise.reject(new Error("nested init failed")),
+						flush: () => Promise.resolve(),
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+			await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow("nested init failed");
+			await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow(
+				"failed to initialize recently",
+			);
+			expect(spawnCount).toBe(1);
+
+			lspClient.clearInitializationFailure(config, tempDir.path());
+			await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow("nested init failed");
+			expect(spawnCount).toBe(2);
 		} finally {
 			tempDir.removeSync();
 		}

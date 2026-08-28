@@ -562,7 +562,7 @@ async function reconcileExecutedChanges(
 	const { finalUris, deletedRoots, watchedFiles } = workspaceEditChanges(executed);
 	const workspace = path.resolve(cwd);
 	const activeClients = Array.from(clients.values()).filter(
-		client => client.status === "ready" && path.resolve(client.cwd) === workspace,
+		client => client.status === "ready" && isPathInsideWorkspace(client.cwd, workspace),
 	);
 
 	for (const activeClient of activeClients) {
@@ -853,24 +853,43 @@ function clientKey(config: ServerConfig, cwd: string): string {
 }
 
 /**
- * Shut down clients for `cwd` whose identity is absent from `configs`, and
- * return the server commands torn down.
+ * Shut down clients in `workspaceRoots` whose identity is absent from `configs`,
+ * and return the server commands torn down.
  *
  * `reload *` re-reads config from disk. Identity-aware keys make a changed
  * server resolve to a fresh client, but the process spawned from the old
  * config would stay registered and running — the idle checker that would
- * eventually reap it is opt-in and off by default.
+ * eventually reap it is opt-in and off by default. Nested clients discovered
+ * lazily are part of the session lifecycle even though they are absent from
+ * cwd-only startup discovery, so workspace reload tears them down too.
  */
 export function shutdownStaleClients(
 	cwd: string,
 	configs: readonly ServerConfig[],
 	signal?: AbortSignal,
+	workspaceRoots: readonly string[] = [cwd],
 ): Promise<string[]> {
-	const fresh = new Set(configs.map(config => clientKey(config, cwd)));
-	const resolvedCwd = path.resolve(cwd);
-	const previousBarrier = clientReloadBarriers.get(resolvedCwd);
+	const fresh = new Set(configs.map(config => clientKey(config, config.resolvedRoot ?? cwd)));
+	const roots = workspaceRoots.map(root => path.resolve(root));
+	const relevantPending = Array.from(clientLocks.entries()).filter(([, pending]) =>
+		roots.some(root => isPathInsideWorkspace(pending.cwd, root)),
+	);
+	const relevantClients = Array.from(clients.values()).filter(client =>
+		roots.some(root => isPathInsideWorkspace(client.cwd, root)),
+	);
+	const barrierRoots = new Set([
+		path.resolve(cwd),
+		...roots,
+		...relevantPending.map(([, pending]) => path.resolve(pending.cwd)),
+		...relevantClients.map(client => path.resolve(client.cwd)),
+	]);
+	const previousBarriers: Promise<unknown>[] = [];
+	for (const root of barrierRoots) {
+		const barrier = clientReloadBarriers.get(root);
+		if (barrier && !previousBarriers.includes(barrier)) previousBarriers.push(barrier);
+	}
 	const cleanup = (async (): Promise<string[]> => {
-		if (previousBarrier) {
+		for (const previousBarrier of previousBarriers) {
 			try {
 				await untilAborted(signal, previousBarrier);
 			} catch {
@@ -883,14 +902,10 @@ export function shutdownStaleClients(
 		// Tombstone stale identities before awaiting initialization. Existing
 		// callers keep sharing their in-flight promise; later callers cannot spawn
 		// another stale process while reload is blocked on teardown.
-		const stalePending = Array.from(clientLocks.entries()).filter(
-			([key, pending]) => path.resolve(pending.cwd) === resolvedCwd && !fresh.has(key),
-		);
+		const stalePending = relevantPending.filter(([key]) => !fresh.has(key));
 		for (const [key] of stalePending) invalidatedClientKeys.add(key);
-		for (const client of clients.values()) {
-			if (path.resolve(client.cwd) === resolvedCwd && !fresh.has(client.name)) {
-				invalidatedClientKeys.add(client.name);
-			}
+		for (const client of relevantClients) {
+			if (!fresh.has(client.name)) invalidatedClientKeys.add(client.name);
 		}
 		await Promise.all(
 			stalePending.map(async ([, pending]) => {
@@ -903,7 +918,7 @@ export function shutdownStaleClients(
 		);
 
 		const stale = Array.from(clients.values()).filter(
-			client => path.resolve(client.cwd) === resolvedCwd && !fresh.has(client.name),
+			client => roots.some(root => isPathInsideWorkspace(client.cwd, root)) && !fresh.has(client.name),
 		);
 		const results = await Promise.all(stale.map(client => shutdownClientInstance(client)));
 		const failed = stale.filter((_client, index) => results[index] !== true);
@@ -913,12 +928,24 @@ export function shutdownStaleClients(
 					failed.map(client => client.config.command).join(", "),
 			);
 		}
+		// Nested identities are rediscovered lazily from a concrete file after
+		// reload. Their temporary tombstones prevent reuse during teardown, but
+		// must not permanently block the same valid identity from starting again.
+		const primaryCwd = path.resolve(cwd);
+		for (const [key, pending] of stalePending) {
+			if (path.resolve(pending.cwd) !== primaryCwd) invalidatedClientKeys.delete(key);
+		}
+		for (const client of stale) {
+			if (path.resolve(client.cwd) !== primaryCwd) invalidatedClientKeys.delete(client.name);
+		}
 		return stale.map(client => client.config.command);
 	})();
-	clientReloadBarriers.set(resolvedCwd, cleanup);
+	for (const root of barrierRoots) clientReloadBarriers.set(root, cleanup);
 	void cleanup.then(
 		() => {
-			if (clientReloadBarriers.get(resolvedCwd) === cleanup) clientReloadBarriers.delete(resolvedCwd);
+			for (const root of barrierRoots) {
+				if (clientReloadBarriers.get(root) === cleanup) clientReloadBarriers.delete(root);
+			}
 		},
 		() => {},
 	);
@@ -927,7 +954,7 @@ export function shutdownStaleClients(
 
 /** Allow an explicit user reload to retry a matching initialization failure immediately. */
 export function clearInitializationFailure(config: ServerConfig, cwd: string): void {
-	initFailures.delete(clientKey(config, cwd));
+	initFailures.delete(clientKey(config, config.resolvedRoot ?? cwd));
 }
 
 /**
@@ -1366,16 +1393,16 @@ const WATCHED_FILES_NOTIFY_TIMEOUT_MS = 2_000;
  * `signal` rejects.
  */
 export async function notifyWorkspaceWatchedFiles(
-	cwd: string,
+	workspace: string | readonly string[],
 	changes: readonly WatchedFileChange[],
 	signal?: AbortSignal,
 ): Promise<void> {
 	throwIfAborted(signal);
 	if (changes.length === 0) return;
 
-	const workspace = path.resolve(cwd);
+	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
 	const activeClients = Array.from(clients.values()).filter(
-		client => client.status === "ready" && path.resolve(client.cwd) === workspace,
+		client => client.status === "ready" && workspaceRoots.some(root => isPathInsideWorkspace(client.cwd, root)),
 	);
 	if (activeClients.length === 0) return;
 
@@ -1383,8 +1410,9 @@ export async function notifyWorkspaceWatchedFiles(
 	const sendSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const results = await Promise.allSettled(
 		activeClients.map(async client => {
+			const clientRoot = path.resolve(client.cwd);
 			const clientChanges = changes
-				.filter(change => isPathInsideWorkspace(change.filePath, workspace))
+				.filter(change => isPathInsideWorkspace(change.filePath, clientRoot))
 				.map(change => {
 					const uri = fileToUri(change.filePath);
 					client.diagnostics.delete(uri);
@@ -1397,7 +1425,10 @@ export async function notifyWorkspaceWatchedFiles(
 	throwIfAborted(signal);
 	for (const result of results) {
 		if (result.status === "rejected") {
-			logger.debug("LSP watched-files notification failed", { cwd, error: String(result.reason) });
+			logger.debug("LSP watched-files notification failed", {
+				workspace: workspaceRoots.join(", "),
+				error: String(result.reason),
+			});
 		}
 	}
 }

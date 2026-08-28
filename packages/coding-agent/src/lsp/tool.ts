@@ -10,11 +10,11 @@ import type {
 import { isEnoent, isFsError, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
-import { sessionWorkspaceDirectories } from "../session/session-workspace";
+import { sessionWorkspaceDirectories, workspaceRootForPath } from "../session/session-workspace";
 import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
-import { replaceTabs, shortenPath } from "../tools/render-utils";
+import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
 import {
@@ -157,6 +157,10 @@ function formatRenameStatPath(filePath: string, cwd: string): string {
 	return replaceTabs(path.isAbsolute(relative) ? shortenPath(filePath) : relative);
 }
 
+function formatStatusRoot(filePath: string, cwd: string): string {
+	return truncateToWidth(formatRenameStatPath(filePath, cwd), TRUNCATE_LENGTHS.CONTENT);
+}
+
 /** Filesystem error detail safe for model/TUI output: never echo raw paths. */
 function formatRenameStatError(error: unknown): string {
 	if (!isFsError(error)) return "unknown filesystem error";
@@ -229,11 +233,14 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			// `Object.keys(config.servers)` reflects cwd-rooted auto-detect. Nested
 			// servers only appear here after a concrete-file operation started them.
-			const startedClients = getActiveClients();
+			const sessionWorkspace = { cwd: workspaceRoots[0], directories: workspaceRoots };
+			const startedClients = getActiveClients().filter(
+				client => !client.cwd || Boolean(workspaceRootForPath(client.cwd, sessionWorkspace)),
+			);
 			const startedByConfigName = new Map<string, LspServerStatus[]>();
 			const catalog = config.definitions ?? config.servers;
 			for (const [name, serverConfig] of Object.entries(catalog)) {
-				const matched = startedClients.filter(c => c.name === serverConfig.command);
+				const matched = startedClients.filter(client => client.name === serverConfig.command);
 				if (matched.length > 0) startedByConfigName.set(name, matched);
 			}
 
@@ -255,7 +262,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						.map(client => {
 							const root =
 								client.cwd && client.cwd !== this.session.cwd
-									? ` @ ${formatPathRelativeToCwd(client.cwd, this.session.cwd)}`
+									? ` @ ${formatStatusRoot(client.cwd, this.session.cwd)}`
 									: "";
 							return `${name}${root} (${client.status})`;
 						})
@@ -265,7 +272,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					const nestedName =
 						Object.entries(catalog).find(([, serverConfig]) => serverConfig.command === client.name)?.[0] ??
 						client.name;
-					const root = client.cwd ? ` @ ${formatPathRelativeToCwd(client.cwd, this.session.cwd)}` : "";
+					const root = client.cwd ? ` @ ${formatStatusRoot(client.cwd, this.session.cwd)}` : "";
 					labelled.push(`${nestedName}${root} (${client.status})`);
 				}
 				lines.push(`Language servers: ${labelled.join(", ")}`);
@@ -358,7 +365,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					try {
 						throwIfAborted(signal);
 						if (serverConfig.createClient) {
-							const linterClient = getLinterClient(serverName, serverConfig, this.session.cwd);
+							const linterClient = getLinterClient(
+								serverName,
+								serverConfig,
+								serverConfig.resolvedRoot ?? this.session.cwd,
+							);
 							const diagnostics = await linterClient.lint(resolved, signal);
 							allDiagnostics.push(...diagnostics);
 							succeededServers++;
@@ -1117,6 +1128,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				this.session.cwd,
 				servers.map(([, serverConfig]) => serverConfig),
 				signal,
+				workspaceRoots,
 			);
 			if (servers.length === 0) {
 				return {
@@ -1407,7 +1419,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const appliedAction = await applyCodeAction(selectedAction, {
 							resolveCodeAction: async actionItem =>
 								(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
-							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, this.session.cwd, signal),
+							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, client.cwd, signal),
 							executeCommand: async commandItem => {
 								await sendRequest(
 									client,
@@ -1503,7 +1515,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					} else {
 						const shouldApply = apply !== false;
 						if (shouldApply) {
-							const applied = await applyWorkspaceEditWithLsp(result, this.session.cwd, signal);
+							const applied = await applyWorkspaceEditWithLsp(result, client.cwd, signal);
 							output = `Applied rename:\n${applied.map(a => `  ${a}`).join("\n")}`;
 						} else {
 							const preview = formatWorkspaceEdit(result, this.session.cwd);

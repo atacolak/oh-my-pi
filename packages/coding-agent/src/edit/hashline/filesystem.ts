@@ -22,6 +22,7 @@ import { Filesystem, NotFoundError, type PreflightWriteOptions, type WriteResult
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
+import { sessionWorkspaceDirectories } from "../../session/session-workspace";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
@@ -161,7 +162,7 @@ export class HashlineFilesystem extends Filesystem {
 		}
 		if (this.session.enableLsp ?? true) {
 			await notifyWorkspaceWatchedFiles(
-				this.session.cwd,
+				sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 				[{ filePath: absolutePath, type: FileChangeType.Deleted }],
 				this.#signal,
 			);
@@ -186,7 +187,7 @@ export class HashlineFilesystem extends Filesystem {
 		}
 		if (this.session.enableLsp ?? true) {
 			await notifyWorkspaceWatchedFiles(
-				this.session.cwd,
+				sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 				[
 					{ filePath: fromAbsolute, type: FileChangeType.Deleted },
 					{ filePath: toAbsolute, type: FileChangeType.Created },

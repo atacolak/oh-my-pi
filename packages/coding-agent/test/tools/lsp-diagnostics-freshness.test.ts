@@ -144,7 +144,7 @@ describe("LSP diagnostics freshness", () => {
 		expect(result).toBeUndefined();
 		expect(await Bun.file(filePath).text()).toBe(".section {}\n");
 		expect(notify).toHaveBeenCalledWith(
-			tempDir.path(),
+			[tempDir.path()],
 			[{ filePath, type: lspClient.FileChangeType.Created }],
 			undefined,
 		);
@@ -168,7 +168,7 @@ describe("LSP diagnostics freshness", () => {
 		expect(result).toBeUndefined();
 		expect(await Bun.file(filePath).text()).toBe("export const value = 1;\n");
 		expect(notify).toHaveBeenCalledWith(
-			tempDir.path(),
+			[tempDir.path()],
 			[{ filePath, type: lspClient.FileChangeType.Created }],
 			undefined,
 		);

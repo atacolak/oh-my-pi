@@ -1629,7 +1629,12 @@ export class SettingsSelectorComponent implements Component {
 }
 
 function settingsProjectLabel(cwd: string): string {
-	const primary = vcs.repo(cwd)?.primaryRoot() ?? null;
+	let primary: string | null = null;
+	try {
+		primary = vcs.repo(cwd)?.primaryRoot() ?? null;
+	} catch {
+		primary = null;
+	}
 	const base = path.basename(primary ?? cwd);
 	const name = base.endsWith(".git") ? base.slice(0, -4) : base;
 	return name || "project";

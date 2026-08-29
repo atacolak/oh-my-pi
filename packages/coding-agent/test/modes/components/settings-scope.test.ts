@@ -50,7 +50,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		stopThemeWatcher();
 		await initTheme();
 		resetSettingsForTest();
-		AgentStorage.resetInstance();
+		AgentStorage.close();
 		restoreSettingsTestState(settingsState);
 		settingsState = undefined;
 		await tempDir.remove();
@@ -164,7 +164,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 
 	it("hides hindsight rows in project scope when only an overlay enables hindsight", async () => {
 		resetSettingsForTest();
-		AgentStorage.resetInstance();
+		AgentStorage.close();
 		const overlayPath = tempDir.join("overlay.yml");
 		await Bun.write(overlayPath, YAML.stringify({ memory: { backend: "hindsight" } }, null, 2));
 		await Settings.init({ cwd: projectDir, agentDir, configFiles: [overlayPath] });

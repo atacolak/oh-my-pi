@@ -163,7 +163,7 @@ import {
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
-import { clampProviderContextImages } from "./session/provider-image-budget";
+import { clampProviderContextImages, dropUnreadableContextImages } from "./session/provider-image-budget";
 import {
 	expandDefaultRetryFallbackChains,
 	findRetryFallbackCandidates,
@@ -501,6 +501,13 @@ export interface CreateAgentSessionOptions {
 	/** Shared event bus for tool/extension communication. Default: creates new bus. */
 	eventBus?: EventBus;
 
+	/**
+	 * Root-scoped bus carrying `task:subagent:*` observability frames for this
+	 * session and every subagent it spawns. Default: creates a new bus per
+	 * root session; `buildSubagentSessionOptions` inherits the spawner's.
+	 */
+	subagentEventBus?: EventBus;
+
 	/** Skills. Default: discovered from multiple locations */
 	skills?: Skill[];
 	/** Rules. Default: discovered from multiple locations */
@@ -657,6 +664,8 @@ export interface CreateAgentSessionResult {
 	startBackgroundModelDiscovery?: () => Promise<void>;
 	/** Shared event bus for tool/extension communication */
 	eventBus: EventBus;
+	/** Root-scoped bus carrying this session tree's `task:subagent:*` frames. */
+	subagentEventBus?: EventBus;
 }
 
 export type DialectFormat = "auto" | "native" | Dialect;
@@ -1291,6 +1300,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const cwd = options.cwd ?? getProjectDir();
 	const agentDir = options.agentDir ?? getAgentDir();
 	const eventBus = options.eventBus ?? new EventBus();
+	const subagentEventBus = options.subagentEventBus ?? new EventBus();
 
 	registerSshCleanup();
 	registerEvalCleanup();
@@ -1788,6 +1798,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			refreshSkills: () => session.refreshSkills(),
 			rules: allRules,
 			eventBus,
+			subagentEventBus,
 			outputSchema: options.outputSchema,
 			outputSchemaMode: options.outputSchemaMode,
 			requireYieldTool: options.requireYieldTool,
@@ -2627,7 +2638,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			if (!model) {
 				const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
-				let pick = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
+				let pick = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth), provider =>
+					modelRegistry.hasConcreteAuth(provider),
+				);
 
 				// Cold-cache discovery race (issues #6114, #6162): a discovery
 				// provider (models.yml `openai-models-list`, LM Studio/Ollama/
@@ -2655,7 +2668,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							settings,
 							modelMatchPreferences,
 						);
-						pick = pickDefaultAvailableModel(refreshedCandidates.filter(hasModelAuth));
+						pick = pickDefaultAvailableModel(refreshedCandidates.filter(hasModelAuth), provider =>
+							modelRegistry.hasConcreteAuth(provider),
+						);
 					}
 				}
 
@@ -3373,6 +3388,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
 			transformed = clampProviderContextImages(transformed, transformModel);
 			transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+			// After the model-specific normalizers: they carry better wording for the
+			// cases they own (STB WebP), so this stays the backstop for everything
+			// else, and it runs before the blob broker uploads any of these bytes.
+			transformed = await dropUnreadableContextImages(transformed, transformModel);
 			if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
 			// Keep per-request volatility out of the system prompt: the date/cwd
 			// reminder rides on the first user turn so open-weight providers keep
@@ -4047,6 +4066,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 						transformed = clampProviderContextImages(transformed, transformModel);
 						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+						transformed = await dropUnreadableContextImages(transformed, transformModel);
 						if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
 						return withDateCwdReminder(
 							transformed,
@@ -4228,6 +4248,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			lspServers,
 			startBackgroundModelDiscovery: startRuntimeDiscovery,
 			eventBus,
+			subagentEventBus,
 		};
 	} catch (error) {
 		// Release the subscription if the throw happened after install but before the

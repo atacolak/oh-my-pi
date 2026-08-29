@@ -17,6 +17,7 @@ import { createHindsightClient } from "./client";
 import { isHindsightConfigured, loadHindsightConfig } from "./config";
 import { type HindsightMessage, hasSubstantiveContent } from "./content";
 import { HindsightSessionState } from "./state";
+import { countRetainableUserTurns } from "./transcript";
 
 const STATIC_INSTRUCTIONS = [
 	"# Memory",
@@ -81,7 +82,7 @@ export const hindsightBackend: MemoryBackend = {
 			return;
 		}
 
-		await installPrimaryState(session, settings, new Set());
+		await installPrimaryState(session, settings, new Set(), options.hindsightCloseRetainBaselineTurns);
 	},
 
 	async buildDeveloperInstructions(_agentDir, settings, session): Promise<string | undefined> {
@@ -128,7 +129,6 @@ export const hindsightBackend: MemoryBackend = {
 		const state = session?.getHindsightSessionState();
 		const primary = state?.aliasOf ? undefined : state;
 		if (!primary) return;
-		await primary.flushRetainQueue();
 		await primary.forceRetainCurrentSession();
 	},
 
@@ -200,6 +200,7 @@ async function installPrimaryState(
 	session: AgentSession,
 	settings: Settings,
 	banksSet: Set<string>,
+	closeRetainBaselineTurns?: number,
 ): Promise<HindsightSessionState | undefined> {
 	const sessionId = session.sessionId;
 	if (!sessionId) return undefined;
@@ -238,6 +239,7 @@ async function installPrimaryState(
 		config,
 		session,
 		banksSet,
+		closeRetainBaselineTurns: closeRetainBaselineTurns ?? countRetainableUserTurns(session.sessionManager),
 		lastRetainedTurn: 0,
 		hasRecalledForFirstTurn: false,
 	});

@@ -570,7 +570,6 @@ export interface CreateAgentSessionOptions {
 	/** Effective durable authoring grant from the resolved root AgentDefinition. */
 	automationAuthor?: AutomationAuthorPolicy;
 
-
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
@@ -2757,7 +2756,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			options.rootAgentName,
 			options.automationAuthor,
 		);
-
 
 		credentialDisabledTarget = extensionRunner;
 		for (const event of startupCredentialDisabledEvents.splice(0)) {

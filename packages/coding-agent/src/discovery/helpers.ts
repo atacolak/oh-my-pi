@@ -18,8 +18,8 @@ import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
-import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import type { AutomationAuthorPolicy } from "../task/types";
+import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 
 import { normalizeToolNames } from "../tools/builtin-names";
 
@@ -252,7 +252,6 @@ export interface ParsedAgentFields {
 	advisor?: boolean | string;
 	/** Root-only durable authoring grant. Independent from `spawns`. */
 	automationAuthor?: AutomationAuthorPolicy;
-
 }
 
 /**

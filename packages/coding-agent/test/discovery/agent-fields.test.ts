@@ -247,5 +247,4 @@ describe("parseAgentFields", () => {
 			})?.automationAuthor,
 		).toBeUndefined();
 	});
-
 });

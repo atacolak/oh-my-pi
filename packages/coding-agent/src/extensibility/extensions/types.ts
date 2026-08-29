@@ -51,8 +51,6 @@ import type {
 	TUI,
 } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
-import type { AutomationAuthorPolicy } from "../../task/types";
-
 import type { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "../../edit";
@@ -68,6 +66,7 @@ import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { CompactMode } from "../../session/compact-modes";
 import type { CustomMessage, CustomMessagePayload } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
+import type { AutomationAuthorPolicy } from "../../task/types";
 import type {
 	BashToolDetails,
 	BashToolInput,
@@ -543,7 +542,6 @@ export interface ExtensionContext {
 	rootAgentName?: string;
 	/** Effective durable authoring grant from the resolved root AgentDefinition. */
 	automationAuthor?: AutomationAuthorPolicy;
-
 }
 
 /**

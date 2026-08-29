@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
-import { STRING_VALUE_FLAGS } from "@oh-my-pi/pi-coding-agent/cli/flag-tables";
+import { restartArgv, STRING_VALUE_FLAGS } from "@oh-my-pi/pi-coding-agent/cli/flag-tables";
 import {
 	resolveLaunchAgent,
 	rootAgentModelSelector,
@@ -50,7 +50,6 @@ const AUTHOR_PROBE_MD = [
 	"---",
 	"you are runtime-maintainer — a fixture for durable authoring policy.",
 ].join("\n");
-
 
 const SCOUT_MD = [
 	"---",
@@ -111,6 +110,17 @@ describe("parseArgs — --agent flag", () => {
 		const result = parseArgs(["--agent", "--profile", "work"]);
 		expect(result.agent).toBe("--profile");
 		expect(result.profile).toBeUndefined();
+	});
+});
+
+describe("restartArgv — --agent flags", () => {
+	it("keeps --agent and --agent-cwd as configuration flags across /restart", () => {
+		expect(
+			restartArgv(
+				["--agent", "runtime-maintainer", "--agent-cwd", "/roles", "--cwd", "/work", "open ubereats"],
+				"sid",
+			),
+		).toEqual(["--agent", "runtime-maintainer", "--agent-cwd", "/roles", "--cwd", "/work", "--resume", "sid"]);
 	});
 });
 
@@ -261,8 +271,6 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.spawns).toBe("scout,reviewer");
 			expect(options.rootAgentName).toBe("hidden-probe");
 			expect(options.automationAuthor).toBeUndefined();
-
-
 		} finally {
 			await fs.rm(roleRoot, { recursive: true, force: true });
 			await fs.rm(executionCwd, { recursive: true, force: true });
@@ -330,5 +338,4 @@ describe("buildSessionOptions — --agent", () => {
 			await fs.rm(executionCwd, { recursive: true, force: true });
 		}
 	});
-
 });

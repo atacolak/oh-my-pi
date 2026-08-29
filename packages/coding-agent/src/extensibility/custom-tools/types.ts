@@ -29,8 +29,8 @@ import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
-import type { TodoItem } from "../../tools/todo";
 import type { AutomationAuthorPolicy } from "../../task/types";
+import type { TodoItem } from "../../tools/todo";
 import type { RetryErrorUpdate } from "../shared-events";
 
 /** Alias for clarity */
@@ -108,7 +108,6 @@ export interface CustomToolContext {
 	rootAgentName?: string;
 	/** Effective durable authoring grant from the resolved root AgentDefinition. */
 	automationAuthor?: AutomationAuthorPolicy;
-
 }
 
 /** Session event passed to onSession callback */

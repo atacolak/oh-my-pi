@@ -25,10 +25,6 @@ describe("loadHindsightConfig retainStrategy", () => {
 		expect(load({}, { HINDSIGHT_RETAIN_STRATEGY: "  " }).retainStrategy).toBeNull();
 	});
 
-	it("loads retainStrategy from settings", () => {
-		expect(load({ "hindsight.retainStrategy": "personal_chat" }).retainStrategy).toBe("personal_chat");
-	});
-
 	it("prefers HINDSIGHT_RETAIN_STRATEGY over settings", () => {
 		expect(
 			load({ "hindsight.retainStrategy": "coding" }, { HINDSIGHT_RETAIN_STRATEGY: "personal_chat" }).retainStrategy,

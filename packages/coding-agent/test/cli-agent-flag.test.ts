@@ -35,6 +35,22 @@ const HIDDEN_PROBE_MD = FLAG_PROBE_MD.replace("name: flag-probe", "name: hidden-
 	"thinking-level: medium",
 	"thinking-level: medium\nhide: true",
 );
+const AUTHOR_PROBE_MD = [
+	"---",
+	"name: runtime-maintainer",
+	'description: "Root runtime maintainer fixture."',
+	"tools: read, grep, glob, bash, automation_author",
+	"hide: true",
+	"spawns: scout",
+	"automationAuthor:",
+	"  allowedAgents:",
+	"    - pr-maintainer",
+	"    - capability-maintainer",
+	"  jurisdiction: descendants",
+	"---",
+	"you are runtime-maintainer — a fixture for durable authoring policy.",
+].join("\n");
+
 
 const SCOUT_MD = [
 	"---",
@@ -243,6 +259,10 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.thinkingLevel).toBe(ThinkingLevel.Medium);
 			expect(options.autoloadSkills).toEqual(["proof-skill"]);
 			expect(options.spawns).toBe("scout,reviewer");
+			expect(options.rootAgentName).toBe("hidden-probe");
+			expect(options.automationAuthor).toBeUndefined();
+
+
 		} finally {
 			await fs.rm(roleRoot, { recursive: true, force: true });
 			await fs.rm(executionCwd, { recursive: true, force: true });
@@ -288,4 +308,27 @@ describe("buildSessionOptions — --agent", () => {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}
 	});
+	it("binds automationAuthor from --agent-cwd independently of execution cwd and spawns", async () => {
+		const roleRoot = await writeProjectAgent(AUTHOR_PROBE_MD);
+		const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-work-"));
+		try {
+			const { options } = await optionsFor(
+				["--agent", "runtime-maintainer", "--agent-cwd", roleRoot, "--cwd", executionCwd],
+				executionCwd,
+				roleRoot,
+			);
+			expect(options.cwd).toBe(executionCwd);
+			expect(options.rootAgentName).toBe("runtime-maintainer");
+			expect(options.agentDisplayName).toBe("runtime-maintainer");
+			expect(options.spawns).toBe("scout");
+			expect(options.automationAuthor).toEqual({
+				allowedAgents: ["pr-maintainer", "capability-maintainer"],
+				jurisdiction: "descendants",
+			});
+		} finally {
+			await fs.rm(roleRoot, { recursive: true, force: true });
+			await fs.rm(executionCwd, { recursive: true, force: true });
+		}
+	});
+
 });

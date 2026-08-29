@@ -51,6 +51,8 @@ import type {
 	TUI,
 } from "@oh-my-pi/pi-tui";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
+import type { AutomationAuthorPolicy } from "../../task/types";
+
 import type { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "../../edit";
@@ -537,6 +539,11 @@ export interface ExtensionContext {
 	 * by default -- it does not narrow or widen OMP's own security model.
 	 */
 	isProjectTrusted(): boolean;
+	/** Resolved root `--agent` name, if this session launched from a definition. */
+	rootAgentName?: string;
+	/** Effective durable authoring grant from the resolved root AgentDefinition. */
+	automationAuthor?: AutomationAuthorPolicy;
+
 }
 
 /**

@@ -1314,6 +1314,11 @@ export async function buildSessionOptions(
 
 	if (launchAgent && !restoringSession) {
 		options.agentDisplayName = launchAgent.name;
+		options.rootAgentName = launchAgent.name;
+		if (launchAgent.automationAuthor) {
+			options.automationAuthor = launchAgent.automationAuthor;
+		}
+
 		options.autoloadSkills = launchAgent.autoloadSkills;
 		if (launchAgent.spawns !== undefined) {
 			options.spawns = launchAgent.spawns === "*" ? "*" : launchAgent.spawns.join(",");

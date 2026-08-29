@@ -187,7 +187,8 @@ import {
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { isScoutSpawnable } from "./task/spawn-policy";
-import type { StructuredSubagentSchemaMode } from "./task/types";
+import type { AutomationAuthorPolicy, StructuredSubagentSchemaMode } from "./task/types";
+
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -557,6 +558,12 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Resolved root `--agent` name. Distinct from IRC display name. */
+	rootAgentName?: string;
+	/** Effective durable authoring grant from the resolved root AgentDefinition. */
+	automationAuthor?: AutomationAuthorPolicy;
+
+
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
@@ -930,6 +937,9 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 	return {
 		sessionManager: ctx.sessionManager,
 		modelRegistry: ctx.modelRegistry,
+		rootAgentName: ctx.rootAgentName,
+		automationAuthor: ctx.automationAuthor,
+
 		model: ctx.model,
 		isIdle: ctx.isIdle,
 		hasQueuedMessages: ctx.hasPendingMessages,
@@ -2729,7 +2739,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			localProtocolOptions,
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
+			options.rootAgentName,
+			options.automationAuthor,
 		);
+
 
 		credentialDisabledTarget = extensionRunner;
 		for (const event of startupCredentialDisabledEvents.splice(0)) {
@@ -2748,6 +2761,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			settings,
 			localProtocolOptions,
+			rootAgentName: options.rootAgentName,
+			automationAuthor: options.automationAuthor,
+
 			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);

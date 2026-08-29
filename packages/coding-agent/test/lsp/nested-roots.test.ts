@@ -443,6 +443,61 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("workspace reload clears nested initialization failures owned by that session", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-workspace-reload-failure-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: {
+						write: () => Promise.reject(new Error("nested init failed")),
+						flush: () => Promise.resolve(),
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+
+			const owner = lspClient.createLspClientOwner();
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			const firstFailure = await tool.execute("nested-failure", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(firstFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(1);
+			await tool.execute("nested-workspace-reload", { action: "reload", file: "*" });
+			const retryFailure = await tool.execute("nested-retry", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(retryFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(2);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not change cwd-only getServersForFile matching", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-cwd-api-");
 		try {

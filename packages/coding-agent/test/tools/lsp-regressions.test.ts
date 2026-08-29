@@ -4119,6 +4119,32 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload preserves a nested client owned by an overlapping session", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-overlapping-session-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const config: ServerConfig = {
+				command: "nested-session-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const server = installHandshakeLsp();
+			const outerOwner = lspClient.createLspClientOwner();
+			const innerOwner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, innerOwner);
+
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], outerOwner);
+
+			expect(await lspClient.getActiveOrPendingClient(config, tempDir.path(), undefined, innerOwner)).toBe(client);
+			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload blocks fresh client creation until stale teardown finishes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-fresh-race-");
 		try {
@@ -4330,7 +4356,13 @@ describe("lsp regressions", () => {
 			expect(loadConfigSpy).toHaveBeenCalledTimes(3);
 			expect(starOutput).toContain("Reloaded test-lsp");
 			expect(omittedOutput).toContain("Reloaded test-lsp");
-			expect(lspClient.getOrCreateClient).toHaveBeenCalledWith(server, tempDir.path(), undefined, expect.anything());
+			expect(lspClient.getOrCreateClient).toHaveBeenCalledWith(
+				server,
+				tempDir.path(),
+				undefined,
+				expect.anything(),
+				expect.anything(),
+			);
 		} finally {
 			vi.restoreAllMocks();
 			tempDir.removeSync();

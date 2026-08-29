@@ -429,7 +429,10 @@ export class HindsightSessionState {
 		// a below-cadence tail of new turns is flushed. Last-turn retains still
 		// record the retained branch identity so `/tree` rewinds can diverge.
 		const prefixDiverged = this.#sessionHistoryDiverged(messages);
-		if (userTurns <= retainedThrough && !prefixDiverged) return;
+		const retainedMessageCount =
+			this.#lastRetainedMessageIndex > 0 ? this.#lastRetainedMessageIndex : this.#loadedMessageCount;
+		const messageTailPending = messages.length > retainedMessageCount;
+		if (userTurns <= retainedThrough && !prefixDiverged && !messageTailPending) return;
 		try {
 			const generation = this.#retainGeneration;
 			const lastTurnWindow =

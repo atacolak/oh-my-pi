@@ -1231,27 +1231,22 @@ describe("Hindsight append-mode session retention", () => {
 		expect(state.lastRetainedTurn).toBe(0);
 	});
 
-	it("does not re-retain a resumed last-turn session that added no new turns", async () => {
+	it("flushes a terminal assistant message persisted after cadence retention", async () => {
 		const bodies = captureBodies();
 		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
-		const entries = [
-			userEntry("u1", null, "turn one has enough text", "2026-08-17T10:00:00.000Z"),
-			assistantEntry("a1", "u1", "reply one has enough text", "2026-08-17T10:00:01.000Z"),
-			userEntry("u2", "a1", "turn two has enough text", "2026-08-17T10:01:00.000Z"),
-			assistantEntry("a2", "u2", "reply two has enough text", "2026-08-17T10:01:01.000Z"),
-		];
+		const userOnly = [userEntry("u1", null, "turn one has enough text", "2026-08-17T10:00:00.000Z")];
+		let entries = userOnly;
 		const state = new HindsightSessionState({
-			sessionId: "sess-resume-idle",
+			sessionId: "sess-assistant-close-tail",
 			client,
 			bankId: "personal",
-			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 5, retainOverlapTurns: 0 }),
+			config: makeConfig({ retainEveryNTurns: 1, retainOverlapTurns: 0 }),
 			session: {
-				sessionId: "sess-resume-idle",
-				loadedUserTurnCount: 2,
+				sessionId: "sess-assistant-close-tail",
 				sessionManager: {
 					getHeader: () => ({
 						type: "session",
-						id: "sess-resume-idle",
+						id: "sess-assistant-close-tail",
 						timestamp: SESSION_START,
 						cwd: "/tmp",
 					}),
@@ -1260,11 +1255,20 @@ describe("Hindsight append-mode session retention", () => {
 				getHindsightSessionState: () => state,
 			} as object as AgentSession,
 			banksSet: new Set(["personal"]),
-			closeRetainBaselineTurns: 2,
 		});
 
+		await state.maybeRetainOnAgentEnd();
+		expect(bodies).toHaveLength(1);
+		expect(String(firstItem(bodies[0]).content)).toContain("turn one has enough text");
+
+		entries = [
+			...userOnly,
+			assistantEntry("a1", "u1", "terminal assistant reply has enough text", "2026-08-17T10:00:01.000Z"),
+		];
 		await state.drainOnClose();
-		expect(bodies).toHaveLength(0);
+
+		expect(bodies).toHaveLength(2);
+		expect(String(firstItem(bodies[1]).content)).toContain("terminal assistant reply has enough text");
 	});
 
 	it("does not re-retain a resumed full-session conversation that added no new turns", async () => {

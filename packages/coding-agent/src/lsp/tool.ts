@@ -20,12 +20,16 @@ import { clampTimeout } from "../tools/tool-timeouts";
 import {
 	applyWorkspaceEditWithLsp,
 	clearInitializationFailure,
+	clearWorkspaceInitializationFailures,
+	createLspClientOwner,
 	ensureFileOpen,
 	getActiveClients,
 	getOrCreateClient,
 	isRustAnalyzerClient,
+	type LspClientOwner,
 	type LspServerStatus,
 	refreshFile,
+	releaseLspClientOwner,
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
@@ -193,8 +197,15 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 	readonly parameters = lspSchema;
 	readonly strict = true;
 
-	constructor(private readonly session: ToolSession) {
+	readonly #clientOwner: LspClientOwner;
+
+	constructor(
+		private readonly session: ToolSession,
+		clientOwner = session.lspClientOwner ?? session.getLspClientOwner?.() ?? createLspClientOwner(),
+	) {
+		this.#clientOwner = clientOwner;
 		this.description = prompt.render(lspDescription);
+		this.session.registerDisposeCallback?.(() => releaseLspClientOwner(this.#clientOwner));
 	}
 
 	static createIf(session: ToolSession): LspTool | null {
@@ -234,7 +245,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// `Object.keys(config.servers)` reflects cwd-rooted auto-detect. Nested
 			// servers only appear here after a concrete-file operation started them.
 			const sessionWorkspace = { cwd: workspaceRoots[0], directories: workspaceRoots };
-			const startedClients = getActiveClients().filter(
+			const startedClients = getActiveClients(this.#clientOwner).filter(
 				client => !client.cwd || Boolean(workspaceRootForPath(client.cwd, sessionWorkspace)),
 			);
 			const startedByConfigName = new Map<string, LspServerStatus[]>();
@@ -376,7 +387,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							totalServerSuccesses++;
 							continue;
 						}
-						const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+						const client = await getOrCreateClient(
+							serverConfig,
+							this.session.cwd,
+							undefined,
+							signal,
+							this.#clientOwner,
+						);
 						if (isProjectAwareLspServer(serverConfig)) {
 							await waitForProjectLoaded(client, signal);
 							throwIfAborted(signal);
@@ -616,7 +633,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				throwIfAborted(signal);
 				let client: LspClient;
 				try {
-					client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+					client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal, this.#clientOwner);
 					if (isProjectAwareLspServer(serverConfig)) {
 						await waitForProjectLoaded(client, signal);
 					}
@@ -808,7 +825,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			for (const [serverName, serverConfig] of servers) {
 				try {
-					const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+					const client = await getOrCreateClient(
+						serverConfig,
+						this.session.cwd,
+						undefined,
+						signal,
+						this.#clientOwner,
+					);
 					for (const { oldUri } of pairs) {
 						if (client.openFiles.has(oldUri)) {
 							await sendNotification(client, "textDocument/didClose", { textDocument: { uri: oldUri } }, signal);
@@ -869,7 +892,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			for (const [serverName, serverConfig] of serverList) {
 				throwIfAborted(signal);
 				try {
-					const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+					const client = await getOrCreateClient(
+						serverConfig,
+						this.session.cwd,
+						undefined,
+						signal,
+						this.#clientOwner,
+					);
 					respondingServers.add(serverName);
 					const caps = client.serverCapabilities ?? {};
 					sections.push(`${serverName}:`);
@@ -955,7 +984,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			try {
-				const client = await getOrCreateClient(chosenConfig, this.session.cwd, undefined, signal);
+				const client = await getOrCreateClient(
+					chosenConfig,
+					this.session.cwd,
+					undefined,
+					signal,
+					this.#clientOwner,
+				);
 				if (resolvedTarget) {
 					await ensureFileOpen(client, resolvedTarget, signal);
 				}
@@ -1032,6 +1067,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						this.session.cwd,
 						undefined,
 						signal,
+						this.#clientOwner,
 					);
 					const workspaceResult = (await sendRequest(
 						workspaceClient,
@@ -1129,7 +1165,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				servers.map(([, serverConfig]) => serverConfig),
 				signal,
 				workspaceRoots,
+				this.#clientOwner,
 			);
+			clearWorkspaceInitializationFailures(workspaceRoots, this.#clientOwner);
 			if (servers.length === 0) {
 				return {
 					content: [{ type: "text", text: "No language server found for this action" }],
@@ -1149,6 +1187,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						this.session.cwd,
 						undefined,
 						signal,
+						this.#clientOwner,
 					);
 					outputs.push(await reloadServer(workspaceClient, workspaceServerName, signal));
 				} catch (err) {
@@ -1178,7 +1217,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		if (action === "reload") clearInitializationFailure(serverConfig, this.session.cwd);
 
 		try {
-			const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+			const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal, this.#clientOwner);
 			const targetFile = resolvedFile;
 			const isRustAnalyzerServer = isRustAnalyzerClient(client) || serverName === "rust-analyzer";
 			const needsProjectIndex =

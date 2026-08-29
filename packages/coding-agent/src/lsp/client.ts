@@ -33,11 +33,49 @@ interface PendingClient {
 const clientLocks = new Map<string, PendingClient>();
 const invalidatedClientKeys = new Set<string>();
 const clientReloadBarriers = new Map<string, Promise<unknown>>();
+export type LspClientOwner = symbol;
+const clientOwners = new Map<string, Set<LspClientOwner>>();
+const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
+
+export function createLspClientOwner(): LspClientOwner {
+	return Symbol("lsp-client-owner");
+}
+
+function registerClientOwner(key: string, owner: LspClientOwner | undefined): void {
+	if (!owner) return;
+	let owners = clientOwners.get(key);
+	if (!owners) {
+		owners = new Set();
+		clientOwners.set(key, owners);
+	}
+	owners.add(owner);
+	let keys = ownerClientKeys.get(owner);
+	if (!keys) {
+		keys = new Set();
+		ownerClientKeys.set(owner, keys);
+	}
+	keys.add(key);
+}
+
+function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
+	const owners = clientOwners.get(key);
+	owners?.delete(owner);
+	if (owners?.size === 0) clientOwners.delete(key);
+	const keys = ownerClientKeys.get(owner);
+	keys?.delete(key);
+	if (keys?.size === 0) ownerClientKeys.delete(owner);
+	return !clientOwners.has(key);
+}
+
+/** Release all client identities associated with a disposed tool session. */
+export function releaseLspClientOwner(owner: LspClientOwner): void {
+	for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) releaseClientOwnerKey(key, owner);
+}
 const fileOperationLocks = new Map<string, Promise<void>>();
 
 /** Negative cache of recent init failures so a broken server fails fast instead of re-spawning per call. */
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
-const initFailures = new Map<string, { at: number; message: string }>();
+const initFailures = new Map<string, { at: number; message: string; cwd: string }>();
 const READER_EXIT_GRACE_MS = 100;
 
 // Idle timeout configuration (disabled by default)
@@ -868,20 +906,35 @@ export function shutdownStaleClients(
 	configs: readonly ServerConfig[],
 	signal?: AbortSignal,
 	workspaceRoots: readonly string[] = [cwd],
+	owner?: LspClientOwner,
 ): Promise<string[]> {
 	const fresh = new Set(configs.map(config => clientKey(config, config.resolvedRoot ?? cwd)));
 	const roots = workspaceRoots.map(root => path.resolve(root));
-	const relevantPending = Array.from(clientLocks.entries()).filter(([, pending]) =>
-		roots.some(root => isPathInsideWorkspace(pending.cwd, root)),
-	);
-	const relevantClients = Array.from(clients.values()).filter(client =>
-		roots.some(root => isPathInsideWorkspace(client.cwd, root)),
-	);
+	const relevantPending = Array.from(clientLocks.entries()).filter(([key, pending]) => {
+		const owners = clientOwners.get(key);
+		return (!owner || !owners || owners.has(owner)) && roots.some(root => isPathInsideWorkspace(pending.cwd, root));
+	});
+	const relevantClients = Array.from(clients.entries()).filter(([key, client]) => {
+		const owners = clientOwners.get(key);
+		return (!owner || !owners || owners.has(owner)) && roots.some(root => isPathInsideWorkspace(client.cwd, root));
+	});
+	const staleOwnedKeys = new Set([
+		...relevantPending.filter(([key]) => !fresh.has(key)).map(([key]) => key),
+		...relevantClients.filter(([key]) => !fresh.has(key)).map(([key]) => key),
+	]);
+	const unownedStaleKeys = owner
+		? new Set(Array.from(staleOwnedKeys).filter(key => releaseClientOwnerKey(key, owner)))
+		: staleOwnedKeys;
+	const retainedOwnedKeys = owner
+		? new Set(Array.from(staleOwnedKeys).filter(key => !unownedStaleKeys.has(key)))
+		: new Set<string>();
+	const stalePending = relevantPending.filter(([key]) => unownedStaleKeys.has(key));
+	const staleClients = relevantClients.filter(([key]) => unownedStaleKeys.has(key));
 	const barrierRoots = new Set([
 		path.resolve(cwd),
 		...roots,
-		...relevantPending.map(([, pending]) => path.resolve(pending.cwd)),
-		...relevantClients.map(client => path.resolve(client.cwd)),
+		...stalePending.map(([, pending]) => path.resolve(pending.cwd)),
+		...staleClients.map(([, client]) => path.resolve(client.cwd)),
 	]);
 	const previousBarriers: Promise<unknown>[] = [];
 	for (const root of barrierRoots) {
@@ -902,11 +955,8 @@ export function shutdownStaleClients(
 		// Tombstone stale identities before awaiting initialization. Existing
 		// callers keep sharing their in-flight promise; later callers cannot spawn
 		// another stale process while reload is blocked on teardown.
-		const stalePending = relevantPending.filter(([key]) => !fresh.has(key));
 		for (const [key] of stalePending) invalidatedClientKeys.add(key);
-		for (const client of relevantClients) {
-			if (!fresh.has(client.name)) invalidatedClientKeys.add(client.name);
-		}
+		for (const [key] of staleClients) invalidatedClientKeys.add(key);
 		await Promise.all(
 			stalePending.map(async ([, pending]) => {
 				try {
@@ -917,17 +967,21 @@ export function shutdownStaleClients(
 			}),
 		);
 
-		const stale = Array.from(clients.values()).filter(
-			client => roots.some(root => isPathInsideWorkspace(client.cwd, root)) && !fresh.has(client.name),
+		const stale = Array.from(clients.entries()).filter(
+			([key, client]) => unownedStaleKeys.has(key) && roots.some(root => isPathInsideWorkspace(client.cwd, root)),
 		);
-		const results = await Promise.all(stale.map(client => shutdownClientInstance(client)));
-		const failed = stale.filter((_client, index) => results[index] !== true);
+		const results = await Promise.all(stale.map(([, client]) => shutdownClientInstance(client)));
+		const failed = stale.filter((_entry, index) => results[index] !== true);
 		if (failed.length > 0) {
+			if (owner) {
+				for (const key of unownedStaleKeys) registerClientOwner(key, owner);
+			}
 			throw new Error(
 				"Failed to stop LSP server(s) with superseded configuration: " +
-					failed.map(client => client.config.command).join(", "),
+					failed.map(([, client]) => client.config.command).join(", "),
 			);
 		}
+		for (const key of retainedOwnedKeys) invalidatedClientKeys.delete(key);
 		// Nested identities are rediscovered lazily from a concrete file after
 		// reload. Their temporary tombstones prevent reuse during teardown, but
 		// must not permanently block the same valid identity from starting again.
@@ -935,10 +989,10 @@ export function shutdownStaleClients(
 		for (const [key, pending] of stalePending) {
 			if (path.resolve(pending.cwd) !== primaryCwd) invalidatedClientKeys.delete(key);
 		}
-		for (const client of stale) {
-			if (path.resolve(client.cwd) !== primaryCwd) invalidatedClientKeys.delete(client.name);
+		for (const [key, client] of stale) {
+			if (path.resolve(client.cwd) !== primaryCwd) invalidatedClientKeys.delete(key);
 		}
-		return stale.map(client => client.config.command);
+		return stale.map(([, client]) => client.config.command);
 	})();
 	for (const root of barrierRoots) clientReloadBarriers.set(root, cleanup);
 	void cleanup.then(
@@ -957,6 +1011,16 @@ export function clearInitializationFailure(config: ServerConfig, cwd: string): v
 	initFailures.delete(clientKey(config, config.resolvedRoot ?? cwd));
 }
 
+/** Clear failures attempted by one session within its workspace roots. */
+export function clearWorkspaceInitializationFailures(workspaceRoots: readonly string[], owner?: LspClientOwner): void {
+	const roots = workspaceRoots.map(root => path.resolve(root));
+	const ownedKeys = owner ? ownerClientKeys.get(owner) : undefined;
+	for (const [key, failure] of initFailures) {
+		if (owner && !ownedKeys?.has(key)) continue;
+		if (roots.some(root => isPathInsideWorkspace(failure.cwd, root))) initFailures.delete(key);
+	}
+}
+
 /**
  * Get or create an LSP client for the given server configuration and working directory.
  * @param config - Server configuration
@@ -972,9 +1036,11 @@ export async function getOrCreateClient(
 	cwd: string,
 	initTimeoutMs?: number,
 	signal?: AbortSignal,
+	owner?: LspClientOwner,
 ): Promise<LspClient> {
 	cwd = config.resolvedRoot ?? cwd;
 	const key = clientKey(config, cwd);
+	registerClientOwner(key, owner);
 	// Check if client already exists
 	const existingClient = clients.get(key);
 	if (existingClient && !invalidatedClientKeys.has(key)) {
@@ -1162,7 +1228,7 @@ export async function getOrCreateClient(
 			// aborts are transient — the server may simply be slow or the user may
 			// have cancelled, so a later call with a fresh deadline should retry.
 			if (!signal?.aborted && !(initTimeoutMs !== undefined && message.includes("timed out"))) {
-				initFailures.set(key, { at: Date.now(), message });
+				initFailures.set(key, { at: Date.now(), message, cwd });
 			}
 			throw err;
 		} finally {
@@ -1179,16 +1245,19 @@ export async function getActiveOrPendingClient(
 	config: ServerConfig,
 	cwd: string,
 	signal?: AbortSignal,
+	owner?: LspClientOwner,
 ): Promise<LspClient | undefined> {
 	cwd = config.resolvedRoot ?? cwd;
 	throwIfAborted(signal);
-	const client = clients.get(clientKey(config, cwd));
+	const key = clientKey(config, cwd);
+	registerClientOwner(key, owner);
+	const client = clients.get(key);
 	if (client) {
 		client.lastActivity = Date.now();
 		return client;
 	}
 
-	const pending = clientLocks.get(clientKey(config, cwd));
+	const pending = clientLocks.get(key);
 	if (!pending) return undefined;
 	try {
 		return await untilAborted(signal, pending.promise);
@@ -1703,6 +1772,9 @@ export async function shutdownAll(): Promise<void> {
 	stopIdleChecker();
 	invalidatedClientKeys.clear();
 	clientReloadBarriers.clear();
+	clientOwners.clear();
+	ownerClientKeys.clear();
+	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
 	clients.clear();
 	// Mid-initialize clients live only in clientLocks (publication is deferred
@@ -1735,13 +1807,15 @@ export interface LspServerStatus {
 /**
  * Get status of all active LSP clients.
  */
-export function getActiveClients(): LspServerStatus[] {
-	return Array.from(clients.values()).map(client => ({
-		name: client.config.command,
-		status: client.status,
-		fileTypes: client.config.fileTypes,
-		cwd: client.cwd,
-	}));
+export function getActiveClients(owner?: LspClientOwner): LspServerStatus[] {
+	return Array.from(clients.entries())
+		.filter(([key]) => !owner || clientOwners.get(key)?.has(owner) === true)
+		.map(([, client]) => ({
+			name: client.config.command,
+			status: client.status,
+			fileTypes: client.config.fileTypes,
+			cwd: client.cwd,
+		}));
 }
 
 // =============================================================================

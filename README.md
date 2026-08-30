@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Status:** fork-local (no upstream PR)
-> - **Upstream base:** [OMP 18.0.11 (`b8ce33a`)](https://github.com/can1357/oh-my-pi/tree/b8ce33a58911c26bed1d84f0db9a5e2e727c49a2)
+> - **Upstream base:** [OMP 18.0.11 (`51f0380`)](https://github.com/can1357/oh-my-pi/tree/51f03804476c3fd3c15748ae07e4849d1efc883b)
 >
 > Not stacked on other capabilities; merged into `runtime` independently.
 

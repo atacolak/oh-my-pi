@@ -6,7 +6,7 @@
 > - **Runtime composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Role discovery:** `--agent-cwd` selects the agent-definition project without changing `--cwd`
 > - **Hidden roles:** `hide: true` keeps explicit automation identities out of ambient task rosters
-> - **Upstream base:** [OMP 18.0.11 (`b8ce33a589`)](https://github.com/can1357/oh-my-pi/tree/b8ce33a58911c26bed1d84f0db9a5e2e727c49a2)
+> - **Upstream base:** [OMP 18.0.11 (`51f0380447`)](https://github.com/can1357/oh-my-pi/tree/51f03804476c3fd3c15748ae07e4849d1efc883b)
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

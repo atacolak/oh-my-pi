@@ -1,5 +1,13 @@
 import * as path from "node:path";
-import { isEnoent, logger, postmortem, ptree, stableStringifyJson, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	isEnoent,
+	logger,
+	pathIsWithin,
+	postmortem,
+	ptree,
+	stableStringifyJson,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../jsonrpc/message-framing";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
@@ -1442,8 +1450,7 @@ export async function notifySaved(client: LspClient, filePath: string, signal?: 
 }
 
 function isPathInsideWorkspace(filePath: string, workspace: string): boolean {
-	const relative = path.relative(workspace, path.resolve(filePath));
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+	return pathIsWithin(workspace, filePath);
 }
 
 /** Budget for the one-way watched-files notification: a wedged server that

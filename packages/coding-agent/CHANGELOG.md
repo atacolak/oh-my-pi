@@ -113,6 +113,7 @@
 - The usage status line now labels untiered quota windows with the report's plan tier, surfacing Z.AI Coding Plan (`pro`) and Codex plan names next to the 5h/7d percentages.
 ### Fixed
 
+- Fixed `lsp reload *` leaving a nested initialization failure cached when the workspace was opened through a symlink but the file path used the canonical target.
 - Fixed nested language-server routing skipping files when a workspace is opened through a symlink but the file path uses the canonical target.
 - Fixed edit and write language-server clients started from a lazy session owner being treated as unowned and torn down by overlapping sessions.
 - Fixed writes after `/add-dir` skipping nested language-server formatting and diagnostics because the write tool kept construction-time workspace roots.

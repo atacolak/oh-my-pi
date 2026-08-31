@@ -2605,7 +2605,6 @@ export class SessionManager {
 		await this.#rewriteAtomically();
 	}
 
-
 	/** All session entries (excludes header). Returns a shallow copy. */
 	getEntries(): SessionEntry[] {
 		return [...this.#entries];
@@ -2716,8 +2715,6 @@ export class SessionManager {
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
 			rootAgent: this.#header?.rootAgent,
 		};
-
-
 		const labels: LabelEntry[] = [];
 		let parentId = entriesToKeep[entriesToKeep.length - 1]?.id ?? null;
 		for (const carried of labelsToCarry) {

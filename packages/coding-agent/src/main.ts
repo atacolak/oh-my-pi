@@ -29,11 +29,10 @@ import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-fla
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
 import { resolveLaunchAgent, rootAgentModelSelector, rootAgentToolNames } from "./cli/launch-agent";
-import { CliUsageError } from "./cli/usage-error";
-
 import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { getLatestRelease } from "./cli/update-cli";
+import { CliUsageError } from "./cli/usage-error";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import {
@@ -107,6 +106,7 @@ import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
+import type { AgentDefinition } from "./task/types";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
@@ -1142,7 +1142,7 @@ export async function buildSessionOptions(
 		);
 	}
 	const launchAgentName = parsed.agent ?? persistedRootAgent;
-	let launchAgent;
+	let launchAgent: AgentDefinition | undefined;
 	try {
 		launchAgent = await resolveLaunchAgent(launchAgentName, parsed.agentCwd ?? options.cwd);
 	} catch (error) {
@@ -1158,7 +1158,6 @@ export async function buildSessionOptions(
 	if (launchAgent && !restoringSession) {
 		await sessionManager?.setRootAgent(launchAgent.name);
 	}
-
 
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>

@@ -7,7 +7,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR:** [#9311](https://github.com/can1357/oh-my-pi/pull/9311) — overhaul the `/extensions` inspector
-> - **Upstream base:** [OMP 18.0.11 (`51f0380`)](https://github.com/can1357/oh-my-pi/tree/51f03804476c3fd3c15748ae07e4849d1efc883b)
+> - **Upstream base:** [OMP 18.0.11 (`9690622`)](https://github.com/can1357/oh-my-pi/tree/969062200754ea02cfac922e5ebb8c608c079e15)
 >
 > This branch tracks `origin/main` plus this banner.
 

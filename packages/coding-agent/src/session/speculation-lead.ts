@@ -15,10 +15,15 @@ const SPECULATION_LEAD_FRACTION = 0.125;
 export const SPECULATION_LEAD_MIN_TOKENS = 8_192;
 const SPECULATION_LEAD_MAX_TOKENS = 32_000;
 
-/** Tokens the threshold band spans: speculation fires inside `[threshold − lead, threshold)`. */
-export function resolveSpeculationLeadTokens(thresholdTokens: number): number {
-	return Math.min(
+/**
+ * Tokens the threshold band spans: speculation fires inside `[threshold − lead, threshold)`.
+ * `minLeadTokens` raises the native lead without changing the default when unset.
+ */
+export function resolveSpeculationLeadTokens(thresholdTokens: number, minLeadTokens?: number): number {
+	const native = Math.min(
 		SPECULATION_LEAD_MAX_TOKENS,
 		Math.max(SPECULATION_LEAD_MIN_TOKENS, Math.floor(thresholdTokens * SPECULATION_LEAD_FRACTION)),
 	);
+	if (minLeadTokens === undefined || minLeadTokens <= 0) return native;
+	return Math.max(native, Math.floor(minLeadTokens));
 }

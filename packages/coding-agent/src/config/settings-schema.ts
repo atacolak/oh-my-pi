@@ -2606,6 +2606,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"compaction.speculationMinLeadTokens": {
+		type: "number",
+		default: undefined,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Minimum Speculation Lead",
+			description:
+				"Optional floor for how far below the compaction threshold speculative summarization may start. Unset keeps the native 12.5%/8k–32k lead.",
+		},
+	},
+
 	// No default: an unset reserve tells the compaction layer the user never
 	// chose one, so small-window recovery may swap in the proportional reserve
 	// (see resolveBudgetReserveTokens). A materialized 16384 here would make
@@ -6124,6 +6136,7 @@ export interface CompactionSettings {
 	keepRecentTokens: number;
 	midTurnEnabled: boolean;
 	asyncEnabled: boolean;
+	speculationMinLeadTokens: number | undefined;
 	handoffSaveToDisk: boolean;
 	autoContinue: boolean;
 	remoteEndpoint: string | undefined;

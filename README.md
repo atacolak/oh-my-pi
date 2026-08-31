@@ -1,3 +1,18 @@
+> [!NOTE]
+> ## `cap/hindsight` — Hindsight retention + locked scope seam
+>
+> Durable local capability: per-retain extraction strategy, conversation source timestamps, append-mode session retention, and the fork-local locked memory-scope seam (`hindsight.scopeTags` → retain/recall/reflect + exact `observation_scopes`, subset mental-model visibility).
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PRs:**
+>   - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy *(open)*
+>   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps *(merged)*
+>   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention *(open)*
+> - **Fork-local:** locked `scope:personal` / `scope:coding` + `project:<repo>` routing — no upstream PR yet
+> - **Upstream base:** [OMP 18.0.11 (`51f0380`)](https://github.com/can1357/oh-my-pi/tree/51f03804476c3fd3c15748ae07e4849d1efc883b)
+>
+> PR heads stay independently reviewable without this banner.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

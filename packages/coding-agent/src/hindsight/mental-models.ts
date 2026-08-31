@@ -207,10 +207,10 @@ export const MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT = 16_000;
  *
  * The rendered block is bounded by `budgetChars` (default
  * MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT). When `visibleTags` is supplied,
- * tagged models must match at least one active tag; untagged models remain
- * visible in every scope. Per-model content is truncated before assembly; if
- * assembly still exceeds the budget, trailing models are dropped. A budget
- * overflow leaves a `…` marker so the LLM can tell the snapshot is truncated.
+ * every tag on a tagged model must be active; untagged models remain visible
+ * in every scope. Per-model content is truncated before assembly; if assembly
+ * still exceeds the budget, trailing models are dropped. A budget overflow
+ * leaves a `…` marker so the LLM can tell the snapshot is truncated.
  */
 export async function loadMentalModelsBlock(
 	client: HindsightApi,
@@ -240,7 +240,7 @@ function modelVisibleForTags(model: MentalModelSummary, visibleTags?: readonly s
 	if (!visibleTags || visibleTags.length === 0) return true;
 	const tags = model.tags ?? [];
 	if (tags.length === 0) return true;
-	return tags.some(tag => visibleTags.includes(tag));
+	return tags.every(tag => visibleTags.includes(tag));
 }
 
 const PREAMBLE =

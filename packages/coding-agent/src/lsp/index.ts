@@ -1,5 +1,4 @@
-export type { LspClientOwner, LspServerStatus } from "./client";
-export { createLspClientOwner, releaseLspClientOwner } from "./client";
+export * from "./client";
 export type { FileDiagnosticsResult, FormatContentResult } from "./diagnostics";
 export { FileFormatResult } from "./diagnostics";
 export type { LspStartupServerInfo, LspWarmupOptions, LspWarmupResult } from "./servers";

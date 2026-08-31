@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
+import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import {
 	findServerRoot,
 	getServersForFile,
@@ -16,6 +17,7 @@ import { discoverStartupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers
 import type { LinterClient, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
 import { createLspWritethrough } from "@oh-my-pi/pi-coding-agent/lsp/writethrough";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -358,6 +360,49 @@ describe("nested LSP project roots", () => {
 			expect(roots).toContain(projectRoot);
 		} finally {
 			tempDir.removeSync();
+		}
+	});
+
+	it("routes writes through directories added after write-tool construction", async () => {
+		const primary = TempDir.createSync("@omp-lsp-add-dir-primary-");
+		const additional = TempDir.createSync("@omp-lsp-add-dir-extra-");
+		try {
+			const nested = writePythonProject(additional.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			let extraDirs: string[] | undefined;
+			const session = {
+				cwd: primary.path(),
+				get additionalDirectories() {
+					return extraDirs;
+				},
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": true,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+			const tool = new WriteTool(session);
+			extraDirs = [additional.path()];
+			const getServers = vi.spyOn(lspConfig, "getServersForFile");
+
+			await tool.execute("add-dir-write", {
+				path: nested.filePath,
+				content: "def example():\n    return 2\n",
+			});
+
+			expect(getServers.mock.calls.some(call => call[2]?.includes(additional.path()))).toBe(true);
+		} finally {
+			primary.removeSync();
+			additional.removeSync();
 		}
 	});
 

@@ -29,6 +29,8 @@ import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-fla
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
 import { resolveLaunchAgent, rootAgentModelSelector, rootAgentToolNames } from "./cli/launch-agent";
+import { CliUsageError } from "./cli/usage-error";
+
 import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { getLatestRelease } from "./cli/update-cli";
@@ -1133,7 +1135,30 @@ export async function buildSessionOptions(
 		}
 	}
 
-	const launchAgent = await resolveLaunchAgent(parsed.agent, parsed.agentCwd ?? options.cwd);
+	const persistedRootAgent = restoringSession ? sessionManager?.getHeader()?.rootAgent : undefined;
+	if (restoringSession && persistedRootAgent && parsed.agent && parsed.agent !== persistedRootAgent) {
+		throw new CliUsageError(
+			`Session was launched as --agent ${persistedRootAgent}; refusing conflicting --agent ${parsed.agent}.`,
+		);
+	}
+	const launchAgentName = parsed.agent ?? persistedRootAgent;
+	let launchAgent;
+	try {
+		launchAgent = await resolveLaunchAgent(launchAgentName, parsed.agentCwd ?? options.cwd);
+	} catch (error) {
+		if (persistedRootAgent && !parsed.agent) {
+			throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
+		}
+		throw error;
+	}
+	if (persistedRootAgent && !launchAgent) {
+		throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
+	}
+
+	if (launchAgent && !restoringSession) {
+		await sessionManager?.setRootAgent(launchAgent.name);
+	}
+
 
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>

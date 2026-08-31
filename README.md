@@ -1,7 +1,7 @@
 > [!NOTE]
 > ## `cap/hot-handoff` — Hot Handoff working-state compaction
 >
-> Fork-local capability: project-opted-in `.omp/HANDOFF.md` reconstructs semantic hot working state with an independent `@handoff` author on OMP's native speculative `soft` compaction path. Snapshot A is frozen at cursor C; every later session entry stays raw; Snapshot B is ephemeral resume-time runtime truth.
+> Fork-local capability: project-opted-in `.omp/HANDOFF.md` reconstructs semantic hot working state with an independent `@handoff` author on OMP's native speculative `soft` compaction path. The Handoff Document covers history through the Speculation Checkpoint; every later session entry stays as Raw Continuation; Resume State is ephemeral runtime truth.
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR(s):** Status: fork-local

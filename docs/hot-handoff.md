@@ -2,7 +2,7 @@
 
 Hot handoff replaces ordinary LLM summarization for opted-in projects.
 
-The independent `@handoff` model reconstructs **semantic hot working state through cursor C**. OMP stores that document as a `CompactionEntry`, keeps **every raw session entry after C**, and injects a fresh deterministic runtime snapshot into the first resumed model call.
+The independent `@handoff` model reconstructs **semantic hot working state through the Speculation Checkpoint**. OMP stores that document as a `CompactionEntry`, keeps **every raw session entry after that checkpoint**, and injects a fresh deterministic runtime snapshot into the first resumed model call.
 
 The handoff **is** the compaction. There is no separate "compact then handoff" sequence.
 
@@ -11,23 +11,24 @@ Normal successful path:
 ```text
 main keeps working
       │
-      │ native speculative lead (~12.5% of threshold, clamped 8k–32k)
+      │ native speculative lead (12.5% of threshold, clamped 8k–32k;
+      │ optional speculationMinLeadTokens raises that floor)
       ▼
-Snapshot A at C
+Author State at Speculation Checkpoint
       │
       ▼
-@handoff ─────────────► H(C) armed
+@handoff ─────────────► Handoff Document armed
       │
-main keeps working ───► raw delta after C
-      │
-      ▼
-threshold
+main keeps working ───► Raw Continuation
       │
       ▼
-instant commit: H(C) + ALL raw after C
+Commit Threshold
       │
       ▼
-fresh Snapshot B
+instant commit: Handoff Document + ALL Raw Continuation
+      │
+      ▼
+fresh Resume State
       │
       ▼
 same main model continues
@@ -38,30 +39,30 @@ Resumed context:
 ```text
 system / project instructions
         +
-H(C)
+Handoff Document
         +
-all raw activity after C
+all Raw Continuation after the Speculation Checkpoint
         +
-fresh LIVE_STATE (Snapshot B)
+fresh LIVE_STATE (Resume State)
         +
 normal memory facilities
 ```
 
-Handoff latency is off the main model's critical path when speculation arms before threshold.
+Handoff latency is off the main model's critical path when speculation arms before the Commit Threshold.
 
 ## What each layer is for
 
 | Layer | Owner | Lifetime |
 | --- | --- | --- |
-| H(C) | independent `@handoff` model | persisted semantic working memory through cursor C |
-| Raw delta | OMP `firstKeptEntryId` from the speculative preparation | every retained entry created after C |
-| Snapshot A | deterministic sensors at C | author input only; allowed to go stale |
-| Snapshot B | deterministic sensors at resume | ephemeral on the first provider `context` |
+| Handoff Document | independent `@handoff` model | persisted semantic working memory through the Speculation Checkpoint |
+| Raw Continuation | OMP `firstKeptEntryId` derived after `snapshotLeafId` | every retained entry created after the checkpoint |
+| Author State | deterministic sensors at the checkpoint | author input only; allowed to go stale |
+| Resume State | deterministic sensors at resume | ephemeral on the first provider `context` |
 | Memory | Hindsight / configured backend | cold recoverable context |
 
 Do not dump long-term memory into every handoff. The resumed agent uses ordinary `recall` / `reflect` when cold context is needed.
 
-`keepRecentTokens: 12000` is the **preparation target**, not a post-speculation cap. Once H(C) is generated at C, every later entry stays raw even if that temporarily exceeds 12k.
+`keepRecentTokens` remains the **stock compaction** preparation target. Successful Hot Handoff speculation does not use it as the semantic/raw boundary. Once a Handoff Document is generated at the Speculation Checkpoint, every later entry stays raw even if that temporarily exceeds 12k.
 
 ## Activation
 
@@ -86,12 +87,13 @@ compaction:
   asyncEnabled: true
   thresholdPercent: 70
   keepRecentTokens: 12000
+  speculationMinLeadTokens: 18000
   autoContinue: true
   methodOrder:
     - soft
 ```
 
-`asyncEnabled: true` is required for speculative generation. The particular model selector is an example, not a required dependency. `@handoff` MUST resolve to an authenticated model distinct from the active working model. If it cannot, OMP warns once and uses stock compaction.
+`asyncEnabled: true` is required for speculative generation. `speculationMinLeadTokens` is optional; unset keeps the native 12.5%/8k–32k lead. The particular model selector is an example, not a required dependency. `@handoff` MUST resolve to an authenticated model distinct from the active working model. If it cannot, OMP warns once and uses stock compaction.
 
 Load the extension:
 
@@ -115,14 +117,17 @@ Hot Handoff stays on OMP's `soft` LLM transport. It does not switch to the built
 
 OMP owns scheduling, cursor, invalidation, and commit:
 
-- lead = 12.5% of threshold, clamped to 8k–32k
-- `snapshotLeafId` + `firstKeptEntryId` from the speculative `prepareCompaction()` are the cursor
-- an armed result is reused at threshold without another `session.compacting` / author call
-- reset/branch/compaction after C invalidates the armed result
-- if threshold arrives while the author is still running, native deferral awaits the in-flight run instead of starting a duplicate
-- an extension-authored armed result does **not** refresh-on-growth. Recutting would punch a hole between H(C) and the newest 12k.
+- native lead = 12.5% of threshold, clamped to 8k–32k
+- optional `compaction.speculationMinLeadTokens` raises that floor
+- `snapshotLeafId` is the Speculation Checkpoint
+- semantic generation covers active history through that checkpoint, including what stock `prepareCompaction()` would have called `recentMessages`
+- at commit, `firstKeptEntryId` is the first active-path entry after `snapshotLeafId`
+- an armed result is reused at the Commit Threshold without another `session.compacting` / author call
+- reset/branch/compaction after the checkpoint invalidates the armed result
+- if the Commit Threshold arrives while the author is still running, native deferral awaits the in-flight run instead of starting a duplicate
+- a checkpoint-bound armed result does **not** refresh-on-growth
 
-If speculative generation fails, the armed slot is discarded. The next automatic maintenance pass uses stock compaction rather than blocking the main model on a fresh Hot Handoff call. Manual `/compact` still runs Hot Handoff synchronously.
+If speculative generation fails, the armed slot is discarded and OMP emits the extension's `failureNotice` once (warning). The next automatic maintenance pass uses stock compaction rather than blocking the main model on a fresh Hot Handoff call. Manual `/compact` still runs Hot Handoff synchronously.
 
 ## Live State Capsule
 
@@ -138,11 +143,11 @@ Every dynamic string is field-capped. The serialized capsule has a hard budget o
 
 Sensor failure is field-local. One broken sensor does not block the handoff.
 
-Snapshot A is captured when the speculative author input is frozen. It is allowed to become stale; later world changes belong to the raw delta and Snapshot B.
+Author State is captured when the speculative author input is frozen. It is allowed to become stale; later world changes belong to the Raw Continuation and Resume State.
 
-Snapshot B is captured on the first provider-bound `context` event after commit, bound to the session that produced the Hot Handoff, and appended as a hidden custom developer message. It is not written to the transcript. Session switch/branch/shutdown clears a pending injection so it cannot leak across sessions.
+Resume State is captured on the first provider-bound `context` event after commit, bound to the session that produced the Hot Handoff, and appended as a hidden custom developer message. It is not written to the transcript. Session switch/branch/shutdown clears a pending injection so it cannot leak across sessions.
 
-If Snapshot B conflicts with older handoff prose about volatile state, Snapshot B wins.
+If Resume State conflicts with older handoff prose about volatile state, Resume State wins.
 
 ## Manual `/compact`
 
@@ -157,8 +162,8 @@ In an opted-in project, ordinary `/compact` uses the same hot-handoff contract a
 | Missing/unauthenticated `@handoff` | Warn once; stock compaction |
 | `@handoff` equals the working model | Warn once; stock compaction |
 | Unresolvable compacting `model` override | Compaction fails rather than silently self-authoring |
-| Speculative author fails | Armed result discarded; later automatic maintenance stock-compacts |
-| Threshold while author is running | Native deferral; no duplicate author |
+| Speculative author fails | Warning once via `failureNotice`; armed result discarded; later automatic maintenance stock-compacts |
+| Commit Threshold while author is running | Native deferral; no duplicate author |
 | User abort | Cancellation propagates; no surprise stock fallback |
 
 See [compaction.md](./compaction.md) for the native cut-point, tail, and persistence pipeline this extension reuses.

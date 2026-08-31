@@ -6,6 +6,32 @@ export const MAX_TODOS = 40;
 export const MAX_ASYNC_JOBS = 20;
 export const MAX_PEERS = 20;
 
+/** Conservative per-field caps so one hostile string cannot bloat Snapshot A/B. */
+export const LIVE_STATE_FIELD_LIMITS = {
+	cwd: 512,
+	repoRoot: 512,
+	branch: 128,
+	head: 64,
+	path: 256,
+	todoContent: 240,
+	todoBlocker: 240,
+	jobId: 64,
+	jobType: 64,
+	jobStatus: 32,
+	jobLabel: 120,
+	jobAgentId: 64,
+	peerId: 64,
+	peerDisplayName: 80,
+	peerParentId: 64,
+	peerActivity: 160,
+	error: 240,
+} as const;
+
+/** Hard serialized-text budget for a rendered LIVE_STATE capsule (~8–12 KiB). */
+export const LIVE_STATE_HARD_BUDGET_BYTES = 10 * 1024;
+
+export const LIVE_STATE_TRUNCATION_MARK = "…[truncated]";
+
 export type HotHandoffTodoStatus = "pending" | "in_progress" | "blocked";
 
 export interface HotHandoffGitState {
@@ -52,6 +78,7 @@ export interface HotHandoffLiveState {
 	peers?: HotHandoffPeer[];
 	peersTruncated?: boolean;
 	errors?: string[];
+	budgetTruncated?: boolean;
 }
 
 export interface HotHandoffPreserveData {
@@ -61,7 +88,6 @@ export interface HotHandoffPreserveData {
 	promptPath: string;
 	promptHash: string;
 	startedAt: string;
-	completedAt?: string;
 }
 
 export interface HotHandoffContract {

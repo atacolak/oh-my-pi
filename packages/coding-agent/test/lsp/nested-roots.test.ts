@@ -585,6 +585,65 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("workspace reload clears nested failures when the session cwd is a symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-reload-failure-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: {
+						write: () => Promise.reject(new Error("nested init failed")),
+						flush: () => Promise.resolve(),
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+
+			const owner = lspClient.createLspClientOwner();
+			const tool = new LspTool(makeLspSession(linkRoot), owner);
+			const firstFailure = await tool.execute("symlink-nested-failure", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(firstFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(1);
+			await tool.execute("symlink-nested-workspace-reload", { action: "reload", file: "*" });
+			const retryFailure = await tool.execute("symlink-nested-retry", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(retryFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(2);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not change cwd-only getServersForFile matching", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-cwd-api-");
 		try {

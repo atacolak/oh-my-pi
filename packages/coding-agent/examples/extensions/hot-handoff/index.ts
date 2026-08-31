@@ -5,6 +5,7 @@ import { loadHotHandoffActivation, wrapHandoffPrompt } from "./prompt";
 import { HOT_HANDOFF_CUSTOM_TYPE, HOT_HANDOFF_VERSION } from "./types";
 
 const HANDOFF_ROLE = "@handoff";
+const HOT_HANDOFF_FAILURE_NOTICE = "⚠ Hot Handoff failed — falling back to default compaction";
 
 function modelKey(model: { provider: string; id: string } | undefined): string | undefined {
 	if (!model) return undefined;
@@ -24,13 +25,13 @@ function currentSessionId(ctx: ExtensionContext): string | undefined {
 export default function hotHandoff(pi: ExtensionAPI): void {
 	pi.setLabel("Hot Handoff");
 
-	let pendingLiveStateInjection: { sessionId: string; version: typeof HOT_HANDOFF_VERSION } | undefined;
+	let pendingResumeStateInjection: { sessionId: string; version: typeof HOT_HANDOFF_VERSION } | undefined;
 	const missingAuthorWarning = { warned: false };
 	const sameAuthorWarning = { warned: false };
 	const emptyContractWarning = { warned: false };
 
 	const clearPending = (): void => {
-		pendingLiveStateInjection = undefined;
+		pendingResumeStateInjection = undefined;
 	};
 
 	pi.on("session.compacting", async (event, ctx): Promise<SessionCompactingResult | undefined> => {
@@ -71,12 +72,13 @@ export default function hotHandoff(pi: ExtensionAPI): void {
 		}
 
 		const startedAt = new Date().toISOString();
-		const snapshotA = await captureLiveState(ctx);
+		const authorState = await captureLiveState(ctx);
 		const resolvedAuthor = `${author.provider}/${author.id}`;
 		return {
 			prompt: wrapHandoffPrompt(activation.contract.text),
-			context: [renderLiveState(snapshotA)],
+			context: [renderLiveState(authorState)],
 			model: resolvedAuthor,
+			failureNotice: HOT_HANDOFF_FAILURE_NOTICE,
 			preserveData: {
 				hotHandoff: {
 					version: HOT_HANDOFF_VERSION,
@@ -94,7 +96,7 @@ export default function hotHandoff(pi: ExtensionAPI): void {
 		const preserveData = event.compactionEntry.preserveData as { hotHandoff?: { version?: number } } | undefined;
 		const sessionId = currentSessionId(ctx);
 		if (preserveData?.hotHandoff?.version === HOT_HANDOFF_VERSION && sessionId) {
-			pendingLiveStateInjection = { sessionId, version: HOT_HANDOFF_VERSION };
+			pendingResumeStateInjection = { sessionId, version: HOT_HANDOFF_VERSION };
 			return;
 		}
 		clearPending();
@@ -111,16 +113,16 @@ export default function hotHandoff(pi: ExtensionAPI): void {
 	});
 
 	pi.on("context", async (event, ctx) => {
-		const pending = pendingLiveStateInjection;
+		const pending = pendingResumeStateInjection;
 		if (!pending) return undefined;
 		const sessionId = currentSessionId(ctx);
 		if (!sessionId || pending.sessionId !== sessionId || pending.version !== HOT_HANDOFF_VERSION) {
 			clearPending();
 			return undefined;
 		}
-		pendingLiveStateInjection = undefined;
-		const snapshotB = await captureLiveState(ctx);
-		const capsule = `${LIVE_STATE_RESUME_PREFACE}\n\n${renderLiveState(snapshotB)}`;
+		pendingResumeStateInjection = undefined;
+		const resumeState = await captureLiveState(ctx);
+		const capsule = `${LIVE_STATE_RESUME_PREFACE}\n\n${renderLiveState(resumeState)}`;
 		const liveStateMessage: AgentMessage = {
 			role: "custom",
 			customType: HOT_HANDOFF_CUSTOM_TYPE,

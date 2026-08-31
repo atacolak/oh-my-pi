@@ -6,7 +6,7 @@ export const MAX_TODOS = 40;
 export const MAX_ASYNC_JOBS = 20;
 export const MAX_PEERS = 20;
 
-/** Conservative per-field caps so one hostile string cannot bloat Snapshot A/B. */
+/** Conservative per-field caps so one hostile string cannot bloat Author State or Resume State. */
 export const LIVE_STATE_FIELD_LIMITS = {
 	cwd: 512,
 	repoRoot: 512,

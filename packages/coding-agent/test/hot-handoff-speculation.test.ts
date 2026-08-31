@@ -48,6 +48,7 @@ describe("hot handoff speculative lifecycle", () => {
 	let agent: Agent;
 	let events: string[];
 	let compactingSources: Array<string | undefined>;
+	let notices: Array<{ level: string; message: string }>;
 
 	function appendSummarizableConversation(): void {
 		const text = "conversation ".repeat(8_000);
@@ -57,7 +58,7 @@ describe("hot handoff speculative lifecycle", () => {
 		sessionManager.appendMessage(assistantMessage("final response", model));
 	}
 
-	function createMaintenance(): SessionMaintenance {
+	function createMaintenance(options: { minLead?: number } = {}): SessionMaintenance {
 		agent = new Agent({
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 		});
@@ -68,16 +69,18 @@ describe("hot handoff speculative lifecycle", () => {
 			"compaction.thresholdPercent": 70,
 			"compaction.keepRecentTokens": 1,
 			"compaction.autoContinue": false,
+			...(options.minLead !== undefined ? { "compaction.speculationMinLeadTokens": options.minLead } : {}),
 		});
 		const extensionRunner = {
 			hasHandlers: (eventType: string) => eventType === "session.compacting",
-			emit: async (event: { type: string; source?: string }) => {
+			emit: async (event: { type: string; source?: string; messages?: unknown[] }) => {
 				if (event.type !== "session.compacting") return undefined;
 				compactingSources.push(event.source);
 				if (event.source === "auto") return undefined;
 				return {
 					prompt: "independent handoff author",
 					model: `${authorModel.provider}/${authorModel.id}`,
+					failureNotice: "⚠ Hot Handoff failed — falling back to default compaction",
 					preserveData: { hotHandoff: { version: 1, startedAt: new Date().toISOString() } },
 				};
 			},
@@ -109,7 +112,9 @@ describe("hot handoff speculative lifecycle", () => {
 			emitSessionEvent: async (event: { type: string }) => {
 				events.push(event.type);
 			},
-			emitNotice: () => {},
+			emitNotice: (level: "info" | "warning" | "error", message: string) => {
+				notices.push({ level, message });
+			},
 			schedulePostPromptTask: () => {},
 			scheduleAgentContinue: () => {},
 			scheduleCompactionContinuation: () => false,
@@ -170,6 +175,7 @@ describe("hot handoff speculative lifecycle", () => {
 		sessionManager = SessionManager.inMemory();
 		events = [];
 		compactingSources = [];
+		notices = [];
 		appendSummarizableConversation();
 		maintenance = createMaintenance();
 	});
@@ -186,7 +192,7 @@ describe("hot handoff speculative lifecycle", () => {
 		const compactSpy = vi
 			.spyOn(compactionModule, "compact")
 			.mockImplementation(async (preparation, compactModel) => ({
-				summary: "H(C)",
+				summary: "Handoff Document",
 				firstKeptEntryId: preparation.firstKeptEntryId,
 				tokensBefore: preparation.tokensBefore,
 				details: {},
@@ -205,18 +211,20 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(compactingSources).toEqual(["speculation"]);
 		expect(sessionManager.getEntries().some(entry => entry.type === "compaction")).toBe(false);
 
+		sessionManager.appendMessage(userMessage("raw continuation"));
 		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
-		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("H(C)");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document");
 	});
 
-	it("keeps every post-cursor entry when growth exceeds keepRecentTokens", async () => {
-		let cursor: string | undefined;
+	it("cuts at the speculation checkpoint, not keepRecentTokens, and derives firstKeptEntryId after it", async () => {
+		const checkpointId = sessionManager.getBranch().at(-1)!.id;
+		let semanticFirstKept: string | undefined;
 		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
-			cursor = preparation.firstKeptEntryId;
+			semanticFirstKept = preparation.firstKeptEntryId;
 			return {
-				summary: "H(C)",
+				summary: "Handoff Document",
 				firstKeptEntryId: preparation.firstKeptEntryId,
 				tokensBefore: preparation.tokensBefore,
 				details: {},
@@ -225,10 +233,17 @@ describe("hot handoff speculative lifecycle", () => {
 
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		await waitForState("armed");
-		expect(cursor).toBeDefined();
+		expect(semanticFirstKept).toBe(checkpointId);
+		expect(compactSpy.mock.calls[0]![0].recentMessages).toEqual([]);
+		expect(compactSpy.mock.calls[0]![0].messagesToSummarize.length).toBeGreaterThan(0);
 
-		sessionManager.appendMessage(userMessage("post-C delta ".repeat(2_000)));
+		sessionManager.appendMessage(userMessage("raw continuation ".repeat(2_000)));
 		sessionManager.appendMessage(assistantMessage("continued after checkpoint", model));
+		const firstRawId = sessionManager.getBranch().find(entry => {
+			if (entry.type !== "message") return false;
+			return JSON.stringify(entry.message).includes("raw continuation");
+		})?.id;
+		expect(firstRawId).toBeDefined();
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 9_000, CONTEXT_WINDOW);
 		expect(maintenance.speculationState).toBe("armed");
 		expect(compactSpy).toHaveBeenCalledTimes(1);
@@ -238,11 +253,9 @@ describe("hot handoff speculative lifecycle", () => {
 		});
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
-		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).toBe(cursor);
-		const roles = agent.state.messages.map(message => message.role);
-		expect(roles[0]).toBe("compactionSummary");
-		expect(roles).toContain("user");
-		expect(agent.state.messages.some(message => JSON.stringify(message).includes("post-C delta"))).toBe(true);
+		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).toBe(firstRawId);
+		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).not.toBe(checkpointId);
+		expect(agent.state.messages.some(message => JSON.stringify(message).includes("raw continuation"))).toBe(true);
 	});
 
 	it("does not wedge the session when the speculative author fails", async () => {
@@ -259,10 +272,14 @@ describe("hot handoff speculative lifecycle", () => {
 		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
 		await waitForState("idle");
 		expect(sessionManager.getEntries().some(entry => entry.type === "compaction")).toBe(false);
+		expect(notices).toEqual([
+			{ level: "warning", message: "⚠ Hot Handoff failed — falling back to default compaction" },
+		]);
 
 		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
 		expect(compactSpy).toHaveBeenCalledTimes(2);
 		expect(compactSpy.mock.calls[1]![1].id).toBe(model.id);
+		expect(notices).toHaveLength(1);
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("stock fallback");
 	});
@@ -274,7 +291,7 @@ describe("hot handoff speculative lifecycle", () => {
 			started.resolve();
 			await release.promise;
 			return {
-				summary: "H(C) late",
+				summary: "Handoff Document late",
 				firstKeptEntryId: preparation.firstKeptEntryId,
 				tokensBefore: preparation.tokensBefore,
 				details: {},
@@ -289,10 +306,26 @@ describe("hot handoff speculative lifecycle", () => {
 
 		release.resolve();
 		await waitForState("armed");
+		sessionManager.appendMessage(userMessage("raw continuation"));
 		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 2_000, CONTEXT_WINDOW)).toBe(false);
 		await maintenance.runAutoCompaction("threshold", false, false, false, {
 			triggerContextTokens: THRESHOLD + 2_000,
 		});
 		expect(compactSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("uses the configured minimum speculation lead when larger than native", async () => {
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "unused",
+			firstKeptEntryId: sessionManager.getBranch().at(-1)!.id,
+			tokensBefore: 1,
+			details: {},
+		});
+		maintenance = createMaintenance({ minLead: 30_000 });
+		// Native lead is 17.5k; min lead 30k starts the band at threshold − 30k.
+		maintenance.maybeStartSpeculativeCompaction(THRESHOLD - 30_000 - 1, CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("idle");
+		maintenance.maybeStartSpeculativeCompaction(THRESHOLD - 30_000, CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("running");
 	});
 });

@@ -211,7 +211,7 @@ describe("hot handoff lifecycle", () => {
 		expect(hot?.completedAt).toBeUndefined();
 	});
 
-	it("injects Snapshot B into the next provider context without persisting it", async () => {
+	it("injects Resume State into the next provider context without persisting it", async () => {
 		await seedSession({
 			handoffMd: "## Objective\ncontinue",
 			modelRoles: { handoff: `${authorModel.provider}/${authorModel.id}` },
@@ -248,7 +248,7 @@ describe("hot handoff lifecycle", () => {
 		expect(second).toHaveLength(1);
 	});
 
-	it("does not inject Snapshot B into a different session", async () => {
+	it("does not inject Resume State into a different session", async () => {
 		await seedSession({
 			handoffMd: "## Objective\ncontinue",
 			modelRoles: { handoff: `${authorModel.provider}/${authorModel.id}` },

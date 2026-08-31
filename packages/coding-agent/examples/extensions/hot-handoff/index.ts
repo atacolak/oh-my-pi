@@ -17,15 +17,28 @@ function warnOnce(ctx: ExtensionContext, seen: { warned: boolean }, message: str
 	ctx.ui.notify(message, "warning");
 }
 
+function currentSessionId(ctx: ExtensionContext): string | undefined {
+	return ctx.sessionManager.getSessionId();
+}
+
 export default function hotHandoff(pi: ExtensionAPI): void {
 	pi.setLabel("Hot Handoff");
 
-	let pendingLiveStateInjection = false;
+	let pendingLiveStateInjection: { sessionId: string; version: typeof HOT_HANDOFF_VERSION } | undefined;
 	const missingAuthorWarning = { warned: false };
 	const sameAuthorWarning = { warned: false };
 	const emptyContractWarning = { warned: false };
 
-	pi.on("session.compacting", async (_event, ctx): Promise<SessionCompactingResult | undefined> => {
+	const clearPending = (): void => {
+		pendingLiveStateInjection = undefined;
+	};
+
+	pi.on("session.compacting", async (event, ctx): Promise<SessionCompactingResult | undefined> => {
+		// Blocking auto-maintenance after a failed/in-flight speculation must
+		// stay on stock compaction. Manual /compact and the speculative author
+		// still use the independent @handoff model.
+		if (event.source === "auto") return undefined;
+
 		const activation = await loadHotHandoffActivation(ctx.cwd);
 		if (!activation.contract) {
 			if (activation.disabledReason === "empty") {
@@ -72,22 +85,40 @@ export default function hotHandoff(pi: ExtensionAPI): void {
 					promptPath: ".omp/HANDOFF.md",
 					promptHash: activation.contract.hash,
 					startedAt,
-					completedAt: new Date().toISOString(),
 				},
 			},
 		};
 	});
 
-	pi.on("session_compact", async event => {
+	pi.on("session_compact", async (event, ctx) => {
 		const preserveData = event.compactionEntry.preserveData as { hotHandoff?: { version?: number } } | undefined;
-		if (preserveData?.hotHandoff?.version === HOT_HANDOFF_VERSION) {
-			pendingLiveStateInjection = true;
+		const sessionId = currentSessionId(ctx);
+		if (preserveData?.hotHandoff?.version === HOT_HANDOFF_VERSION && sessionId) {
+			pendingLiveStateInjection = { sessionId, version: HOT_HANDOFF_VERSION };
+			return;
 		}
+		clearPending();
+	});
+
+	pi.on("session_switch", async () => {
+		clearPending();
+	});
+	pi.on("session_branch", async () => {
+		clearPending();
+	});
+	pi.on("session_shutdown", async () => {
+		clearPending();
 	});
 
 	pi.on("context", async (event, ctx) => {
-		if (!pendingLiveStateInjection) return undefined;
-		pendingLiveStateInjection = false;
+		const pending = pendingLiveStateInjection;
+		if (!pending) return undefined;
+		const sessionId = currentSessionId(ctx);
+		if (!sessionId || pending.sessionId !== sessionId || pending.version !== HOT_HANDOFF_VERSION) {
+			clearPending();
+			return undefined;
+		}
+		pendingLiveStateInjection = undefined;
 		const snapshotB = await captureLiveState(ctx);
 		const capsule = `${LIVE_STATE_RESUME_PREFACE}\n\n${renderLiveState(snapshotB)}`;
 		const liveStateMessage: AgentMessage = {

@@ -303,8 +303,20 @@ describe("LSP diagnostics freshness", () => {
 		await resultPromise;
 
 		expect(getOrCreate).not.toHaveBeenCalled();
-		expect(getActiveOrPending).toHaveBeenNthCalledWith(1, TEST_SERVER, tempDir.path(), expect.any(AbortSignal));
-		expect(getActiveOrPending).toHaveBeenNthCalledWith(2, TEST_SERVER, tempDir.path(), expect.any(AbortSignal));
+		expect(getActiveOrPending).toHaveBeenNthCalledWith(
+			1,
+			TEST_SERVER,
+			tempDir.path(),
+			expect.any(AbortSignal),
+			undefined,
+		);
+		expect(getActiveOrPending).toHaveBeenNthCalledWith(
+			2,
+			TEST_SERVER,
+			tempDir.path(),
+			expect.any(AbortSignal),
+			undefined,
+		);
 		expect(sync).toHaveBeenCalledWith(client, filePath, "export const value = 1;\n", expect.any(AbortSignal));
 		expect(notifySaved).toHaveBeenCalledWith(client, filePath, expect.any(AbortSignal));
 	});

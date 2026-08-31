@@ -402,6 +402,11 @@ export interface SessionCompactingResult {
 	 * silently using the working model with a custom prompt.
 	 */
 	model?: string;
+	/**
+	 * Optional warning shown once if this compacting attempt fails and OMP
+	 * falls back to stock compaction. The extension owns the wording.
+	 */
+	failureNotice?: string;
 }
 
 /** Return type for `session_stop` handlers */

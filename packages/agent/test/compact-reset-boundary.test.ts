@@ -3,6 +3,7 @@ import {
 	type CompactionEntry,
 	DEFAULT_COMPACTION_SETTINGS,
 	prepareCompaction,
+	prepareCompactionThroughEntry,
 	type SessionEntry,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import { createAssistantMessage, createUserMessage } from "./helpers";
@@ -98,5 +99,37 @@ describe("prepareCompaction reset boundary", () => {
 		const summarized = JSON.stringify(prep?.messagesToSummarize ?? []);
 		expect(summarized).toContain("TAIL one");
 		expect(summarized).not.toContain("MID");
+	});
+});
+
+describe("prepareCompactionThroughEntry", () => {
+	test("includes stock recentMessages in the semantic input through the checkpoint", () => {
+		const entries: SessionEntry[] = [
+			userEntry("OLD one"),
+			assistantEntry("OLD one answer"),
+			userEntry("OLD two"),
+			assistantEntry("OLD two answer"),
+			userEntry("RECENT request"),
+			assistantEntry("RECENT answer"),
+		];
+		const checkpoint = entries.at(-1)!;
+		const stock = prepareCompaction(entries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1 });
+		expect(stock).toBeDefined();
+		expect(JSON.stringify(stock?.recentMessages ?? [])).toContain("RECENT");
+		expect(JSON.stringify(stock?.messagesToSummarize ?? [])).not.toContain("RECENT");
+
+		const through = prepareCompactionThroughEntry(
+			entries,
+			{ ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 1 },
+			checkpoint.id,
+		);
+		expect(through).toBeDefined();
+		expect(through?.firstKeptEntryId).toBe(checkpoint.id);
+		expect(through?.recentMessages).toEqual([]);
+		expect(through?.turnPrefixMessages).toEqual([]);
+		expect(through?.isSplitTurn).toBe(false);
+		const summarized = JSON.stringify(through?.messagesToSummarize ?? []);
+		expect(summarized).toContain("OLD one");
+		expect(summarized).toContain("RECENT");
 	});
 });

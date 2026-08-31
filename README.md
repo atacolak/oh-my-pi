@@ -1,3 +1,14 @@
+> [!NOTE]
+> ## `cap/hot-handoff` — Hot Handoff working-state compaction
+>
+> Fork-local capability: project-opted-in `.omp/HANDOFF.md` reconstructs semantic hot working state with an independent `@handoff` author on OMP's native speculative `soft` compaction path. Snapshot A is frozen at cursor C; every later session entry stays raw; Snapshot B is ephemeral resume-time runtime truth.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR(s):** Status: fork-local
+> - **Upstream base:** [OMP 18.0.11 (`9690622`)](https://github.com/can1357/oh-my-pi/tree/969062200754ea02cfac922e5ebb8c608c079e15)
+>
+> PR heads stay independently reviewable without this banner.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

@@ -128,6 +128,7 @@ The automatic paths are intentionally different:
   - If promotion is unavailable, auto maintenance walks `compaction.methodOrder` with `reason: "threshold"` and `willRetry: false`.
   - When `handoff` is the next runnable method, post-turn threshold maintenance normally schedules a post-prompt task that generates the handoff document and commits it as a compaction entry; pre-prompt and mid-turn checks run all methods inline to avoid racing the next turn.
   - On success, if `compaction.autoContinue !== false`, post-turn maintenance schedules an agent-authored developer auto-continue prompt from `prompts/system/auto-continue.md`; mid-turn maintenance never schedules a separate continuation because the core loop already owns the next provider request.
+  - Speculative compaction can generate the LLM summary in the `[threshold − lead, threshold)` band and commit it at threshold without a second summarizer call. See [hot-handoff.md](./hot-handoff.md) for the extension that uses this path as a semantic strategy.
 
 - **Idle maintenance**
   - Trigger: `runIdleCompaction()` when not streaming or already compacting.

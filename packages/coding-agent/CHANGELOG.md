@@ -9,13 +9,13 @@
 - Devin model selectors now accept the native CLI's short aliases (`devin/opus`, `devin/swe`), dotted upstream spellings (`devin/gemini-3.7-flash`), and raw effort-route wire uids for dynamically collapsed families ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
 - Added provider-supplied model metadata to the `/models` detail line: `new`, `beta`, and `recommended` badges beside the model name, and the upstream description after the context, cost, and perf facts ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
 - Standalone `CLAUDE.md` files in the project root (and ancestor directories) are now loaded as context, mirroring `AGENTS.md` discovery; config-directory context files still take precedence per scope.
+- Added a reusable hot-handoff extension that reconstructs semantic working state for opted-in projects (`.omp/HANDOFF.md`) using an independent `@handoff` author, native speculative compaction, a deterministic live-state capsule, and OMP's native compaction pipeline.
 
 ### Changed
 
 - Disabled `hashline` edit mode for Kimi, Mimo, DeepSeek Flash, and Stepfun models for stability
 - Extensions can return a one-off `model` selector from `session.compacting` for that native compaction request only, without changing the active session model.
 - `ExtensionContext.getAgentSnapshot()` exposes a sanitized read-only roster of running and idle non-advisor agents.
-- Added a reusable hot-handoff extension that reconstructs semantic working state for opted-in projects (`.omp/HANDOFF.md`) using an independent `@handoff` author, a deterministic live-state capsule, and OMP's native compaction pipeline.
 
 ### Fixed
 

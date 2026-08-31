@@ -201,9 +201,14 @@ describe("hot handoff lifecycle", () => {
 		expect(session!.sessionId).toBe(sessionId);
 		const compaction = sessionManager.getBranch().findLast(entry => entry.type === "compaction");
 		expect(compaction?.summary).toContain("finish the parser");
-		expect((compaction?.preserveData as { hotHandoff?: { version?: number } } | undefined)?.hotHandoff?.version).toBe(
-			1,
-		);
+		const hot = (
+			compaction?.preserveData as
+				| { hotHandoff?: { version?: number; completedAt?: string; startedAt?: string } }
+				| undefined
+		)?.hotHandoff;
+		expect(hot?.version).toBe(1);
+		expect(hot?.startedAt).toBeDefined();
+		expect(hot?.completedAt).toBeUndefined();
 	});
 
 	it("injects Snapshot B into the next provider context without persisting it", async () => {
@@ -225,7 +230,6 @@ describe("hot handoff lifecycle", () => {
 					promptPath: ".omp/HANDOFF.md",
 					promptHash: "abc",
 					startedAt: new Date().toISOString(),
-					completedAt: new Date().toISOString(),
 				},
 			},
 		});
@@ -242,6 +246,39 @@ describe("hot handoff lifecycle", () => {
 		expect(persisted).not.toContain(HOT_HANDOFF_CUSTOM_TYPE);
 		const second = await extensionRunner.emitContext(before);
 		expect(second).toHaveLength(1);
+	});
+
+	it("does not inject Snapshot B into a different session", async () => {
+		await seedSession({
+			handoffMd: "## Objective\ncontinue",
+			modelRoles: { handoff: `${authorModel.provider}/${authorModel.id}` },
+		});
+		vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "## Objective\ncontinue",
+			shortSummary: "hot",
+			firstKeptEntryId: sessionManager.getBranch().at(-1)!.id,
+			tokensBefore: 100,
+			details: {},
+			preserveData: {
+				hotHandoff: {
+					version: 1,
+					authorSelector: "@handoff",
+					resolvedAuthor: `${authorModel.provider}/${authorModel.id}`,
+					promptPath: ".omp/HANDOFF.md",
+					promptHash: "abc",
+					startedAt: new Date().toISOString(),
+				},
+			},
+		});
+		await session!.compact();
+		await extensionRunner.emit({
+			type: "session_switch",
+			reason: "new",
+			previousSessionFile: undefined,
+		});
+		const before = [{ role: "user", content: "hello", timestamp: Date.now() }] as AgentMessage[];
+		const after = await extensionRunner.emitContext(before);
+		expect(after).toHaveLength(1);
 	});
 
 	it("falls back to stock compaction when @handoff is the working model", async () => {

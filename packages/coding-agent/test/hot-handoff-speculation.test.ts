@@ -1,0 +1,298 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
+import type { AssistantMessage, Model, UserMessage } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionMaintenance, type SessionMaintenanceHost } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+
+const CONTEXT_WINDOW = 200_000;
+const THRESHOLD = 140_000;
+const LEAD = 17_500;
+const SPECULATION_BAND_START = THRESHOLD - LEAD;
+
+function userMessage(text: string): UserMessage {
+	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+}
+
+function assistantMessage(text: string, model: Model): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		stopReason: "stop",
+		usage: {
+			input: 10_000,
+			output: 100,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 10_100,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		timestamp: Date.now(),
+	};
+}
+
+describe("hot handoff speculative lifecycle", () => {
+	let authStorage: AuthStorage;
+	let modelRegistry: ModelRegistry;
+	let model: Model;
+	let authorModel: Model;
+	let sessionManager: SessionManager;
+	let maintenance: SessionMaintenance;
+	let agent: Agent;
+	let events: string[];
+	let compactingSources: Array<string | undefined>;
+
+	function appendSummarizableConversation(): void {
+		const text = "conversation ".repeat(8_000);
+		sessionManager.appendMessage(userMessage(text));
+		sessionManager.appendMessage(assistantMessage("response ".repeat(8_000), model));
+		sessionManager.appendMessage(userMessage(text));
+		sessionManager.appendMessage(assistantMessage("final response", model));
+	}
+
+	function createMaintenance(): SessionMaintenance {
+		agent = new Agent({
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": true,
+			"compaction.asyncEnabled": true,
+			"compaction.methodOrder": ["soft"],
+			"compaction.thresholdPercent": 70,
+			"compaction.keepRecentTokens": 1,
+			"compaction.autoContinue": false,
+		});
+		const extensionRunner = {
+			hasHandlers: (eventType: string) => eventType === "session.compacting",
+			emit: async (event: { type: string; source?: string }) => {
+				if (event.type !== "session.compacting") return undefined;
+				compactingSources.push(event.source);
+				if (event.source === "auto") return undefined;
+				return {
+					prompt: "independent handoff author",
+					model: `${authorModel.provider}/${authorModel.id}`,
+					preserveData: { hotHandoff: { version: 1, startedAt: new Date().toISOString() } },
+				};
+			},
+		};
+		const host = {
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+			extensionRunner,
+			sideStreamFn: async () => {
+				throw new Error("The compact seam should be used instead of the side stream");
+			},
+			providerSessionState: new Map(),
+			preferWebsockets: undefined,
+			model: () => model,
+			thinkingLevel: () => undefined,
+			isDisposed: () => false,
+			isStreaming: () => false,
+			isGeneratingHandoff: () => false,
+			promptGeneration: () => 0,
+			sessionId: () => sessionManager.getSessionId(),
+			messages: () => agent.state.messages,
+			baseSystemPrompt: () => ["Test"],
+			goalModeState: () => undefined,
+			planReferencePath: () => "",
+			nonMessageTokenSource: () => ({}),
+			memoryBackendSession: () => undefined,
+			emitSessionEvent: async (event: { type: string }) => {
+				events.push(event.type);
+			},
+			emitNotice: () => {},
+			schedulePostPromptTask: () => {},
+			scheduleAgentContinue: () => {},
+			scheduleCompactionContinuation: () => false,
+			persistTurnMessagesForMidRunCompaction: async () => false,
+			findLastAssistantMessage: () => undefined,
+			disconnectFromAgent: () => {},
+			reconnectToAgent: () => {},
+			drainStrandedQueuedMessages: () => {},
+			buildDisplaySessionContext: () => sessionManager.buildSessionContext(),
+			convertToLlmForSideRequest: (messages: AgentMessage[]) => messages as never,
+			obfuscateTextForProvider: (text: string | undefined) => text,
+			obfuscatePreparationForProvider: <T>(preparation: T) => preparation,
+			closeCodexProviderSessionsForHistoryRewrite: () => {},
+			resetCodexProviderAfterCompaction: () => {},
+			resetPlanReference: () => {},
+			syncTodoPhasesFromBranch: () => {},
+			resetAdvisorRuntimes: () => {},
+			rebaseAfterCompaction: () => {},
+			recordAnchoredHistoryRewrite: () => {},
+			getContextBreakdown: () => undefined,
+			getContextUsage: () => undefined,
+			shake: async () => ({ modified: false, tokensRemoved: 0 }),
+			dropImages: async () => ({ removed: 0 }),
+			generateHandoffDocument: async () => undefined,
+			removeAssistantMessageFromActiveContext: () => {},
+			dropPersistedAssistantTurn: async () => undefined,
+			runRecoveryCompactionWithRollback: async () => ({ deferredHandoff: false, continuationScheduled: false }),
+			parseRetryAfterMsFromError: () => undefined,
+			setModelTemporary: async () => {},
+			abort: async () => {},
+			abortHandoff: () => {},
+		} as unknown as SessionMaintenanceHost;
+		return new SessionMaintenance(host);
+	}
+
+	async function waitForState(state: "idle" | "running" | "armed"): Promise<void> {
+		for (let microtask = 0; microtask < 200 && maintenance.speculationState !== state; microtask++) {
+			await Promise.resolve();
+		}
+		if (maintenance.speculationState !== state) {
+			throw new Error(`Speculation did not become ${state} (was ${maintenance.speculationState})`);
+		}
+	}
+
+	beforeAll(async () => {
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.setRuntimeApiKey("openai", "test-key");
+		modelRegistry = new ModelRegistry(authStorage);
+		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const author = getBundledModel("openai", "gpt-5");
+		if (!bundled || !author) throw new Error("Expected built-in models");
+		model = { ...bundled, contextWindow: CONTEXT_WINDOW };
+		authorModel = author;
+	});
+
+	beforeEach(() => {
+		sessionManager = SessionManager.inMemory();
+		events = [];
+		compactingSources = [];
+		appendSummarizableConversation();
+		maintenance = createMaintenance();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	afterAll(() => {
+		authStorage.close();
+	});
+
+	it("starts the independent author before threshold and commits without a second call", async () => {
+		const compactSpy = vi
+			.spyOn(compactionModule, "compact")
+			.mockImplementation(async (preparation, compactModel) => ({
+				summary: "H(C)",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+				preserveData: { author: compactModel.id },
+			}));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START - 1, CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("idle");
+		expect(compactSpy).not.toHaveBeenCalled();
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("running");
+		await waitForState("armed");
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		expect(compactSpy.mock.calls[0]![1].id).toBe(authorModel.id);
+		expect(compactingSources).toEqual(["speculation"]);
+		expect(sessionManager.getEntries().some(entry => entry.type === "compaction")).toBe(false);
+
+		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("H(C)");
+	});
+
+	it("keeps every post-cursor entry when growth exceeds keepRecentTokens", async () => {
+		let cursor: string | undefined;
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
+			cursor = preparation.firstKeptEntryId;
+			return {
+				summary: "H(C)",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			};
+		});
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		expect(cursor).toBeDefined();
+
+		sessionManager.appendMessage(userMessage("post-C delta ".repeat(2_000)));
+		sessionManager.appendMessage(assistantMessage("continued after checkpoint", model));
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 9_000, CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("armed");
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+
+		await maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD + 9_000,
+		});
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).toBe(cursor);
+		const roles = agent.state.messages.map(message => message.role);
+		expect(roles[0]).toBe("compactionSummary");
+		expect(roles).toContain("user");
+		expect(agent.state.messages.some(message => JSON.stringify(message).includes("post-C delta"))).toBe(true);
+	});
+
+	it("does not wedge the session when the speculative author fails", async () => {
+		const compactSpy = vi
+			.spyOn(compactionModule, "compact")
+			.mockRejectedValueOnce(new Error("handoff author failed"))
+			.mockImplementation(async preparation => ({
+				summary: "stock fallback",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			}));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("idle");
+		expect(sessionManager.getEntries().some(entry => entry.type === "compaction")).toBe(false);
+
+		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(compactSpy.mock.calls[1]![1].id).toBe(model.id);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("stock fallback");
+	});
+
+	it("does not start a duplicate author when threshold arrives in flight", async () => {
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
+			started.resolve();
+			await release.promise;
+			return {
+				summary: "H(C) late",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			};
+		});
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await started.promise;
+		expect(maintenance.speculationState).toBe("running");
+		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 1_000, CONTEXT_WINDOW)).toBe(true);
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+
+		release.resolve();
+		await waitForState("armed");
+		expect(maintenance.deferThresholdCompactionToSpeculation(THRESHOLD + 2_000, CONTEXT_WINDOW)).toBe(false);
+		await maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD + 2_000,
+		});
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+	});
+});

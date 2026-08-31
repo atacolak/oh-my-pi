@@ -57,6 +57,22 @@ describe("workspaceRootForPath", () => {
 		const workspace = normalizeSessionWorkspace({ cwd: "/repo", directories: ["/other"] });
 		expect(workspaceRootForPath("/home/user/secret.py", workspace)).toBeNull();
 	});
+
+	it("matches a canonical file path when the workspace was opened through a symlink", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-symlink-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const filePath = path.join(realRoot, "src", "a.ts");
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "export const a = 1;\n");
+			const workspace = normalizeSessionWorkspace({ cwd: linkRoot });
+			expect(workspaceRootForPath(filePath, workspace)).toBe(path.resolve(linkRoot));
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+		}
+	});
 });
 
 describe("SessionManager workspace directories", () => {

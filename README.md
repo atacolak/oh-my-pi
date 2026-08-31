@@ -1,17 +1,17 @@
 > [!NOTE]
-> ## `cap/hindsight` — Hindsight retention + locked scope seam
+> ## `wip/hot-handoff-validation` — disposable Hot Handoff validation runtime
 >
-> Durable local capability: per-retain extraction strategy, conversation source timestamps, append-mode session retention, and the fork-local locked memory-scope seam (`hindsight.scopeTags` → retain/recall/reflect + exact `observation_scopes`, subset mental-model visibility).
+> Isolated composition of current upstream main plus selected `cap/*` tips and `cap/hot-handoff`. Not daily OMP. Do not install over `~/.bun/bin/omp`.
 >
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PRs:**
->   - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy *(open)*
->   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps *(merged)*
->   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention *(open)*
-> - **Fork-local:** locked `scope:personal` / `scope:coding` + `project:<repo>` routing — no upstream PR yet
-> - **Upstream base:** [OMP 18.0.11 (`51f0380`)](https://github.com/can1357/oh-my-pi/tree/51f03804476c3fd3c15748ae07e4849d1efc883b)
+> - **Upstream base:** [OMP 18.0.11 (`9690622`)](https://github.com/can1357/oh-my-pi/tree/969062200754ea02cfac922e5ebb8c608c079e15)
+> - **Capabilities:**
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — retention + locked scope seam
+>   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — `/extensions` inspector
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental `--alt` viewport
+>   - [`cap/hot-handoff`](https://github.com/atacolak/oh-my-pi/tree/cap/hot-handoff) — checkpoint-cut working-state compaction
 >
-> PR heads stay independently reviewable without this banner.
+> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

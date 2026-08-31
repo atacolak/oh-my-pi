@@ -33,7 +33,7 @@ export interface WritethroughOptions {
 	/** Transform diagnostics before surfacing them after a successful fetch. */
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
 	/** Additional session workspace directories used to bound nested project-root walks. */
-	additionalDirectories?: readonly string[];
+	additionalDirectories?: readonly string[] | (() => readonly string[] | undefined);
 	/** Session identity used to isolate shared-process client lifecycle. */
 	owner?: LspClientOwner;
 }
@@ -43,7 +43,7 @@ type ResolvedWritethroughOptions = {
 	enableFormat: boolean;
 	enableDiagnostics: boolean;
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
-	additionalDirectories?: readonly string[];
+	additionalDirectories?: readonly string[] | (() => readonly string[] | undefined);
 	owner?: LspClientOwner;
 };
 
@@ -317,7 +317,11 @@ async function runLspWritethrough(
 	const { enableFormat, enableDiagnostics } = options;
 	const contentAlreadyWritten = runOptions?.contentAlreadyWritten ?? false;
 
-	const workspaceRoots = sessionWorkspaceDirectories(cwd, options.additionalDirectories);
+	const additionalDirectories =
+		typeof options.additionalDirectories === "function"
+			? options.additionalDirectories()
+			: options.additionalDirectories;
+	const workspaceRoots = sessionWorkspaceDirectories(cwd, additionalDirectories);
 	let finalContent = content;
 	const writeContent = async (value: string) => writeFileWithFallback(dst, value, file);
 	const getWritePromise = once(() =>

@@ -78,6 +78,12 @@ export interface SessionCompactingEvent {
 	type: "session.compacting";
 	sessionId: string;
 	messages: AgentMessage[];
+	/**
+	 * Why this summarization is running. Optional for older emitters.
+	 * `speculation` is the background pre-threshold pass; `auto` is a blocking
+	 * maintenance pass; `manual` is `/compact`.
+	 */
+	source?: "manual" | "auto" | "speculation";
 }
 
 /** Fired after context compaction */

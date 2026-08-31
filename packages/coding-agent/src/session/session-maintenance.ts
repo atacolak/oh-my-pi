@@ -215,6 +215,12 @@ interface ArmedSpeculation {
 	snapshotLeafId: string;
 	/** Context size when speculation started; drives refresh-on-growth. */
 	contextTokensAtStart: number;
+	/**
+	 * When true, this armed summary describes history through the original
+	 * snapshot cursor. Do not recut on growth: post-cursor raw entries must
+	 * remain even if they exceed `keepRecentTokens`.
+	 */
+	lockCutPoint?: boolean;
 }
 
 /** One background speculative-compaction run and (once resolved) its armed result. */
@@ -857,7 +863,7 @@ export class SessionMaintenance {
 				}
 			}
 
-			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
+			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction, "manual");
 			if (compactionPrep.kind !== "fromHook") methodAttempted = true;
 			if (compactionPrep.kind === "needsLlm" && compactionPrep.hookModel) {
 				const override = resolveCompactionOverrideSelector(
@@ -1260,13 +1266,21 @@ export class SessionMaintenance {
 		const current = this.#speculation;
 		if (current) {
 			if (!current.armed) return; // one run at a time
-			// Refresh-on-growth: the armed summary's kept tail grows with every
-			// turn; once the growth exceeds the keep-recent budget, a fresh cut
-			// reclaims materially more context at apply time.
-			const growth = contextTokens - current.armed.contextTokensAtStart;
-			const refreshBudget = Math.max(settings.keepRecentTokens, SPECULATION_LEAD_MIN_TOKENS);
-			if (growth <= refreshBudget && this.#armedSpeculationValid(current.armed)) return;
-			this.cancelSpeculation();
+			if (current.armed.lockCutPoint) {
+				// Extension-authored summaries are bound to cursor C. Recutting
+				// to reclaim the keep-recent budget would drop post-C history
+				// that exists in neither the summary nor the tail.
+				if (this.#armedSpeculationValid(current.armed)) return;
+				this.cancelSpeculation();
+			} else {
+				// Refresh-on-growth: the armed summary's kept tail grows with every
+				// turn; once the growth exceeds the keep-recent budget, a fresh cut
+				// reclaims materially more context at apply time.
+				const growth = contextTokens - current.armed.contextTokensAtStart;
+				const refreshBudget = Math.max(settings.keepRecentTokens, SPECULATION_LEAD_MIN_TOKENS);
+				if (growth <= refreshBudget && this.#armedSpeculationValid(current.armed)) return;
+				this.cancelSpeculation();
+			}
 		}
 		const model = this.#model;
 		if (!model) return;
@@ -1373,7 +1387,7 @@ export class SessionMaintenance {
 				contextTokensAtStart: contextTokens,
 			};
 		} else {
-			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, undefined);
+			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, undefined, "speculation");
 			// No hookCompaction is passed above, so "fromHook" is unreachable;
 			// the guard just narrows the union.
 			if (compactionPrep.kind === "fromHook") return clear();
@@ -1428,6 +1442,7 @@ export class SessionMaintenance {
 				codexCompaction,
 				snapshotLeafId,
 				contextTokensAtStart: contextTokens,
+				lockCutPoint: Boolean(compactionPrep.hookPrompt || compactionPrep.hookModel),
 			};
 		}
 		if (signal.aborted || this.#speculation !== run) return;
@@ -2309,6 +2324,7 @@ export class SessionMaintenance {
 	async #prepareCompactionFromHooks(
 		preparation: CompactionPreparation,
 		hookCompaction: CompactionResult | undefined,
+		source: "manual" | "auto" | "speculation",
 	): Promise<
 		| {
 				kind: "fromHook";
@@ -2338,6 +2354,7 @@ export class SessionMaintenance {
 				type: "session.compacting",
 				sessionId: this.#host.sessionId(),
 				messages: compactMessages,
+				source,
 			})) as
 				| { context?: string[]; prompt?: string; preserveData?: Record<string, unknown>; model?: string }
 				| undefined;
@@ -3296,7 +3313,7 @@ export class SessionMaintenance {
 				}
 			}
 
-			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
+			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction, "auto");
 
 			// Handoff runs as a summary source: generate the document off the live
 			// context (cache-friendly side request), then commit it like any other

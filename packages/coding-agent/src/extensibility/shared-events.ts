@@ -78,6 +78,12 @@ export interface SessionCompactingEvent {
 	type: "session.compacting";
 	sessionId: string;
 	messages: AgentMessage[];
+	/**
+	 * Why this summarization is running. Optional for older emitters.
+	 * `speculation` is the background pre-threshold pass; `auto` is a blocking
+	 * maintenance pass; `manual` is `/compact`.
+	 */
+	source?: "manual" | "auto" | "speculation";
 }
 
 /** Fired after context compaction */
@@ -388,6 +394,19 @@ export interface SessionCompactingResult {
 	prompt?: string;
 	/** Custom data to store in compaction entry */
 	preserveData?: Record<string, unknown>;
+	/**
+	 * Optional one-off model selector for this native compaction request.
+	 * Resolved through the same model-matching path as `--model` / `ctx.models.resolve()`.
+	 * MUST NOT mutate the active session model. Exclusive to this request: if the
+	 * selector cannot be resolved or authenticated, compaction fails instead of
+	 * silently using the working model with a custom prompt.
+	 */
+	model?: string;
+	/**
+	 * Optional warning shown once if this compacting attempt fails and OMP
+	 * falls back to stock compaction. The extension owns the wording.
+	 */
+	failureNotice?: string;
 }
 
 /** Return type for `session_stop` handlers */

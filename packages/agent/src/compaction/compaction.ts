@@ -1428,6 +1428,68 @@ export function prepareCompaction(
 	};
 }
 
+/**
+ * Prepare a compaction whose semantic input is every active message from the
+ * previous readable compaction/reset boundary through `throughEntryId`.
+ *
+ * Unlike {@link prepareCompaction}, this does not honor `keepRecentTokens` as
+ * the semantic/raw cut. `firstKeptEntryId` is the checkpoint itself and is a
+ * placeholder until the caller derives the first real post-checkpoint entry.
+ */
+export function prepareCompactionThroughEntry(
+	pathEntries: SessionEntry[],
+	settings: CompactionSettings,
+	throughEntryId: string,
+	activeModel?: Model,
+): CompactionPreparation | undefined {
+	const throughIndex = pathEntries.findIndex(entry => entry.id === throughEntryId);
+	if (throughIndex < 0) return undefined;
+	const sliced = pathEntries.slice(0, throughIndex + 1);
+	if (sliced.length === 0 || sliced[sliced.length - 1].type === "compaction") return undefined;
+
+	let prevCompactionIndex = findReadableCompactionIndex(sliced, settings, activeModel);
+	let resetBoundaryIndex = -1;
+	for (let i = sliced.length - 1; i > prevCompactionIndex; i--) {
+		if (sliced[i].type === "reset_boundary") {
+			resetBoundaryIndex = i;
+			break;
+		}
+	}
+	if (resetBoundaryIndex > prevCompactionIndex) {
+		prevCompactionIndex = -1;
+	}
+	const boundaryStart = Math.max(prevCompactionIndex, resetBoundaryIndex) + 1;
+
+	const messagesToSummarize: AgentMessage[] = [];
+	for (let i = boundaryStart; i < sliced.length; i++) {
+		const msg = getMessageFromEntry(sliced[i]);
+		if (msg) messagesToSummarize.push(msg);
+	}
+
+	let previousSummary: string | undefined;
+	let previousPreserveData: Record<string, unknown> | undefined;
+	if (prevCompactionIndex >= 0) {
+		const prevCompaction = sliced[prevCompactionIndex] as CompactionEntry;
+		previousSummary = prevCompaction.summary;
+		previousPreserveData = prevCompaction.preserveData;
+	}
+	if (messagesToSummarize.length === 0 && !previousSummary) return undefined;
+
+	const lastUsage = getLastAssistantUsage(sliced);
+	return {
+		firstKeptEntryId: throughEntryId,
+		messagesToSummarize,
+		turnPrefixMessages: [],
+		recentMessages: [],
+		isSplitTurn: false,
+		tokensBefore: lastUsage ? calculateContextTokens(lastUsage) : 0,
+		previousSummary,
+		previousPreserveData,
+		fileOps: extractFileOperations(messagesToSummarize, sliced, prevCompactionIndex),
+		settings,
+	};
+}
+
 // ============================================================================
 // Main compaction function
 // ============================================================================

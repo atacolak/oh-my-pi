@@ -2740,6 +2740,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			localProtocolOptions,
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
+			() => (hasSession ? session.getAgentSnapshot() : { agents: [] }),
 		);
 
 		credentialDisabledTarget = extensionRunner;

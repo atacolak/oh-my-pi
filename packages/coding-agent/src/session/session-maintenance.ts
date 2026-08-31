@@ -30,6 +30,7 @@ import {
 	isTranscriptUsageAnchor,
 	NativeCompactionError,
 	prepareCompaction,
+	prepareCompactionThroughEntry,
 	RESCUE_SHAKE_CONFIG,
 	remotePreserveReusable,
 	resolveBudgetReserveTokens,
@@ -55,6 +56,7 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import type { ModelRegistry } from "../config/model-registry";
+import { getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
 import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { CompactionSettings as ConfiguredCompactionSettings, Settings } from "../config/settings";
 import type { ExtensionRunner, SessionBeforeCompactResult } from "../extensibility/extensions";
@@ -214,6 +216,11 @@ interface ArmedSpeculation {
 	snapshotLeafId: string;
 	/** Context size when speculation started; drives refresh-on-growth. */
 	contextTokensAtStart: number;
+	/**
+	 * When true, the semantic artifact is anchored to snapshotLeafId.
+	 * Everything after that checkpoint must remain raw; do not recut on growth.
+	 */
+	checkpointBound?: boolean;
 }
 
 /** One background speculative-compaction run and (once resolved) its armed result. */
@@ -230,6 +237,27 @@ function mergeLlmCompactionPreserveData(
 ): Record<string, unknown> | undefined {
 	const preserveData = { ...(hookPreserveData ?? {}), ...(resultPreserveData ?? {}) };
 	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
+}
+
+function resolveCompactionOverrideSelector(
+	selector: string | undefined,
+	availableModels: Model[],
+	settings: Settings,
+): Model | undefined {
+	const trimmed = selector?.trim();
+	if (!trimmed) return undefined;
+	return resolveModelFromString(trimmed, availableModels, getModelMatchPreferences(settings));
+}
+
+function exclusiveCompactionCandidates(override: Model | undefined, fallback: Model[]): Model[] {
+	return override ? [override] : fallback;
+}
+
+/** First active-path entry after a speculation checkpoint, if any. */
+function firstEntryIdAfter(branch: SessionEntry[], snapshotLeafId: string): string | undefined {
+	const idx = branch.findIndex(entry => entry.id === snapshotLeafId);
+	if (idx < 0) return undefined;
+	return branch[idx + 1]?.id;
 }
 
 /** Wrap a handoff document as a compaction summary: append the cumulative file-operations tag and derive entry details. */
@@ -792,7 +820,7 @@ export class SessionMaintenance {
 			const effectiveSettings = resolveMethodSettings(compactionSettings, selectedMethod);
 			const availableModels = this.#host.modelRegistry.getAvailable();
 			const requireProviderRemote = selectedMethod === "remote" && !effectiveSettings.remoteEndpoint;
-			const compactionCandidates = this.#getCompactionModelCandidates(
+			let compactionCandidates = this.#getCompactionModelCandidates(
 				availableModels,
 				requireProviderRemote
 					? candidate =>
@@ -842,8 +870,21 @@ export class SessionMaintenance {
 				}
 			}
 
-			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
+			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction, "manual");
 			if (compactionPrep.kind !== "fromHook") methodAttempted = true;
+			if (compactionPrep.kind === "needsLlm" && compactionPrep.hookModel) {
+				const override = resolveCompactionOverrideSelector(
+					compactionPrep.hookModel,
+					availableModels,
+					this.#host.settings,
+				);
+				if (!override) {
+					throw new Error(
+						`Compaction model override ${compactionPrep.hookModel} could not be resolved to an authenticated model.`,
+					);
+				}
+				compactionCandidates = exclusiveCompactionCandidates(override, compactionCandidates);
+			}
 
 			// Focus instructions require an LLM summary, so the preference resolver
 			// only selects snapcompact for an undirected manual compaction.
@@ -1228,17 +1269,29 @@ export class SessionMaintenance {
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return;
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 		if (contextTokens >= thresholdTokens) return; // real maintenance owns it now
-		if (thresholdTokens - contextTokens > resolveSpeculationLeadTokens(thresholdTokens)) return;
+		if (
+			thresholdTokens - contextTokens >
+			resolveSpeculationLeadTokens(thresholdTokens, settings.speculationMinLeadTokens)
+		)
+			return;
 		const current = this.#speculation;
 		if (current) {
 			if (!current.armed) return; // one run at a time
-			// Refresh-on-growth: the armed summary's kept tail grows with every
-			// turn; once the growth exceeds the keep-recent budget, a fresh cut
-			// reclaims materially more context at apply time.
-			const growth = contextTokens - current.armed.contextTokensAtStart;
-			const refreshBudget = Math.max(settings.keepRecentTokens, SPECULATION_LEAD_MIN_TOKENS);
-			if (growth <= refreshBudget && this.#armedSpeculationValid(current.armed)) return;
-			this.cancelSpeculation();
+			if (current.armed.checkpointBound) {
+				// Checkpoint-bound summaries describe history through snapshotLeafId.
+				// Recutting to reclaim the keep-recent budget would drop post-checkpoint
+				// history that exists in neither the handoff nor the raw continuation.
+				if (this.#armedSpeculationValid(current.armed)) return;
+				this.cancelSpeculation();
+			} else {
+				// Refresh-on-growth: the armed summary's kept tail grows with every
+				// turn; once the growth exceeds the keep-recent budget, a fresh cut
+				// reclaims materially more context at apply time.
+				const growth = contextTokens - current.armed.contextTokensAtStart;
+				const refreshBudget = Math.max(settings.keepRecentTokens, SPECULATION_LEAD_MIN_TOKENS);
+				if (growth <= refreshBudget && this.#armedSpeculationValid(current.armed)) return;
+				this.cancelSpeculation();
+			}
 		}
 		const model = this.#model;
 		if (!model) return;
@@ -1291,7 +1344,7 @@ export class SessionMaintenance {
 		if (!method) return false;
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 		const graceCapTokens = Math.min(
-			thresholdTokens + resolveSpeculationLeadTokens(thresholdTokens),
+			thresholdTokens + resolveSpeculationLeadTokens(thresholdTokens, settings.speculationMinLeadTokens),
 			contextWindow - SPECULATION_LEAD_MIN_TOKENS,
 		);
 		if (contextTokens >= graceCapTokens) return false;
@@ -1320,11 +1373,14 @@ export class SessionMaintenance {
 		const branch = this.#host.sessionManager.getBranch();
 		const snapshotLeafId = branch[branch.length - 1]?.id;
 		if (!snapshotLeafId) return clear();
-		const preparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
-		if (!preparation) return clear();
+		const stockPreparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
+		const checkpointPreparation = prepareCompactionThroughEntry(branch, effectiveSettings, snapshotLeafId, model);
+		if (!stockPreparation && !checkpointPreparation) return clear();
 		const signal = run.controller.signal;
 		let armed: ArmedSpeculation;
 		if (method === "handoff") {
+			const preparation = stockPreparation;
+			if (!preparation) return clear();
 			const generated = await this.#host.generateHandoffDocument(AUTO_HANDOFF_THRESHOLD_FOCUS, {
 				autoTriggered: true,
 				signal,
@@ -1345,44 +1401,76 @@ export class SessionMaintenance {
 				contextTokensAtStart: contextTokens,
 			};
 		} else {
-			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, undefined);
+			const hookSource = checkpointPreparation ?? stockPreparation;
+			if (!hookSource) return clear();
+			const compactionPrep = await this.#prepareCompactionFromHooks(hookSource, undefined, "speculation");
 			// No hookCompaction is passed above, so "fromHook" is unreachable;
 			// the guard just narrows the union.
 			if (compactionPrep.kind === "fromHook") return clear();
-			const candidates = this.#getCompactionModelCandidates(
-				this.#host.modelRegistry.getAvailable(),
+			const checkpointBound = Boolean(compactionPrep.hookModel);
+			const preparation = checkpointBound ? checkpointPreparation : stockPreparation;
+			if (!preparation) return clear();
+			const emitFailureNotice = () => {
+				const notice = compactionPrep.failureNotice?.trim();
+				if (notice) this.#host.emitNotice("warning", notice, "compaction");
+			};
+			const availableModels = this.#host.modelRegistry.getAvailable();
+			let candidates = this.#getCompactionModelCandidates(
+				availableModels,
 				method === "remote" && !effectiveSettings.remoteEndpoint
 					? candidate =>
 							candidate.provider === model.provider &&
 							shouldUseProviderNativeCompaction(candidate, effectiveSettings)
 					: undefined,
 			);
-			if (candidates.length === 0) return clear();
+			if (compactionPrep.hookModel) {
+				const override = resolveCompactionOverrideSelector(
+					compactionPrep.hookModel,
+					availableModels,
+					this.#host.settings,
+				);
+				if (!override) {
+					emitFailureNotice();
+					return clear();
+				}
+				candidates = exclusiveCompactionCandidates(override, candidates);
+			}
+			if (candidates.length === 0) {
+				if (checkpointBound) emitFailureNotice();
+				return clear();
+			}
 			const codexCompaction = createCodexCompactionContext({
 				trigger: "auto",
 				reason: "context_limit",
 				phase: "standalone_turn",
 			});
-			const result = await this.#compactWithFallbackModel(
-				preparation,
-				undefined,
-				signal,
-				{
-					promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
-					extraContext: compactionPrep.hookContext,
-					remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
-					codexCompaction,
-					// Isolate from the live turn: remote compaction transports key
-					// sticky provider sessions by sessionId, and a speculation
-					// overlapping the live stream must never interleave with it.
-					sessionId: `${this.#host.sessionId()}:spec:${Snowflake.next()}`,
-					preferWebsockets: false,
-				},
-				candidates,
-			);
+			let result: CompactionResult;
+			try {
+				result = await this.#compactWithFallbackModel(
+					preparation,
+					undefined,
+					signal,
+					{
+						promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
+						extraContext: compactionPrep.hookContext,
+						remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
+						codexCompaction,
+						// Isolate from the live turn: remote compaction transports key
+						// sticky provider sessions by sessionId, and a speculation
+						// overlapping the live stream must never interleave with it.
+						sessionId: `${this.#host.sessionId()}:spec:${Snowflake.next()}`,
+						preferWebsockets: false,
+					},
+					candidates,
+				);
+			} catch (error) {
+				if (checkpointBound) emitFailureNotice();
+				throw error;
+			}
 			armed = {
 				result: {
 					...result,
+					firstKeptEntryId: checkpointBound ? snapshotLeafId : result.firstKeptEntryId,
 					preserveData: mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData),
 				},
 				action: method === "remote" ? "remote" : "context-full",
@@ -1390,6 +1478,7 @@ export class SessionMaintenance {
 				codexCompaction,
 				snapshotLeafId,
 				contextTokensAtStart: contextTokens,
+				checkpointBound,
 			};
 		}
 		if (signal.aborted || this.#speculation !== run) return;
@@ -1443,7 +1532,16 @@ export class SessionMaintenance {
 		const settings = this.#host.settings.getGroup("compaction");
 		if (settings.asyncEnabled === false) return undefined;
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
-		return this.#armedSpeculationValid(run.armed) ? run.armed : undefined;
+		if (!this.#armedSpeculationValid(run.armed)) return undefined;
+		if (run.armed.checkpointBound) {
+			const nextId = firstEntryIdAfter(this.#host.sessionManager.getBranch(), run.armed.snapshotLeafId);
+			if (!nextId) return undefined;
+			return {
+				...run.armed,
+				result: { ...run.armed.result, firstKeptEntryId: nextId },
+			};
+		}
+		return run.armed;
 	}
 
 	/**
@@ -2271,6 +2369,7 @@ export class SessionMaintenance {
 	async #prepareCompactionFromHooks(
 		preparation: CompactionPreparation,
 		hookCompaction: CompactionResult | undefined,
+		source: "manual" | "auto" | "speculation",
 	): Promise<
 		| {
 				kind: "fromHook";
@@ -2286,23 +2385,41 @@ export class SessionMaintenance {
 				hookContext: string[] | undefined;
 				hookPrompt: string | undefined;
 				preserveData: Record<string, unknown> | undefined;
+				hookModel?: string;
+				failureNotice?: string;
 		  }
 	> {
 		let hookContext: string[] | undefined;
 		let hookPrompt: string | undefined;
 		let preserveData: Record<string, unknown> | undefined;
+		let hookModel: string | undefined;
+		let failureNotice: string | undefined;
 
 		if (!hookCompaction && this.#host.extensionRunner?.hasHandlers("session.compacting")) {
-			const compactMessages = preparation.messagesToSummarize.concat(preparation.turnPrefixMessages);
+			const compactMessages = preparation.messagesToSummarize.concat(
+				preparation.turnPrefixMessages,
+				preparation.recentMessages,
+			);
 			const result = (await this.#host.extensionRunner.emit({
 				type: "session.compacting",
 				sessionId: this.#host.sessionId(),
 				messages: compactMessages,
-			})) as { context?: string[]; prompt?: string; preserveData?: Record<string, unknown> } | undefined;
+				source,
+			})) as
+				| {
+						context?: string[];
+						prompt?: string;
+						preserveData?: Record<string, unknown>;
+						model?: string;
+						failureNotice?: string;
+				  }
+				| undefined;
 
 			hookContext = result?.context;
 			hookPrompt = result?.prompt;
 			preserveData = result?.preserveData;
+			hookModel = result?.model;
+			failureNotice = result?.failureNotice;
 		}
 
 		const memoryBackendContext = await this.#collectMemoryBackendContext(preparation);
@@ -2323,7 +2440,7 @@ export class SessionMaintenance {
 			};
 		}
 
-		return { kind: "needsLlm", hookContext, hookPrompt, preserveData };
+		return { kind: "needsLlm", hookContext, hookPrompt, preserveData, hookModel, failureNotice };
 	}
 
 	/**
@@ -3253,7 +3370,7 @@ export class SessionMaintenance {
 				}
 			}
 
-			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
+			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction, "auto");
 
 			// Handoff runs as a summary source: generate the document off the live
 			// context (cache-friendly side request), then commit it like any other
@@ -3449,7 +3566,7 @@ export class SessionMaintenance {
 				details = snapcompactResult.details;
 				preserveData = { ...(compactionPrep.preserveData ?? {}), ...(snapcompactResult.preserveData ?? {}) };
 			} else {
-				const candidates = this.#getCompactionModelCandidates(
+				let candidates = this.#getCompactionModelCandidates(
 					availableModels,
 					method === "remote" && !effectiveSettings.remoteEndpoint
 						? candidate =>
@@ -3457,6 +3574,19 @@ export class SessionMaintenance {
 								shouldUseProviderNativeCompaction(candidate, effectiveSettings)
 						: undefined,
 				);
+				if (compactionPrep.hookModel) {
+					const override = resolveCompactionOverrideSelector(
+						compactionPrep.hookModel,
+						availableModels,
+						this.#host.settings,
+					);
+					if (!override) {
+						throw new Error(
+							`Compaction model override ${compactionPrep.hookModel} could not be resolved to an authenticated model.`,
+						);
+					}
+					candidates = exclusiveCompactionCandidates(override, candidates);
+				}
 				const retrySettings = this.#host.settings.getGroup("retry");
 				const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
 				let compactResult: CompactionResult | undefined;

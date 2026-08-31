@@ -73,7 +73,7 @@ export function computeCompactionBoundaries(
 	const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
 	if (!(thresholdTokens > 0) || thresholdTokens > contextWindow) return null;
 	const speculates = configured.asyncEnabled !== false && resolveSpeculationMethod(model, configured) !== undefined;
-	const leadTokens = resolveSpeculationLeadTokens(thresholdTokens);
+	const leadTokens = resolveSpeculationLeadTokens(thresholdTokens, configured.speculationMinLeadTokens);
 	return {
 		thresholdPercent: (thresholdTokens / contextWindow) * 100,
 		speculationPercent: speculates ? (Math.max(0, thresholdTokens - leadTokens) / contextWindow) * 100 : null,

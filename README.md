@@ -9,7 +9,7 @@
 >   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps *(merged)*
 >   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention *(open)*
 > - **Fork-local:** locked `scope:personal` / `scope:coding` + `project:<repo>` routing — no upstream PR yet
-> - **Upstream base:** [OMP 18.0.11 (`51f0380`)](https://github.com/can1357/oh-my-pi/tree/51f03804476c3fd3c15748ae07e4849d1efc883b)
+> - **Upstream base:** [OMP 18.0.11 (`65f79e7`)](https://github.com/can1357/oh-my-pi/tree/65f79e76fcc89b96632fe86a598f314bd7cfc725)
 >
 > PR heads stay independently reviewable without this banner.
 

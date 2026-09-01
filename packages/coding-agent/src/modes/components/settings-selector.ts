@@ -1524,15 +1524,29 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	/**
-	 * Close the selector. Alt+S previews the selected layer's theme through
-	 * onThemePreview, which swaps the exported theme instance; reload the
-	 * effective theme so closing does not keep rendering with a scope whose
-	 * theme was never persisted.
+	 * Close the selector. Alt+S previews the selected layer's theme and
+	 * status line; reload the effective appearance so closing does not keep
+	 * rendering a scope that was never persisted.
 	 */
 	#close(): void {
 		const themeName = this.#effectiveThemeName();
 		if (themeName) void this.callbacks.onThemePreview?.(themeName);
+		this.#triggerEffectiveStatusLinePreview();
 		this.callbacks.onCancel();
+	}
+
+	#triggerEffectiveStatusLinePreview(): void {
+		this.callbacks.onStatusLinePreview?.({
+			preset: settings.get("statusLine.preset"),
+			leftSegments: settings.get("statusLine.leftSegments"),
+			rightSegments: settings.get("statusLine.rightSegments"),
+			separator: settings.get("statusLine.separator"),
+			showHookStatus: settings.get("statusLine.showHookStatus"),
+			sessionAccent: settings.get("statusLine.sessionAccent"),
+			transparent: settings.get("statusLine.transparent"),
+			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+			contextLine: settings.get("statusLine.contextLine"),
+		});
 	}
 
 	#inheritSelectedSetting(): void {

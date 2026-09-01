@@ -495,6 +495,52 @@ describe("Settings", () => {
 				ask: { enabled: false },
 			});
 		});
+
+		it("preserves a same-key external project edit made after a local save was queued", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "dark-one" } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.set("theme.dark", "titanium", "project");
+			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "alabaster" } }, null, 2));
+			await settings.flush();
+			expect(settings.get("theme.dark")).toBe("alabaster");
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				theme: { dark: "alabaster" },
+			});
+		});
+
+		it("fires runtime hooks for an adopted sibling project edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: string[] = [];
+			const unsubscribe = onAppendOnlyModeChanged(value => {
+				received.push(value);
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							theme: { dark: "dark-one" },
+							ask: { enabled: true },
+							provider: { appendOnlyContext: "off" },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("provider.appendOnlyContext")).toBe("off");
+				expect(received).toEqual(["off"]);
+			} finally {
+				unsubscribe();
+			}
+		});
 	});
 
 	describe("shell configuration errors", () => {

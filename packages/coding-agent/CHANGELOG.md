@@ -12,6 +12,10 @@
 
 - Hindsight now retains any remaining below-cadence session tail on clean close (`AgentSession.dispose` / session-memory teardown), independent of `retainUpdateMode`.
 
+### Fixed
+
+- Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
+
 ## [18.1.0] - 2026-09-01
 
 ### Added

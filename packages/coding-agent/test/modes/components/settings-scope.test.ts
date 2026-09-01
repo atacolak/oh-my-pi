@@ -430,6 +430,37 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(previews.at(-1)?.preset).toBe("full");
 		expect(previews.at(-1)?.showHookStatus).toBe(true);
 	});
+
+	it("keeps the selected scope's status-line preview after committing a submenu", () => {
+		settings.set("statusLine.preset", "minimal", "project");
+		settings.set("statusLine.preset", "full", "global");
+		const previews: Array<{ preset?: string }> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: [],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onStatusLinePreview: payload => {
+					previews.push(payload);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)?.preset).toBe("full");
+		for (const ch of "status line preset") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		expect(settings.getGlobalValue("statusLine.preset")).toBe("nerd");
+		expect(settings.get("statusLine.preset")).toBe("minimal");
+		expect(previews.at(-1)?.preset).toBe("nerd");
+	});
 	it("clears a provider limit inherited from the global layer when editing in project scope", () => {
 		// Global caps "anthropic"; the project layer has no override. A project
 		// edit must be able to clear that cap without a leftover global record

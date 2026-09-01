@@ -12,7 +12,9 @@ import {
 	normalizeProviderMaxInFlightRequests,
 	onAppendOnlyModeChanged,
 	onCodeModeChanged,
+	onConversationFlowChanged,
 	onModelRolesChanged,
+	onSessionRuntimeChanged,
 	onStatusLineSessionAccentChanged,
 	resetSettingsForTest,
 	type SettingPath,
@@ -350,6 +352,20 @@ describe("Settings", () => {
 			expect(settings.get("steeringMode")).toBe("one-at-a-time");
 		});
 
+		it("lets a native queueMode alias win over a non-native steeringMode", async () => {
+			await fs.promises.mkdir(path.join(projectDir, ".claude"), { recursive: true });
+			await Bun.write(
+				path.join(projectDir, ".claude", "settings.json"),
+				`${JSON.stringify({ steeringMode: "all" }, null, 2)}\n`,
+			);
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ queueMode: "one-at-a-time" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("steeringMode")).toBe("one-at-a-time");
+			settings.set("ask.enabled", true, "project");
+			expect(settings.get("steeringMode")).toBe("one-at-a-time");
+		});
+
 		it("resolves project-scope values without config overlays", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: false } }, null, 2));
@@ -489,6 +505,159 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
+		it("clears a quoted-dotted unexpected-stop alias on inherit", async () => {
+			await writeSettings({ features: { unexpectedStopDetection: "mechanical" } });
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, '"features.unexpectedStopDetection": false\n');
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("features.unexpectedStopDetection")).toBe("none");
+			expect(settings.clearProject("features.unexpectedStopDetection")).toBe(true);
+			expect(settings.get("features.unexpectedStopDetection")).toBe("mechanical");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears migrated native power aliases on inherit", async () => {
+			await writeSettings({ power: { sleepPrevention: "idle" } });
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						power: {
+							preventIdleSleep: false,
+							preventSystemSleep: false,
+							declareUserActive: false,
+							preventDisplaySleep: false,
+						},
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("power.sleepPrevention")).toBe("off");
+			expect(settings.clearProject("power.sleepPrevention")).toBe(true);
+			expect(settings.get("power.sleepPrevention")).toBe("idle");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears migrated provider preference aliases on inherit", async () => {
+			await writeSettings({
+				providers: { webSearchOrder: ["exa"], imageOrder: ["openai-codex"] },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearch: "brave", image: "openai" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("providers.webSearchOrder")).toEqual([
+				"brave",
+				...SEARCH_PROVIDER_ORDER.filter(id => id !== "brave"),
+			]);
+			expect(settings.get("providers.imageOrder")).toEqual([
+				"openai",
+				...AUTO_IMAGE_PROVIDER_ORDER.filter(id => id !== "openai"),
+			]);
+			expect(settings.clearProject("providers.webSearchOrder")).toBe(true);
+			expect(settings.clearProject("providers.imageOrder")).toBe(true);
+			expect(settings.get("providers.webSearchOrder")).toEqual(["exa"]);
+			expect(settings.get("providers.imageOrder")).toEqual(["openai-codex"]);
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears migrated nested-leaf and service-tier aliases on inherit", async () => {
+			await writeSettings({
+				todo: { remindersMax: 5 },
+				dev: { autoqaConsent: "granted" },
+				tier: { openai: "none", anthropic: "none", google: "none", subagent: "inherit", advisor: "none" },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						todo: { reminders: { max: 1 } },
+						dev: { autoqa: { consent: "denied" } },
+						serviceTier: "priority",
+						serviceTierSubagent: "flex",
+						serviceTierAdvisor: "priority",
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("todo.remindersMax")).toBe(1);
+			expect(settings.get("dev.autoqaConsent")).toBe("denied");
+			expect(settings.get("tier.openai")).toBe("priority");
+			expect(settings.get("tier.anthropic")).toBe("priority");
+			expect(settings.get("tier.google")).toBe("priority");
+			expect(settings.get("tier.subagent")).toBe("flex");
+			expect(settings.get("tier.advisor")).toBe("priority");
+			expect(settings.clearProject("todo.remindersMax")).toBe(true);
+			expect(settings.clearProject("dev.autoqaConsent")).toBe(true);
+			expect(settings.clearProject("tier.openai")).toBe(true);
+			expect(settings.clearProject("tier.subagent")).toBe(true);
+			expect(settings.clearProject("tier.advisor")).toBe(true);
+			expect(settings.get("todo.remindersMax")).toBe(5);
+			expect(settings.get("dev.autoqaConsent")).toBe("granted");
+			expect(settings.get("tier.openai")).toBe("none");
+			expect(settings.get("tier.anthropic")).toBe("priority");
+			expect(settings.get("tier.google")).toBe("priority");
+			expect(settings.get("tier.subagent")).toBe("inherit");
+			expect(settings.get("tier.advisor")).toBe("none");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				tier: { anthropic: "priority", google: "priority" },
+			});
+			expect(settings.clearProject("tier.anthropic")).toBe(true);
+			expect(settings.clearProject("tier.google")).toBe(true);
+			expect(settings.get("tier.anthropic")).toBe("none");
+			expect(settings.get("tier.google")).toBe("none");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears migrated mnemosyne, hindsight, and exa aliases on inherit", async () => {
+			await writeSettings({
+				mnemopi: { dbPath: "/tmp/global.db" },
+				hindsight: { scoping: "global", bankId: "global-bank" },
+				exa: { enabled: true },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						mnemosyne: { dbPath: "/tmp/old.db" },
+						hindsight: { dynamicBankId: true, agentName: "ada-cli" },
+						exa: { enableSearch: false },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/old.db");
+			expect(settings.get("hindsight.scoping")).toBe("per-project");
+			expect(settings.get("hindsight.bankId")).toBe("ada-cli");
+			expect(settings.get("exa.enabled")).toBe(false);
+			expect(settings.clearProject("mnemopi.dbPath")).toBe(true);
+			expect(settings.clearProject("hindsight.scoping")).toBe(true);
+			expect(settings.clearProject("hindsight.bankId")).toBe(true);
+			expect(settings.clearProject("exa.enabled")).toBe(true);
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/global.db");
+			expect(settings.get("hindsight.scoping")).toBe("global");
+			expect(settings.get("hindsight.bankId")).toBe("global-bank");
+			expect(settings.get("exa.enabled")).toBe(true);
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
 		it("preserves a newer alias-backed project value when a migrated clear is stale", async () => {
 			await writeSettings({ steeringMode: "all" });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
@@ -537,6 +706,98 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 				theme: { dark: "alabaster" },
 			});
+		});
+
+		it("fires conversation-flow hooks after skipping a stale project queue-mode write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: true } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: string[] = [];
+			const unsubscribe = onConversationFlowChanged(() => {
+				received.push(settings.get("steeringMode"));
+			});
+			try {
+				settings.set("steeringMode", "all", "project");
+				expect(received).toEqual(["all"]);
+				await Bun.write(projectConfigPath, YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2));
+				await settings.flush();
+				expect(settings.get("steeringMode")).toBe("one-at-a-time");
+				expect(received).toEqual(["all", "one-at-a-time"]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					steeringMode: "one-at-a-time",
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after skipping a stale project thinking write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<"auto" | Effort> = [];
+			const unsubscribe = onSessionRuntimeChanged(() => {
+				received.push(settings.get("defaultThinkingLevel"));
+			});
+			try {
+				settings.set("defaultThinkingLevel", Effort.High, "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: Effort.Medium }, null, 2));
+				await settings.flush();
+				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
+				expect(received).toEqual([Effort.Medium]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					defaultThinkingLevel: Effort.Medium,
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after skipping a stale project memory-backend write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ memory: { backend: "builtin" } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: string[] = [];
+			const unsubscribe = onSessionRuntimeChanged(() => {
+				received.push(settings.get("memory.backend"));
+			});
+			try {
+				settings.set("memory.backend", "hindsight", "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ memory: { backend: "off" } }, null, 2));
+				await settings.flush();
+				expect(settings.get("memory.backend")).toBe("off");
+				expect(received).toEqual(["off"]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					memory: { backend: "off" },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after skipping a stale project autocompleteMaxVisible write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 10 }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: number[] = [];
+			const unsubscribe = onSessionRuntimeChanged(() => {
+				received.push(settings.get("autocompleteMaxVisible"));
+			});
+			try {
+				settings.set("autocompleteMaxVisible", 20, "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 7 }, null, 2));
+				await settings.flush();
+				expect(settings.get("autocompleteMaxVisible")).toBe(7);
+				expect(received).toEqual([7]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					autocompleteMaxVisible: 7,
+				});
+			} finally {
+				unsubscribe();
+			}
 		});
 
 		it("fires runtime hooks for an adopted sibling project edit", async () => {

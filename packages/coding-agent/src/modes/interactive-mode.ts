@@ -63,6 +63,7 @@ import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import {
 	isSettingsInitialized,
 	onModelRolesChanged,
+	onSessionRuntimeChanged,
 	onStatusLineSessionAccentChanged,
 	Settings,
 	settings,
@@ -1366,6 +1367,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(
 			onModelRolesChanged(() => {
 				void this.#reapplyPlanModeModelOnRoleChange();
+			}),
+		);
+		this.#eventBusUnsubscribers.push(
+			onSessionRuntimeChanged(() => {
+				this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
 			}),
 		);
 		this.#eventBusUnsubscribers.push(

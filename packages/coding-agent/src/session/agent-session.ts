@@ -111,8 +111,10 @@ import type { Settings, SkillsSettings } from "../config/settings";
 import {
 	onAppendOnlyModeChanged,
 	onCodeModeChanged,
+	onConversationFlowChanged,
 	onExtendedContextChanged,
 	onModelRolesChanged,
+	onSessionRuntimeChanged,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
@@ -559,6 +561,8 @@ export class AgentSession {
 	#unsubscribeModelRoles?: () => void;
 	#unsubscribeExtendedContext?: () => void;
 	#unsubscribeCodeMode?: () => void;
+	#unsubscribeConversationFlow?: () => void;
+	#unsubscribeSessionRuntime?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
 	#eventListeners: AgentSessionEventListener[] = [];
@@ -1749,6 +1753,30 @@ export class AgentSession {
 		this.#unsubscribeCodeMode = onCodeModeChanged(() => {
 			void this.#tools.reconcileCodeMode().catch(error => {
 				logger.warn("Code Mode reconcile after setting change failed", { error: String(error) });
+			});
+		});
+		this.#unsubscribeConversationFlow = onConversationFlowChanged(() => {
+			this.setSteeringMode(this.settings.get("steeringMode"), false);
+			this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			this.setInterruptMode(this.settings.get("interruptMode"), false);
+		});
+		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged(() => {
+			this.setSteeringMode(this.settings.get("steeringMode"), false);
+			this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			this.setInterruptMode(this.settings.get("interruptMode"), false);
+			this.setThinkingLevel(this.settings.get("defaultThinkingLevel"), false);
+			this.setAdvisorEnabled(this.settings.get("advisor.enabled"));
+			void this.applyMemoryBackend().catch(error => {
+				logger.warn("Memory backend reconcile after skipped project save failed", { error: String(error) });
+			});
+			void this.applyInspectImageModeChange().catch(error => {
+				logger.warn("Inspect-image mode reconcile after skipped project save failed", { error: String(error) });
+			});
+			void this.setThinkToolEnabled(this.settings.get("externalThinking")).catch(error => {
+				logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
+			});
+			void this.refreshBaseSystemPrompt().catch(error => {
+				logger.warn("System prompt reconcile after skipped project save failed", { error: String(error) });
 			});
 		});
 
@@ -4419,6 +4447,14 @@ export class AgentSession {
 		if (this.#unsubscribeCodeMode) {
 			this.#unsubscribeCodeMode();
 			this.#unsubscribeCodeMode = undefined;
+		}
+		if (this.#unsubscribeConversationFlow) {
+			this.#unsubscribeConversationFlow();
+			this.#unsubscribeConversationFlow = undefined;
+		}
+		if (this.#unsubscribeSessionRuntime) {
+			this.#unsubscribeSessionRuntime();
+			this.#unsubscribeSessionRuntime = undefined;
 		}
 		this.#eventListeners = [];
 		this.#runStateListeners.clear();

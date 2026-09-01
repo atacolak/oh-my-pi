@@ -1960,14 +1960,12 @@ export class Settings {
 		let shellPathSource: string | undefined;
 		let withoutNativeShellPathSource: string | undefined;
 		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
-		let merged: RawSettings = {};
 		let withoutNative: RawSettings = {};
 		try {
 			const result = await loadCapability(settingsCapability.id, { cwd: this.#cwd });
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level !== "project") continue;
 				const data = dropSettingsGroupShadows(item.data as RawSettings, item.path);
-				merged = this.#deepMerge(merged, data);
 				if (path.normalize(item.path) !== path.normalize(projectConfigPath)) {
 					withoutNative = this.#deepMerge(withoutNative, data);
 					if (Object.hasOwn(data, "shellPath")) withoutNativeShellPathSource = item.path;
@@ -1984,19 +1982,24 @@ export class Settings {
 			? await this.#loadYamlIfPresentForStartup(projectConfigPath)
 			: this.#unwrapYamlLoadResult(projectConfigPath, await this.#loadYamlIfPresent(projectConfigPath, false));
 		const nativeProject = loadedNativeProject ?? {};
+		withoutNative = this.#migrateRawSettings(withoutNative, quarantineInvalid);
 		// Native `.omp/config.yml` is the /settings project-scope write target.
 		// Overlay it last so a same-key `.claude/settings.json` (or other project
-		// source) cannot hide a native edit across reload.
+		// source) cannot hide a native edit across reload. Migrate each layer
+		// first: a native legacy alias must still win over a lower-layer
+		// canonical key instead of being blocked by an already-present path.
+		let settings = withoutNative;
 		if (loadedNativeProject !== null) {
-			merged = this.#deepMerge(merged, nativeProject);
+			const native = this.#migrateRawSettings(structuredClone(nativeProject), quarantineInvalid);
+			settings = this.#deepMerge(withoutNative, native);
 			if (Object.hasOwn(nativeProject, "shellPath")) {
 				shellPathSource = projectConfigPath;
 			}
 		}
 		return {
-			settings: this.#migrateRawSettings(merged, quarantineInvalid),
+			settings,
 			fileSettings: structuredClone(nativeProject),
-			withoutNative: this.#migrateRawSettings(withoutNative, quarantineInvalid),
+			withoutNative,
 			configExists: loadedNativeProject !== null,
 			shellPathSource,
 			withoutNativeShellPathSource,
@@ -2152,6 +2155,101 @@ export class Settings {
 					delete target.theme;
 				}
 			}
+		}
+		if (path === "features.unexpectedStopDetection") {
+			delete target["features.unexpectedStopDetection"];
+		}
+		if (path === "power.sleepPrevention") {
+			deleteByPath(target, ["power", "preventIdleSleep"]);
+			deleteByPath(target, ["power", "preventSystemSleep"]);
+			deleteByPath(target, ["power", "declareUserActive"]);
+			deleteByPath(target, ["power", "preventDisplaySleep"]);
+			delete target["power.preventIdleSleep"];
+			delete target["power.preventSystemSleep"];
+			delete target["power.declareUserActive"];
+			delete target["power.preventDisplaySleep"];
+		}
+		if (path === "providers.webSearchOrder") {
+			deleteByPath(target, ["providers", "webSearch"]);
+			delete target["providers.webSearch"];
+		}
+		if (path === "providers.imageOrder") {
+			deleteByPath(target, ["providers", "image"]);
+			delete target["providers.image"];
+		}
+		if (path === "todo.remindersMax") {
+			deleteByPath(target, ["todo", "reminders", "max"]);
+			delete target["todo.reminders.max"];
+		}
+		if (path === "dev.autoqaConsent") {
+			deleteByPath(target, ["dev", "autoqa", "consent"]);
+			delete target["dev.autoqa.consent"];
+		}
+		if (path === "tier.subagent") {
+			delete target.serviceTierSubagent;
+		}
+		if (path === "tier.advisor") {
+			delete target.serviceTierAdvisor;
+		}
+		if (path === "tier.openai" || path === "tier.anthropic" || path === "tier.google") {
+			const legacy = target.serviceTier;
+			if (typeof legacy === "string") {
+				const mapped: Record<string, string> = {};
+				switch (legacy) {
+					case "priority":
+						mapped.openai = "priority";
+						mapped.anthropic = "priority";
+						mapped.google = "priority";
+						break;
+					case "openai-only":
+						mapped.openai = "priority";
+						break;
+					case "claude-only":
+						mapped.anthropic = "priority";
+						break;
+					case "auto":
+					case "default":
+					case "flex":
+					case "scale":
+						mapped.openai = legacy;
+						break;
+				}
+				const family = path.slice("tier.".length);
+				if (family in mapped) {
+					delete mapped[family];
+					const tierObj = isRecord(target.tier) ? target.tier : {};
+					for (const [name, value] of Object.entries(mapped)) {
+						if (!(name in tierObj)) {
+							tierObj[name] = value;
+						}
+					}
+					if (Object.keys(tierObj).length > 0) {
+						target.tier = tierObj;
+					} else {
+						delete target.tier;
+					}
+					delete target.serviceTier;
+				}
+			}
+		}
+		if (path.startsWith("mnemopi.")) {
+			delete target.mnemosyne;
+		}
+		if (path === "hindsight.scoping") {
+			deleteByPath(target, ["hindsight", "dynamicBankId"]);
+			delete target["hindsight.dynamicBankId"];
+		}
+		if (path === "hindsight.bankId") {
+			deleteByPath(target, ["hindsight", "agentName"]);
+			delete target["hindsight.agentName"];
+		}
+		if (path === "exa.enabled") {
+			deleteByPath(target, ["exa", "enableSearch"]);
+			deleteByPath(target, ["exa", "enableResearcher"]);
+			deleteByPath(target, ["exa", "enableWebsets"]);
+			delete target["exa.enableSearch"];
+			delete target["exa.enableResearcher"];
+			delete target["exa.enableWebsets"];
 		}
 	}
 
@@ -3132,6 +3230,7 @@ export class Settings {
 			sessionAccent: this.get("statusLine.sessionAccent"),
 		};
 		const previousCodeModeValues = this.#codeModeSignalSnapshot();
+		const skippedProjectPaths: string[] = [];
 		const previousHookValues = new Map<SettingPath, unknown>();
 		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 			previousHookValues.set(key, this.get(key));
@@ -3150,6 +3249,7 @@ export class Settings {
 					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(projectFileAtStart) : {});
 				let shouldWrite = false;
 				const skippedProjectModelRoles: string[] = [];
+
 				for (const modifiedPath of modifiedPaths) {
 					const segments = modifiedPath.split(".");
 					const mutation = modifiedPathMutations.get(modifiedPath);
@@ -3163,6 +3263,7 @@ export class Settings {
 							path: projectConfigPath,
 							setting: modifiedPath,
 						});
+						skippedProjectPaths.push(modifiedPath);
 						continue;
 					}
 					const value = getByPath(projectFileAtStart, segments);
@@ -3203,7 +3304,6 @@ export class Settings {
 					await this.#writeYamlAtomically(writePath, projectSettings);
 					this.#projectConfigExists = true;
 				}
-
 				this.#quarantinedYamlTargets.delete(projectConfigPath);
 
 				// Retain changes queued while the write lock was pending in the
@@ -3286,6 +3386,9 @@ export class Settings {
 			if (!Bun.deepEquals(next, previous)) {
 				SETTING_HOOKS[key]?.(next, previous);
 			}
+		}
+		if (skippedProjectPaths.some(modifiedPath => Object.hasOwn(SESSION_RUNTIME_PATHS, modifiedPath))) {
+			sessionRuntimeSignal.fire();
 		}
 	}
 
@@ -3435,6 +3538,33 @@ class SettingSignal<A extends unknown[] = []> {
 	}
 }
 
+const SESSION_RUNTIME_PATHS: Record<
+	| "advisor.enabled"
+	| "autocompleteMaxVisible"
+	| "defaultThinkingLevel"
+	| "externalThinking"
+	| "followUpMode"
+	| "inspect_image.mode"
+	| "interruptMode"
+	| "memory.backend"
+	| "personality"
+	| "steeringMode"
+	| "tools.xdevDocs",
+	true
+> = {
+	"advisor.enabled": true,
+	autocompleteMaxVisible: true,
+	defaultThinkingLevel: true,
+	externalThinking: true,
+	followUpMode: true,
+	"inspect_image.mode": true,
+	interruptMode: true,
+	"memory.backend": true,
+	personality: true,
+	steeringMode: true,
+	"tools.xdevDocs": true,
+};
+
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"theme.dark": value => {
 		if (typeof value === "string") {
@@ -3465,6 +3595,9 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	// track it the same instant path/resource links do. Runtime `/settings` edits
 	// also go through the selector controller to invalidate and repaint live views.
 	"tui.hyperlinks": value => applyHyperlinkSetting(value),
+	steeringMode: () => conversationFlowSignal.fire(),
+	followUpMode: () => conversationFlowSignal.fire(),
+	interruptMode: () => conversationFlowSignal.fire(),
 	"provider.appendOnlyContext": value => {
 		if (typeof value === "string") {
 			appendOnlyModeSignal.fire(value);
@@ -3501,6 +3634,26 @@ const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.append
  * can register independently without overwriting each other.
  */
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
+/** Fires when steering, follow-up, or interrupt mode changes at runtime. */
+const conversationFlowSignal = new SettingSignal("conversation flow");
+
+/**
+ * Subscribe to conversation-flow setting changes (`steeringMode`,
+ * `followUpMode`, `interruptMode`). Returns an unsubscribe function. Callers
+ * should re-read those settings and apply them to the live session without
+ * persisting.
+ */
+export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
+/** Fires when a skipped project save must reapply selector-managed session state. */
+const sessionRuntimeSignal = new SettingSignal("session runtime");
+
+/**
+ * Subscribe to skip-only session-runtime setting changes (`defaultThinkingLevel`,
+ * `memory.backend`, queue modes, and other selector-managed live session fields).
+ * Returns an unsubscribe function. Callers should re-read those settings and
+ * apply them to the live session without persisting.
+ */
+export const onSessionRuntimeChanged = (cb: () => void) => sessionRuntimeSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");

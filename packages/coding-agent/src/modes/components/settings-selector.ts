@@ -1397,19 +1397,21 @@ export class SettingsSelectorComponent implements Component {
 					const boolValue = newValue === "true";
 					const effective = this.#persistSetting(path, boolValue);
 					this.callbacks.onChange(path, effective);
-
-					if (tabId === "appearance") {
-						this.#triggerStatusLinePreview();
-					}
 				} else if (def.type === "enum") {
 					const effective = this.#persistSetting(path, newValue);
 					this.callbacks.onChange(path, effective);
 				}
 				// Submenu/text types already persisted the value inside their own
-				// done callbacks before SettingsList re-dispatches here. Re-run the
-				// definition-to-item mapping so condition-gated settings (e.g. the
-				// Hindsight cluster guarded by memory.backend) appear/disappear
-				// immediately instead of waiting for the next tab switch.
+				// done callbacks before SettingsList re-dispatches here. Boolean
+				// appearance edits and search-mode edits already reapply the scoped
+				// preview; do the same here so a global submenu commit cannot leave
+				// the live status line on the project-effective value.
+				if (tabId === "appearance") {
+					this.#triggerStatusLinePreview();
+				}
+				// Re-run the definition-to-item mapping so condition-gated settings
+				// (e.g. the Hindsight cluster guarded by memory.backend) appear or
+				// disappear immediately instead of waiting for the next tab switch.
 				this.#refreshCurrentTabItems(defs);
 			},
 			() => this.#close(),

@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort } from "@oh-my-pi/pi-ai";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import {
 	type Component,
 	Container,
@@ -46,7 +47,6 @@ import type {
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
 import { detectTerminalAppearance, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
-import * as git from "../../utils/git";
 import { getTabBarTheme } from "../shared";
 import { type ComposerPreviewStatusSource, ComposerShapePreview } from "./composer-shape-preview";
 import { getComposerShapeOptions } from "./composer-shape-registry";
@@ -638,9 +638,10 @@ export class SettingsSelectorComponent implements Component {
 			}
 			this.#switchToTab(tabId);
 		};
-
-		// Initialize with first tab
+		// Initialize with first tab and preview the selected scope's
+		// appearance so an overlay cannot pin the live theme/status.
 		this.#switchToTab("appearance");
+		this.#previewAppearanceForScope();
 	}
 
 	invalidate(): void {
@@ -804,12 +805,13 @@ export class SettingsSelectorComponent implements Component {
 			return true;
 		}
 		if (overContent && list) {
-			const id = list.hitTest(contentLine, innerCol);
+			const itemId = list.hoverTest(contentLine, innerCol);
+			const id = itemId ?? list.hitTest(contentLine, innerCol);
 			if (id !== undefined) {
 				const wasSelected = list.getSelectedItem()?.id === id;
 				list.selectItem(id);
-				// Click-again activates: toggle booleans, open submenus.
-				if (wasSelected) list.handleInput("\n");
+				// Only repeated setting-row clicks activate. Sidebar section clicks navigate.
+				if (wasSelected && itemId !== undefined) list.handleInput("\n");
 			}
 		}
 		return true;
@@ -1147,7 +1149,7 @@ export class SettingsSelectorComponent implements Component {
 			onPreview = value => shapePreview.setValue(value);
 			footer = shapePreview;
 		} else if (def.path === "composer.shape") {
-			const shapePreview = new ComposerShapePreview(String(currentValue ?? "box"), {
+			const shapePreview = new ComposerShapePreview(String(currentValue ?? "band"), {
 				requestRender: this.context.requestRender,
 				status: this.context.composerPreviewStatus,
 			});
@@ -1289,25 +1291,44 @@ export class SettingsSelectorComponent implements Component {
 		return settings.get(path);
 	}
 	/**
-	 * Persist a record setting in the selected scope. The submenu always
-	 * submits the full effective map; write only keys that differ from the
-	 * inherited (global + non-native project) layer, plus `null` tombstones
-	 * for cleared keys. Existing native overrides that still differ are kept.
+	 * Persist a record setting in the selected scope. Editors submit the full
+	 * effective map; write only keys that differ from the inherited (global +
+	 * non-native project) layer, plus `null` tombstones for cleared keys.
+	 * Existing native overrides that still differ are kept.
 	 */
-	#persistRecordScopeSetting(path: SettingPath, value: Record<string, number>): unknown {
+	#persistRecordScopeSetting(path: SettingPath, value: Record<string, unknown>): unknown {
 		if (this.#scope === "global") {
 			settings.set(path, value as never, "global");
 			return settings.get(path);
 		}
-		const inherited = normalizeProviderMaxInFlightRequests(settings.getProjectInheritedValue(path));
-		const next: Record<string, number | null> = {};
-		for (const provider of new Set([...Object.keys(inherited), ...Object.keys(value)])) {
-			const nextLimit = value[provider];
-			if (nextLimit === undefined) {
-				next[provider] = null;
+		if (path === "providers.maxInFlightRequests") {
+			const inherited = normalizeProviderMaxInFlightRequests(settings.getProjectInheritedValue(path));
+			const limits = normalizeProviderMaxInFlightRequests(value);
+			const next: Record<string, number | null> = {};
+			for (const provider of new Set([...Object.keys(inherited), ...Object.keys(limits)])) {
+				const nextLimit = limits[provider];
+				if (nextLimit === undefined) {
+					next[provider] = null;
+					continue;
+				}
+				if (nextLimit !== inherited[provider]) next[provider] = nextLimit;
+			}
+			settings.set(path, next as never, "project");
+			return settings.get(path);
+		}
+		const inheritedRaw = settings.getProjectInheritedValue(path);
+		const inherited =
+			inheritedRaw && typeof inheritedRaw === "object" && !Array.isArray(inheritedRaw)
+				? (inheritedRaw as Record<string, unknown>)
+				: {};
+		const next: Record<string, unknown> = {};
+		for (const key of new Set([...Object.keys(inherited), ...Object.keys(value)])) {
+			const nextValue = value[key];
+			if (nextValue === undefined) {
+				next[key] = null;
 				continue;
 			}
-			if (nextLimit !== inherited[provider]) next[provider] = nextLimit;
+			if (!Bun.deepEquals(nextValue, inherited[key])) next[key] = nextValue;
 		}
 		settings.set(path, next as never, "project");
 		return settings.get(path);
@@ -1338,7 +1359,7 @@ export class SettingsSelectorComponent implements Component {
 			if (path === "providers.maxInFlightRequests") {
 				parsed = validateProviderMaxInFlightRequests(parsed);
 			}
-			return this.#persistSetting(path, parsed);
+			return this.#persistRecordScopeSetting(path, parsed as Record<string, unknown>);
 		}
 		if (typeof currentValue === "number") {
 			return this.#persistSetting(path, Number(value));
@@ -1628,7 +1649,12 @@ export class SettingsSelectorComponent implements Component {
 }
 
 function settingsProjectLabel(cwd: string): string {
-	const primary = git.repo.primaryRootSync(cwd);
+	let primary: string | null = null;
+	try {
+		primary = vcs.repo(cwd)?.primaryRoot() ?? null;
+	} catch {
+		primary = null;
+	}
 	const base = path.basename(primary ?? cwd);
 	const name = base.endsWith(".git") ? base.slice(0, -4) : base;
 	return name || "project";

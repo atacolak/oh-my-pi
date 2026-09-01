@@ -892,6 +892,60 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting a sibling omitThinking disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ omitThinking: false, ask: { enabled: true } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("omitThinking"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ omitThinking: true, ask: { enabled: true } }, null, 2));
+				await settings.flush();
+				expect(settings.get("omitThinking")).toBe(true);
+				expect(received).toEqual([{ value: true, paths: ["omitThinking"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					omitThinking: true,
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling compaction.enabled disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ compaction: { enabled: true }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("compaction.enabled"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ compaction: { enabled: false }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("compaction.enabled")).toBe(false);
+				expect(received).toEqual([{ value: false, paths: ["compaction.enabled"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					compaction: { enabled: false },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires runtime hooks for an adopted sibling project edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

@@ -1375,6 +1375,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (paths.includes("autocompleteMaxVisible")) {
 					this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
 				}
+				if (paths.includes("compaction.enabled")) {
+					this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+				}
 			}),
 		);
 		this.#eventBusUnsubscribers.push(

@@ -147,6 +147,115 @@ describe("AgentSession adopted session-runtime changes", () => {
 		expect(session.thinkingLevel).toBe(Effort.High);
 	});
 
+	it("reapplies adopted omitThinking onto the live agent", async () => {
+		const projectDir = tempDir.join("project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ omitThinking: false, defaultThinkingLevel: Effort.Low }, null, 2),
+		);
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.Low,
+				},
+				hideThinkingSummary: false,
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		session.setThinkingLevel(Effort.High);
+		expect(session.agent.hideThinkingSummary).toBe(false);
+
+		settings.set("ask.enabled", false, "project");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{
+					omitThinking: true,
+					defaultThinkingLevel: Effort.Low,
+					ask: { enabled: true },
+				},
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("omitThinking")).toBe(true);
+		expect(session.agent.hideThinkingSummary).toBe(true);
+		expect(session.thinkingLevel).toBe(Effort.High);
+	});
+
+	it("reapplies adopted compaction.enabled onto live auto-compaction", async () => {
+		const projectDir = tempDir.join("project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ compaction: { enabled: true }, defaultThinkingLevel: Effort.Low }, null, 2),
+		);
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.Low,
+				},
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		session.setThinkingLevel(Effort.High);
+		expect(session.autoCompactionEnabled).toBe(true);
+
+		settings.set("ask.enabled", false, "project");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{
+					compaction: { enabled: false },
+					defaultThinkingLevel: Effort.Low,
+					ask: { enabled: true },
+				},
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("compaction.enabled")).toBe(false);
+		expect(session.autoCompactionEnabled).toBe(false);
+		expect(session.thinkingLevel).toBe(Effort.High);
+	});
+
 	it("ignores session-runtime events from a different Settings clone", async () => {
 		const projectDir = tempDir.join("project");
 		const otherDir = tempDir.join("other-project");

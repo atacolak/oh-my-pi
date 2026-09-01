@@ -3561,6 +3561,7 @@ class SettingSignal<A extends unknown[] = []> {
 export type SessionRuntimePath =
 	| "advisor.enabled"
 	| "autocompleteMaxVisible"
+	| "compaction.enabled"
 	| "defaultThinkingLevel"
 	| "externalThinking"
 	| "followUpMode"
@@ -3568,6 +3569,7 @@ export type SessionRuntimePath =
 	| "interruptMode"
 	| "memory.backend"
 	| "minP"
+	| "omitThinking"
 	| "personality"
 	| "presencePenalty"
 	| "repetitionPenalty"
@@ -3580,6 +3582,7 @@ export type SessionRuntimePath =
 const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"advisor.enabled": true,
 	autocompleteMaxVisible: true,
+	"compaction.enabled": true,
 	defaultThinkingLevel: true,
 	externalThinking: true,
 	followUpMode: true,
@@ -3587,6 +3590,7 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	interruptMode: true,
 	"memory.backend": true,
 	minP: true,
+	omitThinking: true,
 	personality: true,
 	presencePenalty: true,
 	repetitionPenalty: true,

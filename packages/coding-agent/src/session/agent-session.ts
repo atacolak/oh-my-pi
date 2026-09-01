@@ -1798,6 +1798,9 @@ export class AgentSession {
 					logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
 				});
 			}
+			if (changed.has("omitThinking")) {
+				this.agent.hideThinkingSummary = this.settings.get("omitThinking");
+			}
 			if (changed.has("temperature")) {
 				this.agent.temperature = samplingValue(this.settings.get("temperature"));
 			}

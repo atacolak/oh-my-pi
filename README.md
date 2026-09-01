@@ -1,17 +1,19 @@
 > [!NOTE]
-> ## `cap/hindsight` — Hindsight retention + locked scope seam
+> ## `runtime` — Ata's daily OMP
 >
-> Durable local capability: per-retain extraction strategy, conversation source timestamps, append-mode session retention, and the fork-local locked memory-scope seam (`hindsight.scopeTags` → retain/recall/reflect + exact `observation_scopes`, subset mental-model visibility).
+> Daily composition of selected local capabilities on current upstream main.
 >
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PRs:**
->   - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy *(open)*
->   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps *(merged)*
->   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention *(open)*
-> - **Fork-local:** locked `scope:personal` / `scope:coding` + `project:<repo>` routing — no upstream PR yet
-> - **Upstream base:** [OMP 18.0.11 (`65f79e7`)](https://github.com/can1357/oh-my-pi/tree/65f79e76fcc89b96632fe86a598f314bd7cfc725)
+> - **Upstream base:** [OMP 18.0.11 (`65f79e76`)](https://github.com/can1357/oh-my-pi/tree/65f79e76fcc89b96632fe86a598f314bd7cfc725)
+> - **Capabilities:**
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — retention + locked `scope:personal` / `scope:coding` + `project:<repo>` seam
+>   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — /extensions inspector
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental `--alt` viewport
+>   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
+>   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — lazy nested LSP project roots
+>   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
 >
-> PR heads stay independently reviewable without this banner.
+> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

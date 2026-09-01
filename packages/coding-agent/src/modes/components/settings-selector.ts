@@ -979,8 +979,10 @@ export class SettingsSelectorComponent implements Component {
 			this.#persistSetting(path, newValue);
 		}
 		// Submenu/text types already persisted inside their own done callbacks.
+		// Reapply the full scoped appearance so a shadowed global theme commit
+		// cannot leave the live theme on the project-effective mapping.
 		if (def.tab === "appearance") {
-			this.#triggerStatusLinePreview();
+			this.#previewAppearanceForScope();
 		}
 		// Values feed the searchable text and condition gates may have flipped:
 		// recompute results in place (selection is preserved by item id).
@@ -1416,9 +1418,9 @@ export class SettingsSelectorComponent implements Component {
 				// done callbacks before SettingsList re-dispatches here. Boolean
 				// appearance edits and search-mode edits already reapply the scoped
 				// preview; do the same here so a global submenu commit cannot leave
-				// the live status line on the project-effective value.
+				// the live theme or status line on the project-effective mapping.
 				if (tabId === "appearance") {
-					this.#triggerStatusLinePreview();
+					this.#previewAppearanceForScope();
 				}
 				// Re-run the definition-to-item mapping so condition-gated settings
 				// (e.g. the Hindsight cluster guarded by memory.backend) appear or

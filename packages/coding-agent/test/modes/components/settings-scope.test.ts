@@ -289,6 +289,41 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(settings.get("theme.dark")).toBe("dark-one");
 	});
 
+	it("reapplies the scoped theme after a shadowed global theme submenu commit", () => {
+		const previews: string[] = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium", "alabaster"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: themeName => {
+					previews.push(themeName);
+				},
+				onCancel: () => {},
+			},
+		);
+		settings.set("theme.dark", "dark-one", "project");
+		settings.set("theme.dark", "titanium", "global");
+		// Alt+S previews the global layer. Confirming a different global dark
+		// theme persists only that layer; the live preview must stay on the
+		// scoped (global) value instead of snapping back to the still-winning
+		// project mapping that Settings.set() re-evaluates.
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)).toBe("titanium");
+		for (const ch of "dark theme") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		expect(settings.getGlobalValue("theme.dark")).toBe("alabaster");
+		expect(settings.get("theme.dark")).toBe("dark-one");
+		expect(previews.at(-1)).toBe("alabaster");
+	});
+
 	it("keeps the dark/light theme slot of the terminal when closing after a preview", async () => {
 		// This terminal is dark (test env). The project layer sets the dark
 		// slot; Alt+S previews the global layer, which maps the DARK slot to a

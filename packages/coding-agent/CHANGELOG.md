@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
+- Fixed overlapping project saves leaving live session state on an adopted disk value after a later same-key edit persisted.
 - Fixed project saves discarding a second same-key edit when a sibling disk edit landed during debounce.
 - Fixed `/settings` scoped status-line previews omitting segment options from the selected layer.
 - Fixed `/settings` leaving a scoped status-line preview after close, and project saves overwriting newer same-key disk edits without firing adopted-change hooks.

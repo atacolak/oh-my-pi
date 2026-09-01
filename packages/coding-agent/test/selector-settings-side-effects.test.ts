@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { Effort } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -105,6 +106,49 @@ describe("selector setting side effects", () => {
 
 		expect(applyMemoryBackend).toHaveBeenCalledTimes(1);
 	});
+
+	it("applies a thinking-level change without re-persisting it globally", () => {
+		const setThinkingLevel = vi.fn();
+		const invalidate = vi.fn();
+		const updateEditorBorderColor = vi.fn();
+		Settings.instance.set("defaultThinkingLevel", Effort.Medium);
+		const controller = new SelectorController({
+			session: { setThinkingLevel },
+			statusLine: { invalidate },
+			updateEditorBorderColor,
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("defaultThinkingLevel", Effort.High);
+
+		expect(setThinkingLevel).toHaveBeenCalledTimes(1);
+		expect(setThinkingLevel).toHaveBeenCalledWith(Effort.High);
+		expect(setThinkingLevel.mock.calls[0]).toHaveLength(1);
+		expect(Settings.instance.get("defaultThinkingLevel")).toBe(Effort.Medium);
+	});
+
+	it("applies queue-mode changes without re-persisting them globally", () => {
+		const setSteeringMode = vi.fn();
+		const setFollowUpMode = vi.fn();
+		const setInterruptMode = vi.fn();
+		Settings.instance.set("steeringMode", "all");
+		Settings.instance.set("followUpMode", "all");
+		Settings.instance.set("interruptMode", "immediate");
+		const controller = new SelectorController({
+			session: { setSteeringMode, setFollowUpMode, setInterruptMode },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("steeringMode", "one-at-a-time");
+		controller.handleSettingChange("followUpMode", "one-at-a-time");
+		controller.handleSettingChange("interruptMode", "wait");
+
+		expect(setSteeringMode).toHaveBeenCalledWith("one-at-a-time", false);
+		expect(setFollowUpMode).toHaveBeenCalledWith("one-at-a-time", false);
+		expect(setInterruptMode).toHaveBeenCalledWith("wait", false);
+		expect(Settings.instance.get("steeringMode")).toBe("all");
+		expect(Settings.instance.get("followUpMode")).toBe("all");
+		expect(Settings.instance.get("interruptMode")).toBe("immediate");
+	});
+
 	it("stops the live advisor runtime when advisor.enabled is turned off in /settings", () => {
 		const setAdvisorEnabled = vi.fn();
 		const invalidate = vi.fn();

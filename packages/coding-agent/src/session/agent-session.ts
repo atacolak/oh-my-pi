@@ -106,6 +106,7 @@ import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mod
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
+import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
 import {
@@ -481,6 +482,11 @@ function cloneMessageEndNotificationField(value: unknown): unknown {
 		if (json !== undefined) return JSON.parse(json) as unknown;
 	} catch {}
 	return String(value);
+}
+
+/** Map a settings sampling number onto the live agent field (`-1` means provider default). */
+function samplingValue(value: number): number | undefined {
+	return value >= 0 ? value : undefined;
 }
 
 /** Build a detached, notification-only snapshot of an AgentMessage. */
@@ -1760,24 +1766,72 @@ export class AgentSession {
 			this.setFollowUpMode(this.settings.get("followUpMode"), false);
 			this.setInterruptMode(this.settings.get("interruptMode"), false);
 		});
-		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged(() => {
-			this.setSteeringMode(this.settings.get("steeringMode"), false);
-			this.setFollowUpMode(this.settings.get("followUpMode"), false);
-			this.setInterruptMode(this.settings.get("interruptMode"), false);
-			this.setThinkingLevel(this.settings.get("defaultThinkingLevel"), false);
-			this.setAdvisorEnabled(this.settings.get("advisor.enabled"));
-			void this.applyMemoryBackend().catch(error => {
-				logger.warn("Memory backend reconcile after skipped project save failed", { error: String(error) });
-			});
-			void this.applyInspectImageModeChange().catch(error => {
-				logger.warn("Inspect-image mode reconcile after skipped project save failed", { error: String(error) });
-			});
-			void this.setThinkToolEnabled(this.settings.get("externalThinking")).catch(error => {
-				logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
-			});
-			void this.refreshBaseSystemPrompt().catch(error => {
-				logger.warn("System prompt reconcile after skipped project save failed", { error: String(error) });
-			});
+		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged((paths, source) => {
+			if (source !== this.settings) return;
+			const changed = new Set(paths);
+			if (changed.has("steeringMode")) {
+				this.setSteeringMode(this.settings.get("steeringMode"), false);
+			}
+			if (changed.has("followUpMode")) {
+				this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			}
+			if (changed.has("interruptMode")) {
+				this.setInterruptMode(this.settings.get("interruptMode"), false);
+			}
+			if (changed.has("defaultThinkingLevel")) {
+				this.setThinkingLevel(this.settings.get("defaultThinkingLevel"), false);
+			}
+			if (changed.has("advisor.enabled")) {
+				this.setAdvisorEnabled(this.settings.get("advisor.enabled"));
+			}
+			if (changed.has("memory.backend")) {
+				void this.applyMemoryBackend().catch(error => {
+					logger.warn("Memory backend reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("inspect_image.mode")) {
+				void this.applyInspectImageModeChange().catch(error => {
+					logger.warn("Inspect-image mode reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("externalThinking")) {
+				void this.setThinkToolEnabled(this.settings.get("externalThinking")).catch(error => {
+					logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("omitThinking")) {
+				this.agent.hideThinkingSummary = this.settings.get("omitThinking");
+			}
+			if (changed.has("temperature")) {
+				this.agent.temperature = samplingValue(this.settings.get("temperature"));
+			}
+			if (changed.has("topP")) {
+				this.agent.topP = samplingValue(this.settings.get("topP"));
+			}
+			if (changed.has("topK")) {
+				this.agent.topK = samplingValue(this.settings.get("topK"));
+			}
+			if (changed.has("minP")) {
+				this.agent.minP = samplingValue(this.settings.get("minP"));
+			}
+			if (changed.has("presencePenalty")) {
+				this.agent.presencePenalty = samplingValue(this.settings.get("presencePenalty"));
+			}
+			if (changed.has("repetitionPenalty")) {
+				this.agent.repetitionPenalty = samplingValue(this.settings.get("repetitionPenalty"));
+			}
+			if (changed.has("personality") || changed.has("tools.xdevDocs")) {
+				void this.refreshBaseSystemPrompt().catch(error => {
+					logger.warn("System prompt reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (
+				changed.has("providers.webSearchExclude") ||
+				changed.has("providers.webSearchOrder") ||
+				changed.has("providers.imageOrder")
+			) {
+				applyProviderGlobalsFromSettings(this.settings);
+			}
 		});
 
 		// Config-declared resolution done against the catalog as it stands at

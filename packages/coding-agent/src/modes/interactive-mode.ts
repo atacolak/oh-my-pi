@@ -1370,8 +1370,47 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.#eventBusUnsubscribers.push(
-			onSessionRuntimeChanged(() => {
-				this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+			onSessionRuntimeChanged((paths, source) => {
+				if (source !== this.settings) return;
+				if (paths.includes("autocompleteMaxVisible")) {
+					this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+				}
+				if (paths.includes("compaction.enabled") || paths.includes("compaction.methodOrder")) {
+					this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+				}
+				const selectorManagedPaths = [
+					"composer.shape",
+					"display.cacheMissMarker",
+					"display.collapseCompacted",
+					"display.hideToolActivity",
+					"display.showTokenUsage",
+					"display.showTurnTime",
+					"hideThinkingBlock",
+					"mcp.notifications",
+					"proseOnlyThinking",
+					"spelling.autocomplete",
+					"spelling.autocorrect",
+					"spelling.typoDetection",
+					"statusLine.compactThinkingLevel",
+					"statusLine.contextLine",
+					"statusLine.leftSegments",
+					"statusLine.preset",
+					"statusLine.rightSegments",
+					"statusLine.segmentOptions",
+					"statusLine.separator",
+					"statusLine.sessionAccent",
+					"statusLine.showHookStatus",
+					"statusLine.transparent",
+					"terminal.showImages",
+					"tui.renderMermaid",
+					"tui.resizeScrollback",
+					"tui.tight",
+				] as const;
+				for (const path of selectorManagedPaths) {
+					if (paths.includes(path)) {
+						this.#selectorController.handleSettingChange(path, this.settings.get(path));
+					}
+				}
 			}),
 		);
 		this.#eventBusUnsubscribers.push(

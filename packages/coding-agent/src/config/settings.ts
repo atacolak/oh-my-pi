@@ -769,7 +769,9 @@ export class Settings {
 				this.#modifiedProjectPathMutations,
 				this.#migratedRawValue(this.#projectFileSettings, path),
 			);
+			this.#projectFileSettings = this.#migrateRawSettings(this.#projectFileSettings, false);
 			setByPath(this.#projectFileSettings, segments, value);
+			this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
 			this.#rebuildProjectLayer();
 			this.#projectConfigExists = true;
 			this.#syncProjectShellPathSource();
@@ -804,6 +806,7 @@ export class Settings {
 			this.#modifiedProjectPathMutations,
 			this.#migratedRawValue(this.#projectFileSettings, path),
 		);
+		this.#projectFileSettings = this.#migrateRawSettings(this.#projectFileSettings, false);
 		deleteByPath(this.#projectFileSettings, segments);
 		this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
 		this.#rebuildProjectLayer();
@@ -1571,6 +1574,7 @@ export class Settings {
 
 	#captureGlobalMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
 		if (!this.#persist || !this.#configPath) return;
+		if (mutations.has(key)) return;
 		mutations.set(key, {
 			generation: this.#readYamlGeneration(this.#configPath),
 			baseValue: structuredClone(baseValue),
@@ -1579,6 +1583,7 @@ export class Settings {
 
 	#captureProjectMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
 		if (!this.#persist) return;
+		if (mutations.has(key)) return;
 		mutations.set(key, {
 			generation: this.#readYamlGeneration(path.join(this.#cwd, ".omp", "config.yml")),
 			baseValue: structuredClone(baseValue),
@@ -2233,7 +2238,9 @@ export class Settings {
 			}
 		}
 		if (path.startsWith("mnemopi.")) {
-			delete target.mnemosyne;
+			const leaf = path.slice("mnemopi.".length);
+			deleteByPath(target, ["mnemosyne", leaf]);
+			delete target[`mnemosyne.${leaf}`];
 		}
 		if (path === "hindsight.scoping") {
 			deleteByPath(target, ["hindsight", "dynamicBankId"]);
@@ -3230,10 +3237,13 @@ export class Settings {
 			sessionAccent: this.get("statusLine.sessionAccent"),
 		};
 		const previousCodeModeValues = this.#codeModeSignalSnapshot();
-		const skippedProjectPaths: string[] = [];
 		const previousHookValues = new Map<SettingPath, unknown>();
 		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 			previousHookValues.set(key, this.get(key));
+		}
+		const previousSessionRuntimeValues = {} as Record<keyof typeof SESSION_RUNTIME_PATHS, unknown>;
+		for (const key of Object.keys(SESSION_RUNTIME_PATHS) as Array<keyof typeof SESSION_RUNTIME_PATHS>) {
+			previousSessionRuntimeValues[key] = this.get(key);
 		}
 		this.#modifiedProject.clear();
 		this.#modifiedProjectModelRoles.clear();
@@ -3247,6 +3257,7 @@ export class Settings {
 				const projectSettings =
 					loaded.settings ??
 					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(projectFileAtStart) : {});
+				this.#migrateRawSettings(projectSettings, false);
 				let shouldWrite = false;
 				const skippedProjectModelRoles: string[] = [];
 
@@ -3263,7 +3274,6 @@ export class Settings {
 							path: projectConfigPath,
 							setting: modifiedPath,
 						});
-						skippedProjectPaths.push(modifiedPath);
 						continue;
 					}
 					const value = getByPath(projectFileAtStart, segments);
@@ -3303,6 +3313,8 @@ export class Settings {
 				if (shouldWrite) {
 					await this.#writeYamlAtomically(writePath, projectSettings);
 					this.#projectConfigExists = true;
+				} else {
+					this.#projectConfigExists = loaded.settings !== null;
 				}
 				this.#quarantinedYamlTargets.delete(projectConfigPath);
 
@@ -3387,9 +3399,13 @@ export class Settings {
 				SETTING_HOOKS[key]?.(next, previous);
 			}
 		}
-		if (skippedProjectPaths.some(modifiedPath => Object.hasOwn(SESSION_RUNTIME_PATHS, modifiedPath))) {
-			sessionRuntimeSignal.fire();
+		const changedSessionRuntimePaths = (
+			Object.keys(SESSION_RUNTIME_PATHS) as Array<keyof typeof SESSION_RUNTIME_PATHS>
+		).filter(key => !Bun.deepEquals(this.get(key), previousSessionRuntimeValues[key]));
+		if (changedSessionRuntimePaths.length > 0) {
+			sessionRuntimeSignal.fire(changedSessionRuntimePaths, this);
 		}
+		projectSettingsReconciledSignal.fire(this);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -3429,8 +3445,9 @@ export class Settings {
 	 * A skipped same-key project role write already adopted the newer disk
 	 * value into `#project`, but `setProjectModelRole()` may still be pinning
 	 * the rejected local value in `#overrides`. Align that temporary override
-	 * with the adopted role so `getModelRole()` and the post-save signal see
-	 * the disk value for the rest of the session.
+	 * with the adopted role, or restore the original process-wide override
+	 * when the disk edit cleared the role, so `getModelRole()` and later
+	 * `cloneForCwd()`/`reloadForCwd()` keep the original runtime value.
 	 */
 	#reconcileSkippedProjectModelRoleOverride(role: string): void {
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
@@ -3443,7 +3460,12 @@ export class Settings {
 		}
 		const adopted = this.getProjectModelRole(role);
 		if (adopted === undefined) {
-			delete runtimeOverrides[role];
+			const original = this.#savedRuntimeModelRoleOverrides.get(role);
+			if (original === undefined) {
+				delete runtimeOverrides[role];
+			} else {
+				runtimeOverrides[role] = original;
+			}
 			this.#savedRuntimeModelRoleOverrides.delete(role);
 			return;
 		}
@@ -3538,31 +3560,107 @@ class SettingSignal<A extends unknown[] = []> {
 	}
 }
 
-const SESSION_RUNTIME_PATHS: Record<
+export type SessionRuntimePath =
 	| "advisor.enabled"
 	| "autocompleteMaxVisible"
+	| "compaction.enabled"
+	| "compaction.methodOrder"
+	| "composer.shape"
 	| "defaultThinkingLevel"
+	| "display.cacheMissMarker"
+	| "display.collapseCompacted"
+	| "display.hideToolActivity"
+	| "display.showTokenUsage"
+	| "display.showTurnTime"
 	| "externalThinking"
 	| "followUpMode"
+	| "hideThinkingBlock"
 	| "inspect_image.mode"
 	| "interruptMode"
+	| "mcp.notifications"
 	| "memory.backend"
+	| "minP"
+	| "omitThinking"
 	| "personality"
+	| "presencePenalty"
+	| "proseOnlyThinking"
+	| "providers.imageOrder"
+	| "providers.webSearchExclude"
+	| "providers.webSearchOrder"
+	| "repetitionPenalty"
+	| "spelling.autocomplete"
+	| "spelling.autocorrect"
+	| "spelling.typoDetection"
+	| "statusLine.compactThinkingLevel"
+	| "statusLine.contextLine"
+	| "statusLine.leftSegments"
+	| "statusLine.preset"
+	| "statusLine.rightSegments"
+	| "statusLine.segmentOptions"
+	| "statusLine.separator"
+	| "statusLine.sessionAccent"
+	| "statusLine.showHookStatus"
+	| "statusLine.transparent"
 	| "steeringMode"
-	| "tools.xdevDocs",
-	true
-> = {
+	| "temperature"
+	| "terminal.showImages"
+	| "tools.xdevDocs"
+	| "topK"
+	| "topP"
+	| "tui.renderMermaid"
+	| "tui.resizeScrollback"
+	| "tui.tight";
+
+const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"advisor.enabled": true,
 	autocompleteMaxVisible: true,
+	"compaction.enabled": true,
+	"compaction.methodOrder": true,
+	"composer.shape": true,
 	defaultThinkingLevel: true,
+	"display.cacheMissMarker": true,
+	"display.collapseCompacted": true,
+	"display.hideToolActivity": true,
+	"display.showTokenUsage": true,
+	"display.showTurnTime": true,
 	externalThinking: true,
 	followUpMode: true,
+	hideThinkingBlock: true,
 	"inspect_image.mode": true,
 	interruptMode: true,
+	"mcp.notifications": true,
 	"memory.backend": true,
+	minP: true,
+	omitThinking: true,
 	personality: true,
+	presencePenalty: true,
+	proseOnlyThinking: true,
+	"providers.imageOrder": true,
+	"providers.webSearchExclude": true,
+	"providers.webSearchOrder": true,
+	repetitionPenalty: true,
+	"spelling.autocomplete": true,
+	"spelling.autocorrect": true,
+	"spelling.typoDetection": true,
+	"statusLine.compactThinkingLevel": true,
+	"statusLine.contextLine": true,
+	"statusLine.leftSegments": true,
+	"statusLine.preset": true,
+	"statusLine.rightSegments": true,
+	"statusLine.segmentOptions": true,
+	"statusLine.separator": true,
+	"statusLine.sessionAccent": true,
+	"statusLine.showHookStatus": true,
+	"statusLine.transparent": true,
 	steeringMode: true,
+	temperature: true,
+	"terminal.showImages": true,
 	"tools.xdevDocs": true,
+	topK: true,
+	topP: true,
+	"tui.renderMermaid": true,
+	"tui.resizeScrollback": true,
+	"tui.tight": true,
 };
 
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
@@ -3644,16 +3742,31 @@ const conversationFlowSignal = new SettingSignal("conversation flow");
  * persisting.
  */
 export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
-/** Fires when a skipped project save must reapply selector-managed session state. */
-const sessionRuntimeSignal = new SettingSignal("session runtime");
+/** Fires when adopted project session-runtime settings must reapply live session state. */
+const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], source: Settings]>("session runtime");
 
 /**
- * Subscribe to skip-only session-runtime setting changes (`defaultThinkingLevel`,
- * `memory.backend`, queue modes, and other selector-managed live session fields).
- * Returns an unsubscribe function. Callers should re-read those settings and
- * apply them to the live session without persisting.
+ * Subscribe to session-runtime setting changes (`defaultThinkingLevel`,
+ * `memory.backend`, queue modes, selector-managed MCP notifications and
+ * provider eligibility, and other live session fields) after a project save
+ * adopts a newer disk value. Returns an unsubscribe function. Callers should
+ * ignore events whose `source` is not the Settings instance they own, then
+ * re-read only the supplied paths and apply them to the live session without
+ * persisting.
  */
-export const onSessionRuntimeChanged = (cb: () => void) => sessionRuntimeSignal.on(cb);
+export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source: Settings) => void) =>
+	sessionRuntimeSignal.on(cb);
+
+/** Fires after a project save rebuilds the live native layer from disk. */
+const projectSettingsReconciledSignal = new SettingSignal<[source: Settings]>("project settings reconciled");
+
+/**
+ * Subscribe to project-layer reconciliation after `#saveProjectNow()`. Returns
+ * an unsubscribe function. Callers that display live settings (the open
+ * `/settings` selector) should ignore events from other Settings instances
+ * and rebuild their item snapshots from the adopted values.
+ */
+export const onProjectSettingsReconciled = (cb: (source: Settings) => void) => projectSettingsReconciledSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");

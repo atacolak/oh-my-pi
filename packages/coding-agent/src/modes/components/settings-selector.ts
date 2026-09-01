@@ -31,8 +31,11 @@ import type { ShapeTarget } from "@oh-my-pi/snapcompact";
 import {
 	getDefault,
 	getType,
+	isSettingsInitialized,
 	normalizeProviderMaxInFlightRequests,
+	onProjectSettingsReconciled,
 	type SettingPath,
+	Settings,
 	type SettingsScope,
 	settings,
 	validateProviderMaxInFlightRequests,
@@ -575,6 +578,7 @@ export interface StatusLinePreviewSettings {
 	sessionAccent?: boolean;
 	transparent?: boolean;
 	compactThinkingLevel?: boolean;
+	segmentOptions?: Record<string, unknown>;
 }
 
 export interface SettingsCallbacks {
@@ -612,6 +616,7 @@ export class SettingsSelectorComponent implements Component {
 	#searchFirstMatch = new Map<string, string>();
 	#textInputActive = false;
 	#hasSectionJump = false;
+	#unsubscribeProjectSettings?: () => void;
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
 	#tabRowStart = 0;
@@ -642,6 +647,10 @@ export class SettingsSelectorComponent implements Component {
 		// appearance so an overlay cannot pin the live theme/status.
 		this.#switchToTab("appearance");
 		this.#previewAppearanceForScope();
+		this.#unsubscribeProjectSettings = onProjectSettingsReconciled(source => {
+			if (!isSettingsInitialized() || source !== Settings.instance) return;
+			this.#resyncItemsFromSettings();
+		});
 	}
 
 	invalidate(): void {
@@ -966,15 +975,15 @@ export class SettingsSelectorComponent implements Component {
 		if (!def) return;
 		if (def.type === "boolean") {
 			const boolValue = newValue === "true";
-			const effective = this.#persistSetting(path, boolValue);
-			this.callbacks.onChange(path, effective);
+			this.#persistSetting(path, boolValue);
 		} else if (def.type === "enum") {
-			const effective = this.#persistSetting(path, newValue);
-			this.callbacks.onChange(path, effective);
+			this.#persistSetting(path, newValue);
 		}
 		// Submenu/text types already persisted inside their own done callbacks.
+		// Reapply the full scoped appearance so a shadowed global theme commit
+		// cannot leave the live theme on the project-effective mapping.
 		if (def.tab === "appearance") {
-			this.#triggerStatusLinePreview();
+			this.#previewAppearanceForScope();
 		}
 		// Values feed the searchable text and condition gates may have flipped:
 		// recompute results in place (selection is preserved by item id).
@@ -1166,8 +1175,7 @@ export class SettingsSelectorComponent implements Component {
 			options,
 			currentValue,
 			value => {
-				const effective = this.#setSettingValue(def.path, value);
-				this.callbacks.onChange(def.path, effective);
+				this.#setSettingValue(def.path, value);
 				done(this.#getSubmenuCurrentValue(def.path, this.#scopedValue(def.path)));
 			},
 			() => {
@@ -1201,8 +1209,7 @@ export class SettingsSelectorComponent implements Component {
 			value => {
 				// Empty string clears the setting; undefined-typed string settings
 				// store "" which the browser.ts expandPath ignores (no-op fallback).
-				const effective = this.#setSettingValue(def.path, value);
-				this.callbacks.onChange(def.path, effective);
+				this.#setSettingValue(def.path, value);
 				wrappedDone(this.#formatTextInputValue(def, this.#scopedValue(def.path)));
 			},
 			() => wrappedDone(),
@@ -1214,8 +1221,7 @@ export class SettingsSelectorComponent implements Component {
 			this.context.providers,
 			() => normalizeProviderMaxInFlightRequests(this.#scopedValue("providers.maxInFlightRequests")),
 			value => {
-				const effective = this.#persistRecordScopeSetting("providers.maxInFlightRequests", value);
-				this.callbacks.onChange("providers.maxInFlightRequests", effective);
+				this.#persistRecordScopeSetting("providers.maxInFlightRequests", value);
 				done(this.#formatProviderLimitsValue(this.#scopedValue("providers.maxInFlightRequests")));
 			},
 			() => done(),
@@ -1250,8 +1256,7 @@ export class SettingsSelectorComponent implements Component {
 			initial,
 			def.ordered,
 			value => {
-				const effective = this.#persistSetting(def.path, value);
-				this.callbacks.onChange(def.path, effective);
+				this.#persistSetting(def.path, value);
 			},
 			() => done(this.#formatMultiSelectValue(def, this.#scopedValue(def.path))),
 		);
@@ -1285,10 +1290,13 @@ export class SettingsSelectorComponent implements Component {
 	 * Persist a setting in the selected scope and return the recomputed merged
 	 * effective value. Row display reads {@link #scopedValue} separately, while
 	 * runtime callbacks must stay aligned with the active project configuration.
+	 * Shadowed-scope writes that leave the merged value unchanged skip the live
+	 * callback so session/editor side effects are not reapplied.
 	 */
 	#persistSetting(path: SettingPath, value: unknown): unknown {
+		const previous = settings.get(path);
 		settings.set(path, value as never, this.#scope);
-		return settings.get(path);
+		return this.#notifyLiveChange(path, previous, settings.get(path));
 	}
 	/**
 	 * Persist a record setting in the selected scope. Editors submit the full
@@ -1297,9 +1305,10 @@ export class SettingsSelectorComponent implements Component {
 	 * Existing native overrides that still differ are kept.
 	 */
 	#persistRecordScopeSetting(path: SettingPath, value: Record<string, unknown>): unknown {
+		const previous = settings.get(path);
 		if (this.#scope === "global") {
 			settings.set(path, value as never, "global");
-			return settings.get(path);
+			return this.#notifyLiveChange(path, previous, settings.get(path));
 		}
 		if (path === "providers.maxInFlightRequests") {
 			const inherited = normalizeProviderMaxInFlightRequests(settings.getProjectInheritedValue(path));
@@ -1314,7 +1323,7 @@ export class SettingsSelectorComponent implements Component {
 				if (nextLimit !== inherited[provider]) next[provider] = nextLimit;
 			}
 			settings.set(path, next as never, "project");
-			return settings.get(path);
+			return this.#notifyLiveChange(path, previous, settings.get(path));
 		}
 		const inheritedRaw = settings.getProjectInheritedValue(path);
 		const inherited =
@@ -1331,7 +1340,14 @@ export class SettingsSelectorComponent implements Component {
 			if (!Bun.deepEquals(nextValue, inherited[key])) next[key] = nextValue;
 		}
 		settings.set(path, next as never, "project");
-		return settings.get(path);
+		return this.#notifyLiveChange(path, previous, settings.get(path));
+	}
+
+	#notifyLiveChange(path: SettingPath, previous: unknown, next: unknown): unknown {
+		if (!Bun.deepEquals(previous, next)) {
+			this.callbacks.onChange(path, next);
+		}
+		return next;
 	}
 
 	/**
@@ -1395,19 +1411,17 @@ export class SettingsSelectorComponent implements Component {
 
 				if (def.type === "boolean") {
 					const boolValue = newValue === "true";
-					const effective = this.#persistSetting(path, boolValue);
-					this.callbacks.onChange(path, effective);
+					this.#persistSetting(path, boolValue);
 				} else if (def.type === "enum") {
-					const effective = this.#persistSetting(path, newValue);
-					this.callbacks.onChange(path, effective);
+					this.#persistSetting(path, newValue);
 				}
 				// Submenu/text types already persisted the value inside their own
 				// done callbacks before SettingsList re-dispatches here. Boolean
 				// appearance edits and search-mode edits already reapply the scoped
 				// preview; do the same here so a global submenu commit cannot leave
-				// the live status line on the project-effective value.
+				// the live theme or status line on the project-effective mapping.
 				if (tabId === "appearance") {
-					this.#triggerStatusLinePreview();
+					this.#previewAppearanceForScope();
 				}
 				// Re-run the definition-to-item mapping so condition-gated settings
 				// (e.g. the Hindsight cluster guarded by memory.backend) appear or
@@ -1448,6 +1462,24 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	/**
+	 * Rebuild the visible list after a project save adopts disk values so a
+	 * skipped same-key edit cannot leave stale item snapshots on screen.
+	 */
+	#resyncItemsFromSettings(): void {
+		if (this.#searchList) {
+			this.#setSearchQuery(this.#searchQuery);
+		} else if (this.#currentTabId !== "plugins") {
+			const selectedId = this.#currentList?.getSelectedItem()?.id;
+			this.#refreshCurrentTabItems(getSettingsForTab(this.#currentTabId));
+			if (selectedId) this.#currentList?.selectItem(selectedId);
+		}
+		if (this.#currentTabId === "appearance" && !this.#searchList) {
+			this.#previewAppearanceForScope();
+		}
+		this.context.requestRender?.();
+	}
+
+	/**
 	 * Get the status line preview string.
 	 */
 	#getStatusPreviewString(): string {
@@ -1471,6 +1503,7 @@ export class SettingsSelectorComponent implements Component {
 			transparent: this.#scopedValue("statusLine.transparent") as boolean,
 			compactThinkingLevel: this.#scopedValue("statusLine.compactThinkingLevel") as boolean,
 			contextLine: this.#scopedValue("statusLine.contextLine") as ContextLineMode,
+			segmentOptions: this.#scopedValue("statusLine.segmentOptions") as Record<string, unknown>,
 			...overrides,
 		};
 		this.callbacks.onStatusLinePreview?.(statusLineSettings);
@@ -1531,6 +1564,8 @@ export class SettingsSelectorComponent implements Component {
 	 * rendering a scope that was never persisted.
 	 */
 	#close(): void {
+		this.#unsubscribeProjectSettings?.();
+		this.#unsubscribeProjectSettings = undefined;
 		const themeName = this.#effectiveThemeName();
 		if (themeName) void this.callbacks.onThemePreview?.(themeName);
 		this.#triggerEffectiveStatusLinePreview();
@@ -1548,15 +1583,17 @@ export class SettingsSelectorComponent implements Component {
 			transparent: settings.get("statusLine.transparent"),
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 			contextLine: settings.get("statusLine.contextLine"),
+			segmentOptions: settings.get("statusLine.segmentOptions"),
 		});
 	}
 
 	#inheritSelectedSetting(): void {
 		const item = this.#currentList?.getSelectedItem();
 		const def = item ? getSettingDef(item.id as SettingPath) : undefined;
-		if (!def || !settings.clearProject(def.path)) return;
-		const effective = settings.get(def.path);
-		this.callbacks.onChange(def.path, effective);
+		if (!def) return;
+		const previous = settings.get(def.path);
+		if (!settings.clearProject(def.path)) return;
+		this.#notifyLiveChange(def.path, previous, settings.get(def.path));
 		if (def.tab === "appearance") {
 			this.#previewAppearanceForScope();
 		}

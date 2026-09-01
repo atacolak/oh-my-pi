@@ -57,6 +57,32 @@ describe("selector setting side effects", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
+	it("refreshes the status line when cached status-line settings change", () => {
+		const updateSettings = vi.fn();
+		const requestRender = vi.fn();
+		const controller = new SelectorController({
+			statusLine: { updateSettings },
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		Settings.instance.override("statusLine.preset", "full");
+		Settings.instance.override("statusLine.leftSegments", ["model"]);
+		Settings.instance.override("statusLine.contextLine", "annotated");
+		controller.handleSettingChange("statusLine.preset", "full");
+		controller.handleSettingChange("statusLine.leftSegments", ["model"]);
+		controller.handleSettingChange("statusLine.contextLine", "annotated");
+
+		expect(updateSettings).toHaveBeenCalledTimes(3);
+		expect(updateSettings).toHaveBeenCalledWith(
+			expect.objectContaining({
+				preset: "full",
+				leftSegments: ["model"],
+				contextLine: "annotated",
+			}),
+		);
+		expect(requestRender).toHaveBeenCalledTimes(3);
+	});
+
 	it("invalidates the UI and requests a repaint when tui.tight changes", () => {
 		const invalidate = vi.fn();
 		const requestRender = vi.fn();
@@ -68,6 +94,67 @@ describe("selector setting side effects", () => {
 
 		expect(invalidate).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("applies composer.shape changes to the live composer", () => {
+		const syncComposerShape = vi.fn();
+		const controller = new SelectorController({
+			syncComposerShape,
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("composer.shape", "box");
+
+		expect(syncComposerShape).toHaveBeenCalledTimes(1);
+	});
+
+	it("applies spelling changes to the live editor", () => {
+		const syncEditorSpelling = vi.fn();
+		const requestRender = vi.fn();
+		const controller = new SelectorController({
+			syncEditorSpelling,
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("spelling.typoDetection", false);
+		controller.handleSettingChange("spelling.autocomplete", false);
+		controller.handleSettingChange("spelling.autocorrect", true);
+
+		expect(syncEditorSpelling).toHaveBeenCalledTimes(3);
+		expect(requestRender).toHaveBeenCalledTimes(3);
+	});
+
+	it("applies tui.resizeScrollback to the live TUI", () => {
+		const setResizeScrollback = vi.fn();
+		const controller = new SelectorController({
+			ui: { setResizeScrollback },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("tui.resizeScrollback", "preserve");
+
+		expect(setResizeScrollback).toHaveBeenCalledTimes(1);
+		expect(setResizeScrollback).toHaveBeenCalledWith("preserve");
+	});
+
+	it("rebuilds the transcript when tui.renderMermaid changes", () => {
+		const rebuildChatFromMessages = vi.fn();
+		const resetDisplay = vi.fn();
+		const refreshBaseSystemPrompt = vi.fn(async () => {});
+		const showError = vi.fn();
+		const controller = new SelectorController({
+			rebuildChatFromMessages,
+			showError,
+			session: { refreshBaseSystemPrompt },
+			ui: { resetDisplay },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("tui.renderMermaid", false);
+
+		expect(refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages.mock.invocationCallOrder[0]).toBeLessThan(
+			resetDisplay.mock.invocationCallOrder[0],
+		);
 	});
 	it("applies tui.hyperlinks changes to live renderers", () => {
 		const originalHyperlinks = TERMINAL.hyperlinks;
@@ -234,6 +321,20 @@ describe("selector setting side effects", () => {
 					requestRender.mock.invocationCallOrder[0],
 				);
 			}
+		});
+	}
+
+	for (const enabled of [true, false]) {
+		it(`applies mcp.notifications=${enabled} to the live MCP manager`, () => {
+			const setNotificationsEnabled = vi.fn();
+			const controller = new SelectorController({
+				mcpManager: { setNotificationsEnabled },
+			} as unknown as InteractiveModeContext);
+
+			controller.handleSettingChange("mcp.notifications", enabled);
+
+			expect(setNotificationsEnabled).toHaveBeenCalledTimes(1);
+			expect(setNotificationsEnabled).toHaveBeenCalledWith(enabled);
 		});
 	}
 

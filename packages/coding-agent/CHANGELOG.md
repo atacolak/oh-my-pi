@@ -12,6 +12,21 @@
 - Fixed project inherit leaving a quoted-dotted `features.unexpectedStopDetection` alias, and skipped project queue-mode saves leaving the live session on the rejected local value.
 - Fixed skipped project thinking and memory saves leaving the live session on the rejected local value.
 - Fixed project inherit leaving mnemosyne, hindsight, and Exa aliases, and skipped autocompleteMaxVisible saves leaving the editor on the rejected local value.
+- Fixed project saves discarding a second same-key edit when a sibling disk edit landed during debounce.
+- Fixed `/settings` scoped status-line previews omitting segment options from the selected layer.
+- Fixed project saves leaving live session/editor state, original runtime model roles, or a stale project-config flag after adopting a sibling disk edit, role clear, or deleted `.omp/config.yml`.
+- Fixed project saves resetting a temporary `/thinking` level when adopting an unrelated session-runtime sibling edit.
+- Fixed project edits to a renamed native object dropping sibling legacy fields.
+- Fixed project inherit of one renamed native field dropping sibling legacy fields.
+- Fixed adopted project settings reapplying live session state across Settings clones, and `/settings` keeping stale row snapshots after a skipped project save.
+- Fixed project saves leaving live sampling parameters on the rejected local value after adopting a newer disk edit.
+- Fixed project saves leaving live omit-thinking and auto-compact session state on the rejected local value after adopting a newer disk edit.
+- Fixed project saves leaving the live auto-compact status indicator stale after adopting a `compaction.methodOrder` disk edit.
+- Fixed project saves leaving live web-search eligibility, tool-activity visibility, remaining display toggles, MCP notification subscriptions, composer shape, spelling, and TUI tightness/scrollback/mermaid state on the rejected local value after adopting a newer disk edit.
+- Fixed `/settings` shadowed global theme submenu commits snapping the live theme back to the project-effective mapping.
+- Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
+- Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
+
 ## [18.1.1] - 2026-09-01
 
 ### Fixed

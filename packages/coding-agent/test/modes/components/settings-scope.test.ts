@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-ai";
 import {
 	normalizeProviderMaxInFlightRequests,
 	resetSettingsForTest,
@@ -72,9 +73,10 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		);
 	}
 
-	it("writes the global layer while callbacks receive the shadowing effective value", async () => {
+	it("writes the global layer without live callbacks when the project value still wins", async () => {
 		// Start both layers at true, then toggle only the global fallback to
-		// false. The persisted scope and active effective value must diverge.
+		// false. The persisted scope and active effective value must diverge,
+		// and session side effects must not rerun for an unchanged merge.
 		settings.set("ask.enabled", true, "global");
 		const selector = createSelector();
 		expect(selector.render(120).join("\n")).toContain(`Settings · ${path.basename(projectDir)}`);
@@ -90,9 +92,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 
 		expect(settings.getGlobalValue("ask.enabled")).toBe(false);
 		expect(settings.get("ask.enabled")).toBe(true);
-		// Side-effect handlers receive the merged effective value, not the
-		// global fallback displayed in the row.
-		expect(changes.at(-1)).toEqual({ path: "ask.enabled", value: true });
+		expect(changes).toEqual([]);
 
 		await settings.flush();
 		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toEqual({ ask: { enabled: false } });
@@ -257,6 +257,34 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(settings.get("statusLine.preset")).toBe("minimal");
 	});
 
+	it("previews the selected scope's status-line segment options", () => {
+		settings.set("statusLine.preset", "minimal", "project");
+		settings.set("statusLine.preset", "full", "global");
+		settings.set("statusLine.segmentOptions", { path: { abbreviate: true } }, "project");
+		settings.set("statusLine.segmentOptions", { path: { abbreviate: false } }, "global");
+		const previews: Array<{ segmentOptions?: Record<string, unknown> }> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onStatusLinePreview: payload => {
+					previews.push(payload);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: false } });
+		selector.handleInput("\x1b");
+		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: true } });
+	});
+
 	it("restores the scoped theme when canceling a theme submenu", () => {
 		const previews: string[] = [];
 		const selector = new SettingsSelectorComponent(
@@ -287,6 +315,41 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		selector.handleInput("\x1b");
 		expect(previews.at(-1)).toBe("titanium");
 		expect(settings.get("theme.dark")).toBe("dark-one");
+	});
+
+	it("reapplies the scoped theme after a shadowed global theme submenu commit", () => {
+		const previews: string[] = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium", "alabaster"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: themeName => {
+					previews.push(themeName);
+				},
+				onCancel: () => {},
+			},
+		);
+		settings.set("theme.dark", "dark-one", "project");
+		settings.set("theme.dark", "titanium", "global");
+		// Alt+S previews the global layer. Confirming a different global dark
+		// theme persists only that layer; the live preview must stay on the
+		// scoped (global) value instead of snapping back to the still-winning
+		// project mapping that Settings.set() re-evaluates.
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)).toBe("titanium");
+		for (const ch of "dark theme") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		expect(settings.getGlobalValue("theme.dark")).toBe("alabaster");
+		expect(settings.get("theme.dark")).toBe("dark-one");
+		expect(previews.at(-1)).toBe("alabaster");
 	});
 
 	it("keeps the dark/light theme slot of the terminal when closing after a preview", async () => {
@@ -607,5 +670,33 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			custom: { keep: true },
 			retry: { fallbackChains: { slow: null } },
 		});
+	});
+	it("rebuilds open rows after a skipped same-key project save", async () => {
+		settings.set("defaultThinkingLevel", Effort.Low, "project");
+		await settings.flush();
+		const selector = createSelector();
+		for (const char of "thinking level") selector.handleInput(char);
+		const thinkingRow = (text: string) =>
+			Bun.stripANSI(text)
+				.split("\n")
+				.find(line => line.includes("Thinking Level") && !line.includes("Compact"));
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("low");
+
+		settings.set("defaultThinkingLevel", Effort.High, "project");
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("low");
+
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{ ask: { enabled: true }, custom: { keep: true }, defaultThinkingLevel: Effort.Medium },
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("medium");
+		selector.handleInput("\x1b");
 	});
 });

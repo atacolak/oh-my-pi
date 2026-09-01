@@ -366,6 +366,45 @@ describe("Settings", () => {
 			expect(settings.get("steeringMode")).toBe("one-at-a-time");
 		});
 
+		it("migrates a native mnemosyne object before writing a canonical mnemopi path", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ mnemosyne: { dbPath: "/tmp/old.db", embeddingModel: "legacy-embed" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/old.db");
+			expect(settings.get("mnemopi.embeddingModel")).toBe("legacy-embed");
+			settings.set("mnemopi.dbPath", "/tmp/new.db", "project");
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/new.db");
+			expect(settings.get("mnemopi.embeddingModel")).toBe("legacy-embed");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				mnemopi: { dbPath: "/tmp/new.db", embeddingModel: "legacy-embed" },
+			});
+		});
+
+		it("preserves sibling mnemosyne fields when inheriting one canonical mnemopi path", async () => {
+			await writeSettings({
+				mnemopi: { dbPath: "/tmp/global.db", embeddingVariant: "en" },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ mnemosyne: { dbPath: "/tmp/old.db", embeddingVariant: "multilingual" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/old.db");
+			expect(settings.get("mnemopi.embeddingVariant")).toBe("multilingual");
+			expect(settings.clearProject("mnemopi.dbPath")).toBe(true);
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/global.db");
+			expect(settings.get("mnemopi.embeddingVariant")).toBe("multilingual");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				mnemopi: { embeddingVariant: "multilingual" },
+			});
+		});
+
 		it("resolves project-scope values without config overlays", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: false } }, null, 2));
@@ -695,6 +734,28 @@ describe("Settings", () => {
 			});
 		});
 
+		it("keeps a second same-key project edit when a sibling disk edit lands during debounce", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.set("theme.dark", "titanium", "project");
+			settings.set("theme.dark", "alabaster", "project");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: false } }, null, 2),
+			);
+			await settings.flush();
+			expect(settings.get("theme.dark")).toBe("alabaster");
+			expect(settings.get("ask.enabled")).toBe(false);
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				theme: { dark: "alabaster" },
+				ask: { enabled: false },
+			});
+		});
+
 		it("preserves a same-key external project edit made after a local save was queued", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "dark-one" } }, null, 2));
@@ -735,9 +796,9 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: Array<"auto" | Effort> = [];
-			const unsubscribe = onSessionRuntimeChanged(() => {
-				received.push(settings.get("defaultThinkingLevel"));
+			const received: Array<{ level: "auto" | Effort; paths: string[]; source: Settings }> = [];
+			const unsubscribe = onSessionRuntimeChanged((paths, source) => {
+				received.push({ level: settings.get("defaultThinkingLevel"), paths: [...paths], source });
 			});
 			try {
 				settings.set("defaultThinkingLevel", Effort.High, "project");
@@ -745,10 +806,40 @@ describe("Settings", () => {
 				await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: Effort.Medium }, null, 2));
 				await settings.flush();
 				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
-				expect(received).toEqual([Effort.Medium]);
+				expect(received).toEqual([{ level: Effort.Medium, paths: ["defaultThinkingLevel"], source: settings }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					defaultThinkingLevel: Effort.Medium,
 				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("does not attribute a clone's session-runtime event to another Settings instance", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const otherDir = tempDir.join("other-project");
+			fs.mkdirSync(path.join(otherDir, ".omp"), { recursive: true });
+			await Bun.write(
+				path.join(otherDir, ".omp", "config.yml"),
+				YAML.stringify({ defaultThinkingLevel: "low" }, null, 2),
+			);
+			const cloned = await settings.cloneForCwd(otherDir);
+			const received: Settings[] = [];
+			const unsubscribe = onSessionRuntimeChanged((_paths, source) => {
+				received.push(source);
+			});
+			try {
+				cloned.set("defaultThinkingLevel", Effort.High, "project");
+				await Bun.write(
+					path.join(otherDir, ".omp", "config.yml"),
+					YAML.stringify({ defaultThinkingLevel: Effort.Medium }, null, 2),
+				);
+				await cloned.flush();
+				expect(cloned.get("defaultThinkingLevel")).toBe(Effort.Medium);
+				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Low);
+				expect(received).toEqual([cloned]);
 			} finally {
 				unsubscribe();
 			}
@@ -758,9 +849,9 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ memory: { backend: "builtin" } }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: string[] = [];
-			const unsubscribe = onSessionRuntimeChanged(() => {
-				received.push(settings.get("memory.backend"));
+			const received: Array<{ backend: string; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ backend: settings.get("memory.backend"), paths: [...paths] });
 			});
 			try {
 				settings.set("memory.backend", "hindsight", "project");
@@ -768,7 +859,7 @@ describe("Settings", () => {
 				await Bun.write(projectConfigPath, YAML.stringify({ memory: { backend: "off" } }, null, 2));
 				await settings.flush();
 				expect(settings.get("memory.backend")).toBe("off");
-				expect(received).toEqual(["off"]);
+				expect(received).toEqual([{ backend: "off", paths: ["memory.backend"] }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					memory: { backend: "off" },
 				});
@@ -781,9 +872,9 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 10 }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: number[] = [];
-			const unsubscribe = onSessionRuntimeChanged(() => {
-				received.push(settings.get("autocompleteMaxVisible"));
+			const received: Array<{ value: number; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("autocompleteMaxVisible"), paths: [...paths] });
 			});
 			try {
 				settings.set("autocompleteMaxVisible", 20, "project");
@@ -791,9 +882,541 @@ describe("Settings", () => {
 				await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 7 }, null, 2));
 				await settings.flush();
 				expect(settings.get("autocompleteMaxVisible")).toBe(7);
-				expect(received).toEqual([7]);
+				expect(received).toEqual([{ value: 7, paths: ["autocompleteMaxVisible"] }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					autocompleteMaxVisible: 7,
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after skipping a stale project temperature write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ temperature: 0.2 }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: number; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("temperature"), paths: [...paths] });
+			});
+			try {
+				settings.set("temperature", 0.8, "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ temperature: 0.4 }, null, 2));
+				await settings.flush();
+				expect(settings.get("temperature")).toBe(0.4);
+				expect(received).toEqual([{ value: 0.4, paths: ["temperature"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					temperature: 0.4,
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling omitThinking disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ omitThinking: false, ask: { enabled: true } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("omitThinking"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ omitThinking: true, ask: { enabled: true } }, null, 2));
+				await settings.flush();
+				expect(settings.get("omitThinking")).toBe(true);
+				expect(received).toEqual([{ value: true, paths: ["omitThinking"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					omitThinking: true,
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling compaction.enabled disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ compaction: { enabled: true }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("compaction.enabled"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ compaction: { enabled: false }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("compaction.enabled")).toBe(false);
+				expect(received).toEqual([{ value: false, paths: ["compaction.enabled"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					compaction: { enabled: false },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling compaction.methodOrder disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ compaction: { enabled: true, methodOrder: ["soft"] }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: string[]; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: [...settings.get("compaction.methodOrder")], paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ compaction: { enabled: true, methodOrder: [] }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("compaction.methodOrder")).toEqual([]);
+				expect(received).toEqual([{ value: [], paths: ["compaction.methodOrder"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					compaction: { enabled: true, methodOrder: [] },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling providers.webSearchExclude disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [] }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: string[]; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: [...settings.get("providers.webSearchExclude")], paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ providers: { webSearchExclude: ["exa"] }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("providers.webSearchExclude")).toEqual(["exa"]);
+				expect(received).toEqual([{ value: ["exa"], paths: ["providers.webSearchExclude"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					providers: { webSearchExclude: ["exa"] },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling display.hideToolActivity disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ display: { hideToolActivity: false }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("display.hideToolActivity"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ display: { hideToolActivity: true }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("display.hideToolActivity")).toBe(true);
+				expect(received).toEqual([{ value: true, paths: ["display.hideToolActivity"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					display: { hideToolActivity: true },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting sibling display setting disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						terminal: { showImages: true },
+						hideThinkingBlock: false,
+						proseOnlyThinking: true,
+						display: {
+							cacheMissMarker: false,
+							collapseCompacted: true,
+							showTokenUsage: false,
+							showTurnTime: false,
+						},
+						ask: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{
+				showImages: boolean;
+				hideThinkingBlock: boolean;
+				proseOnlyThinking: boolean;
+				cacheMissMarker: boolean;
+				collapseCompacted: boolean;
+				showTokenUsage: boolean;
+				showTurnTime: boolean;
+				paths: string[];
+			}> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({
+					showImages: settings.get("terminal.showImages"),
+					hideThinkingBlock: settings.get("hideThinkingBlock"),
+					proseOnlyThinking: settings.get("proseOnlyThinking"),
+					cacheMissMarker: settings.get("display.cacheMissMarker"),
+					collapseCompacted: settings.get("display.collapseCompacted"),
+					showTokenUsage: settings.get("display.showTokenUsage"),
+					showTurnTime: settings.get("display.showTurnTime"),
+					paths: [...paths],
+				});
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							terminal: { showImages: false },
+							hideThinkingBlock: true,
+							proseOnlyThinking: false,
+							display: {
+								cacheMissMarker: true,
+								collapseCompacted: false,
+								showTokenUsage: true,
+								showTurnTime: true,
+							},
+							ask: { enabled: true },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("terminal.showImages")).toBe(false);
+				expect(settings.get("hideThinkingBlock")).toBe(true);
+				expect(settings.get("proseOnlyThinking")).toBe(false);
+				expect(settings.get("display.cacheMissMarker")).toBe(true);
+				expect(settings.get("display.collapseCompacted")).toBe(false);
+				expect(settings.get("display.showTokenUsage")).toBe(true);
+				expect(settings.get("display.showTurnTime")).toBe(true);
+				expect(received).toEqual([
+					{
+						showImages: false,
+						hideThinkingBlock: true,
+						proseOnlyThinking: false,
+						cacheMissMarker: true,
+						collapseCompacted: false,
+						showTokenUsage: true,
+						showTurnTime: true,
+						paths: [
+							"display.cacheMissMarker",
+							"display.collapseCompacted",
+							"display.showTokenUsage",
+							"display.showTurnTime",
+							"hideThinkingBlock",
+							"proseOnlyThinking",
+							"terminal.showImages",
+						],
+					},
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					terminal: { showImages: false },
+					hideThinkingBlock: true,
+					proseOnlyThinking: false,
+					display: {
+						cacheMissMarker: true,
+						collapseCompacted: false,
+						showTokenUsage: true,
+						showTurnTime: true,
+					},
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling mcp.notifications disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ mcp: { notifications: false }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("mcp.notifications"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ mcp: { notifications: true }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("mcp.notifications")).toBe(true);
+				expect(received).toEqual([{ value: true, paths: ["mcp.notifications"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					mcp: { notifications: true },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting sibling composer, spelling, and tui disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						composer: { shape: "band" },
+						spelling: { typoDetection: true, autocomplete: true, autocorrect: false },
+						tui: { tight: false, resizeScrollback: "rebuild", renderMermaid: true },
+						ask: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{
+				composerShape: string;
+				typoDetection: boolean;
+				autocomplete: boolean;
+				autocorrect: boolean;
+				tight: boolean;
+				resizeScrollback: string;
+				renderMermaid: boolean;
+				paths: string[];
+			}> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({
+					composerShape: settings.get("composer.shape") ?? "band",
+					typoDetection: settings.get("spelling.typoDetection"),
+					autocomplete: settings.get("spelling.autocomplete"),
+					autocorrect: settings.get("spelling.autocorrect"),
+					tight: settings.get("tui.tight"),
+					resizeScrollback: settings.get("tui.resizeScrollback"),
+					renderMermaid: settings.get("tui.renderMermaid"),
+					paths: [...paths],
+				});
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							composer: { shape: "box" },
+							spelling: { typoDetection: false, autocomplete: false, autocorrect: true },
+							tui: { tight: true, resizeScrollback: "preserve", renderMermaid: false },
+							ask: { enabled: true },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("composer.shape")).toBe("box");
+				expect(settings.get("spelling.typoDetection")).toBe(false);
+				expect(settings.get("spelling.autocomplete")).toBe(false);
+				expect(settings.get("spelling.autocorrect")).toBe(true);
+				expect(settings.get("tui.tight")).toBe(true);
+				expect(settings.get("tui.resizeScrollback")).toBe("preserve");
+				expect(settings.get("tui.renderMermaid")).toBe(false);
+				expect(received).toEqual([
+					{
+						composerShape: "box",
+						typoDetection: false,
+						autocomplete: false,
+						autocorrect: true,
+						tight: true,
+						resizeScrollback: "preserve",
+						renderMermaid: false,
+						paths: [
+							"composer.shape",
+							"spelling.autocomplete",
+							"spelling.autocorrect",
+							"spelling.typoDetection",
+							"tui.renderMermaid",
+							"tui.resizeScrollback",
+							"tui.tight",
+						],
+					},
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					composer: { shape: "box" },
+					spelling: { typoDetection: false, autocomplete: false, autocorrect: true },
+					tui: { tight: true, resizeScrollback: "preserve", renderMermaid: false },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting sibling status-line disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						statusLine: {
+							preset: "minimal",
+							separator: "pipe",
+							showHookStatus: true,
+							transparent: false,
+							compactThinkingLevel: true,
+							contextLine: "off",
+							leftSegments: ["pi"],
+							rightSegments: ["git"],
+							segmentOptions: { path: { abbreviate: true } },
+							sessionAccent: true,
+						},
+						ask: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{
+				preset: string;
+				separator: string;
+				showHookStatus: boolean;
+				transparent: boolean;
+				compactThinkingLevel: boolean;
+				contextLine: string;
+				leftSegments: string[];
+				rightSegments: string[];
+				sessionAccent: boolean;
+				paths: string[];
+			}> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({
+					preset: settings.get("statusLine.preset"),
+					separator: settings.get("statusLine.separator"),
+					showHookStatus: settings.get("statusLine.showHookStatus"),
+					transparent: settings.get("statusLine.transparent"),
+					compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+					contextLine: settings.get("statusLine.contextLine"),
+					leftSegments: settings.get("statusLine.leftSegments"),
+					rightSegments: settings.get("statusLine.rightSegments"),
+					sessionAccent: settings.get("statusLine.sessionAccent"),
+					paths: [...paths],
+				});
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							statusLine: {
+								preset: "full",
+								separator: "slash",
+								showHookStatus: false,
+								transparent: true,
+								compactThinkingLevel: false,
+								contextLine: "embedded",
+								leftSegments: ["model"],
+								rightSegments: ["cost"],
+								segmentOptions: { path: { abbreviate: false } },
+								sessionAccent: false,
+							},
+							ask: { enabled: true },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("statusLine.preset")).toBe("full");
+				expect(settings.get("statusLine.separator")).toBe("slash");
+				expect(settings.get("statusLine.showHookStatus")).toBe(false);
+				expect(settings.get("statusLine.transparent")).toBe(true);
+				expect(settings.get("statusLine.compactThinkingLevel")).toBe(false);
+				expect(settings.get("statusLine.contextLine")).toBe("embedded");
+				expect(settings.get("statusLine.leftSegments")).toEqual(["model"]);
+				expect(settings.get("statusLine.rightSegments")).toEqual(["cost"]);
+				expect(settings.get("statusLine.sessionAccent")).toBe(false);
+				expect(received).toEqual([
+					{
+						preset: "full",
+						separator: "slash",
+						showHookStatus: false,
+						transparent: true,
+						compactThinkingLevel: false,
+						contextLine: "embedded",
+						leftSegments: ["model"],
+						rightSegments: ["cost"],
+						sessionAccent: false,
+						paths: [
+							"statusLine.compactThinkingLevel",
+							"statusLine.contextLine",
+							"statusLine.leftSegments",
+							"statusLine.preset",
+							"statusLine.rightSegments",
+							"statusLine.segmentOptions",
+							"statusLine.separator",
+							"statusLine.sessionAccent",
+							"statusLine.showHookStatus",
+							"statusLine.transparent",
+						],
+					},
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					statusLine: {
+						preset: "full",
+						separator: "slash",
+						showHookStatus: false,
+						transparent: true,
+						compactThinkingLevel: false,
+						contextLine: "embedded",
+						leftSegments: ["model"],
+						rightSegments: ["cost"],
+						segmentOptions: { path: { abbreviate: false } },
+						sessionAccent: false,
+					},
+					ask: { enabled: false },
 				});
 			} finally {
 				unsubscribe();
@@ -861,6 +1484,70 @@ describe("Settings", () => {
 			} finally {
 				unsubscribe();
 			}
+		});
+
+		it("fires session-runtime hooks for an adopted sibling project edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ ask: { enabled: true }, memory: { backend: "builtin" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ backend: string; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ backend: settings.get("memory.backend"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ ask: { enabled: true }, memory: { backend: "hindsight" } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("memory.backend")).toBe("hindsight");
+				expect(received).toEqual([{ backend: "hindsight", paths: ["memory.backend"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					ask: { enabled: false },
+					memory: { backend: "hindsight" },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("restores the original runtime role after an adopted project-role clear", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ modelRoles: { smol: "old/smol" } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.override("modelRoleStorage", "project");
+			settings.overrideModelRoles({ smol: "runtime/smol" });
+			settings.setProjectModelRole("smol", "local/smol");
+			expect(settings.getModelRole("smol")).toBe("local/smol");
+
+			await Bun.write(projectConfigPath, YAML.stringify({}, null, 2));
+			await settings.flush();
+
+			expect(settings.getProjectModelRole("smol")).toBeUndefined();
+			expect(settings.getModelRole("smol")).toBe("runtime/smol");
+			expect(settings.isProjectModelRoleRuntimeOverrideActive("smol")).toBe(false);
+			const cloned = await settings.cloneForCwd(tempDir.join("other-project"));
+			expect(cloned.getModelRole("smol")).toBe("runtime/smol");
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears project-config existence after adopting a deleted native file", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: true } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.hasProjectConfig()).toBe(true);
+
+			settings.set("ask.enabled", false, "project");
+			await fs.promises.unlink(projectConfigPath);
+			await settings.flush();
+
+			expect(settings.hasProjectConfig()).toBe(false);
+			expect(await Bun.file(projectConfigPath).exists()).toBe(false);
 		});
 
 		it("attributes an adopted non-native shellPath after a sibling locked save", async () => {

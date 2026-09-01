@@ -226,6 +226,37 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(settings.get("theme.dark")).toBe("dark-one");
 	});
 
+	it("restores the effective status line when closing after a scope preview", () => {
+		settings.set("statusLine.preset", "minimal", "project");
+		settings.set("statusLine.preset", "full", "global");
+		settings.set("statusLine.showHookStatus", false, "project");
+		settings.set("statusLine.showHookStatus", true, "global");
+		const previews: Array<{ preset?: string; showHookStatus?: boolean }> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onStatusLinePreview: payload => {
+					previews.push(payload);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)?.preset).toBe("full");
+		expect(previews.at(-1)?.showHookStatus).toBe(true);
+		selector.handleInput("\x1b");
+		expect(previews.at(-1)?.preset).toBe("minimal");
+		expect(previews.at(-1)?.showHookStatus).toBe(false);
+		expect(settings.get("statusLine.preset")).toBe("minimal");
+	});
+
 	it("restores the scoped theme when canceling a theme submenu", () => {
 		const previews: string[] = [];
 		const selector = new SettingsSelectorComponent(

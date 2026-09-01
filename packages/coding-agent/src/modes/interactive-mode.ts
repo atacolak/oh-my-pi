@@ -1385,6 +1385,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					"display.hideToolActivity",
 					"display.showTokenUsage",
 					"display.showTurnTime",
+					"git.enabled",
 					"hideThinkingBlock",
 					"mcp.notifications",
 					"proseOnlyThinking",

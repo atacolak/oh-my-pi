@@ -3575,6 +3575,7 @@ export type SessionRuntimePath =
 	| "display.showTurnTime"
 	| "externalThinking"
 	| "followUpMode"
+	| "git.enabled"
 	| "hideThinkingBlock"
 	| "inspect_image.mode"
 	| "interruptMode"
@@ -3626,6 +3627,7 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"display.showTurnTime": true,
 	externalThinking: true,
 	followUpMode: true,
+	"git.enabled": true,
 	hideThinkingBlock: true,
 	"inspect_image.mode": true,
 	interruptMode: true,

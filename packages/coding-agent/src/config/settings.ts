@@ -806,6 +806,7 @@ export class Settings {
 			this.#modifiedProjectPathMutations,
 			this.#migratedRawValue(this.#projectFileSettings, path),
 		);
+		this.#projectFileSettings = this.#migrateRawSettings(this.#projectFileSettings, false);
 		deleteByPath(this.#projectFileSettings, segments);
 		this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
 		this.#rebuildProjectLayer();
@@ -2235,7 +2236,9 @@ export class Settings {
 			}
 		}
 		if (path.startsWith("mnemopi.")) {
-			delete target.mnemosyne;
+			const leaf = path.slice("mnemopi.".length);
+			deleteByPath(target, ["mnemosyne", leaf]);
+			delete target[`mnemosyne.${leaf}`];
 		}
 		if (path === "hindsight.scoping") {
 			deleteByPath(target, ["hindsight", "dynamicBankId"]);

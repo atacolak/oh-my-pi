@@ -384,6 +384,27 @@ describe("Settings", () => {
 			});
 		});
 
+		it("preserves sibling mnemosyne fields when inheriting one canonical mnemopi path", async () => {
+			await writeSettings({
+				mnemopi: { dbPath: "/tmp/global.db", embeddingVariant: "en" },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ mnemosyne: { dbPath: "/tmp/old.db", embeddingVariant: "multilingual" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/old.db");
+			expect(settings.get("mnemopi.embeddingVariant")).toBe("multilingual");
+			expect(settings.clearProject("mnemopi.dbPath")).toBe(true);
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/global.db");
+			expect(settings.get("mnemopi.embeddingVariant")).toBe("multilingual");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				mnemopi: { embeddingVariant: "multilingual" },
+			});
+		});
+
 		it("resolves project-scope values without config overlays", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: false } }, null, 2));

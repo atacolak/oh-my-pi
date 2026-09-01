@@ -1760,7 +1760,8 @@ export class AgentSession {
 			this.setFollowUpMode(this.settings.get("followUpMode"), false);
 			this.setInterruptMode(this.settings.get("interruptMode"), false);
 		});
-		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged(paths => {
+		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged((paths, source) => {
+			if (source !== this.settings) return;
 			const changed = new Set(paths);
 			if (changed.has("steeringMode")) {
 				this.setSteeringMode(this.settings.get("steeringMode"), false);

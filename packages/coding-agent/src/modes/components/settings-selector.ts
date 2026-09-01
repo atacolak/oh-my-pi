@@ -31,8 +31,11 @@ import type { ShapeTarget } from "@oh-my-pi/snapcompact";
 import {
 	getDefault,
 	getType,
+	isSettingsInitialized,
 	normalizeProviderMaxInFlightRequests,
+	onProjectSettingsReconciled,
 	type SettingPath,
+	Settings,
 	type SettingsScope,
 	settings,
 	validateProviderMaxInFlightRequests,
@@ -612,6 +615,7 @@ export class SettingsSelectorComponent implements Component {
 	#searchFirstMatch = new Map<string, string>();
 	#textInputActive = false;
 	#hasSectionJump = false;
+	#unsubscribeProjectSettings?: () => void;
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
 	#tabRowStart = 0;
@@ -642,6 +646,10 @@ export class SettingsSelectorComponent implements Component {
 		// appearance so an overlay cannot pin the live theme/status.
 		this.#switchToTab("appearance");
 		this.#previewAppearanceForScope();
+		this.#unsubscribeProjectSettings = onProjectSettingsReconciled(source => {
+			if (!isSettingsInitialized() || source !== Settings.instance) return;
+			this.#resyncItemsFromSettings();
+		});
 	}
 
 	invalidate(): void {
@@ -1451,6 +1459,24 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	/**
+	 * Rebuild the visible list after a project save adopts disk values so a
+	 * skipped same-key edit cannot leave stale item snapshots on screen.
+	 */
+	#resyncItemsFromSettings(): void {
+		if (this.#searchList) {
+			this.#setSearchQuery(this.#searchQuery);
+		} else if (this.#currentTabId !== "plugins") {
+			const selectedId = this.#currentList?.getSelectedItem()?.id;
+			this.#refreshCurrentTabItems(getSettingsForTab(this.#currentTabId));
+			if (selectedId) this.#currentList?.selectItem(selectedId);
+		}
+		if (this.#currentTabId === "appearance" && !this.#searchList) {
+			this.#previewAppearanceForScope();
+		}
+		this.context.requestRender?.();
+	}
+
+	/**
 	 * Get the status line preview string.
 	 */
 	#getStatusPreviewString(): string {
@@ -1534,6 +1560,8 @@ export class SettingsSelectorComponent implements Component {
 	 * rendering a scope that was never persisted.
 	 */
 	#close(): void {
+		this.#unsubscribeProjectSettings?.();
+		this.#unsubscribeProjectSettings = undefined;
 		const themeName = this.#effectiveThemeName();
 		if (themeName) void this.callbacks.onThemePreview?.(themeName);
 		this.#triggerEffectiveStatusLinePreview();

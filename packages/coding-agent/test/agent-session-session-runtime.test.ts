@@ -17,8 +17,8 @@ describe("AgentSession adopted session-runtime changes", () => {
 	let settingsState: SettingsTestState | undefined;
 	let tempDir: TempDir;
 	let session: AgentSession | undefined;
+	let otherSession: AgentSession | undefined;
 	let authStorage: AuthStorage | undefined;
-
 	beforeEach(() => {
 		settingsState = beginSettingsTest();
 		tempDir = TempDir.createSync("@pi-session-runtime-");
@@ -26,7 +26,9 @@ describe("AgentSession adopted session-runtime changes", () => {
 
 	afterEach(async () => {
 		if (session) await session.dispose();
+		if (otherSession) await otherSession.dispose();
 		session = undefined;
+		otherSession = undefined;
 		authStorage?.close();
 		authStorage = undefined;
 		restoreSettingsTestState(settingsState);
@@ -83,5 +85,55 @@ describe("AgentSession adopted session-runtime changes", () => {
 		expect(settings.get("autocompleteMaxVisible")).toBe(7);
 		expect(settings.get("defaultThinkingLevel")).toBe(Effort.Low);
 		expect(session.thinkingLevel).toBe(Effort.High);
+	});
+
+	it("ignores session-runtime events from a different Settings clone", async () => {
+		const projectDir = tempDir.join("project");
+		const otherDir = tempDir.join("other-project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(otherDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: Effort.Low }, null, 2));
+		await Bun.write(
+			path.join(otherDir, ".omp", "config.yml"),
+			YAML.stringify({ defaultThinkingLevel: Effort.Low }, null, 2),
+		);
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const otherSettings = await settings.cloneForCwd(otherDir);
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const createSession = (sessionSettings: Settings) =>
+			new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model,
+						systemPrompt: ["Test"],
+						tools: [],
+						messages: [],
+						thinkingLevel: Effort.Low,
+					},
+				}),
+				sessionManager: SessionManager.inMemory(),
+				settings: sessionSettings,
+				modelRegistry: new ModelRegistry(authStorage!),
+			});
+		session = createSession(settings);
+		otherSession = createSession(otherSettings);
+
+		session.setThinkingLevel(Effort.High);
+		otherSession.setThinkingLevel(Effort.High);
+
+		settings.set("defaultThinkingLevel", Effort.Medium, "project");
+		await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: Effort.Minimal }, null, 2));
+		await settings.flush();
+
+		expect(settings.get("defaultThinkingLevel")).toBe(Effort.Minimal);
+		expect(session.thinkingLevel).toBe(Effort.Minimal);
+		expect(otherSession.thinkingLevel).toBe(Effort.High);
 	});
 });

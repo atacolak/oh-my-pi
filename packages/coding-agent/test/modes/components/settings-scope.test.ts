@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-ai";
 import {
 	normalizeProviderMaxInFlightRequests,
 	resetSettingsForTest,
@@ -606,5 +607,33 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			custom: { keep: true },
 			retry: { fallbackChains: { slow: null } },
 		});
+	});
+	it("rebuilds open rows after a skipped same-key project save", async () => {
+		settings.set("defaultThinkingLevel", Effort.Low, "project");
+		await settings.flush();
+		const selector = createSelector();
+		for (const char of "thinking level") selector.handleInput(char);
+		const thinkingRow = (text: string) =>
+			Bun.stripANSI(text)
+				.split("\n")
+				.find(line => line.includes("Thinking Level") && !line.includes("Compact"));
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("low");
+
+		settings.set("defaultThinkingLevel", Effort.High, "project");
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("low");
+
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{ ask: { enabled: true }, custom: { keep: true }, defaultThinkingLevel: Effort.Medium },
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("medium");
+		selector.handleInput("\x1b");
 	});
 });

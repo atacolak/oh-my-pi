@@ -774,9 +774,9 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: Array<{ level: "auto" | Effort; paths: string[] }> = [];
-			const unsubscribe = onSessionRuntimeChanged(paths => {
-				received.push({ level: settings.get("defaultThinkingLevel"), paths: [...paths] });
+			const received: Array<{ level: "auto" | Effort; paths: string[]; source: Settings }> = [];
+			const unsubscribe = onSessionRuntimeChanged((paths, source) => {
+				received.push({ level: settings.get("defaultThinkingLevel"), paths: [...paths], source });
 			});
 			try {
 				settings.set("defaultThinkingLevel", Effort.High, "project");
@@ -784,10 +784,40 @@ describe("Settings", () => {
 				await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: Effort.Medium }, null, 2));
 				await settings.flush();
 				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
-				expect(received).toEqual([{ level: Effort.Medium, paths: ["defaultThinkingLevel"] }]);
+				expect(received).toEqual([{ level: Effort.Medium, paths: ["defaultThinkingLevel"], source: settings }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					defaultThinkingLevel: Effort.Medium,
 				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("does not attribute a clone's session-runtime event to another Settings instance", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const otherDir = tempDir.join("other-project");
+			fs.mkdirSync(path.join(otherDir, ".omp"), { recursive: true });
+			await Bun.write(
+				path.join(otherDir, ".omp", "config.yml"),
+				YAML.stringify({ defaultThinkingLevel: "low" }, null, 2),
+			);
+			const cloned = await settings.cloneForCwd(otherDir);
+			const received: Settings[] = [];
+			const unsubscribe = onSessionRuntimeChanged((_paths, source) => {
+				received.push(source);
+			});
+			try {
+				cloned.set("defaultThinkingLevel", Effort.High, "project");
+				await Bun.write(
+					path.join(otherDir, ".omp", "config.yml"),
+					YAML.stringify({ defaultThinkingLevel: Effort.Medium }, null, 2),
+				);
+				await cloned.flush();
+				expect(cloned.get("defaultThinkingLevel")).toBe(Effort.Medium);
+				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Low);
+				expect(received).toEqual([cloned]);
 			} finally {
 				unsubscribe();
 			}

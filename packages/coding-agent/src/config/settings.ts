@@ -3401,8 +3401,9 @@ export class Settings {
 			Object.keys(SESSION_RUNTIME_PATHS) as Array<keyof typeof SESSION_RUNTIME_PATHS>
 		).filter(key => !Bun.deepEquals(this.get(key), previousSessionRuntimeValues[key]));
 		if (changedSessionRuntimePaths.length > 0) {
-			sessionRuntimeSignal.fire(changedSessionRuntimePaths);
+			sessionRuntimeSignal.fire(changedSessionRuntimePaths, this);
 		}
+		projectSettingsReconciledSignal.fire(this);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -3664,16 +3665,29 @@ const conversationFlowSignal = new SettingSignal("conversation flow");
  */
 export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
 /** Fires when adopted project session-runtime settings must reapply live session state. */
-const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[]]>("session runtime");
+const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], source: Settings]>("session runtime");
 
 /**
  * Subscribe to session-runtime setting changes (`defaultThinkingLevel`,
  * `memory.backend`, queue modes, and other selector-managed live session fields)
  * after a project save adopts a newer disk value. Returns an unsubscribe
- * function. Callers should re-read only the supplied paths and apply them to
+ * function. Callers should ignore events whose `source` is not the Settings
+ * instance they own, then re-read only the supplied paths and apply them to
  * the live session without persisting.
  */
-export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[]) => void) => sessionRuntimeSignal.on(cb);
+export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source: Settings) => void) =>
+	sessionRuntimeSignal.on(cb);
+
+/** Fires after a project save rebuilds the live native layer from disk. */
+const projectSettingsReconciledSignal = new SettingSignal<[source: Settings]>("project settings reconciled");
+
+/**
+ * Subscribe to project-layer reconciliation after `#saveProjectNow()`. Returns
+ * an unsubscribe function. Callers that display live settings (the open
+ * `/settings` selector) should ignore events from other Settings instances
+ * and rebuild their item snapshots from the adopted values.
+ */
+export const onProjectSettingsReconciled = (cb: (source: Settings) => void) => projectSettingsReconciledSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");

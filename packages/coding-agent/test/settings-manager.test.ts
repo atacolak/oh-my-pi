@@ -863,6 +863,70 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks for an adopted sibling project edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ ask: { enabled: true }, memory: { backend: "builtin" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: string[] = [];
+			const unsubscribe = onSessionRuntimeChanged(() => {
+				received.push(settings.get("memory.backend"));
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ ask: { enabled: true }, memory: { backend: "hindsight" } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("memory.backend")).toBe("hindsight");
+				expect(received).toEqual(["hindsight"]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					ask: { enabled: false },
+					memory: { backend: "hindsight" },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("restores the original runtime role after an adopted project-role clear", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ modelRoles: { smol: "old/smol" } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.override("modelRoleStorage", "project");
+			settings.overrideModelRoles({ smol: "runtime/smol" });
+			settings.setProjectModelRole("smol", "local/smol");
+			expect(settings.getModelRole("smol")).toBe("local/smol");
+
+			await Bun.write(projectConfigPath, YAML.stringify({}, null, 2));
+			await settings.flush();
+
+			expect(settings.getProjectModelRole("smol")).toBeUndefined();
+			expect(settings.getModelRole("smol")).toBe("runtime/smol");
+			expect(settings.isProjectModelRoleRuntimeOverrideActive("smol")).toBe(false);
+			const cloned = await settings.cloneForCwd(tempDir.join("other-project"));
+			expect(cloned.getModelRole("smol")).toBe("runtime/smol");
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears project-config existence after adopting a deleted native file", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: true } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.hasProjectConfig()).toBe(true);
+
+			settings.set("ask.enabled", false, "project");
+			await fs.promises.unlink(projectConfigPath);
+			await settings.flush();
+
+			expect(settings.hasProjectConfig()).toBe(false);
+			expect(await Bun.file(projectConfigPath).exists()).toBe(false);
+		});
+
 		it("attributes an adopted non-native shellPath after a sibling locked save", async () => {
 			await fs.promises.mkdir(path.join(projectDir, ".claude"), { recursive: true });
 			const claudeShell = tempDir.join("missing-claude-bash");

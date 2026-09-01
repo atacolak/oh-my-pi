@@ -3230,10 +3230,13 @@ export class Settings {
 			sessionAccent: this.get("statusLine.sessionAccent"),
 		};
 		const previousCodeModeValues = this.#codeModeSignalSnapshot();
-		const skippedProjectPaths: string[] = [];
 		const previousHookValues = new Map<SettingPath, unknown>();
 		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 			previousHookValues.set(key, this.get(key));
+		}
+		const previousSessionRuntimeValues = {} as Record<keyof typeof SESSION_RUNTIME_PATHS, unknown>;
+		for (const key of Object.keys(SESSION_RUNTIME_PATHS) as Array<keyof typeof SESSION_RUNTIME_PATHS>) {
+			previousSessionRuntimeValues[key] = this.get(key);
 		}
 		this.#modifiedProject.clear();
 		this.#modifiedProjectModelRoles.clear();
@@ -3263,7 +3266,6 @@ export class Settings {
 							path: projectConfigPath,
 							setting: modifiedPath,
 						});
-						skippedProjectPaths.push(modifiedPath);
 						continue;
 					}
 					const value = getByPath(projectFileAtStart, segments);
@@ -3303,6 +3305,8 @@ export class Settings {
 				if (shouldWrite) {
 					await this.#writeYamlAtomically(writePath, projectSettings);
 					this.#projectConfigExists = true;
+				} else {
+					this.#projectConfigExists = loaded.settings !== null;
 				}
 				this.#quarantinedYamlTargets.delete(projectConfigPath);
 
@@ -3387,7 +3391,11 @@ export class Settings {
 				SETTING_HOOKS[key]?.(next, previous);
 			}
 		}
-		if (skippedProjectPaths.some(modifiedPath => Object.hasOwn(SESSION_RUNTIME_PATHS, modifiedPath))) {
+		if (
+			(Object.keys(SESSION_RUNTIME_PATHS) as Array<keyof typeof SESSION_RUNTIME_PATHS>).some(
+				key => !Bun.deepEquals(this.get(key), previousSessionRuntimeValues[key]),
+			)
+		) {
 			sessionRuntimeSignal.fire();
 		}
 	}
@@ -3429,8 +3437,9 @@ export class Settings {
 	 * A skipped same-key project role write already adopted the newer disk
 	 * value into `#project`, but `setProjectModelRole()` may still be pinning
 	 * the rejected local value in `#overrides`. Align that temporary override
-	 * with the adopted role so `getModelRole()` and the post-save signal see
-	 * the disk value for the rest of the session.
+	 * with the adopted role, or restore the original process-wide override
+	 * when the disk edit cleared the role, so `getModelRole()` and later
+	 * `cloneForCwd()`/`reloadForCwd()` keep the original runtime value.
 	 */
 	#reconcileSkippedProjectModelRoleOverride(role: string): void {
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
@@ -3443,7 +3452,12 @@ export class Settings {
 		}
 		const adopted = this.getProjectModelRole(role);
 		if (adopted === undefined) {
-			delete runtimeOverrides[role];
+			const original = this.#savedRuntimeModelRoleOverrides.get(role);
+			if (original === undefined) {
+				delete runtimeOverrides[role];
+			} else {
+				runtimeOverrides[role] = original;
+			}
 			this.#savedRuntimeModelRoleOverrides.delete(role);
 			return;
 		}
@@ -3644,14 +3658,15 @@ const conversationFlowSignal = new SettingSignal("conversation flow");
  * persisting.
  */
 export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
-/** Fires when a skipped project save must reapply selector-managed session state. */
+/** Fires when adopted project session-runtime settings must reapply live session state. */
 const sessionRuntimeSignal = new SettingSignal("session runtime");
 
 /**
- * Subscribe to skip-only session-runtime setting changes (`defaultThinkingLevel`,
- * `memory.backend`, queue modes, and other selector-managed live session fields).
- * Returns an unsubscribe function. Callers should re-read those settings and
- * apply them to the live session without persisting.
+ * Subscribe to session-runtime setting changes (`defaultThinkingLevel`,
+ * `memory.backend`, queue modes, and other selector-managed live session fields)
+ * after a project save adopts a newer disk value. Returns an unsubscribe
+ * function. Callers should re-read those settings and apply them to the live
+ * session without persisting.
  */
 export const onSessionRuntimeChanged = (cb: () => void) => sessionRuntimeSignal.on(cb);
 

@@ -3562,6 +3562,7 @@ export type SessionRuntimePath =
 	| "advisor.enabled"
 	| "autocompleteMaxVisible"
 	| "compaction.enabled"
+	| "composer.shape"
 	| "defaultThinkingLevel"
 	| "display.cacheMissMarker"
 	| "display.collapseCompacted"
@@ -3584,17 +3585,24 @@ export type SessionRuntimePath =
 	| "providers.webSearchExclude"
 	| "providers.webSearchOrder"
 	| "repetitionPenalty"
+	| "spelling.autocomplete"
+	| "spelling.autocorrect"
+	| "spelling.typoDetection"
 	| "steeringMode"
 	| "temperature"
 	| "terminal.showImages"
 	| "tools.xdevDocs"
 	| "topK"
-	| "topP";
+	| "topP"
+	| "tui.renderMermaid"
+	| "tui.resizeScrollback"
+	| "tui.tight";
 
 const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"advisor.enabled": true,
 	autocompleteMaxVisible: true,
 	"compaction.enabled": true,
+	"composer.shape": true,
 	defaultThinkingLevel: true,
 	"display.cacheMissMarker": true,
 	"display.collapseCompacted": true,
@@ -3617,12 +3625,18 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"providers.webSearchExclude": true,
 	"providers.webSearchOrder": true,
 	repetitionPenalty: true,
+	"spelling.autocomplete": true,
+	"spelling.autocorrect": true,
+	"spelling.typoDetection": true,
 	steeringMode: true,
 	temperature: true,
 	"terminal.showImages": true,
 	"tools.xdevDocs": true,
 	topK: true,
 	topP: true,
+	"tui.renderMermaid": true,
+	"tui.resizeScrollback": true,
+	"tui.tight": true,
 };
 
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {

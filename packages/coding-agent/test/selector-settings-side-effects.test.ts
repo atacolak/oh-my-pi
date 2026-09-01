@@ -69,6 +69,67 @@ describe("selector setting side effects", () => {
 		expect(invalidate).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
+
+	it("applies composer.shape changes to the live composer", () => {
+		const syncComposerShape = vi.fn();
+		const controller = new SelectorController({
+			syncComposerShape,
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("composer.shape", "box");
+
+		expect(syncComposerShape).toHaveBeenCalledTimes(1);
+	});
+
+	it("applies spelling changes to the live editor", () => {
+		const syncEditorSpelling = vi.fn();
+		const requestRender = vi.fn();
+		const controller = new SelectorController({
+			syncEditorSpelling,
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("spelling.typoDetection", false);
+		controller.handleSettingChange("spelling.autocomplete", false);
+		controller.handleSettingChange("spelling.autocorrect", true);
+
+		expect(syncEditorSpelling).toHaveBeenCalledTimes(3);
+		expect(requestRender).toHaveBeenCalledTimes(3);
+	});
+
+	it("applies tui.resizeScrollback to the live TUI", () => {
+		const setResizeScrollback = vi.fn();
+		const controller = new SelectorController({
+			ui: { setResizeScrollback },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("tui.resizeScrollback", "preserve");
+
+		expect(setResizeScrollback).toHaveBeenCalledTimes(1);
+		expect(setResizeScrollback).toHaveBeenCalledWith("preserve");
+	});
+
+	it("rebuilds the transcript when tui.renderMermaid changes", () => {
+		const rebuildChatFromMessages = vi.fn();
+		const resetDisplay = vi.fn();
+		const refreshBaseSystemPrompt = vi.fn(async () => {});
+		const showError = vi.fn();
+		const controller = new SelectorController({
+			rebuildChatFromMessages,
+			showError,
+			session: { refreshBaseSystemPrompt },
+			ui: { resetDisplay },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("tui.renderMermaid", false);
+
+		expect(refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages.mock.invocationCallOrder[0]).toBeLessThan(
+			resetDisplay.mock.invocationCallOrder[0],
+		);
+	});
 	it("applies tui.hyperlinks changes to live renderers", () => {
 		const originalHyperlinks = TERMINAL.hyperlinks;
 		const statusInvalidate = vi.fn();

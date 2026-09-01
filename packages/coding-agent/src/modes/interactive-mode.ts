@@ -1379,6 +1379,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 				}
 				const selectorManagedPaths = [
+					"composer.shape",
 					"display.cacheMissMarker",
 					"display.collapseCompacted",
 					"display.hideToolActivity",
@@ -1387,7 +1388,13 @@ export class InteractiveMode implements InteractiveModeContext {
 					"hideThinkingBlock",
 					"mcp.notifications",
 					"proseOnlyThinking",
+					"spelling.autocomplete",
+					"spelling.autocorrect",
+					"spelling.typoDetection",
 					"terminal.showImages",
+					"tui.renderMermaid",
+					"tui.resizeScrollback",
+					"tui.tight",
 				] as const;
 				for (const path of selectorManagedPaths) {
 					if (paths.includes(path)) {

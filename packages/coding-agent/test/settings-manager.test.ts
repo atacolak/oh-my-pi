@@ -1147,6 +1147,99 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting sibling composer, spelling, and tui disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						composer: { shape: "band" },
+						spelling: { typoDetection: true, autocomplete: true, autocorrect: false },
+						tui: { tight: false, resizeScrollback: "rebuild", renderMermaid: true },
+						ask: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{
+				composerShape: string;
+				typoDetection: boolean;
+				autocomplete: boolean;
+				autocorrect: boolean;
+				tight: boolean;
+				resizeScrollback: string;
+				renderMermaid: boolean;
+				paths: string[];
+			}> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({
+					composerShape: settings.get("composer.shape") ?? "band",
+					typoDetection: settings.get("spelling.typoDetection"),
+					autocomplete: settings.get("spelling.autocomplete"),
+					autocorrect: settings.get("spelling.autocorrect"),
+					tight: settings.get("tui.tight"),
+					resizeScrollback: settings.get("tui.resizeScrollback"),
+					renderMermaid: settings.get("tui.renderMermaid"),
+					paths: [...paths],
+				});
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							composer: { shape: "box" },
+							spelling: { typoDetection: false, autocomplete: false, autocorrect: true },
+							tui: { tight: true, resizeScrollback: "preserve", renderMermaid: false },
+							ask: { enabled: true },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("composer.shape")).toBe("box");
+				expect(settings.get("spelling.typoDetection")).toBe(false);
+				expect(settings.get("spelling.autocomplete")).toBe(false);
+				expect(settings.get("spelling.autocorrect")).toBe(true);
+				expect(settings.get("tui.tight")).toBe(true);
+				expect(settings.get("tui.resizeScrollback")).toBe("preserve");
+				expect(settings.get("tui.renderMermaid")).toBe(false);
+				expect(received).toEqual([
+					{
+						composerShape: "box",
+						typoDetection: false,
+						autocomplete: false,
+						autocorrect: true,
+						tight: true,
+						resizeScrollback: "preserve",
+						renderMermaid: false,
+						paths: [
+							"composer.shape",
+							"spelling.autocomplete",
+							"spelling.autocorrect",
+							"spelling.typoDetection",
+							"tui.renderMermaid",
+							"tui.resizeScrollback",
+							"tui.tight",
+						],
+					},
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					composer: { shape: "box" },
+					spelling: { typoDetection: false, autocomplete: false, autocorrect: true },
+					tui: { tight: true, resizeScrollback: "preserve", renderMermaid: false },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires runtime hooks for an adopted sibling project edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

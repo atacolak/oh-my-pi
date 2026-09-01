@@ -474,6 +474,33 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
+		it("clears a migrated native flat theme via the nested theme path", async () => {
+			await writeSettings({ theme: { light: "paper" } });
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ theme: "alabaster" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("theme.light")).toBe("alabaster");
+			expect(settings.clearProject("theme.light")).toBe(true);
+			expect(settings.get("theme.light")).toBe("paper");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("preserves a newer alias-backed project value when a migrated clear is stale", async () => {
+			await writeSettings({ steeringMode: "all" });
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ queueMode: "one-at-a-time" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("steeringMode")).toBe("one-at-a-time");
+			expect(settings.clearProject("steeringMode")).toBe(true);
+			await Bun.write(projectConfigPath, YAML.stringify({ queueMode: "all" }, null, 2));
+			await settings.flush();
+			expect(settings.get("steeringMode")).toBe("all");
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				queueMode: "all",
+			});
+		});
+
 		it("exposes an external sibling project edit after a locked native save", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

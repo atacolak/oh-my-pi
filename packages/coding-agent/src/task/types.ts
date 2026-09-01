@@ -6,6 +6,13 @@ import type { ConfiguredThinkingLevel, TaskEffort } from "../thinking";
 import type { NestedRepoPatch } from "./worktree";
 
 /** Source of an agent definition */
+
+/** Durable automation-authoring grant carried by a root AgentDefinition. Independent from `spawns`. */
+export interface AutomationAuthorPolicy {
+	allowedAgents: string[] | "*";
+	jurisdiction: "descendants" | "scope";
+}
+
 export type AgentSource = "bundled" | "user" | "project";
 /**
  * Enforcement policy for a structured subagent output schema.
@@ -362,10 +369,15 @@ export interface AgentDefinition {
 	systemPrompt: string;
 	tools?: string[];
 	spawns?: string[] | "*";
+	/** Root-only durable authoring grant. Absent means no `automation_author` authority. */
+	automationAuthor?: AutomationAuthorPolicy;
+
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;
 	output?: unknown;
 	blocking?: boolean;
+	/** Omit this definition from ambient agent rosters while preserving exact-name resolution. */
+	hide?: boolean;
 	autoloadSkills?: string[];
 	/** When `false`, the agent's `read` tool returns verbatim file content instead of structural summaries. */
 	readSummarize?: boolean;

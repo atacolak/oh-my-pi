@@ -44,6 +44,8 @@ export interface SessionHeader {
 	previousSessionFiles?: string[];
 	/** Provider prompt-cache identity inherited by exact-route full forks. */
 	providerPromptCacheKey?: string;
+	/** Resolved root `--agent` name for this session, if launched from a definition. */
+	rootAgent?: string;
 }
 
 export interface NewSessionOptions {
@@ -54,6 +56,8 @@ export interface NewSessionOptions {
 	drop?: boolean;
 	/** Additional workspace directories to seed on the new session. */
 	additionalDirectories?: string[];
+	/** Resolved root `--agent` name to seed on the new session header. */
+	rootAgent?: string;
 }
 
 export interface SessionEntryBase {

@@ -203,16 +203,16 @@ function retentionPrefixKey(messages: HindsightMessage[], count: number): string
 export class HindsightSessionState {
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
-	client: HindsightApi;
-	bankId: string;
+	#client: HindsightApi;
+	#bankId: string;
 	/** Tags applied to every retain — non-empty in per-project-tagged mode. */
-	retainTags?: string[];
+	#retainTags?: string[];
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
-	recallTags?: string[];
-	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	#recallTags?: string[];
+	#recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
 	#config: HindsightConfig;
 	session: AgentSession;
-	banksSet: Set<string>;
+	#banksSet: Set<string>;
 	lastRetainedTurn: number;
 	#lastRetainedMessageIndex: number = 0;
 	#cachedTranscript: string = "";
@@ -244,36 +244,116 @@ export class HindsightSessionState {
 	 * Only set on primary states; aliases inherit the parent's subscription.
 	 */
 	unsubscribeScope?: () => void;
-	/** Alias states delegate persistence config to a primary parent state. */
-	aliasOf?: HindsightSessionState;
+	/**
+	 * When this primary is replaced by a live rebuild, aliases still holding
+	 * the disposed object follow `#successor` to the currently installed parent.
+	 */
+	#successor?: HindsightSessionState;
+	#aliasOf?: HindsightSessionState;
 	readonly retainQueue: HindsightRetainQueue;
 
 	constructor(options: HindsightSessionStateOptions) {
 		this.sessionId = options.sessionId;
-		this.client = options.client;
-		this.bankId = options.bankId;
-		this.retainTags = options.retainTags;
-		this.recallTags = options.recallTags;
-		this.recallTagsMatch = options.recallTagsMatch;
+		this.#aliasOf = options.aliasOf;
+		this.#client = options.client;
+		this.#bankId = options.bankId;
+		this.#retainTags = options.retainTags;
+		this.#recallTags = options.recallTags;
+		this.#recallTagsMatch = options.recallTagsMatch;
 		this.#config = options.config;
 		this.session = options.session;
-		this.banksSet = options.banksSet;
+		this.#banksSet = options.banksSet;
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
 		this.#lastRetainedMessageIndex = 0;
 		this.#cachedTranscript = "";
 		this.#lastRetainedPrefixKey = "";
 		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
-		this.aliasOf = options.aliasOf;
 		this.retainQueue = new HindsightRetainQueue(this);
 	}
 
+	/** Alias states delegate persistence routing to the live primary parent. */
+	get aliasOf(): HindsightSessionState | undefined {
+		let primary = this.#aliasOf;
+		const seen = new Set<HindsightSessionState>();
+		while (primary && primary.#successor) {
+			if (seen.has(primary)) break;
+			seen.add(primary);
+			primary = primary.#successor;
+		}
+		return primary;
+	}
+
+	set aliasOf(value: HindsightSessionState | undefined) {
+		this.#aliasOf = value;
+	}
+
+	get client(): HindsightApi {
+		return this.aliasOf ? this.aliasOf.client : this.#client;
+	}
+
+	set client(value: HindsightApi) {
+		if (this.aliasOf) this.aliasOf.client = value;
+		else this.#client = value;
+	}
+
+	get bankId(): string {
+		return this.aliasOf ? this.aliasOf.bankId : this.#bankId;
+	}
+
+	set bankId(value: string) {
+		if (this.aliasOf) this.aliasOf.bankId = value;
+		else this.#bankId = value;
+	}
+
+	get retainTags(): string[] | undefined {
+		return this.aliasOf ? this.aliasOf.retainTags : this.#retainTags;
+	}
+
+	set retainTags(value: string[] | undefined) {
+		if (this.aliasOf) this.aliasOf.retainTags = value;
+		else this.#retainTags = value;
+	}
+
+	get recallTags(): string[] | undefined {
+		return this.aliasOf ? this.aliasOf.recallTags : this.#recallTags;
+	}
+
+	set recallTags(value: string[] | undefined) {
+		if (this.aliasOf) this.aliasOf.recallTags = value;
+		else this.#recallTags = value;
+	}
+
+	get recallTagsMatch(): "any" | "all" | "any_strict" | "all_strict" | undefined {
+		return this.aliasOf ? this.aliasOf.recallTagsMatch : this.#recallTagsMatch;
+	}
+
+	set recallTagsMatch(value: "any" | "all" | "any_strict" | "all_strict" | undefined) {
+		if (this.aliasOf) this.aliasOf.recallTagsMatch = value;
+		else this.#recallTagsMatch = value;
+	}
+
+	get banksSet(): Set<string> {
+		return this.aliasOf ? this.aliasOf.banksSet : this.#banksSet;
+	}
+
+	set banksSet(value: Set<string>) {
+		if (this.aliasOf) this.aliasOf.banksSet = value;
+		else this.#banksSet = value;
+	}
+
 	get config(): HindsightConfig {
-		return this.aliasOf?.config ?? this.#config;
+		return this.aliasOf ? this.aliasOf.config : this.#config;
 	}
 
 	set config(value: HindsightConfig) {
 		if (this.aliasOf) this.aliasOf.config = value;
 		else this.#config = value;
+	}
+
+	/** Point aliases still holding this object at the replacement primary. */
+	replaceWith(next: HindsightSessionState): void {
+		if (next === this) return;
+		this.#successor = next;
 	}
 
 	setSessionId(sessionId: string): void {

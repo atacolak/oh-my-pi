@@ -722,6 +722,57 @@ describe("hindsightBackend live bank routing", () => {
 		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.strategy).toBe("personal_chat");
 	});
 
+	it("rebinding aliases after a primary bank rebuild still sends the live retainStrategy", async () => {
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "global");
+		const parentSession = makeFakeSession({ sessionId: "s-rebind-parent", cwd: "/work/proj", settings });
+		const aliasSession = makeFakeSession({ sessionId: "s-rebind-alias", cwd: "/work/proj", settings });
+
+		await hindsightBackend.start({
+			session: parentSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const parent = parentSession.getHindsightSessionState();
+		expect(parent).toBeDefined();
+
+		await hindsightBackend.start({
+			session: aliasSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 1,
+			parentHindsightSessionState: parent,
+		});
+
+		settings.set("hindsight.scoping", "per-project");
+		await Bun.sleep(0);
+
+		const replacement = parentSession.getHindsightSessionState();
+		expect(replacement).toBeDefined();
+		expect(replacement).not.toBe(parent);
+		expect(aliasSession.getHindsightSessionState()?.aliasOf).toBe(replacement);
+		expect(aliasSession.getHindsightSessionState()?.bankId).toBe(replacement?.bankId);
+
+		settings.set("hindsight.retainStrategy", "personal_chat");
+		await Bun.sleep(0);
+
+		const alias = aliasSession.getHindsightSessionState();
+		expect(alias).toBeDefined();
+		expect(alias?.config.retainStrategy).toBe("personal_chat");
+		alias?.enqueueRetain("alias after rebuild");
+		await alias?.flushRetainQueue();
+		expect(retainBatchSpy.mock.calls[0]?.[0]).toBe(replacement!.bankId);
+		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.strategy).toBe("personal_chat");
+	});
+
 	it("does not rebuild when the bank-routing setting is rewritten with the same value", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const settings = Settings.isolated({

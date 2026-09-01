@@ -6,6 +6,10 @@
 
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
 
+### Fixed
+
+- Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
+
 ## [18.1.0] - 2026-09-01
 
 ### Added

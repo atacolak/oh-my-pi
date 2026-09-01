@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathIsWithin } from "@oh-my-pi/pi-utils";
 
 /**
  * Filesystem workspace of a session: one current/default directory plus a
@@ -50,4 +51,26 @@ export function normalizeSessionWorkspace(args: { cwd: string; directories?: str
 /** The workspace directories beyond `cwd`, in order (ACP `additionalDirectories` shape). */
 export function additionalWorkspaceDirectories(workspace: SessionWorkspace): string[] {
 	return workspace.directories.filter(directory => directory !== workspace.cwd);
+}
+
+/**
+ * Longest matching workspace directory that contains `filePath`.
+ * Additional roots are not a hierarchy; the most specific prefix wins.
+ */
+export function workspaceRootForPath(filePath: string, workspace: SessionWorkspace): string | null {
+	const resolved = path.resolve(filePath);
+	let best: string | null = null;
+	for (const directory of workspace.directories) {
+		if (!pathIsWithin(directory, resolved)) continue;
+		if (best === null || directory.length > best.length) best = directory;
+	}
+	return best;
+}
+
+/** Ordered workspace directories for a cwd plus optional additional roots. */
+export function sessionWorkspaceDirectories(cwd: string, additionalDirectories?: readonly string[]): string[] {
+	return normalizeSessionWorkspace({
+		cwd,
+		directories: additionalDirectories ? [...additionalDirectories] : [],
+	}).directories;
 }

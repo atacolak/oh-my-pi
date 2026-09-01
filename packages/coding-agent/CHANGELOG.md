@@ -13,6 +13,7 @@
 - Fixed skipped project thinking and memory saves leaving the live session on the rejected local value.
 - Fixed project inherit leaving mnemosyne, hindsight, and Exa aliases, and skipped autocompleteMaxVisible saves leaving the editor on the rejected local value.
 - Fixed project saves discarding a second same-key edit when a sibling disk edit landed during debounce.
+- Fixed overlapping project saves leaving live session state on an adopted disk value after a later same-key edit persisted.
 - Fixed `/settings` scoped status-line previews omitting segment options from the selected layer.
 - Fixed project saves leaving live session/editor state, original runtime model roles, or a stale project-config flag after adopting a sibling disk edit, role clear, or deleted `.omp/config.yml`.
 - Fixed project saves resetting a temporary `/thinking` level when adopting an unrelated session-runtime sibling edit.

@@ -756,6 +756,54 @@ describe("Settings", () => {
 			});
 		});
 
+		it("reapplies a later same-key project edit after an overlapping stale save", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ level: "auto" | Effort; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ level: settings.get("defaultThinkingLevel"), paths: [...paths] });
+			});
+			const firstSaveEntered = Promise.withResolvers<void>();
+			const releaseFirstSave = Promise.withResolvers<void>();
+			const withFileLock = fileLock.withFileLock;
+			let holdingFirstSave = true;
+			vi.spyOn(fileLock, "withFileLock").mockImplementation(async (filePath, fn, options) => {
+				return await withFileLock(
+					filePath,
+					async () => {
+						if (holdingFirstSave) {
+							holdingFirstSave = false;
+							firstSaveEntered.resolve();
+							await releaseFirstSave.promise;
+						}
+						return await fn();
+					},
+					options,
+				);
+			});
+			vi.useFakeTimers();
+			try {
+				settings.set("defaultThinkingLevel", Effort.High, "project");
+				vi.advanceTimersByTime(100);
+				await firstSaveEntered.promise;
+				await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: Effort.Medium }, null, 2));
+				settings.set("defaultThinkingLevel", Effort.Low, "project");
+				vi.advanceTimersByTime(100);
+				releaseFirstSave.resolve();
+				await settings.flush();
+				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Low);
+				expect(received.at(-1)).toEqual({ level: Effort.Low, paths: ["defaultThinkingLevel"] });
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					defaultThinkingLevel: Effort.Low,
+				});
+			} finally {
+				releaseFirstSave.resolve();
+				unsubscribe();
+				vi.useRealTimers();
+			}
+		});
+
 		it("preserves a same-key external project edit made after a local save was queued", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "dark-one" } }, null, 2));

@@ -3203,7 +3203,8 @@ export class Settings {
 		clearTimeout(this.#projectSaveTimer);
 		this.#projectSaveTimer = setTimeout(() => {
 			this.#projectSaveTimer = undefined;
-			const savePromise = this.#saveProjectNow();
+			const previousSave = this.#projectSavePromise;
+			const savePromise = previousSave ? previousSave.then(() => this.#saveProjectNow()) : this.#saveProjectNow();
 			this.#projectSavePromise = savePromise;
 			savePromise
 				.catch(err => {

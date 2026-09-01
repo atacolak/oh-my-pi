@@ -946,6 +946,36 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting a sibling compaction.methodOrder disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ compaction: { enabled: true, methodOrder: ["soft"] }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: string[]; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: [...settings.get("compaction.methodOrder")], paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ compaction: { enabled: true, methodOrder: [] }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("compaction.methodOrder")).toEqual([]);
+				expect(received).toEqual([{ value: [], paths: ["compaction.methodOrder"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					compaction: { enabled: true, methodOrder: [] },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires session-runtime hooks after adopting a sibling providers.webSearchExclude disk edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

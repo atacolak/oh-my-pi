@@ -3562,6 +3562,7 @@ export type SessionRuntimePath =
 	| "advisor.enabled"
 	| "autocompleteMaxVisible"
 	| "compaction.enabled"
+	| "compaction.methodOrder"
 	| "composer.shape"
 	| "defaultThinkingLevel"
 	| "display.cacheMissMarker"
@@ -3612,6 +3613,7 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"advisor.enabled": true,
 	autocompleteMaxVisible: true,
 	"compaction.enabled": true,
+	"compaction.methodOrder": true,
 	"composer.shape": true,
 	defaultThinkingLevel: true,
 	"display.cacheMissMarker": true,

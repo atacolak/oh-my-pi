@@ -258,6 +258,64 @@ describe("AgentSession adopted session-runtime changes", () => {
 		expect(session.thinkingLevel).toBe(Effort.High);
 	});
 
+	it("reapplies adopted compaction.methodOrder onto live auto-compaction", async () => {
+		const projectDir = tempDir.join("project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{ compaction: { enabled: true, methodOrder: ["soft"] }, defaultThinkingLevel: Effort.Low },
+				null,
+				2,
+			),
+		);
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.Low,
+				},
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		session.setThinkingLevel(Effort.High);
+		expect(session.autoCompactionEnabled).toBe(true);
+
+		settings.set("ask.enabled", false, "project");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{
+					compaction: { enabled: true, methodOrder: [] },
+					defaultThinkingLevel: Effort.Low,
+					ask: { enabled: true },
+				},
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("compaction.methodOrder")).toEqual([]);
+		expect(session.autoCompactionEnabled).toBe(false);
+		expect(session.thinkingLevel).toBe(Effort.High);
+	});
+
 	it("reapplies adopted providers.webSearchExclude onto live search eligibility", async () => {
 		const projectDir = tempDir.join("project");
 		const agentDir = tempDir.join("agent");

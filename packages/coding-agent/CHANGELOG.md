@@ -18,6 +18,7 @@
 - Fixed adopted project settings reapplying live session state across Settings clones, and `/settings` keeping stale row snapshots after a skipped project save.
 - Fixed project saves leaving live sampling parameters on the rejected local value after adopting a newer disk edit.
 - Fixed project saves leaving live omit-thinking and auto-compact session state on the rejected local value after adopting a newer disk edit.
+- Fixed project saves leaving the live auto-compact status indicator stale after adopting a `compaction.methodOrder` disk edit.
 - Fixed project saves leaving live web-search eligibility, tool-activity visibility, remaining display toggles, MCP notification subscriptions, composer shape, spelling, and TUI tightness/scrollback/mermaid state on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global theme submenu commits snapping the live theme back to the project-effective mapping.
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.

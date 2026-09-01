@@ -3568,6 +3568,7 @@ export type SessionRuntimePath =
 	| "followUpMode"
 	| "inspect_image.mode"
 	| "interruptMode"
+	| "mcp.notifications"
 	| "memory.backend"
 	| "minP"
 	| "omitThinking"
@@ -3593,6 +3594,7 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	followUpMode: true,
 	"inspect_image.mode": true,
 	interruptMode: true,
+	"mcp.notifications": true,
 	"memory.backend": true,
 	minP: true,
 	omitThinking: true,
@@ -3693,11 +3695,12 @@ const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], sou
 
 /**
  * Subscribe to session-runtime setting changes (`defaultThinkingLevel`,
- * `memory.backend`, queue modes, selector-managed provider eligibility, and
- * other live session fields) after a project save adopts a newer disk value.
- * Returns an unsubscribe function. Callers should ignore events whose `source`
- * is not the Settings instance they own, then re-read only the supplied paths
- * and apply them to the live session without persisting.
+ * `memory.backend`, queue modes, selector-managed MCP notifications and
+ * provider eligibility, and other live session fields) after a project save
+ * adopts a newer disk value. Returns an unsubscribe function. Callers should
+ * ignore events whose `source` is not the Settings instance they own, then
+ * re-read only the supplied paths and apply them to the live session without
+ * persisting.
  */
 export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source: Settings) => void) =>
 	sessionRuntimeSignal.on(cb);

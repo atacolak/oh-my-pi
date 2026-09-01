@@ -237,6 +237,20 @@ describe("selector setting side effects", () => {
 		});
 	}
 
+	for (const enabled of [true, false]) {
+		it(`applies mcp.notifications=${enabled} to the live MCP manager`, () => {
+			const setNotificationsEnabled = vi.fn();
+			const controller = new SelectorController({
+				mcpManager: { setNotificationsEnabled },
+			} as unknown as InteractiveModeContext);
+
+			controller.handleSettingChange("mcp.notifications", enabled);
+
+			expect(setNotificationsEnabled).toHaveBeenCalledTimes(1);
+			expect(setNotificationsEnabled).toHaveBeenCalledWith(enabled);
+		});
+	}
+
 	for (const enabled of [false, true]) {
 		it(`rebuilds the transcript when display.showTokenUsage=${enabled} changes in /settings`, () => {
 			const rebuildChatFromMessages = vi.fn();

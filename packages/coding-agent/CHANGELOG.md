@@ -18,7 +18,7 @@
 - Fixed adopted project settings reapplying live session state across Settings clones, and `/settings` keeping stale row snapshots after a skipped project save.
 - Fixed project saves leaving live sampling parameters on the rejected local value after adopting a newer disk edit.
 - Fixed project saves leaving live omit-thinking and auto-compact session state on the rejected local value after adopting a newer disk edit.
-- Fixed project saves leaving live web-search eligibility and tool-activity visibility on the rejected local value after adopting a newer disk edit.
+- Fixed project saves leaving live web-search eligibility, tool-activity visibility, and MCP notification subscriptions on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 

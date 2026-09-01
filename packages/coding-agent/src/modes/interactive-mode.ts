@@ -1384,6 +1384,12 @@ export class InteractiveMode implements InteractiveModeContext {
 						this.settings.get("display.hideToolActivity"),
 					);
 				}
+				if (paths.includes("mcp.notifications")) {
+					this.#selectorController.handleSettingChange(
+						"mcp.notifications",
+						this.settings.get("mcp.notifications"),
+					);
+				}
 			}),
 		);
 		this.#eventBusUnsubscribers.push(

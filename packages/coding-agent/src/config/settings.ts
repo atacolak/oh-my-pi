@@ -733,9 +733,7 @@ export class Settings {
 			setByPath(this.#projectFileSettings, segments, value);
 			this.#rebuildProjectLayer();
 			this.#projectConfigExists = true;
-			if (path === "shellPath") {
-				this.#projectShellPathSource = `${this.#cwd}/.omp/config.yml`;
-			}
+			this.#syncProjectShellPathSource();
 			this.#modifiedProject.add(path);
 			this.#queueProjectSave();
 		} else {
@@ -770,11 +768,7 @@ export class Settings {
 		deleteByPath(this.#projectFileSettings, segments);
 		this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
 		this.#rebuildProjectLayer();
-		if (path === "shellPath") {
-			this.#projectShellPathSource = Object.hasOwn(this.#project, "shellPath")
-				? this.#projectWithoutNativeShellPathSource
-				: undefined;
-		}
+		this.#syncProjectShellPathSource();
 		this.#modifiedProject.add(path);
 		this.#queueProjectSave();
 		this.#applySettingChange(path, prev);
@@ -2873,8 +2867,8 @@ export class Settings {
 				const projectSettings =
 					loaded.settings ??
 					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(projectFileAtStart) : {});
-
 				let shouldWrite = false;
+				const skippedProjectModelRoles: string[] = [];
 				for (const modifiedPath of modifiedPaths) {
 					const segments = modifiedPath.split(".");
 					const mutation = modifiedPathMutations.get(modifiedPath);
@@ -2913,6 +2907,7 @@ export class Settings {
 							path: projectConfigPath,
 							setting: `modelRoles.${role}`,
 						});
+						skippedProjectModelRoles.push(role);
 						continue;
 					}
 					if (Object.hasOwn(projectRolesAtStart, role)) {
@@ -2952,6 +2947,10 @@ export class Settings {
 				}
 				this.#projectFileSettings = structuredClone(projectSettings);
 				this.#rebuildProjectLayer();
+				this.#syncProjectShellPathSource();
+				for (const role of skippedProjectModelRoles) {
+					this.#reconcileSkippedProjectModelRoleOverride(role);
+				}
 			});
 			invalidateCapabilityFsCache(projectConfigPath);
 		} catch (error) {
@@ -3030,6 +3029,41 @@ export class Settings {
 	#rebuildProjectLayer(): void {
 		const native = this.#migrateRawSettings(structuredClone(this.#projectFileSettings), false);
 		this.#project = this.#deepMerge(structuredClone(this.#projectWithoutNative), native);
+	}
+
+	#syncProjectShellPathSource(): void {
+		if (Object.hasOwn(this.#projectFileSettings, "shellPath")) {
+			this.#projectShellPathSource = path.join(this.#cwd, ".omp", "config.yml");
+			return;
+		}
+		this.#projectShellPathSource = Object.hasOwn(this.#project, "shellPath")
+			? this.#projectWithoutNativeShellPathSource
+			: undefined;
+	}
+
+	/**
+	 * A skipped same-key project role write already adopted the newer disk
+	 * value into `#project`, but `setProjectModelRole()` may still be pinning
+	 * the rejected local value in `#overrides`. Align that temporary override
+	 * with the adopted role so `getModelRole()` and the post-save signal see
+	 * the disk value for the rest of the session.
+	 */
+	#reconcileSkippedProjectModelRoleOverride(role: string): void {
+		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
+		if (
+			!this.#savedRuntimeModelRoleOverrides.has(role) ||
+			!isRecord(runtimeOverrides) ||
+			!Object.hasOwn(runtimeOverrides, role)
+		) {
+			return;
+		}
+		const adopted = this.getProjectModelRole(role);
+		if (adopted === undefined) {
+			delete runtimeOverrides[role];
+			this.#savedRuntimeModelRoleOverrides.delete(role);
+			return;
+		}
+		runtimeOverrides[role] = adopted;
 	}
 
 	#rebuildMerged(): void {

@@ -541,6 +541,65 @@ describe("Settings", () => {
 				unsubscribe();
 			}
 		});
+
+		it("adopts a newer same-key project role instead of keeping the rejected runtime override", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ modelRoles: { smol: "old/smol" } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.override("modelRoleStorage", "project");
+			settings.overrideModelRoles({ smol: "runtime/smol" });
+			settings.setProjectModelRole("smol", "local/smol");
+			expect(settings.getModelRole("smol")).toBe("local/smol");
+			expect(settings.isProjectModelRoleRuntimeOverrideActive("smol")).toBe(true);
+
+			let roleSignals = 0;
+			const unsubscribe = onModelRolesChanged(() => {
+				roleSignals += 1;
+			});
+			try {
+				await Bun.write(projectConfigPath, YAML.stringify({ modelRoles: { smol: "disk/smol" } }, null, 2));
+				await settings.flush();
+				expect(settings.getModelRole("smol")).toBe("disk/smol");
+				expect(settings.getProjectModelRole("smol")).toBe("disk/smol");
+				expect(settings.getModelRoleProvenance("smol")).toBe("runtime");
+				expect(settings.isProjectModelRoleRuntimeOverrideActive("smol")).toBe(true);
+				expect(roleSignals).toBeGreaterThan(0);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					modelRoles: { smol: "disk/smol" },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("attributes an adopted non-native shellPath after a sibling locked save", async () => {
+			await fs.promises.mkdir(path.join(projectDir, ".claude"), { recursive: true });
+			const claudeShell = tempDir.join("missing-claude-bash");
+			await Bun.write(
+				path.join(projectDir, ".claude", "settings.json"),
+				`${JSON.stringify({ shellPath: claudeShell }, null, 2)}\n`,
+			);
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			const nativeShell = tempDir.join("missing-native-bash");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ shellPath: nativeShell, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(() => settings.getShellConfig()).toThrow(`Please update shellPath in ${projectConfigPath}`);
+
+			settings.set("ask.enabled", false, "project");
+			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: true } }, null, 2));
+			await settings.flush();
+
+			expect(settings.get("shellPath")).toBe(claudeShell);
+			expect(() => settings.getShellConfig()).toThrow(
+				`Please update shellPath in ${path.join(projectDir, ".claude", "settings.json")}`,
+			);
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				ask: { enabled: false },
+			});
+		});
 	});
 
 	describe("shell configuration errors", () => {

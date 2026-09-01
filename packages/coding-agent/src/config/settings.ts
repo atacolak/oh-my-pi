@@ -333,6 +333,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Record-typed settings persist `null` as a tombstone that blocks a lower
+ * layer. Consumers treat a tombstoned key as absent (so defaults or sibling
+ * keys can apply), not as a malformed value.
+ */
+function omitRecordNulls(value: unknown): unknown {
+	if (!isRecord(value)) return value;
+	let omitted: Record<string, unknown> | undefined;
+	for (const key of Object.keys(value)) {
+		if (value[key] !== null) continue;
+		omitted ??= { ...value };
+		delete omitted[key];
+	}
+	return omitted ?? value;
+}
+
+function resolveLayerValue<P extends SettingPath>(path: P, value: unknown, cwd: string): SettingValue<P> {
+	const resolved = value !== undefined ? (resolvePathScopedStringArray(path, value, cwd) ?? value) : getDefault(path);
+	if (SETTINGS_SCHEMA[path].type === "record" && path !== "providers.maxInFlightRequests") {
+		return omitRecordNulls(resolved) as SettingValue<P>;
+	}
+	return resolved as SettingValue<P>;
+}
+
+/**
  * Migrate a v17 leaf rename that used to nest under a boolean parent path
  * (`dev.autoqa.consent` → `dev.autoqaConsent`, `todo.reminders.max` →
  * `todo.remindersMax`). Pre-rename configs left the leaf beneath the parent,
@@ -641,10 +665,9 @@ export class Settings {
 		}
 
 		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
+		const resolved = resolveLayerValue(path, value, this.#cwd);
 		this.#resolvedCache.set(path, resolved);
-		return resolved as SettingValue<P>;
+		return resolved;
 	}
 
 	/**
@@ -655,9 +678,7 @@ export class Settings {
 	 */
 	getGlobalValue<P extends SettingPath>(path: P): SettingValue<P> {
 		const value = getByPath(this.#global, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
-		return resolved as SettingValue<P>;
+		return resolveLayerValue(path, value, this.#cwd);
 	}
 
 	/**
@@ -669,9 +690,7 @@ export class Settings {
 	getProjectInheritedValue<P extends SettingPath>(path: P): SettingValue<P> {
 		const merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#projectWithoutNative);
 		const value = getByPath(merged, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
-		return resolved as SettingValue<P>;
+		return resolveLayerValue(path, value, this.#cwd);
 	}
 
 	/**
@@ -682,9 +701,7 @@ export class Settings {
 	getProjectScopedValue<P extends SettingPath>(path: P): SettingValue<P> {
 		const merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#projectSettingsForMerge());
 		const value = getByPath(merged, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
-		return resolved as SettingValue<P>;
+		return resolveLayerValue(path, value, this.#cwd);
 	}
 
 	/**
@@ -1814,6 +1831,36 @@ export class Settings {
 			deleteByPath(target, ["inspect_image", "enabled"]);
 			delete target["inspect_image.enabled"];
 		}
+		if (path === "task.isolation.mode") {
+			deleteByPath(target, ["task", "isolation", "enabled"]);
+			delete target["task.isolation.enabled"];
+		}
+		if (path === "compaction.methodOrder") {
+			deleteByPath(target, ["compaction", "strategy"]);
+			deleteByPath(target, ["compaction", "remoteEnabled"]);
+			delete target["compaction.strategy"];
+			delete target["compaction.remoteEnabled"];
+		}
+		if (path === "memory.backend") {
+			deleteByPath(target, ["memories", "enabled"]);
+			delete target["memories.enabled"];
+		}
+		if (path === "grep.enabled") {
+			deleteByPath(target, ["search", "enabled"]);
+			delete target["search.enabled"];
+		}
+		if (path === "grep.contextBefore") {
+			deleteByPath(target, ["search", "contextBefore"]);
+			delete target["search.contextBefore"];
+		}
+		if (path === "grep.contextAfter") {
+			deleteByPath(target, ["search", "contextAfter"]);
+			delete target["search.contextAfter"];
+		}
+		if (path === "glob.enabled") {
+			deleteByPath(target, ["find", "enabled"]);
+			delete target["find.enabled"];
+		}
 	}
 
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
@@ -2835,6 +2882,7 @@ export class Settings {
 					}
 				}
 				this.#projectFileSettings = structuredClone(projectSettings);
+				this.#rebuildProjectLayer();
 			});
 			invalidateCapabilityFsCache(projectConfigPath);
 		} catch (error) {

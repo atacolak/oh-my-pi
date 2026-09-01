@@ -406,6 +406,95 @@ describe("Settings", () => {
 			await settings.flush();
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
+
+		it("clears remaining migrated native aliases on inherit", async () => {
+			await writeSettings({
+				"task.isolation.mode": "none",
+				"compaction.methodOrder": ["soft"],
+				"memory.backend": "off",
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						task: { isolation: { enabled: true } },
+						compaction: { strategy: "handoff", remoteEnabled: false },
+						memories: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("task.isolation.mode")).toBe("auto");
+			expect(settings.get("compaction.methodOrder")).toEqual(["handoff", "soft"]);
+			expect(settings.get("memory.backend")).toBe("local");
+			expect(settings.clearProject("task.isolation.mode")).toBe(true);
+			expect(settings.clearProject("compaction.methodOrder")).toBe(true);
+			expect(settings.clearProject("memory.backend")).toBe(true);
+			expect(settings.get("task.isolation.mode")).toBe("none");
+			expect(settings.get("compaction.methodOrder")).toEqual(["soft"]);
+			expect(settings.get("memory.backend")).toBe("off");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears migrated search and find aliases on inherit", async () => {
+			await writeSettings({
+				grep: { enabled: true, contextBefore: 0, contextAfter: 0 },
+				glob: { enabled: true },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						search: { enabled: false, contextBefore: 2, contextAfter: 5 },
+						"find.enabled": false,
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("grep.enabled")).toBe(false);
+			expect(settings.get("grep.contextBefore")).toBe(2);
+			expect(settings.get("grep.contextAfter")).toBe(5);
+			expect(settings.get("glob.enabled")).toBe(false);
+			expect(settings.clearProject("grep.enabled")).toBe(true);
+			expect(settings.clearProject("grep.contextBefore")).toBe(true);
+			expect(settings.clearProject("grep.contextAfter")).toBe(true);
+			expect(settings.clearProject("glob.enabled")).toBe(true);
+			expect(settings.get("grep.enabled")).toBe(true);
+			expect(settings.get("grep.contextBefore")).toBe(0);
+			expect(settings.get("grep.contextAfter")).toBe(0);
+			expect(settings.get("glob.enabled")).toBe(true);
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("exposes an external sibling project edit after a locked native save", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("theme.dark")).toBe("dark-one");
+			settings.set("ask.enabled", false, "project");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "titanium" }, ask: { enabled: true } }, null, 2),
+			);
+			await settings.flush();
+			expect(settings.get("theme.dark")).toBe("titanium");
+			expect(settings.get("ask.enabled")).toBe(false);
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				theme: { dark: "titanium" },
+				ask: { enabled: false },
+			});
+		});
 	});
 
 	describe("shell configuration errors", () => {

@@ -17,6 +17,26 @@
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
 - Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
+### Fixed
+
+- Claude marketplace MCP servers now resolve environment placeholders in stdio environment values instead of passing strings such as `${NAME:-}` literally ([#10481](https://github.com/can1357/oh-my-pi/pull/10481) by [@mrexodia](https://github.com/mrexodia)).
+## [18.1.2] - 2026-09-01
+
+### Added
+
+- Recover stray <SM:EDIT> payloads emitted as plain text into real edit tool calls, with support for disabling this behavior through the edit.recoverInlineEdits setting.
+- Advisors now receive context from the active memory backend, including project decisions and recalled instructions; advisors also gain the recall tool when supported by the backend.
+
+### Changed
+
+- Replaced the sloppy edit format's symbolic markers with a clearer XML-based format using <SM:EDIT>, <SM:FIND>, and <SM:PUT> tags. Edit errors now include copy-ready XML payloads.
+- Increased the default input delay for the trace CLI to 3 seconds.
+
+### Fixed
+
+- Improved chat history stability in long-running sessions by avoiding unnecessary updates when date or directory context changes.
+- Fixed the trace CLI hanging during proxy connections and added support for forward HTTP proxies.
+- Fixed newly started sessions using stale model context-window limits after background model discovery completes; the active model now refreshes automatically so context usage and compaction thresholds match the model catalog.
 
 ## [18.1.1] - 2026-09-01
 

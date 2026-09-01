@@ -111,6 +111,7 @@ import type { Settings, SkillsSettings } from "../config/settings";
 import {
 	onAppendOnlyModeChanged,
 	onCodeModeChanged,
+	onConversationFlowChanged,
 	onExtendedContextChanged,
 	onModelRolesChanged,
 } from "../config/settings";
@@ -535,6 +536,7 @@ export class AgentSession {
 	#unsubscribeModelRoles?: () => void;
 	#unsubscribeExtendedContext?: () => void;
 	#unsubscribeCodeMode?: () => void;
+	#unsubscribeConversationFlow?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
 	#eventListeners: AgentSessionEventListener[] = [];
@@ -1723,6 +1725,11 @@ export class AgentSession {
 			void this.#tools.reconcileCodeMode().catch(error => {
 				logger.warn("Code Mode reconcile after setting change failed", { error: String(error) });
 			});
+		});
+		this.#unsubscribeConversationFlow = onConversationFlowChanged(() => {
+			this.setSteeringMode(this.settings.get("steeringMode"), false);
+			this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			this.setInterruptMode(this.settings.get("interruptMode"), false);
 		});
 
 		// Config-declared resolution done against the catalog as it stands at
@@ -4375,6 +4382,10 @@ export class AgentSession {
 		if (this.#unsubscribeCodeMode) {
 			this.#unsubscribeCodeMode();
 			this.#unsubscribeCodeMode = undefined;
+		}
+		if (this.#unsubscribeConversationFlow) {
+			this.#unsubscribeConversationFlow();
+			this.#unsubscribeConversationFlow = undefined;
 		}
 		this.#eventListeners = [];
 		this.#runStateListeners.clear();

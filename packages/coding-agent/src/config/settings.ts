@@ -1892,6 +1892,9 @@ export class Settings {
 				}
 			}
 		}
+		if (path === "features.unexpectedStopDetection") {
+			delete target["features.unexpectedStopDetection"];
+		}
 	}
 
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
@@ -3199,6 +3202,9 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	// track it the same instant path/resource links do. Runtime `/settings` edits
 	// also go through the selector controller to invalidate and repaint live views.
 	"tui.hyperlinks": value => applyHyperlinkSetting(value),
+	steeringMode: () => conversationFlowSignal.fire(),
+	followUpMode: () => conversationFlowSignal.fire(),
+	interruptMode: () => conversationFlowSignal.fire(),
 	"provider.appendOnlyContext": value => {
 		if (typeof value === "string") {
 			appendOnlyModeSignal.fire(value);
@@ -3235,6 +3241,16 @@ const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.append
  * can register independently without overwriting each other.
  */
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
+/** Fires when steering, follow-up, or interrupt mode changes at runtime. */
+const conversationFlowSignal = new SettingSignal("conversation flow");
+
+/**
+ * Subscribe to conversation-flow setting changes (`steeringMode`,
+ * `followUpMode`, `interruptMode`). Returns an unsubscribe function. Callers
+ * should re-read those settings and apply them to the live session without
+ * persisting.
+ */
+export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");

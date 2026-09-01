@@ -268,6 +268,7 @@ describe("loadMentalModelsBlock", () => {
 				{ id: "z", bank_id: "b", name: "Zeta", content: "   " },
 			],
 		});
+		vi.spyOn(HindsightApiCtor.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] });
 		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
 		const block = await loadMentalModelsBlock(api, "b");
 		expect(block).toBeUndefined();
@@ -295,6 +296,7 @@ describe("loadMentalModelsBlock", () => {
 				{ id: "personal", bank_id: "b", name: "Personal", tags: ["scope:personal"], content: "personal fact" },
 			],
 		});
+		vi.spyOn(HindsightApiCtor.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] });
 		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
 		const coding = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, [
 			"scope:coding",
@@ -316,8 +318,85 @@ describe("loadMentalModelsBlock", () => {
 
 	it("returns undefined on list failure rather than throwing (best-effort surface)", async () => {
 		vi.spyOn(HindsightApiCtor.prototype, "listMentalModels").mockRejectedValue(new Error("boom"));
+		vi.spyOn(HindsightApiCtor.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] });
 		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
 		const block = await loadMentalModelsBlock(api, "b");
+		expect(block).toBeUndefined();
+	});
+
+	it("excludes knowledge-page backing models from the boot block", async () => {
+		vi.spyOn(HindsightApiCtor.prototype, "listMentalModels").mockResolvedValue({
+			items: [
+				{
+					id: "oh-my-pi-conventions",
+					bank_id: "b",
+					name: "OMP Conventions",
+					tags: ["scope:coding", "project:oh-my-pi"],
+					content: "hot omp convention",
+				},
+				{
+					id: "mm-page-architecture",
+					bank_id: "b",
+					name: "Architecture",
+					tags: ["scope:coding", "project:oh-my-pi"],
+					content: "page architecture body",
+				},
+				{
+					id: "user-preferences",
+					bank_id: "b",
+					name: "User Preferences",
+					tags: ["scope:personal"],
+					content: "hot personal preference",
+				},
+			],
+		});
+		vi.spyOn(HindsightApiCtor.prototype, "getKnowledgeBaseTree").mockResolvedValue({
+			roots: [
+				{
+					id: "page-architecture",
+					kind: "page",
+					name: "Architecture",
+					mental_model_id: "mm-page-architecture",
+					tags: ["scope:coding", "project:oh-my-pi"],
+					children: [],
+				},
+			],
+		});
+		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
+		const project = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, [
+			"scope:coding",
+			"project:oh-my-pi",
+		]);
+		expect(project).toContain("hot omp convention");
+		expect(project).not.toContain("page architecture body");
+		expect(project).not.toContain("hot personal preference");
+
+		const personal = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, [
+			"scope:personal",
+		]);
+		expect(personal).toContain("hot personal preference");
+		expect(personal).not.toContain("page architecture body");
+		expect(personal).not.toContain("hot omp convention");
+	});
+
+	it("returns undefined when the knowledge tree request fails", async () => {
+		vi.spyOn(HindsightApiCtor.prototype, "listMentalModels").mockResolvedValue({
+			items: [
+				{
+					id: "oh-my-pi-conventions",
+					bank_id: "b",
+					name: "OMP Conventions",
+					tags: ["scope:coding", "project:oh-my-pi"],
+					content: "hot omp convention",
+				},
+			],
+		});
+		vi.spyOn(HindsightApiCtor.prototype, "getKnowledgeBaseTree").mockRejectedValue(new Error("tree down"));
+		const api = new HindsightApiCtor({ baseUrl: "http://localhost:8888" });
+		const block = await loadMentalModelsBlock(api, "b", MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT, [
+			"scope:coding",
+			"project:oh-my-pi",
+		]);
 		expect(block).toBeUndefined();
 	});
 });

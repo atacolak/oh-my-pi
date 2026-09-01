@@ -15,6 +15,7 @@
 ### Fixed
 
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
+- Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
 
 ## [18.1.0] - 2026-09-01
 

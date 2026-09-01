@@ -869,6 +869,29 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after skipping a stale project temperature write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ temperature: 0.2 }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: number; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("temperature"), paths: [...paths] });
+			});
+			try {
+				settings.set("temperature", 0.8, "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ temperature: 0.4 }, null, 2));
+				await settings.flush();
+				expect(settings.get("temperature")).toBe(0.4);
+				expect(received).toEqual([{ value: 0.4, paths: ["temperature"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					temperature: 0.4,
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires runtime hooks for an adopted sibling project edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

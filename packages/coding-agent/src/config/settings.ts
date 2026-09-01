@@ -3567,9 +3567,15 @@ export type SessionRuntimePath =
 	| "inspect_image.mode"
 	| "interruptMode"
 	| "memory.backend"
+	| "minP"
 	| "personality"
+	| "presencePenalty"
+	| "repetitionPenalty"
 	| "steeringMode"
-	| "tools.xdevDocs";
+	| "temperature"
+	| "tools.xdevDocs"
+	| "topK"
+	| "topP";
 
 const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"advisor.enabled": true,
@@ -3580,9 +3586,15 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"inspect_image.mode": true,
 	interruptMode: true,
 	"memory.backend": true,
+	minP: true,
 	personality: true,
+	presencePenalty: true,
+	repetitionPenalty: true,
 	steeringMode: true,
+	temperature: true,
 	"tools.xdevDocs": true,
+	topK: true,
+	topP: true,
 };
 
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {

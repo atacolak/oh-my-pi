@@ -483,6 +483,11 @@ function cloneMessageEndNotificationField(value: unknown): unknown {
 	return String(value);
 }
 
+/** Map a settings sampling number onto the live agent field (`-1` means provider default). */
+function samplingValue(value: number): number | undefined {
+	return value >= 0 ? value : undefined;
+}
+
 /** Build a detached, notification-only snapshot of an AgentMessage. */
 function cloneMessageEndNotification(message: AgentMessage): AgentMessage {
 	const snapshot: Record<PropertyKey, unknown> = {};
@@ -1792,6 +1797,24 @@ export class AgentSession {
 				void this.setThinkToolEnabled(this.settings.get("externalThinking")).catch(error => {
 					logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
 				});
+			}
+			if (changed.has("temperature")) {
+				this.agent.temperature = samplingValue(this.settings.get("temperature"));
+			}
+			if (changed.has("topP")) {
+				this.agent.topP = samplingValue(this.settings.get("topP"));
+			}
+			if (changed.has("topK")) {
+				this.agent.topK = samplingValue(this.settings.get("topK"));
+			}
+			if (changed.has("minP")) {
+				this.agent.minP = samplingValue(this.settings.get("minP"));
+			}
+			if (changed.has("presencePenalty")) {
+				this.agent.presencePenalty = samplingValue(this.settings.get("presencePenalty"));
+			}
+			if (changed.has("repetitionPenalty")) {
+				this.agent.repetitionPenalty = samplingValue(this.settings.get("repetitionPenalty"));
 			}
 			if (changed.has("personality") || changed.has("tools.xdevDocs")) {
 				void this.refreshBaseSystemPrompt().catch(error => {

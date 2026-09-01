@@ -87,6 +87,66 @@ describe("AgentSession adopted session-runtime changes", () => {
 		expect(session.thinkingLevel).toBe(Effort.High);
 	});
 
+	it("reapplies adopted sampling settings onto the live agent", async () => {
+		const projectDir = tempDir.join("project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ temperature: 0.2, topP: 0.9, defaultThinkingLevel: Effort.Low }, null, 2),
+		);
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.Low,
+				},
+				temperature: 0.2,
+				topP: 0.9,
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		session.setThinkingLevel(Effort.High);
+		expect(session.agent.temperature).toBe(0.2);
+		expect(session.agent.topP).toBe(0.9);
+
+		settings.set("ask.enabled", false, "project");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{
+					temperature: 0.7,
+					topP: 0.5,
+					defaultThinkingLevel: Effort.Low,
+					ask: { enabled: true },
+				},
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("temperature")).toBe(0.7);
+		expect(settings.get("topP")).toBe(0.5);
+		expect(session.agent.temperature).toBe(0.7);
+		expect(session.agent.topP).toBe(0.5);
+		expect(session.thinkingLevel).toBe(Effort.High);
+	});
+
 	it("ignores session-runtime events from a different Settings clone", async () => {
 		const projectDir = tempDir.join("project");
 		const otherDir = tempDir.join("other-project");

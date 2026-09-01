@@ -12,6 +12,7 @@
 - Fixed skipped project thinking and memory saves leaving the live session on the rejected local value.
 - Fixed project inherit leaving mnemosyne, hindsight, and Exa aliases, and skipped autocompleteMaxVisible saves leaving the editor on the rejected local value.
 - Fixed project saves leaving live session/editor state, original runtime model roles, or a stale project-config flag after adopting a sibling disk edit, role clear, or deleted `.omp/config.yml`.
+- Fixed project saves resetting a temporary `/thinking` level when adopting an unrelated session-runtime sibling edit.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 
 ## [18.1.0] - 2026-09-01

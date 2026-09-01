@@ -735,9 +735,9 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: Array<"auto" | Effort> = [];
-			const unsubscribe = onSessionRuntimeChanged(() => {
-				received.push(settings.get("defaultThinkingLevel"));
+			const received: Array<{ level: "auto" | Effort; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ level: settings.get("defaultThinkingLevel"), paths: [...paths] });
 			});
 			try {
 				settings.set("defaultThinkingLevel", Effort.High, "project");
@@ -745,7 +745,7 @@ describe("Settings", () => {
 				await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: Effort.Medium }, null, 2));
 				await settings.flush();
 				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
-				expect(received).toEqual([Effort.Medium]);
+				expect(received).toEqual([{ level: Effort.Medium, paths: ["defaultThinkingLevel"] }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					defaultThinkingLevel: Effort.Medium,
 				});
@@ -758,9 +758,9 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ memory: { backend: "builtin" } }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: string[] = [];
-			const unsubscribe = onSessionRuntimeChanged(() => {
-				received.push(settings.get("memory.backend"));
+			const received: Array<{ backend: string; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ backend: settings.get("memory.backend"), paths: [...paths] });
 			});
 			try {
 				settings.set("memory.backend", "hindsight", "project");
@@ -768,7 +768,7 @@ describe("Settings", () => {
 				await Bun.write(projectConfigPath, YAML.stringify({ memory: { backend: "off" } }, null, 2));
 				await settings.flush();
 				expect(settings.get("memory.backend")).toBe("off");
-				expect(received).toEqual(["off"]);
+				expect(received).toEqual([{ backend: "off", paths: ["memory.backend"] }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					memory: { backend: "off" },
 				});
@@ -781,9 +781,9 @@ describe("Settings", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 10 }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: number[] = [];
-			const unsubscribe = onSessionRuntimeChanged(() => {
-				received.push(settings.get("autocompleteMaxVisible"));
+			const received: Array<{ value: number; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("autocompleteMaxVisible"), paths: [...paths] });
 			});
 			try {
 				settings.set("autocompleteMaxVisible", 20, "project");
@@ -791,7 +791,7 @@ describe("Settings", () => {
 				await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 7 }, null, 2));
 				await settings.flush();
 				expect(settings.get("autocompleteMaxVisible")).toBe(7);
-				expect(received).toEqual([7]);
+				expect(received).toEqual([{ value: 7, paths: ["autocompleteMaxVisible"] }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					autocompleteMaxVisible: 7,
 				});
@@ -870,9 +870,9 @@ describe("Settings", () => {
 				YAML.stringify({ ask: { enabled: true }, memory: { backend: "builtin" } }, null, 2),
 			);
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: string[] = [];
-			const unsubscribe = onSessionRuntimeChanged(() => {
-				received.push(settings.get("memory.backend"));
+			const received: Array<{ backend: string; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ backend: settings.get("memory.backend"), paths: [...paths] });
 			});
 			try {
 				settings.set("ask.enabled", false, "project");
@@ -883,7 +883,7 @@ describe("Settings", () => {
 				);
 				await settings.flush();
 				expect(settings.get("memory.backend")).toBe("hindsight");
-				expect(received).toEqual(["hindsight"]);
+				expect(received).toEqual([{ backend: "hindsight", paths: ["memory.backend"] }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					ask: { enabled: false },
 					memory: { backend: "hindsight" },

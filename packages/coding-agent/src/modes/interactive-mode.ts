@@ -1370,8 +1370,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		this.#eventBusUnsubscribers.push(
-			onSessionRuntimeChanged(() => {
-				this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+			onSessionRuntimeChanged(paths => {
+				if (paths.includes("autocompleteMaxVisible")) {
+					this.editor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+				}
 			}),
 		);
 		this.#eventBusUnsubscribers.push(

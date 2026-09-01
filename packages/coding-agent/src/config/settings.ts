@@ -3391,12 +3391,11 @@ export class Settings {
 				SETTING_HOOKS[key]?.(next, previous);
 			}
 		}
-		if (
-			(Object.keys(SESSION_RUNTIME_PATHS) as Array<keyof typeof SESSION_RUNTIME_PATHS>).some(
-				key => !Bun.deepEquals(this.get(key), previousSessionRuntimeValues[key]),
-			)
-		) {
-			sessionRuntimeSignal.fire();
+		const changedSessionRuntimePaths = (
+			Object.keys(SESSION_RUNTIME_PATHS) as Array<keyof typeof SESSION_RUNTIME_PATHS>
+		).filter(key => !Bun.deepEquals(this.get(key), previousSessionRuntimeValues[key]));
+		if (changedSessionRuntimePaths.length > 0) {
+			sessionRuntimeSignal.fire(changedSessionRuntimePaths);
 		}
 	}
 
@@ -3552,7 +3551,7 @@ class SettingSignal<A extends unknown[] = []> {
 	}
 }
 
-const SESSION_RUNTIME_PATHS: Record<
+export type SessionRuntimePath =
 	| "advisor.enabled"
 	| "autocompleteMaxVisible"
 	| "defaultThinkingLevel"
@@ -3563,9 +3562,9 @@ const SESSION_RUNTIME_PATHS: Record<
 	| "memory.backend"
 	| "personality"
 	| "steeringMode"
-	| "tools.xdevDocs",
-	true
-> = {
+	| "tools.xdevDocs";
+
+const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"advisor.enabled": true,
 	autocompleteMaxVisible: true,
 	defaultThinkingLevel: true,
@@ -3659,16 +3658,16 @@ const conversationFlowSignal = new SettingSignal("conversation flow");
  */
 export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
 /** Fires when adopted project session-runtime settings must reapply live session state. */
-const sessionRuntimeSignal = new SettingSignal("session runtime");
+const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[]]>("session runtime");
 
 /**
  * Subscribe to session-runtime setting changes (`defaultThinkingLevel`,
  * `memory.backend`, queue modes, and other selector-managed live session fields)
  * after a project save adopts a newer disk value. Returns an unsubscribe
- * function. Callers should re-read those settings and apply them to the live
- * session without persisting.
+ * function. Callers should re-read only the supplied paths and apply them to
+ * the live session without persisting.
  */
-export const onSessionRuntimeChanged = (cb: () => void) => sessionRuntimeSignal.on(cb);
+export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[]) => void) => sessionRuntimeSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");

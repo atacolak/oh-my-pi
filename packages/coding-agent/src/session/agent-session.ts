@@ -1760,24 +1760,43 @@ export class AgentSession {
 			this.setFollowUpMode(this.settings.get("followUpMode"), false);
 			this.setInterruptMode(this.settings.get("interruptMode"), false);
 		});
-		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged(() => {
-			this.setSteeringMode(this.settings.get("steeringMode"), false);
-			this.setFollowUpMode(this.settings.get("followUpMode"), false);
-			this.setInterruptMode(this.settings.get("interruptMode"), false);
-			this.setThinkingLevel(this.settings.get("defaultThinkingLevel"), false);
-			this.setAdvisorEnabled(this.settings.get("advisor.enabled"));
-			void this.applyMemoryBackend().catch(error => {
-				logger.warn("Memory backend reconcile after skipped project save failed", { error: String(error) });
-			});
-			void this.applyInspectImageModeChange().catch(error => {
-				logger.warn("Inspect-image mode reconcile after skipped project save failed", { error: String(error) });
-			});
-			void this.setThinkToolEnabled(this.settings.get("externalThinking")).catch(error => {
-				logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
-			});
-			void this.refreshBaseSystemPrompt().catch(error => {
-				logger.warn("System prompt reconcile after skipped project save failed", { error: String(error) });
-			});
+		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged(paths => {
+			const changed = new Set(paths);
+			if (changed.has("steeringMode")) {
+				this.setSteeringMode(this.settings.get("steeringMode"), false);
+			}
+			if (changed.has("followUpMode")) {
+				this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			}
+			if (changed.has("interruptMode")) {
+				this.setInterruptMode(this.settings.get("interruptMode"), false);
+			}
+			if (changed.has("defaultThinkingLevel")) {
+				this.setThinkingLevel(this.settings.get("defaultThinkingLevel"), false);
+			}
+			if (changed.has("advisor.enabled")) {
+				this.setAdvisorEnabled(this.settings.get("advisor.enabled"));
+			}
+			if (changed.has("memory.backend")) {
+				void this.applyMemoryBackend().catch(error => {
+					logger.warn("Memory backend reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("inspect_image.mode")) {
+				void this.applyInspectImageModeChange().catch(error => {
+					logger.warn("Inspect-image mode reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("externalThinking")) {
+				void this.setThinkToolEnabled(this.settings.get("externalThinking")).catch(error => {
+					logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("personality") || changed.has("tools.xdevDocs")) {
+				void this.refreshBaseSystemPrompt().catch(error => {
+					logger.warn("System prompt reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
 		});
 
 		// Config-declared resolution done against the catalog as it stands at

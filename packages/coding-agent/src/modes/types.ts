@@ -93,6 +93,8 @@ export interface InteractiveModeInitOptions {
 	clearInitialTerminalHistory?: boolean;
 	/** Recent-session rows loaded by the prepaint composer while runtime modules initialized. */
 	recentSessions?: Promise<RecentSession[] | undefined>;
+	/** Disable settings-driven collab hosting for headless renderers. */
+	autoStartCollab?: boolean;
 }
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
@@ -152,7 +154,9 @@ export interface InteractiveModeContext {
 	mcpManager?: MCPManager;
 	lspServers?: LspStartupServerInfo[];
 	collabHost?: CollabHost;
+	collabHostStart?: Promise<CollabHost>;
 	collabGuest?: CollabGuestLink;
+	collabGuestStart?: Promise<CollabGuestLink>;
 	eventController: EventController;
 	eventBus?: EventBus;
 	/** Root-scoped bus carrying this session tree's `task:subagent:*` frames. */

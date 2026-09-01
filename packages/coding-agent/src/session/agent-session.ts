@@ -7490,29 +7490,29 @@ export class AgentSession {
 
 	/**
 	 * Set steering mode.
-	 * Saves to settings.
+	 * Persists to settings unless `persist` is false (live /settings side effect).
 	 */
-	setSteeringMode(mode: "all" | "one-at-a-time"): void {
+	setSteeringMode(mode: "all" | "one-at-a-time", persist: boolean = true): void {
 		this.agent.setSteeringMode(mode);
-		this.settings.set("steeringMode", mode);
+		if (persist) this.settings.set("steeringMode", mode);
 	}
 
 	/**
 	 * Set follow-up mode.
-	 * Saves to settings.
+	 * Persists to settings unless `persist` is false (live /settings side effect).
 	 */
-	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
+	setFollowUpMode(mode: "all" | "one-at-a-time", persist: boolean = true): void {
 		this.agent.setFollowUpMode(mode);
-		this.settings.set("followUpMode", mode);
+		if (persist) this.settings.set("followUpMode", mode);
 	}
 
 	/**
 	 * Set interrupt mode.
-	 * Saves to settings.
+	 * Persists to settings unless `persist` is false (live /settings side effect).
 	 */
-	setInterruptMode(mode: "immediate" | "wait"): void {
+	setInterruptMode(mode: "immediate" | "wait", persist: boolean = true): void {
 		this.agent.setInterruptMode(mode);
-		this.settings.set("interruptMode", mode);
+		if (persist) this.settings.set("interruptMode", mode);
 	}
 
 	/**

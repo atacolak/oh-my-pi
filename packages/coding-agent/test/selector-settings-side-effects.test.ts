@@ -126,6 +126,29 @@ describe("selector setting side effects", () => {
 		expect(Settings.instance.get("defaultThinkingLevel")).toBe(Effort.Medium);
 	});
 
+	it("applies queue-mode changes without re-persisting them globally", () => {
+		const setSteeringMode = vi.fn();
+		const setFollowUpMode = vi.fn();
+		const setInterruptMode = vi.fn();
+		Settings.instance.set("steeringMode", "all");
+		Settings.instance.set("followUpMode", "all");
+		Settings.instance.set("interruptMode", "immediate");
+		const controller = new SelectorController({
+			session: { setSteeringMode, setFollowUpMode, setInterruptMode },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("steeringMode", "one-at-a-time");
+		controller.handleSettingChange("followUpMode", "one-at-a-time");
+		controller.handleSettingChange("interruptMode", "wait");
+
+		expect(setSteeringMode).toHaveBeenCalledWith("one-at-a-time", false);
+		expect(setFollowUpMode).toHaveBeenCalledWith("one-at-a-time", false);
+		expect(setInterruptMode).toHaveBeenCalledWith("wait", false);
+		expect(Settings.instance.get("steeringMode")).toBe("all");
+		expect(Settings.instance.get("followUpMode")).toBe("all");
+		expect(Settings.instance.get("interruptMode")).toBe("immediate");
+	});
+
 	it("stops the live advisor runtime when advisor.enabled is turned off in /settings", () => {
 		const setAdvisorEnabled = vi.fn();
 		const invalidate = vi.fn();

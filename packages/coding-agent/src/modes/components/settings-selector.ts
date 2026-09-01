@@ -638,9 +638,10 @@ export class SettingsSelectorComponent implements Component {
 			}
 			this.#switchToTab(tabId);
 		};
-
-		// Initialize with first tab
+		// Initialize with first tab and preview the selected scope's
+		// appearance so an overlay cannot pin the live theme/status.
 		this.#switchToTab("appearance");
+		this.#previewAppearanceForScope();
 	}
 
 	invalidate(): void {
@@ -1290,25 +1291,44 @@ export class SettingsSelectorComponent implements Component {
 		return settings.get(path);
 	}
 	/**
-	 * Persist a record setting in the selected scope. The submenu always
-	 * submits the full effective map; write only keys that differ from the
-	 * inherited (global + non-native project) layer, plus `null` tombstones
-	 * for cleared keys. Existing native overrides that still differ are kept.
+	 * Persist a record setting in the selected scope. Editors submit the full
+	 * effective map; write only keys that differ from the inherited (global +
+	 * non-native project) layer, plus `null` tombstones for cleared keys.
+	 * Existing native overrides that still differ are kept.
 	 */
-	#persistRecordScopeSetting(path: SettingPath, value: Record<string, number>): unknown {
+	#persistRecordScopeSetting(path: SettingPath, value: Record<string, unknown>): unknown {
 		if (this.#scope === "global") {
 			settings.set(path, value as never, "global");
 			return settings.get(path);
 		}
-		const inherited = normalizeProviderMaxInFlightRequests(settings.getProjectInheritedValue(path));
-		const next: Record<string, number | null> = {};
-		for (const provider of new Set([...Object.keys(inherited), ...Object.keys(value)])) {
-			const nextLimit = value[provider];
-			if (nextLimit === undefined) {
-				next[provider] = null;
+		if (path === "providers.maxInFlightRequests") {
+			const inherited = normalizeProviderMaxInFlightRequests(settings.getProjectInheritedValue(path));
+			const limits = normalizeProviderMaxInFlightRequests(value);
+			const next: Record<string, number | null> = {};
+			for (const provider of new Set([...Object.keys(inherited), ...Object.keys(limits)])) {
+				const nextLimit = limits[provider];
+				if (nextLimit === undefined) {
+					next[provider] = null;
+					continue;
+				}
+				if (nextLimit !== inherited[provider]) next[provider] = nextLimit;
+			}
+			settings.set(path, next as never, "project");
+			return settings.get(path);
+		}
+		const inheritedRaw = settings.getProjectInheritedValue(path);
+		const inherited =
+			inheritedRaw && typeof inheritedRaw === "object" && !Array.isArray(inheritedRaw)
+				? (inheritedRaw as Record<string, unknown>)
+				: {};
+		const next: Record<string, unknown> = {};
+		for (const key of new Set([...Object.keys(inherited), ...Object.keys(value)])) {
+			const nextValue = value[key];
+			if (nextValue === undefined) {
+				next[key] = null;
 				continue;
 			}
-			if (nextLimit !== inherited[provider]) next[provider] = nextLimit;
+			if (!Bun.deepEquals(nextValue, inherited[key])) next[key] = nextValue;
 		}
 		settings.set(path, next as never, "project");
 		return settings.get(path);
@@ -1339,7 +1359,7 @@ export class SettingsSelectorComponent implements Component {
 			if (path === "providers.maxInFlightRequests") {
 				parsed = validateProviderMaxInFlightRequests(parsed);
 			}
-			return this.#persistSetting(path, parsed);
+			return this.#persistRecordScopeSetting(path, parsed as Record<string, unknown>);
 		}
 		if (typeof currentValue === "number") {
 			return this.#persistSetting(path, Number(value));

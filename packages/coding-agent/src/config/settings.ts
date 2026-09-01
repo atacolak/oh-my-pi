@@ -738,9 +738,7 @@ export class Settings {
 		const prev = this.get(path);
 		this.#persistedMutationGeneration++;
 		deleteByPath(this.#projectFileSettings, segments);
-		if (path === "steeringMode") {
-			delete this.#projectFileSettings.queueMode;
-		}
+		this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
 		this.#rebuildProjectLayer();
 		if (path === "shellPath") {
 			this.#projectShellPathSource = Object.hasOwn(this.#project, "shellPath")
@@ -1804,10 +1802,17 @@ export class Settings {
 		}
 	}
 
-	/** Apply schema migrations to raw settings */
 	#dropLegacyNativeKeys(target: RawSettings, path: string): void {
 		if (path === "steeringMode") {
 			delete target.queueMode;
+		}
+		if (path === "startup.changelogMode") {
+			delete target.collapseChangelog;
+			delete target["startup.changelogMode"];
+		}
+		if (path === "inspect_image.mode") {
+			deleteByPath(target, ["inspect_image", "enabled"]);
+			delete target["inspect_image.enabled"];
 		}
 	}
 

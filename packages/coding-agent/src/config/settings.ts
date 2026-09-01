@@ -1699,14 +1699,12 @@ export class Settings {
 		let shellPathSource: string | undefined;
 		let withoutNativeShellPathSource: string | undefined;
 		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
-		let merged: RawSettings = {};
 		let withoutNative: RawSettings = {};
 		try {
 			const result = await loadCapability(settingsCapability.id, { cwd: this.#cwd });
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level !== "project") continue;
 				const data = dropSettingsGroupShadows(item.data as RawSettings, item.path);
-				merged = this.#deepMerge(merged, data);
 				if (path.normalize(item.path) !== path.normalize(projectConfigPath)) {
 					withoutNative = this.#deepMerge(withoutNative, data);
 					if (Object.hasOwn(data, "shellPath")) withoutNativeShellPathSource = item.path;
@@ -1723,19 +1721,24 @@ export class Settings {
 			? await this.#loadYamlIfPresentForStartup(projectConfigPath)
 			: this.#unwrapYamlLoadResult(projectConfigPath, await this.#loadYamlIfPresent(projectConfigPath, false));
 		const nativeProject = loadedNativeProject ?? {};
+		withoutNative = this.#migrateRawSettings(withoutNative, quarantineInvalid);
 		// Native `.omp/config.yml` is the /settings project-scope write target.
 		// Overlay it last so a same-key `.claude/settings.json` (or other project
-		// source) cannot hide a native edit across reload.
+		// source) cannot hide a native edit across reload. Migrate each layer
+		// first: a native legacy alias must still win over a lower-layer
+		// canonical key instead of being blocked by an already-present path.
+		let settings = withoutNative;
 		if (loadedNativeProject !== null) {
-			merged = this.#deepMerge(merged, nativeProject);
+			const native = this.#migrateRawSettings(structuredClone(nativeProject), quarantineInvalid);
+			settings = this.#deepMerge(withoutNative, native);
 			if (Object.hasOwn(nativeProject, "shellPath")) {
 				shellPathSource = projectConfigPath;
 			}
 		}
 		return {
-			settings: this.#migrateRawSettings(merged, quarantineInvalid),
+			settings,
 			fileSettings: structuredClone(nativeProject),
-			withoutNative: this.#migrateRawSettings(withoutNative, quarantineInvalid),
+			withoutNative,
 			configExists: loadedNativeProject !== null,
 			shellPathSource,
 			withoutNativeShellPathSource,

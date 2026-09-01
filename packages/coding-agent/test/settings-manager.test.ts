@@ -348,6 +348,20 @@ describe("Settings", () => {
 			expect(settings.get("steeringMode")).toBe("one-at-a-time");
 		});
 
+		it("lets a native queueMode alias win over a non-native steeringMode", async () => {
+			await fs.promises.mkdir(path.join(projectDir, ".claude"), { recursive: true });
+			await Bun.write(
+				path.join(projectDir, ".claude", "settings.json"),
+				`${JSON.stringify({ steeringMode: "all" }, null, 2)}\n`,
+			);
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ queueMode: "one-at-a-time" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("steeringMode")).toBe("one-at-a-time");
+			settings.set("ask.enabled", true, "project");
+			expect(settings.get("steeringMode")).toBe("one-at-a-time");
+		});
+
 		it("resolves project-scope values without config overlays", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: false } }, null, 2));

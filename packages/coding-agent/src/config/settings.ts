@@ -3588,6 +3588,16 @@ export type SessionRuntimePath =
 	| "spelling.autocomplete"
 	| "spelling.autocorrect"
 	| "spelling.typoDetection"
+	| "statusLine.compactThinkingLevel"
+	| "statusLine.contextLine"
+	| "statusLine.leftSegments"
+	| "statusLine.preset"
+	| "statusLine.rightSegments"
+	| "statusLine.segmentOptions"
+	| "statusLine.separator"
+	| "statusLine.sessionAccent"
+	| "statusLine.showHookStatus"
+	| "statusLine.transparent"
 	| "steeringMode"
 	| "temperature"
 	| "terminal.showImages"
@@ -3628,6 +3638,16 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"spelling.autocomplete": true,
 	"spelling.autocorrect": true,
 	"spelling.typoDetection": true,
+	"statusLine.compactThinkingLevel": true,
+	"statusLine.contextLine": true,
+	"statusLine.leftSegments": true,
+	"statusLine.preset": true,
+	"statusLine.rightSegments": true,
+	"statusLine.segmentOptions": true,
+	"statusLine.separator": true,
+	"statusLine.sessionAccent": true,
+	"statusLine.showHookStatus": true,
+	"statusLine.transparent": true,
 	steeringMode: true,
 	temperature: true,
 	"terminal.showImages": true,

@@ -57,6 +57,32 @@ describe("selector setting side effects", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
+	it("refreshes the status line when cached status-line settings change", () => {
+		const updateSettings = vi.fn();
+		const requestRender = vi.fn();
+		const controller = new SelectorController({
+			statusLine: { updateSettings },
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		Settings.instance.override("statusLine.preset", "full");
+		Settings.instance.override("statusLine.leftSegments", ["model"]);
+		Settings.instance.override("statusLine.contextLine", "annotated");
+		controller.handleSettingChange("statusLine.preset", "full");
+		controller.handleSettingChange("statusLine.leftSegments", ["model"]);
+		controller.handleSettingChange("statusLine.contextLine", "annotated");
+
+		expect(updateSettings).toHaveBeenCalledTimes(3);
+		expect(updateSettings).toHaveBeenCalledWith(
+			expect.objectContaining({
+				preset: "full",
+				leftSegments: ["model"],
+				contextLine: "annotated",
+			}),
+		);
+		expect(requestRender).toHaveBeenCalledTimes(3);
+	});
+
 	it("invalidates the UI and requests a repaint when tui.tight changes", () => {
 		const invalidate = vi.fn();
 		const requestRender = vi.fn();

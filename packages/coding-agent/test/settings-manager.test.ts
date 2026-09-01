@@ -1240,6 +1240,137 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting sibling status-line disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						statusLine: {
+							preset: "minimal",
+							separator: "pipe",
+							showHookStatus: true,
+							transparent: false,
+							compactThinkingLevel: true,
+							contextLine: "off",
+							leftSegments: ["pi"],
+							rightSegments: ["git"],
+							segmentOptions: { path: { abbreviate: true } },
+							sessionAccent: true,
+						},
+						ask: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{
+				preset: string;
+				separator: string;
+				showHookStatus: boolean;
+				transparent: boolean;
+				compactThinkingLevel: boolean;
+				contextLine: string;
+				leftSegments: string[];
+				rightSegments: string[];
+				sessionAccent: boolean;
+				paths: string[];
+			}> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({
+					preset: settings.get("statusLine.preset"),
+					separator: settings.get("statusLine.separator"),
+					showHookStatus: settings.get("statusLine.showHookStatus"),
+					transparent: settings.get("statusLine.transparent"),
+					compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+					contextLine: settings.get("statusLine.contextLine"),
+					leftSegments: settings.get("statusLine.leftSegments"),
+					rightSegments: settings.get("statusLine.rightSegments"),
+					sessionAccent: settings.get("statusLine.sessionAccent"),
+					paths: [...paths],
+				});
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							statusLine: {
+								preset: "full",
+								separator: "slash",
+								showHookStatus: false,
+								transparent: true,
+								compactThinkingLevel: false,
+								contextLine: "embedded",
+								leftSegments: ["model"],
+								rightSegments: ["cost"],
+								segmentOptions: { path: { abbreviate: false } },
+								sessionAccent: false,
+							},
+							ask: { enabled: true },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("statusLine.preset")).toBe("full");
+				expect(settings.get("statusLine.separator")).toBe("slash");
+				expect(settings.get("statusLine.showHookStatus")).toBe(false);
+				expect(settings.get("statusLine.transparent")).toBe(true);
+				expect(settings.get("statusLine.compactThinkingLevel")).toBe(false);
+				expect(settings.get("statusLine.contextLine")).toBe("embedded");
+				expect(settings.get("statusLine.leftSegments")).toEqual(["model"]);
+				expect(settings.get("statusLine.rightSegments")).toEqual(["cost"]);
+				expect(settings.get("statusLine.sessionAccent")).toBe(false);
+				expect(received).toEqual([
+					{
+						preset: "full",
+						separator: "slash",
+						showHookStatus: false,
+						transparent: true,
+						compactThinkingLevel: false,
+						contextLine: "embedded",
+						leftSegments: ["model"],
+						rightSegments: ["cost"],
+						sessionAccent: false,
+						paths: [
+							"statusLine.compactThinkingLevel",
+							"statusLine.contextLine",
+							"statusLine.leftSegments",
+							"statusLine.preset",
+							"statusLine.rightSegments",
+							"statusLine.segmentOptions",
+							"statusLine.separator",
+							"statusLine.sessionAccent",
+							"statusLine.showHookStatus",
+							"statusLine.transparent",
+						],
+					},
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					statusLine: {
+						preset: "full",
+						separator: "slash",
+						showHookStatus: false,
+						transparent: true,
+						compactThinkingLevel: false,
+						contextLine: "embedded",
+						leftSegments: ["model"],
+						rightSegments: ["cost"],
+						segmentOptions: { path: { abbreviate: false } },
+						sessionAccent: false,
+					},
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires runtime hooks for an adopted sibling project edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

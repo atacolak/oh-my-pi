@@ -513,6 +513,32 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
+		it("clears migrated native power aliases on inherit", async () => {
+			await writeSettings({ power: { sleepPrevention: "idle" } });
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						power: {
+							preventIdleSleep: false,
+							preventSystemSleep: false,
+							declareUserActive: false,
+							preventDisplaySleep: false,
+						},
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("power.sleepPrevention")).toBe("off");
+			expect(settings.clearProject("power.sleepPrevention")).toBe(true);
+			expect(settings.get("power.sleepPrevention")).toBe("idle");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
 		it("preserves a newer alias-backed project value when a migrated clear is stale", async () => {
 			await writeSettings({ steeringMode: "all" });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");

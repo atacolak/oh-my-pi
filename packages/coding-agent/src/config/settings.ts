@@ -1898,6 +1898,16 @@ export class Settings {
 		if (path === "features.unexpectedStopDetection") {
 			delete target["features.unexpectedStopDetection"];
 		}
+		if (path === "power.sleepPrevention") {
+			deleteByPath(target, ["power", "preventIdleSleep"]);
+			deleteByPath(target, ["power", "preventSystemSleep"]);
+			deleteByPath(target, ["power", "declareUserActive"]);
+			deleteByPath(target, ["power", "preventDisplaySleep"]);
+			delete target["power.preventIdleSleep"];
+			delete target["power.preventSystemSleep"];
+			delete target["power.declareUserActive"];
+			delete target["power.preventDisplaySleep"];
+		}
 	}
 
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {

@@ -1,3 +1,14 @@
+> [!NOTE]
+> ## `cap/collab-autostart` — opt-in collab auto-hosting
+>
+> Durable local capability: interactive TUI sessions can opt in to auto-start collab hosting, write a full write-capable link file, and refuse project-scoped unattended hosting plus the implicit public relay.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR(s):** [#9833](https://github.com/can1357/oh-my-pi/pull/9833) — opt-in auto-start hosting and write-link file
+> - **Upstream base:** [OMP 18.0.11 (`65f79e76`)](https://github.com/can1357/oh-my-pi/tree/65f79e76fcc89b96632fe86a598f314bd7cfc725)
+>
+> PR heads stay independently reviewable without this banner.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

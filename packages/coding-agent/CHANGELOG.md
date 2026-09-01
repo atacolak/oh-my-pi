@@ -10,6 +10,7 @@
 - Devin model selectors now accept the native CLI's short aliases (`devin/opus`, `devin/swe`), dotted upstream spellings (`devin/gemini-3.7-flash`), and raw effort-route wire uids for dynamically collapsed families ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
 - Added provider-supplied model metadata to the `/models` detail line: `new`, `beta`, and `recommended` badges beside the model name, and the upstream description after the context, cost, and perf facts ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
 - Standalone `CLAUDE.md` files in the project root (and ancestor directories) are now loaded as context, mirroring `AGENTS.md` discovery; config-directory context files still take precedence per scope.
+- Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output.
 
 ### Changed
 
@@ -231,7 +232,6 @@
 - Accelerated SHA-2 and SHA-3 checksum builtins on supported ARM64 hardware.
 - Fixed joined collaboration guests becoming inconsistent with the host after host-side compaction.
 - Fixed `hub list` and child peer rosters counting parked agents from stale root sessions; the persisted roster now scopes to the current root, retries transient filesystem faults, and renders live rows through the production subagent prompt template with a truthful omitted count.
-- Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output.
 
 ## [18.0.6] - 2026-08-26
 

@@ -385,6 +385,27 @@ describe("Settings", () => {
 			await settings.flush();
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
+
+		it("clears migrated native changelog and inspect_image aliases on inherit", async () => {
+			await writeSettings({
+				"startup.changelogMode": "summary",
+				"inspect_image.mode": "auto",
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ collapseChangelog: false, inspect_image: { enabled: false } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("startup.changelogMode")).toBe("expanded");
+			expect(settings.get("inspect_image.mode")).toBe("off");
+			expect(settings.clearProject("startup.changelogMode")).toBe(true);
+			expect(settings.clearProject("inspect_image.mode")).toBe(true);
+			expect(settings.get("startup.changelogMode")).toBe("summary");
+			expect(settings.get("inspect_image.mode")).toBe("auto");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
 	});
 
 	describe("shell configuration errors", () => {

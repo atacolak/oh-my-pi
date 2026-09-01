@@ -125,6 +125,30 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(selector.render(120).join("\n")).toContain("Settings · global");
 	});
 
+	it("previews the selected scope's appearance when the selector opens", () => {
+		const previews: string[] = [];
+		settings.set("theme.dark", "dark-one", "project");
+		settings.set("theme.dark", "titanium", "global");
+		new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: themeName => {
+					previews.push(themeName);
+				},
+				onCancel: () => {},
+			},
+		);
+		expect(previews.at(-1)).toBe("dark-one");
+		expect(settings.get("theme.dark")).toBe("dark-one");
+	});
+
 	it("previews the selected scope's theme without persisting", () => {
 		const previews: string[] = [];
 		const selector = new SettingsSelectorComponent(
@@ -477,6 +501,24 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			ask: { enabled: true },
 			custom: { keep: true },
 			providers: { maxInFlightRequests: { anthropic: 7, openai: 9 } },
+		});
+	});
+
+	it("does not copy unchanged inherited record keys into the project layer", async () => {
+		settings.set("tools.approval", { bash: "allow", read: "prompt" }, "global");
+		const selector = createSelector();
+		for (const ch of "tool approval policies") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x15");
+		selector.handleInput('{"bash":"deny","read":"prompt"}');
+		selector.handleInput("\n");
+		expect(settings.get("tools.approval")).toEqual({ bash: "deny", read: "prompt" });
+		expect(settings.getGlobalValue("tools.approval")).toEqual({ bash: "allow", read: "prompt" });
+		await settings.flush();
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			ask: { enabled: true },
+			custom: { keep: true },
+			tools: { approval: { bash: "deny" } },
 		});
 	});
 });

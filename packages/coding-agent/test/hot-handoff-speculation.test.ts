@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, Model, UserMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -37,6 +37,18 @@ function assistantMessage(text: string, model: Model): AssistantMessage {
 		timestamp: Date.now(),
 	};
 }
+
+function toolResultMessage(text: string, toolCallId = "call-raw"): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "read",
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
 
 describe("hot handoff speculative lifecycle", () => {
 	let authStorage: AuthStorage;
@@ -358,6 +370,32 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(maintenance.speculationState).toBe("idle");
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 	});
+
+	it("does not prune or shake the checkpoint-bound raw window after commit", async () => {
+		vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "Handoff Document",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		sessionManager.appendMessage(userMessage("raw continuation"));
+		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+
+		const bulky = "exact recent evidence ".repeat(8_000);
+		sessionManager.appendMessage(toolResultMessage(bulky));
+		await maintenance.checkCompaction(assistantMessage("continued after compact", model), true, false, false);
+
+		const texts = sessionManager
+			.getBranch()
+			.filter(entry => entry.type === "message" && entry.message.role === "toolResult")
+			.map(entry => JSON.stringify(entry.type === "message" ? entry.message : undefined));
+		expect(texts.some(text => text.includes("exact recent evidence"))).toBe(true);
+		expect(texts.some(text => text.includes("[shaken") || text.includes("Output truncated"))).toBe(false);
+	});
+
 
 	it("does not wedge the session when the speculative author fails", async () => {
 		const compactSpy = vi

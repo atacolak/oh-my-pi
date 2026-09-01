@@ -497,6 +497,7 @@ export class SessionMaintenance {
 	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
+		if (this.#preserveCheckpointBoundRawWindow()) return undefined;
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
 		const result = pruneToolOutputs(
@@ -538,6 +539,7 @@ export class SessionMaintenance {
 	 * provider prompt cache.
 	 */
 	async #pruneStaleToolResults(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
+		if (this.#preserveCheckpointBoundRawWindow()) return undefined;
 		const { supersedeReads, dropUseless } = this.#host.settings.getGroup("compaction");
 		if (!supersedeReads && !dropUseless) return undefined;
 		const branchEntries = this.#host.sessionManager.getBranch();
@@ -1590,10 +1592,11 @@ export class SessionMaintenance {
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
 		if (!this.#armedSpeculationValid(run.armed)) return undefined;
 		if (run.armed.checkpointBound) {
-			const firstKeptEntryId = run.armed.recut
-				? this.#keepRecentFirstKeptEntryId()
-				: (firstEntryIdAfter(this.#host.sessionManager.getBranch(), run.armed.snapshotLeafId) ??
-					run.armed.snapshotLeafId);
+			const firstKeptEntryId =
+				run.armed.recut || this.#latestCompactionIsCheckpointBound()
+					? this.#keepRecentFirstKeptEntryId()
+					: (firstEntryIdAfter(this.#host.sessionManager.getBranch(), run.armed.snapshotLeafId) ??
+						run.armed.snapshotLeafId);
 			if (!firstKeptEntryId) return undefined;
 			return {
 				...run.armed,
@@ -2781,6 +2784,19 @@ export class SessionMaintenance {
 	}
 
 	/**
+	 * After a Hot Handoff compact, the keep region is the exact raw window.
+	 * Also hold that window while a checkpoint-bound author is in flight or
+	 * armed: per-turn prune/shake would stub the accumulating tail so recut
+	 * never sees 15–25k.
+	 */
+	#preserveCheckpointBoundRawWindow(): boolean {
+		if (this.#latestCompactionIsCheckpointBound()) return true;
+		const run = this.#speculation;
+		if (run?.armed?.checkpointBound) return true;
+		return Boolean(run && !run.armed && this.#host.extensionRunner?.hasHandlers("session.compacting"));
+	}
+
+	/**
 	 * After a checkpoint-bound compact, residual context is still inside the
 	 * speculation fire band (system prompt + handoff + raw tail). Starting
 	 * another author immediately recuts that tail. Hold until residual grows
@@ -2879,6 +2895,7 @@ export class SessionMaintenance {
 		signal: AbortSignal,
 		options: { skipElide: boolean; hasProgress: () => boolean },
 	): Promise<boolean> {
+		if (this.#preserveCheckpointBoundRawWindow()) return false;
 		if (signal.aborted) return false;
 		// Tier 0 — a snapcompact pass whose just-written frame archive is itself
 		// the over-budget cost (each pass re-renders the carried-forward text
@@ -4216,6 +4233,7 @@ export class SessionMaintenance {
 		suppressContinuation = false,
 		detachPostCommit = false,
 	): Promise<CompactionCheckResult | "fallback"> {
+		if (this.#preserveCheckpointBoundRawWindow()) return "fallback";
 		const action = "shake";
 		this.#autoCompactionAbortController?.abort();
 		const controller = new AbortController();

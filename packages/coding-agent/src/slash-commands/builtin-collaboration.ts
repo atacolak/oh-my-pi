@@ -1,8 +1,7 @@
 import { Spacer } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
-import { CollabGuestLink } from "../collab/guest";
-import { CollabHost } from "../collab/host";
-import { resolveRelayUrl, startCollabHost } from "../collab/start";
+import type { CollabHost } from "../collab/host";
+import { resolveRelayUrl, startCollabGuest, startCollabHost } from "../collab/start";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import { parseExportArgs } from "../export/html/args";
@@ -10,18 +9,11 @@ import { shareSession } from "../export/share";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
-import { urlHyperlinkAlways } from "../tui";
 import { copyToClipboard } from "../utils/clipboard";
 import { refreshStatusLine } from "./builtin-modes";
-import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
+import { CollabQrCodeComponent, collabBrowserLink } from "./helpers/collab-qrcode";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
-
-/** Scheme-less display form of a browser deep link: accent + underline, OSC-8 linked to the full URL. */
-function collabWebLinkClickable(webLink: string): string {
-	const display = theme.fg("accent", `\x1b[4m${webLink.replace(/^https?:\/\//, "")}\x1b[24m`);
-	return urlHyperlinkAlways(webLink, display);
-}
 
 /** Join hint printed by /collab: compact terminal link + clickable browser deep link. */
 function collabLinkHint(host: CollabHost, heading: string, view = false): string {
@@ -29,9 +21,11 @@ function collabLinkHint(host: CollabHost, heading: string, view = false): string
 	const link = view ? host.viewLink : host.link;
 	const webLink = view ? host.webViewLink : host.webLink;
 	return [
-		theme.fg("success", heading),
+		// Keep the URL on the first row: under transcript pressure the status
+		// block is clipped to rendered[0], which used to drop the join link.
+		`${collabBrowserLink(webLink, "Join in browser")}  ${theme.fg("success", heading)}`,
 		` ${bullet} ${theme.fg("muted", view ? "Watch from another terminal:" : "Join from another terminal:")} ${APP_NAME} join "${link}"`,
-		` ${bullet} ${theme.fg("muted", "or any web browser:")} ${collabWebLinkClickable(webLink)}`,
+		` ${bullet} ${theme.fg("muted", "or any web browser:")} ${collabBrowserLink(webLink)}`,
 		theme.fg(
 			"dim",
 			view
@@ -293,7 +287,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 					const names = ctx.collabHost.participants.map(p =>
 						p.role === "host" ? `${p.name} (host)` : p.readOnly ? `${p.name} (view-only)` : p.name,
 					);
-					ctx.showStatus(`Collab: ${names.join(", ")} — ${collabWebLinkClickable(ctx.collabHost.webLink)}`);
+					ctx.showStatus(`Collab: ${names.join(", ")} — ${collabBrowserLink(ctx.collabHost.webLink)}`);
 				} else if (ctx.collabGuest) {
 					ctx.showStatus(
 						ctx.collabGuest.readOnly
@@ -305,7 +299,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				}
 				return;
 			}
-			if (ctx.collabGuest) {
+			if (ctx.collabGuest || ctx.collabGuestStart) {
 				ctx.showError("Already in a collab session as a guest (/leave first)");
 				return;
 			}
@@ -358,16 +352,16 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				ctx.showError("Usage: /join <link>");
 				return;
 			}
-			if (ctx.collabHost) {
+			if (ctx.collabHost || ctx.collabHostStart) {
 				ctx.showError("Stop hosting first (/collab stop)");
 				return;
 			}
-			if (ctx.collabGuest) {
+			if (ctx.collabGuest || ctx.collabGuestStart) {
 				ctx.showError("Already in a collab session (/leave first)");
 				return;
 			}
 			try {
-				await new CollabGuestLink(ctx).join(link);
+				await startCollabGuest(ctx, link);
 			} catch (err) {
 				ctx.showError(`Failed to join collab session: ${errorMessage(err)}`);
 			}

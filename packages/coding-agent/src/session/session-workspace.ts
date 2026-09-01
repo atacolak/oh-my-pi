@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathIsWithin } from "@oh-my-pi/pi-utils";
 
 /**
  * Filesystem workspace of a session: one current/default directory plus a
@@ -60,7 +61,7 @@ export function workspaceRootForPath(filePath: string, workspace: SessionWorkspa
 	const resolved = path.resolve(filePath);
 	let best: string | null = null;
 	for (const directory of workspace.directories) {
-		if (!isPathInsideDirectory(directory, resolved)) continue;
+		if (!pathIsWithin(directory, resolved)) continue;
 		if (best === null || directory.length > best.length) best = directory;
 	}
 	return best;
@@ -72,9 +73,4 @@ export function sessionWorkspaceDirectories(cwd: string, additionalDirectories?:
 		cwd,
 		directories: additionalDirectories ? [...additionalDirectories] : [],
 	}).directories;
-}
-
-function isPathInsideDirectory(directory: string, candidate: string): boolean {
-	const relative = path.relative(directory, candidate);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }

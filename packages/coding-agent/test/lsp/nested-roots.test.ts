@@ -5,16 +5,19 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
+import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import {
 	findServerRoot,
 	getServersForFile,
 	loadConfig,
 	resolveServersForFile,
 } from "@oh-my-pi/pi-coding-agent/lsp/config";
+import { formatContent, getDiagnosticsForFile } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
 import { discoverStartupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers";
-import type { LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import type { LinterClient, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
 import { createLspWritethrough } from "@oh-my-pi/pi-coding-agent/lsp/writethrough";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -137,6 +140,89 @@ describe("nested LSP project roots", () => {
 			const resolved = resolveServersForFile(config, filePath, [tempDir.path()]);
 			expect(resolved.find(server => server.name === "basedpyright")?.config.resolvedCommand).toBe(localBin);
 			expect(piUtils.$which).not.toHaveBeenCalledWith("basedpyright-langserver");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("uses a hoisted workspace executable for a nested project", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-hoisted-bin-");
+		try {
+			fs.writeFileSync(path.join(tempDir.path(), "package.json"), "{}\n");
+			const nested = path.join(tempDir.path(), "packages", "app");
+			fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+			fs.writeFileSync(path.join(nested, "package.json"), "{}\n");
+			const filePath = path.join(nested, "src", "index.ts");
+			fs.writeFileSync(filePath, "export const value = 1;\n");
+			const binDir = path.join(tempDir.path(), "node_modules", ".bin");
+			fs.mkdirSync(binDir, { recursive: true });
+			const hoistedBin = path.join(binDir, "typescript-language-server");
+			fs.writeFileSync(hoistedBin, "");
+			fs.chmodSync(hoistedBin, 0o755);
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(hoistedBin);
+			const resolved = resolveServersForFile(config, filePath, [tempDir.path()]);
+			const typescript = resolved.find(server => server.name === "typescript-language-server");
+			expect(typescript?.root).toBe(nested);
+			expect(typescript?.config.resolvedCommand).toBe(hoistedBin);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not reuse the primary workspace executable for an additional workspace", () => {
+		const primary = TempDir.createSync("@omp-lsp-primary-bin-");
+		const additional = TempDir.createSync("@omp-lsp-additional-bin-");
+		try {
+			fs.writeFileSync(path.join(primary.path(), "package.json"), "{}\n");
+			const binDir = path.join(primary.path(), "node_modules", ".bin");
+			fs.mkdirSync(binDir, { recursive: true });
+			const primaryBin = path.join(binDir, "typescript-language-server");
+			fs.writeFileSync(primaryBin, "");
+			fs.chmodSync(primaryBin, 0o755);
+
+			const nested = path.join(additional.path(), "packages", "app");
+			fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+			fs.writeFileSync(path.join(nested, "package.json"), "{}\n");
+			const filePath = path.join(nested, "src", "index.ts");
+			fs.writeFileSync(filePath, "export const value = 1;\n");
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+
+			const config = loadConfig(primary.path());
+			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(primaryBin);
+			const resolved = resolveServersForFile(config, filePath, [primary.path(), additional.path()]);
+			expect(resolved.find(server => server.name === "typescript-language-server")).toBeUndefined();
+		} finally {
+			primary.removeSync();
+			additional.removeSync();
+		}
+	});
+
+	it("roots dot-marker server definitions at the containing workspace", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dot-marker-");
+		try {
+			const fileA = path.join(tempDir.path(), "src", "a.ts");
+			const fileB = path.join(tempDir.path(), "test", "b.ts");
+			fs.mkdirSync(path.dirname(fileA), { recursive: true });
+			fs.mkdirSync(path.dirname(fileB), { recursive: true });
+			fs.writeFileSync(fileA, "export const a = 1;\n");
+			fs.writeFileSync(fileB, "export const b = 1;\n");
+			const server: ServerConfig = {
+				command: "plugin-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: ["."],
+			};
+			const config = { servers: {}, definitions: { plugin: server } };
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "plugin-lsp" ? "/usr/bin/plugin-lsp" : null,
+			);
+
+			const resolvedA = resolveServersForFile(config, fileA, [tempDir.path()]);
+			const resolvedB = resolveServersForFile(config, fileB, [tempDir.path()]);
+			expect(resolvedA[0]?.root).toBe(tempDir.path());
+			expect(resolvedB[0]?.root).toBe(tempDir.path());
 		} finally {
 			tempDir.removeSync();
 		}
@@ -273,6 +359,287 @@ describe("nested LSP project roots", () => {
 			await writethrough(filePath, "def example():\n    return 2\n");
 			expect(roots).toContain(projectRoot);
 		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("routes writes through directories added after write-tool construction", async () => {
+		const primary = TempDir.createSync("@omp-lsp-add-dir-primary-");
+		const additional = TempDir.createSync("@omp-lsp-add-dir-extra-");
+		try {
+			const nested = writePythonProject(additional.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			let extraDirs: string[] | undefined;
+			const session = {
+				cwd: primary.path(),
+				get additionalDirectories() {
+					return extraDirs;
+				},
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": true,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+			const tool = new WriteTool(session);
+			extraDirs = [additional.path()];
+			const getServers = vi.spyOn(lspConfig, "getServersForFile");
+
+			await tool.execute("add-dir-write", {
+				path: nested.filePath,
+				content: "def example():\n    return 2\n",
+			});
+
+			expect(getServers.mock.calls.some(call => call[2]?.includes(additional.path()))).toBe(true);
+		} finally {
+			primary.removeSync();
+			additional.removeSync();
+		}
+	});
+
+	it("registers a lazy session owner on write-through client creation", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-lazy-owner-write-");
+		try {
+			const { filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const owner = lspClient.createLspClientOwner();
+			const createdOwners: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(
+				async (config, cwd, _timeout, _signal, clientOwner) => {
+					createdOwners.push(clientOwner);
+					return mockLspClient(config, cwd);
+				},
+			);
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: tempDir.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				getLspClientOwner: () => owner,
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": true,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+
+			await new WriteTool(session).execute("lazy-owner-write", {
+				path: filePath,
+				content: "def example():\n    return 2\n",
+			});
+
+			expect(createdOwners).toContain(owner);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("roots custom linter diagnostics and formatting at each nested project", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-linter-");
+		try {
+			const projectA = path.join(tempDir.path(), "a");
+			const projectB = path.join(tempDir.path(), "b");
+			fs.mkdirSync(projectA);
+			fs.mkdirSync(projectB);
+			const fileA = path.join(projectA, "a.ts");
+			const fileB = path.join(projectB, "b.ts");
+			fs.writeFileSync(fileA, "const a = 1;\n");
+			fs.writeFileSync(fileB, "const b = 1;\n");
+			const createdRoots: string[] = [];
+			const createClient = (_config: ServerConfig, cwd: string): LinterClient => {
+				createdRoots.push(cwd);
+				return {
+					format: async (_filePath, content) => `${content}// ${path.basename(cwd)}\n`,
+					lint: async () => [],
+				};
+			};
+			const server: ServerConfig = {
+				command: "nested-linter",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				createClient,
+			};
+			const serverA: ServerConfig = { ...server, resolvedRoot: projectA };
+			const serverB: ServerConfig = { ...server, resolvedRoot: projectB };
+
+			await getDiagnosticsForFile(fileA, tempDir.path(), [["nested-linter", serverA]]);
+			const formattedA = await formatContent(fileA, "const a = 1;\n", tempDir.path(), [["nested-linter", serverA]]);
+			const formattedB = await formatContent(fileB, "const b = 1;\n", tempDir.path(), [["nested-linter", serverB]]);
+
+			expect(createdRoots).toEqual([projectA, projectB]);
+			expect(formattedA.content).toContain("// a");
+			expect(formattedB.content).toContain("// b");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("clears a nested initialization failure using the resolved root identity", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-failure-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "python");
+			fs.mkdirSync(nestedRoot);
+			const config: ServerConfig = {
+				command: "broken-nested-lsp",
+				fileTypes: ["py"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: {
+						write: () => Promise.reject(new Error("nested init failed")),
+						flush: () => Promise.resolve(),
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+			await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow("nested init failed");
+			await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow(
+				"failed to initialize recently",
+			);
+			expect(spawnCount).toBe(1);
+
+			lspClient.clearInitializationFailure(config, tempDir.path());
+			await expect(lspClient.getOrCreateClient(config, tempDir.path())).rejects.toThrow("nested init failed");
+			expect(spawnCount).toBe(2);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload clears nested initialization failures owned by that session", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-workspace-reload-failure-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: {
+						write: () => Promise.reject(new Error("nested init failed")),
+						flush: () => Promise.resolve(),
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+
+			const owner = lspClient.createLspClientOwner();
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			const firstFailure = await tool.execute("nested-failure", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(firstFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(1);
+			await tool.execute("nested-workspace-reload", { action: "reload", file: "*" });
+			const retryFailure = await tool.execute("nested-retry", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(retryFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(2);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload clears nested failures when the session cwd is a symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-reload-failure-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: {
+						write: () => Promise.reject(new Error("nested init failed")),
+						flush: () => Promise.resolve(),
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+
+			const owner = lspClient.createLspClientOwner();
+			const tool = new LspTool(makeLspSession(linkRoot), owner);
+			const firstFailure = await tool.execute("symlink-nested-failure", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(firstFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(1);
+			await tool.execute("symlink-nested-workspace-reload", { action: "reload", file: "*" });
+			const retryFailure = await tool.execute("symlink-nested-retry", {
+				action: "hover",
+				file: nested.filePath,
+				line: 1,
+				symbol: "example",
+			});
+			expect(retryFailure.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested init failed"),
+			});
+			expect(spawnCount).toBe(2);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
 			tempDir.removeSync();
 		}
 	});

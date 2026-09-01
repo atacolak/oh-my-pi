@@ -3,17 +3,18 @@
 >
 > Daily composition of selected local capabilities on current upstream main.
 >
-> - **Upstream base:** [OMP 18.0.6 (`b4e8e85`)](https://github.com/can1357/oh-my-pi/tree/b4e8e856ad)
+> - **Upstream base:** [OMP 18.0.11 (`65f79e76`)](https://github.com/can1357/oh-my-pi/tree/65f79e76fcc89b96632fe86a598f314bd7cfc725)
 > - **Capabilities:**
 >   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — retention + locked `scope:personal` / `scope:coding` + `project:<repo>` seam
 >   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — /extensions inspector
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings
 >   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — experimental `--alt` viewport
 >   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
->   - [`fix/nested-lsp-roots`](https://github.com/can1357/oh-my-pi/pull/9969) — lazy nested LSP project roots (`#1648`)
+>   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — lazy nested LSP project roots
+>   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
->
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

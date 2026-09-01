@@ -243,6 +243,7 @@ export function findServerRoot(filePath: string, markers: string[], workspaceRoo
 			: null;
 	if (workspaceRoots && workspaceRoots.length > 0 && !boundary) return null;
 	if (markers.length === 0) return boundary ?? startDir;
+	if (markers.includes(".")) return boundary ?? startDir;
 
 	let dir = startDir;
 	while (true) {
@@ -559,23 +560,30 @@ export function resolveServersForFile(
 	filePath: string,
 	workspaceRoots: readonly string[],
 ): ResolvedLspServer[] {
+	const workspace = normalizeSessionWorkspace({ cwd: workspaceRoots[0], directories: workspaceRoots.slice(1) });
+	const boundary = workspaceRootForPath(path.resolve(filePath), workspace);
+	if (!boundary) return [];
+
 	const catalog = config.definitions ?? config.servers;
 	const resolved: ResolvedLspServer[] = [];
 	for (const [name, definition] of matchServersForFile(catalog, filePath)) {
-		const root =
-			findServerRoot(filePath, definition.rootMarkers, workspaceRoots) ??
-			(config.servers[name] ? workspaceRoots[0] : null);
+		const root = findServerRoot(filePath, definition.rootMarkers, workspaceRoots);
 		if (!root) continue;
 
-		const resolvedCommand = resolveCommand(definition.command, root) ?? definition.resolvedCommand;
-		if (!resolvedCommand && !config.servers[name]) continue;
+		const localRoots = root === boundary ? [root] : [root, boundary];
+		const primaryResolvedCommand = boundary === workspace.cwd ? config.servers[name]?.resolvedCommand : undefined;
+		const resolvedCommand =
+			resolveCommand(definition.command, root, { localRoots }) ??
+			primaryResolvedCommand ??
+			definition.resolvedCommand;
+		if (!resolvedCommand) continue;
 
 		resolved.push({
 			name,
 			root,
 			config: {
 				...definition,
-				resolvedCommand: resolvedCommand ?? definition.resolvedCommand,
+				resolvedCommand,
 				resolvedRoot: root,
 			},
 		});

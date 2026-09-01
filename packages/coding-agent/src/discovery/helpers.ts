@@ -11,6 +11,7 @@ import {
 	parseFrontmatter,
 	tryParseJson,
 } from "@oh-my-pi/pi-utils";
+import type { ContextFile } from "../capability/context-file";
 import type { ExtensionModule } from "../capability/extension-module";
 import { invalidate as invalidateFsCache, readDirEntries, readFile } from "../capability/fs";
 import { parseRuleConditionAndScope, type Rule, type RuleFrontmatter } from "../capability/rule";
@@ -18,7 +19,9 @@ import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
+import type { AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
+
 import { normalizeToolNames } from "../tools/builtin-names";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
@@ -248,6 +251,8 @@ export interface ParsedAgentFields {
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
 	advisor?: boolean | string;
+	/** Root-only durable authoring grant. Independent from `spawns`. */
+	automationAuthor?: AutomationAuthorPolicy;
 }
 
 /**
@@ -262,7 +267,8 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		return null;
 	}
 
-	let tools = parseArrayOrCSV(frontmatter.tools);
+	let tools =
+		Array.isArray(frontmatter.tools) && frontmatter.tools.length === 0 ? [] : parseArrayOrCSV(frontmatter.tools);
 	if (tools) tools = normalizeToolNames(tools);
 
 	// Subagents with explicit tool lists always need yield
@@ -318,6 +324,8 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
+	const automationAuthor = parseAutomationAuthor(frontmatter.automationAuthor);
+
 	return {
 		name,
 		description,
@@ -332,7 +340,31 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		readSummarize,
 		prewalk,
 		advisor,
+		automationAuthor,
 	};
+}
+
+function parseAutomationAuthor(value: unknown): AutomationAuthorPolicy | undefined {
+	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const jurisdiction = record.jurisdiction;
+	if (jurisdiction !== "descendants" && jurisdiction !== "scope") return undefined;
+	const allowed = record.allowedAgents;
+	let allowedAgents: string[] | "*";
+	if (allowed === "*") {
+		allowedAgents = "*";
+	} else if (
+		Array.isArray(allowed) &&
+		allowed.length > 0 &&
+		allowed.every(item => typeof item === "string" && item.trim().length > 0)
+	) {
+		allowedAgents = allowed.map(item => String(item).trim());
+	} else {
+		return undefined;
+	}
+	return { allowedAgents, jurisdiction };
 }
 
 async function globIf(
@@ -566,6 +598,102 @@ export async function loadFilesFromDir<T>(
  */
 export function calculateDepth(cwd: string, targetDir: string, separator: string): number {
 	return cwd.split(separator).length - targetDir.split(separator).length;
+}
+// =============================================================================
+// Standalone context-file walker (AGENTS.md, CLAUDE.md, …)
+// =============================================================================
+
+/**
+ * Compare paths while tolerating Windows drive casing.
+ */
+function samePath(left: string, right: string): boolean {
+	const normalizedLeft = path.resolve(left);
+	const normalizedRight = path.resolve(right);
+	return process.platform === "win32"
+		? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+		: normalizedLeft === normalizedRight;
+}
+
+/**
+ * Return whether `child` is at or below `parent`.
+ */
+function isWithin(parent: string, child: string): boolean {
+	const normalizedParent = path.resolve(parent);
+	const normalizedChild = path.resolve(child);
+	const relative = path.relative(
+		process.platform === "win32" ? normalizedParent.toLowerCase() : normalizedParent,
+		process.platform === "win32" ? normalizedChild.toLowerCase() : normalizedChild,
+	);
+	return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+/**
+ * Load standalone context files (e.g. AGENTS.md, CLAUDE.md) by walking up from
+ * cwd. Shared across providers whose files live in project root rather than
+ * config directories (which their own providers handle).
+ *
+ * When a repository is nested below the user's home directory, continue past
+ * the Git root to discover workspace-level files, but stop before loading the
+ * home directory's own copy as project context. A repository rooted at the
+ * home directory itself is not "nested below" it, so the home-level file
+ * remains project context.
+ */
+export async function loadStandaloneContextFiles(
+	ctx: LoadContext,
+	providerId: string,
+	fileName: string,
+): Promise<LoadResult<ContextFile>> {
+	const items: ContextFile[] = [];
+	const warnings: string[] = [];
+	const home = path.resolve(ctx.home);
+	const cwd = path.resolve(ctx.cwd);
+	const repoRoot = ctx.repoRoot ? path.resolve(ctx.repoRoot) : null;
+	const filesystemRoot = path.parse(cwd).root;
+	const cwdIsUnderHome = isWithin(home, cwd);
+	const repoIsHome = repoRoot !== null && samePath(home, repoRoot);
+	const repoIsUnderHome = repoRoot !== null && isWithin(home, repoRoot) && !repoIsHome;
+	const scanToHome = repoRoot !== null && cwdIsUnderHome && repoIsUnderHome;
+	const boundary = scanToHome ? home : (repoRoot ?? (cwdIsUnderHome ? home : filesystemRoot));
+	const includeBoundary = repoRoot === null ? cwdIsUnderHome : !samePath(boundary, home) || repoIsHome;
+	const excludeHome = scanToHome;
+
+	let current = cwd;
+	while (true) {
+		const atBoundary = samePath(current, boundary);
+		const atHome = excludeHome && samePath(current, home);
+		if (!(atHome || (atBoundary && !includeBoundary))) {
+			const candidate = path.join(current, fileName);
+			const content = await readFile(candidate);
+
+			// Empty files contribute nothing and must not claim the depth scope:
+			// at a priority tie, an empty first-registered file would shadow a
+			// non-empty sibling (e.g. an empty AGENTS.md shadowing CLAUDE.md).
+			if (content !== null && content !== "") {
+				const parent = path.dirname(candidate);
+				const baseName = parent.split(path.sep).pop() ?? "";
+
+				if (!baseName.startsWith(".")) {
+					const fileDir = path.dirname(candidate);
+					const calculatedDepth = calculateDepth(cwd, fileDir, path.sep);
+
+					items.push({
+						path: candidate,
+						content,
+						level: "project",
+						depth: calculatedDepth,
+						_source: createSourceMeta(providerId, candidate, "project"),
+					});
+				}
+			}
+		}
+		if (atBoundary) break;
+
+		const parent = path.dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+
+	return { items, warnings };
 }
 
 interface ExtensionModuleManifest {

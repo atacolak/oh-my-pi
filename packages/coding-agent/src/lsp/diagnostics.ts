@@ -3,7 +3,13 @@ import path from "node:path";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { formatPathRelativeToCwd } from "../tools/path-utils";
 import { throwIfAborted } from "../tools/tool-errors";
-import { getOrCreateClient, sendRequest, supportsDocumentDiagnostics, waitForProjectLoaded } from "./client";
+import {
+	getOrCreateClient,
+	type LspClientOwner,
+	sendRequest,
+	supportsDocumentDiagnostics,
+	waitForProjectLoaded,
+} from "./client";
 import { getLinterClient } from "./clients";
 import { hasRootMarkerAncestor } from "./config";
 import { applyTextEditsToString } from "./edits";
@@ -31,6 +37,14 @@ import {
 
 const DIAGNOSTIC_MESSAGE_LIMIT = 50;
 export const SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS = 3000;
+/**
+ * Single-file diagnostics wait budget for project-aware servers (Roslyn, tsserver, …).
+ * Their first pull-diagnostic response computes analysis on demand and routinely
+ * takes several seconds, overrunning {@link SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS};
+ * an explicit `lsp diagnostics` request can afford to wait, so give it more room
+ * (still capped by the tool-level timeout).
+ */
+export const PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS = 10_000;
 export const BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS = 400;
 const DIAGNOSTICS_POLL_MS = 100;
 const DIAGNOSTICS_SETTLE_MS = 250;
@@ -196,25 +210,38 @@ interface WaitForDiagnosticsOptions {
 	settleMs?: number;
 }
 
+/**
+ * Outcome of one document pull-diagnostic request.
+ *
+ * Distinguishes a usable report from a failed request so a timeout or RPC error
+ * is never mistaken for a clean file. `diagnostics` holds the report's items (an
+ * empty array means the server reported the file clean); `failed` carries the
+ * error when the pull could not complete.
+ */
+interface PullDiagnosticsOutcome {
+	diagnostics?: Diagnostic[];
+	failed?: unknown;
+}
+
 function requestDocumentDiagnostics(
 	client: LspClient,
 	uri: string,
 	signal: AbortSignal | undefined,
 	timeoutMs: number,
-): Promise<Diagnostic[] | undefined> {
+): Promise<PullDiagnosticsOutcome> {
 	return sendRequest(client, "textDocument/diagnostic", { textDocument: { uri } }, signal, timeoutMs)
 		.then(report => {
 			if (!report || typeof report !== "object" || !("kind" in report) || report.kind !== "full") {
-				return undefined;
+				return {};
 			}
-			if (!("items" in report) || !Array.isArray(report.items)) return undefined;
-			return report.items;
+			if (!("items" in report) || !Array.isArray(report.items)) return {};
+			return { diagnostics: report.items };
 		})
 		.catch(err => {
 			if (!signal?.aborted) {
 				logger.debug("LSP document diagnostic pull failed", { server: client.name, uri, error: String(err) });
 			}
-			return undefined;
+			return { failed: err };
 		});
 }
 
@@ -226,17 +253,16 @@ export async function waitForDiagnostics(
 	const { timeoutMs = 3000, signal, minVersion, expectedDocumentVersion, settleMs = DIAGNOSTICS_SETTLE_MS } = options;
 	const deadline = Date.now() + timeoutMs;
 	let pullAttempted = false;
-	let pullResultPromise: Promise<{ diagnostics: Diagnostic[] | undefined }> | undefined;
+	let pullResultPromise: Promise<PullDiagnosticsOutcome> | undefined;
 	let pulled: Diagnostic[] | undefined;
+	let pullFailure: unknown;
 	let settledRef: PublishedDiagnostics | undefined;
 	let settledAt = 0;
 	while (Date.now() < deadline) {
 		throwIfAborted(signal);
 		if (!pullAttempted && supportsDocumentDiagnostics(client)) {
 			pullAttempted = true;
-			pullResultPromise = requestDocumentDiagnostics(client, uri, signal, Math.max(1, deadline - Date.now())).then(
-				diagnostics => ({ diagnostics }),
-			);
+			pullResultPromise = requestDocumentDiagnostics(client, uri, signal, Math.max(1, deadline - Date.now()));
 		}
 
 		const versionOk = minVersion === undefined || client.diagnosticsVersion > minVersion;
@@ -264,21 +290,42 @@ export async function waitForDiagnostics(
 		const pullResult = await Promise.race([pullResultPromise, Bun.sleep(pollMs).then(() => undefined)]);
 		if (pullResult) {
 			pullResultPromise = undefined;
-			pulled = pullResult.diagnostics;
-			if (pulled !== undefined) break;
+			if (pullResult.diagnostics !== undefined) {
+				pulled = pullResult.diagnostics;
+				break;
+			}
+			if (pullResult.failed !== undefined) {
+				// A pull failure leaves the report unknown, but a dual-mode server
+				// may still publish fresh diagnostics within the remaining budget.
+				pullFailure = pullResult.failed;
+			}
 		}
 	}
 
 	const versionOk = minVersion === undefined || client.diagnosticsVersion > minVersion;
 	const published = client.diagnostics.get(uri);
 	if (published && versionOk) {
-		return published.diagnostics;
+		if (expectedDocumentVersion !== undefined && published.version === expectedDocumentVersion) {
+			return published.diagnostics;
+		}
+		if (published === settledRef && Date.now() - settledAt >= settleMs) {
+			return published.diagnostics;
+		}
 	}
 	if (pullResultPromise) {
-		pulled = (await pullResultPromise).diagnostics;
+		const outcome = await pullResultPromise;
+		if (outcome.diagnostics !== undefined) pulled = outcome.diagnostics;
+		else if (outcome.failed !== undefined) pullFailure = outcome.failed;
 	}
 	throwIfAborted(signal);
-	if (pulled === undefined) return [];
+	if (pulled === undefined) {
+		// A failed pull (timeout/RPC error) leaves the file's state unknown; never
+		// let it collapse into a clean empty result the caller renders as "OK".
+		if (pullFailure !== undefined) {
+			throw pullFailure instanceof Error ? pullFailure : new Error(String(pullFailure));
+		}
+		return [];
+	}
 	client.diagnostics.set(uri, {
 		diagnostics: pulled,
 		version: expectedDocumentVersion ?? client.openFiles.get(uri)?.version ?? null,
@@ -315,6 +362,7 @@ interface GetDiagnosticsForFileOptions {
 	 * {@link DIAGNOSTICS_PIPELINE_GRACE_MS}. Exposed as a test seam.
 	 */
 	pipelineBudgetMs?: number;
+	owner?: LspClientOwner;
 }
 
 /**
@@ -326,12 +374,13 @@ export async function captureDiagnosticVersions(
 	servers: Array<[string, ServerConfig]>,
 	initTimeoutMs?: number,
 	signal?: AbortSignal,
+	owner?: LspClientOwner,
 ): Promise<ServerVersionMap> {
 	const versions = new Map<string, number>();
 	await Promise.allSettled(
 		servers.map(async ([serverName, serverConfig]) => {
 			if (serverConfig.createClient) return;
-			const client = await getOrCreateClient(serverConfig, cwd, initTimeoutMs, signal);
+			const client = await getOrCreateClient(serverConfig, cwd, initTimeoutMs, signal, owner);
 			versions.set(serverName, client.diagnosticsVersion);
 		}),
 	);
@@ -343,12 +392,13 @@ export async function captureOpenFileVersions(
 	cwd: string,
 	servers: Array<[string, ServerConfig]>,
 	signal?: AbortSignal,
+	owner?: LspClientOwner,
 ): Promise<ServerVersionMap> {
 	const uri = fileToUri(absolutePath);
 	const versions = new Map<string, number>();
 	await Promise.allSettled(
 		servers.map(async ([serverName, serverConfig]) => {
-			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal);
+			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal, owner);
 			const version = client.openFiles.get(uri)?.version;
 			if (version !== undefined) {
 				versions.set(serverName, version);
@@ -373,7 +423,7 @@ export async function getDiagnosticsForFile(
 	servers: Array<[string, ServerConfig]>,
 	options: GetDiagnosticsForFileOptions = {},
 ): Promise<FileDiagnosticsResult | undefined> {
-	const { signal, minVersions, expectedDocumentVersions, timeoutMs } = options;
+	const { signal, minVersions, expectedDocumentVersions, timeoutMs, owner } = options;
 	if (servers.length === 0) {
 		return undefined;
 	}
@@ -401,13 +451,13 @@ export async function getDiagnosticsForFile(
 				throwIfAborted(boundSignal);
 				// Use custom linter client if configured
 				if (serverConfig.createClient) {
-					const linterClient = getLinterClient(serverName, serverConfig, cwd);
+					const linterClient = getLinterClient(serverName, serverConfig, serverConfig.resolvedRoot ?? cwd);
 					const diagnostics = await linterClient.lint(absolutePath, boundSignal);
 					return { serverName, serverConfig, diagnostics };
 				}
 
 				// Default: use LSP
-				const client = await getOrCreateClient(serverConfig, cwd, undefined, boundSignal);
+				const client = await getOrCreateClient(serverConfig, cwd, undefined, boundSignal, owner);
 				throwIfAborted(boundSignal);
 				if (isProjectAwareLspServer(serverConfig)) {
 					await waitForProjectLoaded(client, boundSignal);
@@ -511,6 +561,7 @@ export async function formatContent(
 	cwd: string,
 	servers: Array<[string, ServerConfig]>,
 	signal?: AbortSignal,
+	owner?: LspClientOwner,
 ): Promise<FormatContentResult> {
 	if (servers.length === 0) {
 		// No formatters configured at all
@@ -525,14 +576,14 @@ export async function formatContent(
 			throwIfAborted(signal);
 			// Use custom linter client if configured
 			if (serverConfig.createClient) {
-				const linterClient = getLinterClient(serverName, serverConfig, cwd);
+				const linterClient = getLinterClient(serverName, serverConfig, serverConfig.resolvedRoot ?? cwd);
 				const formattedContent = await linterClient.format(absolutePath, content);
 				return { content: formattedContent, failed: false, unsupported: false };
 			}
 
 			// Default: use LSP. Initialization failures are formatter failures;
 			// a successfully initialized server without formatting support is unsupported.
-			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal);
+			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal, owner);
 			throwIfAborted(signal);
 
 			const caps = client.serverCapabilities;

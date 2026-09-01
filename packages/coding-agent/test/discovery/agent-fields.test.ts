@@ -90,6 +90,10 @@ describe("parseAgentFields", () => {
 
 		expect(fields?.tools).toEqual(["read", "grep", "yield"]);
 	});
+	test("keeps an explicitly empty tools list distinct from an absent one", () => {
+		expect(parseAgentFields({ name: "quiet", description: "desc", tools: [] })?.tools).toEqual(["yield"]);
+		expect(parseAgentFields({ name: "quiet", description: "desc" })?.tools).toBeUndefined();
+	});
 
 	test("maps legacy search and find tool names", () => {
 		const fields = parseAgentFields({
@@ -201,5 +205,46 @@ describe("parseAgentFields", () => {
 		);
 		expect(parseAgentFields({ name: "worker", description: "desc", advisor: "  " })?.advisor).toBeUndefined();
 		expect(parseAgentFields({ name: "worker", description: "desc" })?.advisor).toBeUndefined();
+	});
+	test("parses descendant and scope automationAuthor policies", () => {
+		expect(
+			parseAgentFields({
+				name: "runtime-maintainer",
+				description: "desc",
+				spawns: "scout",
+				automationAuthor: {
+					allowedAgents: ["pr-maintainer", "capability-maintainer"],
+					jurisdiction: "descendants",
+				},
+			})?.automationAuthor,
+		).toEqual({
+			allowedAgents: ["pr-maintainer", "capability-maintainer"],
+			jurisdiction: "descendants",
+		});
+		expect(
+			parseAgentFields({
+				name: "automation-builder",
+				description: "desc",
+				automationAuthor: { allowedAgents: "*", jurisdiction: "scope" },
+			})?.automationAuthor,
+		).toEqual({ allowedAgents: "*", jurisdiction: "scope" });
+	});
+
+	test("keeps automationAuthor independent from spawns and drops invalid grants", () => {
+		const fields = parseAgentFields({
+			name: "runtime-maintainer",
+			description: "desc",
+			spawns: ["scout"],
+			automationAuthor: { allowedAgents: [], jurisdiction: "descendants" },
+		});
+		expect(fields?.spawns).toEqual(["scout"]);
+		expect(fields?.automationAuthor).toBeUndefined();
+		expect(
+			parseAgentFields({
+				name: "runtime-maintainer",
+				description: "desc",
+				automationAuthor: { allowedAgents: "*", jurisdiction: "universe" },
+			})?.automationAuthor,
+		).toBeUndefined();
 	});
 });

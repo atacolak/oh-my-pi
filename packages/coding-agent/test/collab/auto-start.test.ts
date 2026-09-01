@@ -6,13 +6,16 @@ import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { COLLAB_PROTO, DEFAULT_RELAY_URL, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
-import { autoStartCollab } from "@oh-my-pi/pi-coding-agent/collab/start";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { autoStartCollab, startCollabGuest, startCollabHost } from "@oh-my-pi/pi-coding-agent/collab/start";
+import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
-function context(overrides: Record<string, unknown> = {}): InteractiveModeContext {
-	const settings = Settings.isolated(overrides);
+function context(
+	overrides: Record<string, unknown> = {},
+	sessionSettings = Settings.isolated(overrides as Partial<Record<SettingPath, unknown>>),
+): InteractiveModeContext {
+	const settings = sessionSettings;
 	return {
 		settings,
 		collabHost: undefined,
@@ -91,6 +94,130 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("atomically replaces a permissive existing link file with mode 0600", async () => {
+		installInMemoryRelay();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const file = path.join(dir, "collab.link");
+		await fs.writeFile(file, "stale", { mode: 0o644 });
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": "ws://localhost:8787",
+			"collab.writeLinkPath": file,
+		});
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(true);
+			expect(await fs.readFile(file, "utf8")).toBe(ctx.collabHost?.link ?? "");
+			expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+		} finally {
+			await ctx.collabHost?.stop("test done");
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("serializes concurrent host starts into one relay connection", async () => {
+		const ctx = context();
+		const gate = Promise.withResolvers<void>();
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async () => gate.promise);
+		try {
+			const first = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			const second = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			expect(start).toHaveBeenCalledTimes(1);
+			gate.resolve();
+			const [firstHost, secondHost] = await Promise.all([first, second]);
+			expect(secondHost).toBe(firstHost);
+			expect(ctx.collabHost).toBe(firstHost);
+			expect(ctx.collabHostStart).toBeUndefined();
+		} finally {
+			start.mockRestore();
+		}
+	});
+
+	it("blocks guest joins while host startup owns the collab role", async () => {
+		const ctx = context();
+		const gate = Promise.withResolvers<void>();
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async () => gate.promise);
+		try {
+			const pending = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			await expect(startCollabGuest(ctx, "invalid link")).rejects.toThrow("Stop hosting first");
+			expect(ctx.collabGuest).toBeUndefined();
+			gate.resolve();
+			await pending;
+		} finally {
+			await ctx.collabHost?.stop("test done");
+			start.mockRestore();
+		}
+	});
+
+	it("tears down a completed host if a guest appears during startup", async () => {
+		const ctx = context();
+		const gate = Promise.withResolvers<void>();
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async () => gate.promise);
+		const stop = spyOn(CollabHost.prototype, "stop").mockResolvedValue();
+		try {
+			const pending = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			ctx.collabGuest = {} as InteractiveModeContext["collabGuest"];
+			gate.resolve();
+			await expect(pending).rejects.toThrow("Cannot host while joined as a guest");
+			expect(stop).toHaveBeenCalledWith("guest joined while host was starting");
+			expect(ctx.collabHost).toBeUndefined();
+			expect(ctx.collabHostStart).toBeUndefined();
+		} finally {
+			start.mockRestore();
+			stop.mockRestore();
+		}
+	});
+
+	it("refuses project-configured auto-start before connecting or writing", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const agentDir = path.join(dir, "agent");
+		const projectDir = path.join(dir, "project");
+		const target = path.join(dir, "sensitive");
+		await fs.mkdir(path.join(projectDir, ".omp"), { recursive: true });
+		await Bun.write(
+			path.join(projectDir, ".omp", "config.yml"),
+			`collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n  writeLinkPath: ${target}\n`,
+		);
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir, inMemory: true });
+		const warnings: string[] = [];
+		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(start).not.toHaveBeenCalled();
+			expect(await Bun.file(target).exists()).toBe(false);
+			expect(warnings.join(" ")).toContain("outside project settings");
+		} finally {
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("ignores a project-configured link path when auto-start is user-configured", async () => {
+		installInMemoryRelay();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const agentDir = path.join(dir, "agent");
+		const projectDir = path.join(dir, "project");
+		const target = path.join(dir, "sensitive");
+		await fs.mkdir(path.join(projectDir, ".omp"), { recursive: true });
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			"collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n",
+		);
+		await Bun.write(path.join(projectDir, ".omp", "config.yml"), `collab:\n  writeLinkPath: ${target}\n`);
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const warnings: string[] = [];
+		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(true);
+			expect(await Bun.file(target).exists()).toBe(false);
+			expect(warnings.join(" ")).toContain("link file skipped");
+		} finally {
+			await ctx.collabHost?.stop("test done");
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("refuses the implicit public relay", async () => {
 		const warnings: string[] = [];
 		const ctx = context({ "collab.autoStart": true, showWarning: (text: string) => warnings.push(text) });
@@ -148,7 +275,9 @@ describe("collab auto-start", () => {
 		try {
 			await expect(autoStartCollab(ctx)).resolves.toBe(true);
 			const link = (await fs.readFile(file, "utf8")).trim();
-			expect(link).toBe(ctx.collabHost?.link);
+			const hostLink = ctx.collabHost?.link;
+			if (!hostLink) throw new Error("auto-start did not attach a host link");
+			expect(link).toBe(hostLink);
 			const parsed = parseCollabLink(link);
 			if ("error" in parsed) throw new Error(parsed.error);
 			expect(parsed.writeToken).toBeDefined();

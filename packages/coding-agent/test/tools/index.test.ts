@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, LspTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 
@@ -140,6 +140,11 @@ describe("createTools", () => {
 		expect(names).not.toContain("lsp");
 	});
 
+	it("returns null from the public lsp factory when the session disables LSP", async () => {
+		expect(await BUILTIN_TOOLS.lsp(createTestSession({ enableLsp: false }))).toBeNull();
+		expect(await BUILTIN_TOOLS.lsp(createTestSession())).toBeInstanceOf(LspTool);
+	});
+
 	it("respects requested tool subset", async () => {
 		const session = createTestSession();
 		const tools = await createTools(session, ["read", "write"]);
@@ -157,15 +162,17 @@ describe("createTools", () => {
 		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp", "write"]);
 	});
 
-	it("skips xd:// state entirely when the session grants no write tool", async () => {
-		// The xd:// transport rides `write xd://<tool>`; without a granted write
-		// tool nothing can dispatch a device, so no state is allocated and later
-		// SDK assembly exposes custom/MCP tools top-level instead.
+	it("grants a device-only xd:// transport write when an explicit list keeps read but omits write", async () => {
+		// The xd:// transport rides `write xd://<tool>`; with no write at all the
+		// session would allocate no xd:// state and later SDK assembly would
+		// expose custom/MCP tools top-level. A device-only write restores
+		// mounting while filesystem writes stay rejected (see WriteTool).
 		const session = createTestSession();
 		const tools = await createTools(session, ["read", "lsp"]);
 
-		expect(session.xdev).toBeUndefined();
-		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
+		expect(session.deviceOnlyWrite).toBe(true);
+		expect(session.xdev).toBeDefined();
+		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp", "write"]);
 	});
 
 	it("lowercases requested tool subset", async () => {
@@ -233,7 +240,8 @@ describe("createTools", () => {
 			}),
 			["ask", "read"],
 		);
-		expect(requested.map(t => t.name)).toEqual(["read"]);
+		// write joins as the device-only xd:// transport (read granted, ask disabled).
+		expect(requested.map(t => t.name)).toEqual(["read", "write"]);
 	});
 
 	it("includes ask tool when ask.enabled is true and hasUI is true", async () => {
@@ -273,7 +281,9 @@ describe("createTools", () => {
 		expect(names).not.toContain("inspect_image");
 
 		const requestedTools = await createTools(createTestSession({ settings: session.settings }), ["bash", "read"]);
-		expect(requestedTools.map(t => t.name)).toEqual(["read"]);
+		// `write` joins as the device-only xd:// transport: read was granted,
+		// write omitted (see the "device-only xd:// transport write" test).
+		expect(requestedTools.map(t => t.name)).toEqual(["read", "write"]);
 	});
 
 	it("auto-includes goal when goal mode is active", async () => {
@@ -286,7 +296,8 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "goal"]);
+		// `write` joins last as the device-only xd:// transport (see above).
+		expect(names).toEqual(["read", "goal", "write"]);
 	});
 
 	it("does not widen a restricted explicit tool list for an active goal", async () => {

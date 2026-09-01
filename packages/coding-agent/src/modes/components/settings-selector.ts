@@ -966,11 +966,9 @@ export class SettingsSelectorComponent implements Component {
 		if (!def) return;
 		if (def.type === "boolean") {
 			const boolValue = newValue === "true";
-			const effective = this.#persistSetting(path, boolValue);
-			this.callbacks.onChange(path, effective);
+			this.#persistSetting(path, boolValue);
 		} else if (def.type === "enum") {
-			const effective = this.#persistSetting(path, newValue);
-			this.callbacks.onChange(path, effective);
+			this.#persistSetting(path, newValue);
 		}
 		// Submenu/text types already persisted inside their own done callbacks.
 		if (def.tab === "appearance") {
@@ -1166,8 +1164,7 @@ export class SettingsSelectorComponent implements Component {
 			options,
 			currentValue,
 			value => {
-				const effective = this.#setSettingValue(def.path, value);
-				this.callbacks.onChange(def.path, effective);
+				this.#setSettingValue(def.path, value);
 				done(this.#getSubmenuCurrentValue(def.path, this.#scopedValue(def.path)));
 			},
 			() => {
@@ -1201,8 +1198,7 @@ export class SettingsSelectorComponent implements Component {
 			value => {
 				// Empty string clears the setting; undefined-typed string settings
 				// store "" which the browser.ts expandPath ignores (no-op fallback).
-				const effective = this.#setSettingValue(def.path, value);
-				this.callbacks.onChange(def.path, effective);
+				this.#setSettingValue(def.path, value);
 				wrappedDone(this.#formatTextInputValue(def, this.#scopedValue(def.path)));
 			},
 			() => wrappedDone(),
@@ -1214,8 +1210,7 @@ export class SettingsSelectorComponent implements Component {
 			this.context.providers,
 			() => normalizeProviderMaxInFlightRequests(this.#scopedValue("providers.maxInFlightRequests")),
 			value => {
-				const effective = this.#persistRecordScopeSetting("providers.maxInFlightRequests", value);
-				this.callbacks.onChange("providers.maxInFlightRequests", effective);
+				this.#persistRecordScopeSetting("providers.maxInFlightRequests", value);
 				done(this.#formatProviderLimitsValue(this.#scopedValue("providers.maxInFlightRequests")));
 			},
 			() => done(),
@@ -1250,8 +1245,7 @@ export class SettingsSelectorComponent implements Component {
 			initial,
 			def.ordered,
 			value => {
-				const effective = this.#persistSetting(def.path, value);
-				this.callbacks.onChange(def.path, effective);
+				this.#persistSetting(def.path, value);
 			},
 			() => done(this.#formatMultiSelectValue(def, this.#scopedValue(def.path))),
 		);
@@ -1285,10 +1279,13 @@ export class SettingsSelectorComponent implements Component {
 	 * Persist a setting in the selected scope and return the recomputed merged
 	 * effective value. Row display reads {@link #scopedValue} separately, while
 	 * runtime callbacks must stay aligned with the active project configuration.
+	 * Shadowed-scope writes that leave the merged value unchanged skip the live
+	 * callback so session/editor side effects are not reapplied.
 	 */
 	#persistSetting(path: SettingPath, value: unknown): unknown {
+		const previous = settings.get(path);
 		settings.set(path, value as never, this.#scope);
-		return settings.get(path);
+		return this.#notifyLiveChange(path, previous, settings.get(path));
 	}
 	/**
 	 * Persist a record setting in the selected scope. Editors submit the full
@@ -1297,9 +1294,10 @@ export class SettingsSelectorComponent implements Component {
 	 * Existing native overrides that still differ are kept.
 	 */
 	#persistRecordScopeSetting(path: SettingPath, value: Record<string, unknown>): unknown {
+		const previous = settings.get(path);
 		if (this.#scope === "global") {
 			settings.set(path, value as never, "global");
-			return settings.get(path);
+			return this.#notifyLiveChange(path, previous, settings.get(path));
 		}
 		if (path === "providers.maxInFlightRequests") {
 			const inherited = normalizeProviderMaxInFlightRequests(settings.getProjectInheritedValue(path));
@@ -1314,7 +1312,7 @@ export class SettingsSelectorComponent implements Component {
 				if (nextLimit !== inherited[provider]) next[provider] = nextLimit;
 			}
 			settings.set(path, next as never, "project");
-			return settings.get(path);
+			return this.#notifyLiveChange(path, previous, settings.get(path));
 		}
 		const inheritedRaw = settings.getProjectInheritedValue(path);
 		const inherited =
@@ -1331,7 +1329,14 @@ export class SettingsSelectorComponent implements Component {
 			if (!Bun.deepEquals(nextValue, inherited[key])) next[key] = nextValue;
 		}
 		settings.set(path, next as never, "project");
-		return settings.get(path);
+		return this.#notifyLiveChange(path, previous, settings.get(path));
+	}
+
+	#notifyLiveChange(path: SettingPath, previous: unknown, next: unknown): unknown {
+		if (!Bun.deepEquals(previous, next)) {
+			this.callbacks.onChange(path, next);
+		}
+		return next;
 	}
 
 	/**
@@ -1395,11 +1400,9 @@ export class SettingsSelectorComponent implements Component {
 
 				if (def.type === "boolean") {
 					const boolValue = newValue === "true";
-					const effective = this.#persistSetting(path, boolValue);
-					this.callbacks.onChange(path, effective);
+					this.#persistSetting(path, boolValue);
 				} else if (def.type === "enum") {
-					const effective = this.#persistSetting(path, newValue);
-					this.callbacks.onChange(path, effective);
+					this.#persistSetting(path, newValue);
 				}
 				// Submenu/text types already persisted the value inside their own
 				// done callbacks before SettingsList re-dispatches here. Boolean
@@ -1554,9 +1557,10 @@ export class SettingsSelectorComponent implements Component {
 	#inheritSelectedSetting(): void {
 		const item = this.#currentList?.getSelectedItem();
 		const def = item ? getSettingDef(item.id as SettingPath) : undefined;
-		if (!def || !settings.clearProject(def.path)) return;
-		const effective = settings.get(def.path);
-		this.callbacks.onChange(def.path, effective);
+		if (!def) return;
+		const previous = settings.get(def.path);
+		if (!settings.clearProject(def.path)) return;
+		this.#notifyLiveChange(def.path, previous, settings.get(def.path));
 		if (def.tab === "appearance") {
 			this.#previewAppearanceForScope();
 		}

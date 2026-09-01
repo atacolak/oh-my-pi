@@ -769,7 +769,9 @@ export class Settings {
 				this.#modifiedProjectPathMutations,
 				this.#migratedRawValue(this.#projectFileSettings, path),
 			);
+			this.#projectFileSettings = this.#migrateRawSettings(this.#projectFileSettings, false);
 			setByPath(this.#projectFileSettings, segments, value);
+			this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
 			this.#rebuildProjectLayer();
 			this.#projectConfigExists = true;
 			this.#syncProjectShellPathSource();
@@ -3250,6 +3252,7 @@ export class Settings {
 				const projectSettings =
 					loaded.settings ??
 					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(projectFileAtStart) : {});
+				this.#migrateRawSettings(projectSettings, false);
 				let shouldWrite = false;
 				const skippedProjectModelRoles: string[] = [];
 

@@ -72,9 +72,10 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		);
 	}
 
-	it("writes the global layer while callbacks receive the shadowing effective value", async () => {
+	it("writes the global layer without live callbacks when the project value still wins", async () => {
 		// Start both layers at true, then toggle only the global fallback to
-		// false. The persisted scope and active effective value must diverge.
+		// false. The persisted scope and active effective value must diverge,
+		// and session side effects must not rerun for an unchanged merge.
 		settings.set("ask.enabled", true, "global");
 		const selector = createSelector();
 		expect(selector.render(120).join("\n")).toContain(`Settings · ${path.basename(projectDir)}`);
@@ -90,9 +91,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 
 		expect(settings.getGlobalValue("ask.enabled")).toBe(false);
 		expect(settings.get("ask.enabled")).toBe(true);
-		// Side-effect handlers receive the merged effective value, not the
-		// global fallback displayed in the row.
-		expect(changes.at(-1)).toEqual({ path: "ask.enabled", value: true });
+		expect(changes).toEqual([]);
 
 		await settings.flush();
 		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toEqual({ ask: { enabled: false } });

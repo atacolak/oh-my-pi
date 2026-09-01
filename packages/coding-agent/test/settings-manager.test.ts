@@ -366,6 +366,24 @@ describe("Settings", () => {
 			expect(settings.get("steeringMode")).toBe("one-at-a-time");
 		});
 
+		it("migrates a native mnemosyne object before writing a canonical mnemopi path", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ mnemosyne: { dbPath: "/tmp/old.db", embeddingModel: "legacy-embed" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/old.db");
+			expect(settings.get("mnemopi.embeddingModel")).toBe("legacy-embed");
+			settings.set("mnemopi.dbPath", "/tmp/new.db", "project");
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/new.db");
+			expect(settings.get("mnemopi.embeddingModel")).toBe("legacy-embed");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				mnemopi: { dbPath: "/tmp/new.db", embeddingModel: "legacy-embed" },
+			});
+		});
+
 		it("resolves project-scope values without config overlays", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: false } }, null, 2));

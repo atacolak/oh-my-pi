@@ -1378,17 +1378,21 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (paths.includes("compaction.enabled")) {
 					this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 				}
-				if (paths.includes("display.hideToolActivity")) {
-					this.#selectorController.handleSettingChange(
-						"display.hideToolActivity",
-						this.settings.get("display.hideToolActivity"),
-					);
-				}
-				if (paths.includes("mcp.notifications")) {
-					this.#selectorController.handleSettingChange(
-						"mcp.notifications",
-						this.settings.get("mcp.notifications"),
-					);
+				const selectorManagedPaths = [
+					"display.cacheMissMarker",
+					"display.collapseCompacted",
+					"display.hideToolActivity",
+					"display.showTokenUsage",
+					"display.showTurnTime",
+					"hideThinkingBlock",
+					"mcp.notifications",
+					"proseOnlyThinking",
+					"terminal.showImages",
+				] as const;
+				for (const path of selectorManagedPaths) {
+					if (paths.includes(path)) {
+						this.#selectorController.handleSettingChange(path, this.settings.get(path));
+					}
 				}
 			}),
 		);

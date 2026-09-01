@@ -1006,6 +1006,117 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting sibling display setting disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						terminal: { showImages: true },
+						hideThinkingBlock: false,
+						proseOnlyThinking: true,
+						display: {
+							cacheMissMarker: false,
+							collapseCompacted: true,
+							showTokenUsage: false,
+							showTurnTime: false,
+						},
+						ask: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{
+				showImages: boolean;
+				hideThinkingBlock: boolean;
+				proseOnlyThinking: boolean;
+				cacheMissMarker: boolean;
+				collapseCompacted: boolean;
+				showTokenUsage: boolean;
+				showTurnTime: boolean;
+				paths: string[];
+			}> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({
+					showImages: settings.get("terminal.showImages"),
+					hideThinkingBlock: settings.get("hideThinkingBlock"),
+					proseOnlyThinking: settings.get("proseOnlyThinking"),
+					cacheMissMarker: settings.get("display.cacheMissMarker"),
+					collapseCompacted: settings.get("display.collapseCompacted"),
+					showTokenUsage: settings.get("display.showTokenUsage"),
+					showTurnTime: settings.get("display.showTurnTime"),
+					paths: [...paths],
+				});
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							terminal: { showImages: false },
+							hideThinkingBlock: true,
+							proseOnlyThinking: false,
+							display: {
+								cacheMissMarker: true,
+								collapseCompacted: false,
+								showTokenUsage: true,
+								showTurnTime: true,
+							},
+							ask: { enabled: true },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("terminal.showImages")).toBe(false);
+				expect(settings.get("hideThinkingBlock")).toBe(true);
+				expect(settings.get("proseOnlyThinking")).toBe(false);
+				expect(settings.get("display.cacheMissMarker")).toBe(true);
+				expect(settings.get("display.collapseCompacted")).toBe(false);
+				expect(settings.get("display.showTokenUsage")).toBe(true);
+				expect(settings.get("display.showTurnTime")).toBe(true);
+				expect(received).toEqual([
+					{
+						showImages: false,
+						hideThinkingBlock: true,
+						proseOnlyThinking: false,
+						cacheMissMarker: true,
+						collapseCompacted: false,
+						showTokenUsage: true,
+						showTurnTime: true,
+						paths: [
+							"display.cacheMissMarker",
+							"display.collapseCompacted",
+							"display.showTokenUsage",
+							"display.showTurnTime",
+							"hideThinkingBlock",
+							"proseOnlyThinking",
+							"terminal.showImages",
+						],
+					},
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					terminal: { showImages: false },
+					hideThinkingBlock: true,
+					proseOnlyThinking: false,
+					display: {
+						cacheMissMarker: true,
+						collapseCompacted: false,
+						showTokenUsage: true,
+						showTurnTime: true,
+					},
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires session-runtime hooks after adopting a sibling mcp.notifications disk edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

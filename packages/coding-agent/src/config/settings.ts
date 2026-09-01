@@ -3563,9 +3563,14 @@ export type SessionRuntimePath =
 	| "autocompleteMaxVisible"
 	| "compaction.enabled"
 	| "defaultThinkingLevel"
+	| "display.cacheMissMarker"
+	| "display.collapseCompacted"
 	| "display.hideToolActivity"
+	| "display.showTokenUsage"
+	| "display.showTurnTime"
 	| "externalThinking"
 	| "followUpMode"
+	| "hideThinkingBlock"
 	| "inspect_image.mode"
 	| "interruptMode"
 	| "mcp.notifications"
@@ -3574,12 +3579,14 @@ export type SessionRuntimePath =
 	| "omitThinking"
 	| "personality"
 	| "presencePenalty"
+	| "proseOnlyThinking"
 	| "providers.imageOrder"
 	| "providers.webSearchExclude"
 	| "providers.webSearchOrder"
 	| "repetitionPenalty"
 	| "steeringMode"
 	| "temperature"
+	| "terminal.showImages"
 	| "tools.xdevDocs"
 	| "topK"
 	| "topP";
@@ -3589,9 +3596,14 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	autocompleteMaxVisible: true,
 	"compaction.enabled": true,
 	defaultThinkingLevel: true,
+	"display.cacheMissMarker": true,
+	"display.collapseCompacted": true,
 	"display.hideToolActivity": true,
+	"display.showTokenUsage": true,
+	"display.showTurnTime": true,
 	externalThinking: true,
 	followUpMode: true,
+	hideThinkingBlock: true,
 	"inspect_image.mode": true,
 	interruptMode: true,
 	"mcp.notifications": true,
@@ -3600,12 +3612,14 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	omitThinking: true,
 	personality: true,
 	presencePenalty: true,
+	proseOnlyThinking: true,
 	"providers.imageOrder": true,
 	"providers.webSearchExclude": true,
 	"providers.webSearchOrder": true,
 	repetitionPenalty: true,
 	steeringMode: true,
 	temperature: true,
+	"terminal.showImages": true,
 	"tools.xdevDocs": true,
 	topK: true,
 	topP: true,

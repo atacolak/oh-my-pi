@@ -333,6 +333,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Record-typed settings persist `null` as a tombstone that blocks a lower
+ * layer. Consumers treat a tombstoned key as absent (so defaults or sibling
+ * keys can apply), not as a malformed value.
+ */
+function omitRecordNulls(value: unknown): unknown {
+	if (!isRecord(value)) return value;
+	let omitted: Record<string, unknown> | undefined;
+	for (const key of Object.keys(value)) {
+		if (value[key] !== null) continue;
+		omitted ??= { ...value };
+		delete omitted[key];
+	}
+	return omitted ?? value;
+}
+
+function resolveLayerValue<P extends SettingPath>(path: P, value: unknown, cwd: string): SettingValue<P> {
+	const resolved = value !== undefined ? (resolvePathScopedStringArray(path, value, cwd) ?? value) : getDefault(path);
+	if (SETTINGS_SCHEMA[path].type === "record" && path !== "providers.maxInFlightRequests") {
+		return omitRecordNulls(resolved) as SettingValue<P>;
+	}
+	return resolved as SettingValue<P>;
+}
+
+/**
  * Migrate a v17 leaf rename that used to nest under a boolean parent path
  * (`dev.autoqa.consent` → `dev.autoqaConsent`, `todo.reminders.max` →
  * `todo.remindersMax`). Pre-rename configs left the leaf beneath the parent,
@@ -510,6 +534,9 @@ export class Settings {
 	/** On-disk generations and prior values observed before each pending global mutation. */
 	#modifiedPathMutations = new Map<string, PendingYamlMutation>();
 	#modifiedGlobalModelRoleMutations = new Map<string, PendingYamlMutation>();
+	/** On-disk generations and prior values observed before each pending project mutation. */
+	#modifiedProjectPathMutations = new Map<string, PendingYamlMutation>();
+	#modifiedProjectModelRoleMutations = new Map<string, PendingYamlMutation>();
 	/** Changes whenever a live API mutates a persisted layer. */
 	#persistedMutationGeneration = 0;
 	/**
@@ -641,10 +668,9 @@ export class Settings {
 		}
 
 		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
+		const resolved = resolveLayerValue(path, value, this.#cwd);
 		this.#resolvedCache.set(path, resolved);
-		return resolved as SettingValue<P>;
+		return resolved;
 	}
 
 	/**
@@ -655,9 +681,7 @@ export class Settings {
 	 */
 	getGlobalValue<P extends SettingPath>(path: P): SettingValue<P> {
 		const value = getByPath(this.#global, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
-		return resolved as SettingValue<P>;
+		return resolveLayerValue(path, value, this.#cwd);
 	}
 
 	/**
@@ -669,9 +693,7 @@ export class Settings {
 	getProjectInheritedValue<P extends SettingPath>(path: P): SettingValue<P> {
 		const merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#projectWithoutNative);
 		const value = getByPath(merged, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
-		return resolved as SettingValue<P>;
+		return resolveLayerValue(path, value, this.#cwd);
 	}
 
 	/**
@@ -682,9 +704,7 @@ export class Settings {
 	getProjectScopedValue<P extends SettingPath>(path: P): SettingValue<P> {
 		const merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#projectSettingsForMerge());
 		const value = getByPath(merged, SETTING_PATH_SEGMENTS[path]);
-		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
-		return resolved as SettingValue<P>;
+		return resolveLayerValue(path, value, this.#cwd);
 	}
 
 	/**
@@ -715,12 +735,15 @@ export class Settings {
 
 		this.#persistedMutationGeneration++;
 		if (scope === "project") {
+			this.#captureProjectMutation(
+				path,
+				this.#modifiedProjectPathMutations,
+				getByPath(this.#projectFileSettings, segments),
+			);
 			setByPath(this.#projectFileSettings, segments, value);
 			this.#rebuildProjectLayer();
 			this.#projectConfigExists = true;
-			if (path === "shellPath") {
-				this.#projectShellPathSource = `${this.#cwd}/.omp/config.yml`;
-			}
+			this.#syncProjectShellPathSource();
 			this.#modifiedProject.add(path);
 			this.#queueProjectSave();
 		} else {
@@ -747,14 +770,15 @@ export class Settings {
 
 		const prev = this.get(path);
 		this.#persistedMutationGeneration++;
+		this.#captureProjectMutation(
+			path,
+			this.#modifiedProjectPathMutations,
+			getByPath(this.#projectFileSettings, segments),
+		);
 		deleteByPath(this.#projectFileSettings, segments);
 		this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
 		this.#rebuildProjectLayer();
-		if (path === "shellPath") {
-			this.#projectShellPathSource = Object.hasOwn(this.#project, "shellPath")
-				? this.#projectWithoutNativeShellPathSource
-				: undefined;
-		}
+		this.#syncProjectShellPathSource();
 		this.#modifiedProject.add(path);
 		this.#queueProjectSave();
 		this.#applySettingChange(path, prev);
@@ -1254,6 +1278,7 @@ export class Settings {
 		const prev = this.get("modelRoles");
 		const fileRoles = getByPath(this.#projectFileSettings, ["modelRoles"]);
 		const current: Record<string, unknown> = isRecord(fileRoles) ? { ...fileRoles } : {};
+		this.#captureProjectMutation(role, this.#modifiedProjectModelRoleMutations, current[role]);
 		current[role] = modelId;
 		setByPath(this.#projectFileSettings, ["modelRoles"], current);
 		this.#modifiedProjectModelRoles.add(role);
@@ -1498,6 +1523,14 @@ export class Settings {
 		if (!this.#persist || !this.#configPath) return;
 		mutations.set(key, {
 			generation: this.#readYamlGeneration(this.#configPath),
+			baseValue: structuredClone(baseValue),
+		});
+	}
+
+	#captureProjectMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
+		if (!this.#persist) return;
+		mutations.set(key, {
+			generation: this.#readYamlGeneration(path.join(this.#cwd, ".omp", "config.yml")),
 			baseValue: structuredClone(baseValue),
 		});
 	}
@@ -1823,6 +1856,36 @@ export class Settings {
 		if (path === "inspect_image.mode") {
 			deleteByPath(target, ["inspect_image", "enabled"]);
 			delete target["inspect_image.enabled"];
+		}
+		if (path === "task.isolation.mode") {
+			deleteByPath(target, ["task", "isolation", "enabled"]);
+			delete target["task.isolation.enabled"];
+		}
+		if (path === "compaction.methodOrder") {
+			deleteByPath(target, ["compaction", "strategy"]);
+			deleteByPath(target, ["compaction", "remoteEnabled"]);
+			delete target["compaction.strategy"];
+			delete target["compaction.remoteEnabled"];
+		}
+		if (path === "memory.backend") {
+			deleteByPath(target, ["memories", "enabled"]);
+			delete target["memories.enabled"];
+		}
+		if (path === "grep.enabled") {
+			deleteByPath(target, ["search", "enabled"]);
+			delete target["search.enabled"];
+		}
+		if (path === "grep.contextBefore") {
+			deleteByPath(target, ["search", "contextBefore"]);
+			delete target["search.contextBefore"];
+		}
+		if (path === "grep.contextAfter") {
+			deleteByPath(target, ["search", "contextAfter"]);
+			delete target["search.contextAfter"];
+		}
+		if (path === "glob.enabled") {
+			deleteByPath(target, ["find", "enabled"]);
+			delete target["find.enabled"];
 		}
 	}
 
@@ -2789,10 +2852,23 @@ export class Settings {
 		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
 		const modifiedPaths = [...this.#modifiedProject];
 		const modifiedModelRoles = [...this.#modifiedProjectModelRoles];
+		const modifiedPathMutations = new Map(this.#modifiedProjectPathMutations);
+		const modifiedModelRoleMutations = new Map(this.#modifiedProjectModelRoleMutations);
 		const projectFileAtStart = structuredClone(this.#projectFileSettings);
 		const projectRolesAtStart = this.#rawModelRolesFromLayer(this.#projectFileSettings);
+		const previousSignaledValues = {
+			modelRoles: this.get("modelRoles"),
+			sessionAccent: this.get("statusLine.sessionAccent"),
+		};
+		const previousCodeModeValues = this.#codeModeSignalSnapshot();
+		const previousHookValues = new Map<SettingPath, unknown>();
+		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
+			previousHookValues.set(key, this.get(key));
+		}
 		this.#modifiedProject.clear();
 		this.#modifiedProjectModelRoles.clear();
+		this.#modifiedProjectPathMutations.clear();
+		this.#modifiedProjectModelRoleMutations.clear();
 
 		try {
 			await fs.promises.mkdir(path.dirname(projectConfigPath), { recursive: true });
@@ -2801,9 +2877,23 @@ export class Settings {
 				const projectSettings =
 					loaded.settings ??
 					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(projectFileAtStart) : {});
-
+				let shouldWrite = false;
+				const skippedProjectModelRoles: string[] = [];
 				for (const modifiedPath of modifiedPaths) {
 					const segments = modifiedPath.split(".");
+					const mutation = modifiedPathMutations.get(modifiedPath);
+					const canApply =
+						mutation !== undefined &&
+						mutation.generation.kind !== "unreadable" &&
+						(yamlGenerationsMatch(mutation.generation, loaded.generation) ||
+							Bun.deepEquals(getByPath(projectSettings, segments), mutation.baseValue));
+					if (!canApply) {
+						logger.warn("Settings: skipped stale change after external config edit", {
+							path: projectConfigPath,
+							setting: modifiedPath,
+						});
+						continue;
+					}
 					const value = getByPath(projectFileAtStart, segments);
 					if (value === undefined) {
 						deleteByPath(projectSettings, segments);
@@ -2811,17 +2901,38 @@ export class Settings {
 						setByPath(projectSettings, segments, value);
 					}
 					this.#dropLegacyNativeKeys(projectSettings, modifiedPath);
+					shouldWrite = true;
 				}
+				const currentRoles = getByPath(projectSettings, ["modelRoles"]);
+				const currentRoleValues: Record<string, unknown> = isRecord(currentRoles) ? currentRoles : {};
 				for (const role of modifiedModelRoles) {
+					const mutation = modifiedModelRoleMutations.get(role);
+					const canApply =
+						mutation !== undefined &&
+						mutation.generation.kind !== "unreadable" &&
+						(yamlGenerationsMatch(mutation.generation, loaded.generation) ||
+							Bun.deepEquals(currentRoleValues[role], mutation.baseValue));
+					if (!canApply) {
+						logger.warn("Settings: skipped stale change after external config edit", {
+							path: projectConfigPath,
+							setting: `modelRoles.${role}`,
+						});
+						skippedProjectModelRoles.push(role);
+						continue;
+					}
 					if (Object.hasOwn(projectRolesAtStart, role)) {
 						setByPath(projectSettings, ["modelRoles", role], projectRolesAtStart[role]);
 					} else {
 						deleteByPath(projectSettings, ["modelRoles", role]);
 					}
+					shouldWrite = true;
 				}
 
-				await this.#writeYamlAtomically(writePath, projectSettings);
-				this.#projectConfigExists = true;
+				if (shouldWrite) {
+					await this.#writeYamlAtomically(writePath, projectSettings);
+					this.#projectConfigExists = true;
+				}
+
 				this.#quarantinedYamlTargets.delete(projectConfigPath);
 
 				// Retain changes queued while the write lock was pending in the
@@ -2845,19 +2956,66 @@ export class Settings {
 					}
 				}
 				this.#projectFileSettings = structuredClone(projectSettings);
+				this.#rebuildProjectLayer();
+				this.#syncProjectShellPathSource();
+				for (const role of skippedProjectModelRoles) {
+					this.#reconcileSkippedProjectModelRoleOverride(role);
+				}
 			});
 			invalidateCapabilityFsCache(projectConfigPath);
 		} catch (error) {
+			const retryGeneration = this.#quarantinedYamlTargets.has(projectConfigPath)
+				? this.#readYamlGeneration(projectConfigPath)
+				: undefined;
 			for (const modifiedPath of modifiedPaths) {
 				this.#modifiedProject.add(modifiedPath);
+				if (!this.#modifiedProjectPathMutations.has(modifiedPath)) {
+					const mutation = modifiedPathMutations.get(modifiedPath) ?? {
+						generation: { kind: "unreadable" },
+						baseValue: undefined,
+					};
+					this.#modifiedProjectPathMutations.set(
+						modifiedPath,
+						retryGeneration ? { ...mutation, generation: retryGeneration } : mutation,
+					);
+				}
 			}
 			for (const role of modifiedModelRoles) {
 				this.#modifiedProjectModelRoles.add(role);
+				if (!this.#modifiedProjectModelRoleMutations.has(role)) {
+					const mutation = modifiedModelRoleMutations.get(role) ?? {
+						generation: { kind: "unreadable" },
+						baseValue: undefined,
+					};
+					this.#modifiedProjectModelRoleMutations.set(
+						role,
+						retryGeneration ? { ...mutation, generation: retryGeneration } : mutation,
+					);
+				}
 			}
 			throw error;
 		}
 
 		this.#rebuildMerged();
+		const nextModelRoles = this.get("modelRoles");
+		if (!Bun.deepEquals(nextModelRoles, previousSignaledValues.modelRoles)) {
+			this.#fireEffectiveSettingChanged("modelRoles", nextModelRoles, previousSignaledValues.modelRoles);
+		}
+		const nextSessionAccent = this.get("statusLine.sessionAccent");
+		if (!Bun.deepEquals(nextSessionAccent, previousSignaledValues.sessionAccent)) {
+			this.#fireEffectiveSettingChanged(
+				"statusLine.sessionAccent",
+				nextSessionAccent,
+				previousSignaledValues.sessionAccent,
+			);
+		}
+		this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);
+		for (const [key, previous] of previousHookValues) {
+			const next = this.get(key);
+			if (!Bun.deepEquals(next, previous)) {
+				SETTING_HOOKS[key]?.(next, previous);
+			}
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -2881,6 +3039,41 @@ export class Settings {
 	#rebuildProjectLayer(): void {
 		const native = this.#migrateRawSettings(structuredClone(this.#projectFileSettings), false);
 		this.#project = this.#deepMerge(structuredClone(this.#projectWithoutNative), native);
+	}
+
+	#syncProjectShellPathSource(): void {
+		if (Object.hasOwn(this.#projectFileSettings, "shellPath")) {
+			this.#projectShellPathSource = path.join(this.#cwd, ".omp", "config.yml");
+			return;
+		}
+		this.#projectShellPathSource = Object.hasOwn(this.#project, "shellPath")
+			? this.#projectWithoutNativeShellPathSource
+			: undefined;
+	}
+
+	/**
+	 * A skipped same-key project role write already adopted the newer disk
+	 * value into `#project`, but `setProjectModelRole()` may still be pinning
+	 * the rejected local value in `#overrides`. Align that temporary override
+	 * with the adopted role so `getModelRole()` and the post-save signal see
+	 * the disk value for the rest of the session.
+	 */
+	#reconcileSkippedProjectModelRoleOverride(role: string): void {
+		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
+		if (
+			!this.#savedRuntimeModelRoleOverrides.has(role) ||
+			!isRecord(runtimeOverrides) ||
+			!Object.hasOwn(runtimeOverrides, role)
+		) {
+			return;
+		}
+		const adopted = this.getProjectModelRole(role);
+		if (adopted === undefined) {
+			delete runtimeOverrides[role];
+			this.#savedRuntimeModelRoleOverrides.delete(role);
+			return;
+		}
+		runtimeOverrides[role] = adopted;
 	}
 
 	#rebuildMerged(): void {

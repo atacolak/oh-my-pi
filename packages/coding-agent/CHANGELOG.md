@@ -26,7 +26,9 @@
 ### Fixed
 
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
-- Fixed `/settings` project-scope record edits copying inherited keys, inheriting only `queueMode`, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
+- Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
+- Fixed `/settings` leaving a scoped status-line preview after close, and project saves overwriting newer same-key disk edits without firing adopted-change hooks.
+- Fixed project saves keeping a rejected local model-role override or blaming `.omp/config.yml` after adopting a newer on-disk role or inherited `shellPath`.
 - Fixed an issue where custom model overrides were lost during configuration updates
 - Fixed `lsp reload *` leaving a nested initialization failure cached when the workspace was opened through a symlink but the file path used the canonical target.
 - Fixed nested language-server routing skipping files when a workspace is opened through a symlink but the file path uses the canonical target.

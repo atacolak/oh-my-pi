@@ -406,6 +406,200 @@ describe("Settings", () => {
 			await settings.flush();
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
+
+		it("clears remaining migrated native aliases on inherit", async () => {
+			await writeSettings({
+				"task.isolation.mode": "none",
+				"compaction.methodOrder": ["soft"],
+				"memory.backend": "off",
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						task: { isolation: { enabled: true } },
+						compaction: { strategy: "handoff", remoteEnabled: false },
+						memories: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("task.isolation.mode")).toBe("auto");
+			expect(settings.get("compaction.methodOrder")).toEqual(["handoff", "soft"]);
+			expect(settings.get("memory.backend")).toBe("local");
+			expect(settings.clearProject("task.isolation.mode")).toBe(true);
+			expect(settings.clearProject("compaction.methodOrder")).toBe(true);
+			expect(settings.clearProject("memory.backend")).toBe(true);
+			expect(settings.get("task.isolation.mode")).toBe("none");
+			expect(settings.get("compaction.methodOrder")).toEqual(["soft"]);
+			expect(settings.get("memory.backend")).toBe("off");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears migrated search and find aliases on inherit", async () => {
+			await writeSettings({
+				grep: { enabled: true, contextBefore: 0, contextAfter: 0 },
+				glob: { enabled: true },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						search: { enabled: false, contextBefore: 2, contextAfter: 5 },
+						"find.enabled": false,
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("grep.enabled")).toBe(false);
+			expect(settings.get("grep.contextBefore")).toBe(2);
+			expect(settings.get("grep.contextAfter")).toBe(5);
+			expect(settings.get("glob.enabled")).toBe(false);
+			expect(settings.clearProject("grep.enabled")).toBe(true);
+			expect(settings.clearProject("grep.contextBefore")).toBe(true);
+			expect(settings.clearProject("grep.contextAfter")).toBe(true);
+			expect(settings.clearProject("glob.enabled")).toBe(true);
+			expect(settings.get("grep.enabled")).toBe(true);
+			expect(settings.get("grep.contextBefore")).toBe(0);
+			expect(settings.get("grep.contextAfter")).toBe(0);
+			expect(settings.get("glob.enabled")).toBe(true);
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("exposes an external sibling project edit after a locked native save", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("theme.dark")).toBe("dark-one");
+			settings.set("ask.enabled", false, "project");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "titanium" }, ask: { enabled: true } }, null, 2),
+			);
+			await settings.flush();
+			expect(settings.get("theme.dark")).toBe("titanium");
+			expect(settings.get("ask.enabled")).toBe(false);
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				theme: { dark: "titanium" },
+				ask: { enabled: false },
+			});
+		});
+
+		it("preserves a same-key external project edit made after a local save was queued", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "dark-one" } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.set("theme.dark", "titanium", "project");
+			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "alabaster" } }, null, 2));
+			await settings.flush();
+			expect(settings.get("theme.dark")).toBe("alabaster");
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				theme: { dark: "alabaster" },
+			});
+		});
+
+		it("fires runtime hooks for an adopted sibling project edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: string[] = [];
+			const unsubscribe = onAppendOnlyModeChanged(value => {
+				received.push(value);
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{
+							theme: { dark: "dark-one" },
+							ask: { enabled: true },
+							provider: { appendOnlyContext: "off" },
+						},
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("provider.appendOnlyContext")).toBe("off");
+				expect(received).toEqual(["off"]);
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("adopts a newer same-key project role instead of keeping the rejected runtime override", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ modelRoles: { smol: "old/smol" } }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.override("modelRoleStorage", "project");
+			settings.overrideModelRoles({ smol: "runtime/smol" });
+			settings.setProjectModelRole("smol", "local/smol");
+			expect(settings.getModelRole("smol")).toBe("local/smol");
+			expect(settings.isProjectModelRoleRuntimeOverrideActive("smol")).toBe(true);
+
+			let roleSignals = 0;
+			const unsubscribe = onModelRolesChanged(() => {
+				roleSignals += 1;
+			});
+			try {
+				await Bun.write(projectConfigPath, YAML.stringify({ modelRoles: { smol: "disk/smol" } }, null, 2));
+				await settings.flush();
+				expect(settings.getModelRole("smol")).toBe("disk/smol");
+				expect(settings.getProjectModelRole("smol")).toBe("disk/smol");
+				expect(settings.getModelRoleProvenance("smol")).toBe("runtime");
+				expect(settings.isProjectModelRoleRuntimeOverrideActive("smol")).toBe(true);
+				expect(roleSignals).toBeGreaterThan(0);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					modelRoles: { smol: "disk/smol" },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("attributes an adopted non-native shellPath after a sibling locked save", async () => {
+			await fs.promises.mkdir(path.join(projectDir, ".claude"), { recursive: true });
+			const claudeShell = tempDir.join("missing-claude-bash");
+			await Bun.write(
+				path.join(projectDir, ".claude", "settings.json"),
+				`${JSON.stringify({ shellPath: claudeShell }, null, 2)}\n`,
+			);
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			const nativeShell = tempDir.join("missing-native-bash");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ shellPath: nativeShell, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(() => settings.getShellConfig()).toThrow(`Please update shellPath in ${projectConfigPath}`);
+
+			settings.set("ask.enabled", false, "project");
+			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: true } }, null, 2));
+			await settings.flush();
+
+			expect(settings.get("shellPath")).toBe(claudeShell);
+			expect(() => settings.getShellConfig()).toThrow(
+				`Please update shellPath in ${path.join(projectDir, ".claude", "settings.json")}`,
+			);
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				ask: { enabled: false },
+			});
+		});
 	});
 
 	describe("shell configuration errors", () => {

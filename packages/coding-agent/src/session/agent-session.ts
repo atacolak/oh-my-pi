@@ -106,6 +106,7 @@ import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mod
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
+import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
 import {
@@ -1823,6 +1824,13 @@ export class AgentSession {
 				void this.refreshBaseSystemPrompt().catch(error => {
 					logger.warn("System prompt reconcile after skipped project save failed", { error: String(error) });
 				});
+			}
+			if (
+				changed.has("providers.webSearchExclude") ||
+				changed.has("providers.webSearchOrder") ||
+				changed.has("providers.imageOrder")
+			) {
+				applyProviderGlobalsFromSettings(this.settings);
 			}
 		});
 

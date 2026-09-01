@@ -9,6 +9,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { isSearchProviderExcluded, setExcludedSearchProviders } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
@@ -31,6 +32,7 @@ describe("AgentSession adopted session-runtime changes", () => {
 		otherSession = undefined;
 		authStorage?.close();
 		authStorage = undefined;
+		setExcludedSearchProviders([]);
 		restoreSettingsTestState(settingsState);
 		settingsState = undefined;
 		await tempDir?.remove();
@@ -253,6 +255,60 @@ describe("AgentSession adopted session-runtime changes", () => {
 
 		expect(settings.get("compaction.enabled")).toBe(false);
 		expect(session.autoCompactionEnabled).toBe(false);
+		expect(session.thinkingLevel).toBe(Effort.High);
+	});
+
+	it("reapplies adopted providers.webSearchExclude onto live search eligibility", async () => {
+		const projectDir = tempDir.join("project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ providers: { webSearchExclude: [] }, defaultThinkingLevel: Effort.Low }, null, 2),
+		);
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.Low,
+				},
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		session.setThinkingLevel(Effort.High);
+		expect(isSearchProviderExcluded("exa")).toBe(false);
+
+		settings.set("ask.enabled", false, "project");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{
+					providers: { webSearchExclude: ["exa"] },
+					defaultThinkingLevel: Effort.Low,
+					ask: { enabled: true },
+				},
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("providers.webSearchExclude")).toEqual(["exa"]);
+		expect(isSearchProviderExcluded("exa")).toBe(true);
 		expect(session.thinkingLevel).toBe(Effort.High);
 	});
 

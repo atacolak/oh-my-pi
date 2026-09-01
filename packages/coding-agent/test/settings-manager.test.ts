@@ -946,6 +946,66 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting a sibling providers.webSearchExclude disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [] }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: string[]; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: [...settings.get("providers.webSearchExclude")], paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ providers: { webSearchExclude: ["exa"] }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("providers.webSearchExclude")).toEqual(["exa"]);
+				expect(received).toEqual([{ value: ["exa"], paths: ["providers.webSearchExclude"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					providers: { webSearchExclude: ["exa"] },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling display.hideToolActivity disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ display: { hideToolActivity: false }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("display.hideToolActivity"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ display: { hideToolActivity: true }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("display.hideToolActivity")).toBe(true);
+				expect(received).toEqual([{ value: true, paths: ["display.hideToolActivity"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					display: { hideToolActivity: true },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires runtime hooks for an adopted sibling project edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

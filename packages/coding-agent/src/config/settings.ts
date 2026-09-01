@@ -3563,6 +3563,7 @@ export type SessionRuntimePath =
 	| "autocompleteMaxVisible"
 	| "compaction.enabled"
 	| "defaultThinkingLevel"
+	| "display.hideToolActivity"
 	| "externalThinking"
 	| "followUpMode"
 	| "inspect_image.mode"
@@ -3572,6 +3573,9 @@ export type SessionRuntimePath =
 	| "omitThinking"
 	| "personality"
 	| "presencePenalty"
+	| "providers.imageOrder"
+	| "providers.webSearchExclude"
+	| "providers.webSearchOrder"
 	| "repetitionPenalty"
 	| "steeringMode"
 	| "temperature"
@@ -3584,6 +3588,7 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	autocompleteMaxVisible: true,
 	"compaction.enabled": true,
 	defaultThinkingLevel: true,
+	"display.hideToolActivity": true,
 	externalThinking: true,
 	followUpMode: true,
 	"inspect_image.mode": true,
@@ -3593,6 +3598,9 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	omitThinking: true,
 	personality: true,
 	presencePenalty: true,
+	"providers.imageOrder": true,
+	"providers.webSearchExclude": true,
+	"providers.webSearchOrder": true,
 	repetitionPenalty: true,
 	steeringMode: true,
 	temperature: true,
@@ -3685,11 +3693,11 @@ const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], sou
 
 /**
  * Subscribe to session-runtime setting changes (`defaultThinkingLevel`,
- * `memory.backend`, queue modes, and other selector-managed live session fields)
- * after a project save adopts a newer disk value. Returns an unsubscribe
- * function. Callers should ignore events whose `source` is not the Settings
- * instance they own, then re-read only the supplied paths and apply them to
- * the live session without persisting.
+ * `memory.backend`, queue modes, selector-managed provider eligibility, and
+ * other live session fields) after a project save adopts a newer disk value.
+ * Returns an unsubscribe function. Callers should ignore events whose `source`
+ * is not the Settings instance they own, then re-read only the supplied paths
+ * and apply them to the live session without persisting.
  */
 export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source: Settings) => void) =>
 	sessionRuntimeSignal.on(cb);

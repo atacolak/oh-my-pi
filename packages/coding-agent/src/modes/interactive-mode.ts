@@ -1378,6 +1378,12 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (paths.includes("compaction.enabled")) {
 					this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 				}
+				if (paths.includes("display.hideToolActivity")) {
+					this.#selectorController.handleSettingChange(
+						"display.hideToolActivity",
+						this.settings.get("display.hideToolActivity"),
+					);
+				}
 			}),
 		);
 		this.#eventBusUnsubscribers.push(

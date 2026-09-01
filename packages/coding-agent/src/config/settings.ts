@@ -728,7 +728,7 @@ export class Settings {
 			this.#captureProjectMutation(
 				path,
 				this.#modifiedProjectPathMutations,
-				getByPath(this.#projectFileSettings, segments),
+				this.#migratedRawValue(this.#projectFileSettings, path),
 			);
 			setByPath(this.#projectFileSettings, segments, value);
 			this.#rebuildProjectLayer();
@@ -763,7 +763,7 @@ export class Settings {
 		this.#captureProjectMutation(
 			path,
 			this.#modifiedProjectPathMutations,
-			getByPath(this.#projectFileSettings, segments),
+			this.#migratedRawValue(this.#projectFileSettings, path),
 		);
 		deleteByPath(this.#projectFileSettings, segments);
 		this.#dropLegacyNativeKeys(this.#projectFileSettings, path);
@@ -1835,6 +1835,10 @@ export class Settings {
 		}
 	}
 
+	#migratedRawValue(raw: RawSettings, path: string): unknown {
+		return getByPath(this.#migrateRawSettings(structuredClone(raw), false), path.split("."));
+	}
+
 	#dropLegacyNativeKeys(target: RawSettings, path: string): void {
 		if (path === "steeringMode") {
 			delete target.queueMode;
@@ -1876,6 +1880,17 @@ export class Settings {
 		if (path === "glob.enabled") {
 			deleteByPath(target, ["find", "enabled"]);
 			delete target["find.enabled"];
+		}
+		if ((path === "theme.light" || path === "theme.dark") && typeof target.theme === "string") {
+			const oldTheme = target.theme;
+			if (oldTheme === "light" || oldTheme === "dark") {
+				delete target.theme;
+			} else {
+				const slot = isLightTheme(oldTheme) ? "light" : "dark";
+				if (path === `theme.${slot}`) {
+					delete target.theme;
+				}
+			}
 		}
 	}
 
@@ -2877,7 +2892,7 @@ export class Settings {
 						mutation !== undefined &&
 						mutation.generation.kind !== "unreadable" &&
 						(yamlGenerationsMatch(mutation.generation, loaded.generation) ||
-							Bun.deepEquals(getByPath(projectSettings, segments), mutation.baseValue));
+							Bun.deepEquals(this.#migratedRawValue(projectSettings, modifiedPath), mutation.baseValue));
 					if (!canApply) {
 						logger.warn("Settings: skipped stale change after external config edit", {
 							path: projectConfigPath,

@@ -622,6 +622,42 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
+		it("clears migrated mnemosyne, hindsight, and exa aliases on inherit", async () => {
+			await writeSettings({
+				mnemopi: { dbPath: "/tmp/global.db" },
+				hindsight: { scoping: "global", bankId: "global-bank" },
+				exa: { enabled: true },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						mnemosyne: { dbPath: "/tmp/old.db" },
+						hindsight: { dynamicBankId: true, agentName: "ada-cli" },
+						exa: { enableSearch: false },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/old.db");
+			expect(settings.get("hindsight.scoping")).toBe("per-project");
+			expect(settings.get("hindsight.bankId")).toBe("ada-cli");
+			expect(settings.get("exa.enabled")).toBe(false);
+			expect(settings.clearProject("mnemopi.dbPath")).toBe(true);
+			expect(settings.clearProject("hindsight.scoping")).toBe(true);
+			expect(settings.clearProject("hindsight.bankId")).toBe(true);
+			expect(settings.clearProject("exa.enabled")).toBe(true);
+			expect(settings.get("mnemopi.dbPath")).toBe("/tmp/global.db");
+			expect(settings.get("hindsight.scoping")).toBe("global");
+			expect(settings.get("hindsight.bankId")).toBe("global-bank");
+			expect(settings.get("exa.enabled")).toBe(true);
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
 		it("preserves a newer alias-backed project value when a migrated clear is stale", async () => {
 			await writeSettings({ steeringMode: "all" });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
@@ -735,6 +771,29 @@ describe("Settings", () => {
 				expect(received).toEqual(["off"]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					memory: { backend: "off" },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after skipping a stale project autocompleteMaxVisible write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 10 }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: number[] = [];
+			const unsubscribe = onSessionRuntimeChanged(() => {
+				received.push(settings.get("autocompleteMaxVisible"));
+			});
+			try {
+				settings.set("autocompleteMaxVisible", 20, "project");
+				expect(received).toEqual([]);
+				await Bun.write(projectConfigPath, YAML.stringify({ autocompleteMaxVisible: 7 }, null, 2));
+				await settings.flush();
+				expect(settings.get("autocompleteMaxVisible")).toBe(7);
+				expect(received).toEqual([7]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					autocompleteMaxVisible: 7,
 				});
 			} finally {
 				unsubscribe();

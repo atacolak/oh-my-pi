@@ -2232,6 +2232,25 @@ export class Settings {
 				}
 			}
 		}
+		if (path.startsWith("mnemopi.")) {
+			delete target.mnemosyne;
+		}
+		if (path === "hindsight.scoping") {
+			deleteByPath(target, ["hindsight", "dynamicBankId"]);
+			delete target["hindsight.dynamicBankId"];
+		}
+		if (path === "hindsight.bankId") {
+			deleteByPath(target, ["hindsight", "agentName"]);
+			delete target["hindsight.agentName"];
+		}
+		if (path === "exa.enabled") {
+			deleteByPath(target, ["exa", "enableSearch"]);
+			deleteByPath(target, ["exa", "enableResearcher"]);
+			deleteByPath(target, ["exa", "enableWebsets"]);
+			delete target["exa.enableSearch"];
+			delete target["exa.enableResearcher"];
+			delete target["exa.enableWebsets"];
+		}
 	}
 
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
@@ -3521,6 +3540,7 @@ class SettingSignal<A extends unknown[] = []> {
 
 const SESSION_RUNTIME_PATHS: Record<
 	| "advisor.enabled"
+	| "autocompleteMaxVisible"
 	| "defaultThinkingLevel"
 	| "externalThinking"
 	| "followUpMode"
@@ -3533,6 +3553,7 @@ const SESSION_RUNTIME_PATHS: Record<
 	true
 > = {
 	"advisor.enabled": true,
+	autocompleteMaxVisible: true,
 	defaultThinkingLevel: true,
 	externalThinking: true,
 	followUpMode: true,

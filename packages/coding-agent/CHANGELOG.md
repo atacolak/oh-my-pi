@@ -10,6 +10,7 @@
 - Fixed project inherit leaving a legacy flat `theme` override, and project saves treating an alias-backed clear as unconflicted when a newer legacy alias landed on disk.
 - Fixed project inherit leaving a quoted-dotted `features.unexpectedStopDetection` alias, and skipped project queue-mode saves leaving the live session on the rejected local value.
 - Fixed skipped project thinking and memory saves leaving the live session on the rejected local value.
+- Fixed project inherit leaving mnemosyne, hindsight, and Exa aliases, and skipped autocompleteMaxVisible saves leaving the editor on the rejected local value.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 
 ## [18.1.0] - 2026-09-01
@@ -35,9 +36,6 @@
 
 ### Fixed
 
-- Fixed an issue where custom model overrides were lost during configuration updates
-- Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration
-- Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
 - Improved edit-tool error guidance for operations missing the `»` separator, identifying redundant context-only operations
 - Fixed OAuth provider `modifyModels` projections being silently dropped after a discovery refresh introduced live-config headers.
 - Edit-tool `＋`/`－` line operations now match their anchors leniently across whitespace drift (indentation, blank-line miscounts) instead of failing with a byte-for-byte error; a note reports the lenient match.

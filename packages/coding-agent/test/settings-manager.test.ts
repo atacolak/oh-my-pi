@@ -406,6 +406,39 @@ describe("Settings", () => {
 			await settings.flush();
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
+
+		it("clears remaining migrated native aliases on inherit", async () => {
+			await writeSettings({
+				"task.isolation.mode": "none",
+				"compaction.methodOrder": ["soft"],
+				"memory.backend": "off",
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						task: { isolation: { enabled: true } },
+						compaction: { strategy: "handoff", remoteEnabled: false },
+						memories: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("task.isolation.mode")).toBe("auto");
+			expect(settings.get("compaction.methodOrder")).toEqual(["handoff", "soft"]);
+			expect(settings.get("memory.backend")).toBe("local");
+			expect(settings.clearProject("task.isolation.mode")).toBe(true);
+			expect(settings.clearProject("compaction.methodOrder")).toBe(true);
+			expect(settings.clearProject("memory.backend")).toBe(true);
+			expect(settings.get("task.isolation.mode")).toBe("none");
+			expect(settings.get("compaction.methodOrder")).toEqual(["soft"]);
+			expect(settings.get("memory.backend")).toBe("off");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
 	});
 
 	describe("shell configuration errors", () => {

@@ -521,4 +521,29 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			tools: { approval: { bash: "deny" } },
 		});
 	});
+
+	it("treats a project record tombstone as an absent key", async () => {
+		settings.set(
+			"retry.fallbackChains",
+			{ default: ["openai/gpt-4o-mini"], slow: ["google/gemini-2.5-flash"] },
+			"global",
+		);
+		const selector = createSelector();
+		for (const ch of "retry fallback chains") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x15");
+		selector.handleInput('{"default":["openai/gpt-4o-mini"]}');
+		selector.handleInput("\n");
+		expect(settings.get("retry.fallbackChains")).toEqual({ default: ["openai/gpt-4o-mini"] });
+		expect(settings.getGlobalValue("retry.fallbackChains")).toEqual({
+			default: ["openai/gpt-4o-mini"],
+			slow: ["google/gemini-2.5-flash"],
+		});
+		await settings.flush();
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			ask: { enabled: true },
+			custom: { keep: true },
+			retry: { fallbackChains: { slow: null } },
+		});
+	});
 });

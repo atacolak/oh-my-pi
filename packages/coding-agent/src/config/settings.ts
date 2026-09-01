@@ -1845,6 +1845,22 @@ export class Settings {
 			deleteByPath(target, ["memories", "enabled"]);
 			delete target["memories.enabled"];
 		}
+		if (path === "grep.enabled") {
+			deleteByPath(target, ["search", "enabled"]);
+			delete target["search.enabled"];
+		}
+		if (path === "grep.contextBefore") {
+			deleteByPath(target, ["search", "contextBefore"]);
+			delete target["search.contextBefore"];
+		}
+		if (path === "grep.contextAfter") {
+			deleteByPath(target, ["search", "contextAfter"]);
+			delete target["search.contextAfter"];
+		}
+		if (path === "glob.enabled") {
+			deleteByPath(target, ["find", "enabled"]);
+			delete target["find.enabled"];
+		}
 	}
 
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
@@ -2866,6 +2882,7 @@ export class Settings {
 					}
 				}
 				this.#projectFileSettings = structuredClone(projectSettings);
+				this.#rebuildProjectLayer();
 			});
 			invalidateCapabilityFsCache(projectConfigPath);
 		} catch (error) {

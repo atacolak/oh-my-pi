@@ -27,6 +27,12 @@ interface PendingRetainItem {
 	content: string;
 	context?: string;
 	timestamp: Date;
+	/** Bank routing captured at enqueue so a later primary rebuild cannot reroute this item. */
+	client: HindsightApi;
+	bankId: string;
+	retainTags?: string[];
+	banksSet: Set<string>;
+	config: HindsightConfig;
 }
 
 interface RecallOutcome {
@@ -85,8 +91,17 @@ export class HindsightRetainQueue {
 		if (this.#closed) {
 			throw new Error("Hindsight retain queue is closed.");
 		}
-		this.#items.push({ content, context, timestamp: new Date() });
-
+		const state = this.#state;
+		this.#items.push({
+			content,
+			context,
+			timestamp: new Date(),
+			client: state.client,
+			bankId: state.bankId,
+			retainTags: state.retainTags,
+			banksSet: state.banksSet,
+			config: state.config,
+		});
 		if (this.#items.length >= RETAIN_FLUSH_BATCH_SIZE) {
 			void this.flush();
 			return;
@@ -148,21 +163,36 @@ export class HindsightRetainQueue {
 			return;
 		}
 
+		let index = 0;
+		while (index < items.length) {
+			let end = index + 1;
+			while (end < items.length && sameRetainRoute(items[index]!, items[end]!)) {
+				end += 1;
+			}
+			await this.#flushRoute(sessionId, items.slice(index, end));
+			index = end;
+		}
+	}
+
+	async #flushRoute(sessionId: string, items: PendingRetainItem[]): Promise<void> {
+		const route = items[0];
+		if (!route) return;
+
 		try {
-			await ensureBankExists(state.client, state.bankId, state.config, state.banksSet);
+			await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
 			const batch: MemoryItemInput[] = items.map(item => ({
 				content: item.content,
-				context: item.context ?? state.config.retainContext,
+				context: item.context ?? item.config.retainContext,
 				metadata: { session_id: sessionId },
-				tags: state.retainTags,
+				tags: item.retainTags,
 				timestamp: item.timestamp,
-				strategy: state.config.retainStrategy || undefined,
+				strategy: item.config.retainStrategy || undefined,
 			}));
-			await state.client.retainBatch(state.bankId, batch, { async: true });
-			if (state.config.debug) {
+			await route.client.retainBatch(route.bankId, batch, { async: true });
+			if (route.config.debug) {
 				logger.debug("Hindsight retain queue: batch flushed", {
 					sessionId,
-					bankId: state.bankId,
+					bankId: route.bankId,
 					items: items.length,
 				});
 			}
@@ -170,7 +200,7 @@ export class HindsightRetainQueue {
 			const errorText = err instanceof Error ? err.message : String(err);
 			logger.warn("Hindsight retain queue: batch flush failed", {
 				sessionId,
-				bankId: state.bankId,
+				bankId: route.bankId,
 				items: items.length,
 				error: errorText,
 			});
@@ -186,6 +216,20 @@ export class HindsightRetainQueue {
 			"Hindsight",
 		);
 	}
+}
+
+function sameRetainRoute(a: PendingRetainItem, b: PendingRetainItem): boolean {
+	if (a.client !== b.client || a.bankId !== b.bankId || a.banksSet !== b.banksSet || a.config !== b.config) {
+		return false;
+	}
+	const aTags = a.retainTags;
+	const bTags = b.retainTags;
+	if (aTags === bTags) return true;
+	if (!aTags || !bTags || aTags.length !== bTags.length) return false;
+	for (let i = 0; i < aTags.length; i++) {
+		if (aTags[i] !== bTags[i]) return false;
+	}
+	return true;
 }
 
 /** Rolling hash of messages[0, count) for retention-cache validation (see #lastRetainedPrefixKey). */

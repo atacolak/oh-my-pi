@@ -5,6 +5,7 @@
 ### Added
 
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
+
 ## [18.1.0] - 2026-09-01
 
 ### Added

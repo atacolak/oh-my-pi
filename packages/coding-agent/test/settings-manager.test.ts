@@ -539,6 +539,85 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
+		it("clears migrated provider preference aliases on inherit", async () => {
+			await writeSettings({
+				providers: { webSearchOrder: ["exa"], imageOrder: ["openai-codex"] },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearch: "brave", image: "openai" } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("providers.webSearchOrder")).toEqual([
+				"brave",
+				...SEARCH_PROVIDER_ORDER.filter(id => id !== "brave"),
+			]);
+			expect(settings.get("providers.imageOrder")).toEqual([
+				"openai",
+				...AUTO_IMAGE_PROVIDER_ORDER.filter(id => id !== "openai"),
+			]);
+			expect(settings.clearProject("providers.webSearchOrder")).toBe(true);
+			expect(settings.clearProject("providers.imageOrder")).toBe(true);
+			expect(settings.get("providers.webSearchOrder")).toEqual(["exa"]);
+			expect(settings.get("providers.imageOrder")).toEqual(["openai-codex"]);
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
+		it("clears migrated nested-leaf and service-tier aliases on inherit", async () => {
+			await writeSettings({
+				todo: { remindersMax: 5 },
+				dev: { autoqaConsent: "granted" },
+				tier: { openai: "none", anthropic: "none", google: "none", subagent: "inherit", advisor: "none" },
+			});
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						todo: { reminders: { max: 1 } },
+						dev: { autoqa: { consent: "denied" } },
+						serviceTier: "priority",
+						serviceTierSubagent: "flex",
+						serviceTierAdvisor: "priority",
+					},
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			expect(settings.get("todo.remindersMax")).toBe(1);
+			expect(settings.get("dev.autoqaConsent")).toBe("denied");
+			expect(settings.get("tier.openai")).toBe("priority");
+			expect(settings.get("tier.anthropic")).toBe("priority");
+			expect(settings.get("tier.google")).toBe("priority");
+			expect(settings.get("tier.subagent")).toBe("flex");
+			expect(settings.get("tier.advisor")).toBe("priority");
+			expect(settings.clearProject("todo.remindersMax")).toBe(true);
+			expect(settings.clearProject("dev.autoqaConsent")).toBe(true);
+			expect(settings.clearProject("tier.openai")).toBe(true);
+			expect(settings.clearProject("tier.subagent")).toBe(true);
+			expect(settings.clearProject("tier.advisor")).toBe(true);
+			expect(settings.get("todo.remindersMax")).toBe(5);
+			expect(settings.get("dev.autoqaConsent")).toBe("granted");
+			expect(settings.get("tier.openai")).toBe("none");
+			expect(settings.get("tier.anthropic")).toBe("priority");
+			expect(settings.get("tier.google")).toBe("priority");
+			expect(settings.get("tier.subagent")).toBe("inherit");
+			expect(settings.get("tier.advisor")).toBe("none");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				tier: { anthropic: "priority", google: "priority" },
+			});
+			expect(settings.clearProject("tier.anthropic")).toBe(true);
+			expect(settings.clearProject("tier.google")).toBe(true);
+			expect(settings.get("tier.anthropic")).toBe("none");
+			expect(settings.get("tier.google")).toBe("none");
+			await settings.flush();
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+		});
+
 		it("preserves a newer alias-backed project value when a migrated clear is stale", async () => {
 			await writeSettings({ steeringMode: "all" });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");

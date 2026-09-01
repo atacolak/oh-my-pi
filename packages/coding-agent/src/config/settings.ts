@@ -1908,6 +1908,69 @@ export class Settings {
 			delete target["power.declareUserActive"];
 			delete target["power.preventDisplaySleep"];
 		}
+		if (path === "providers.webSearchOrder") {
+			deleteByPath(target, ["providers", "webSearch"]);
+			delete target["providers.webSearch"];
+		}
+		if (path === "providers.imageOrder") {
+			deleteByPath(target, ["providers", "image"]);
+			delete target["providers.image"];
+		}
+		if (path === "todo.remindersMax") {
+			deleteByPath(target, ["todo", "reminders", "max"]);
+			delete target["todo.reminders.max"];
+		}
+		if (path === "dev.autoqaConsent") {
+			deleteByPath(target, ["dev", "autoqa", "consent"]);
+			delete target["dev.autoqa.consent"];
+		}
+		if (path === "tier.subagent") {
+			delete target.serviceTierSubagent;
+		}
+		if (path === "tier.advisor") {
+			delete target.serviceTierAdvisor;
+		}
+		if (path === "tier.openai" || path === "tier.anthropic" || path === "tier.google") {
+			const legacy = target.serviceTier;
+			if (typeof legacy === "string") {
+				const mapped: Record<string, string> = {};
+				switch (legacy) {
+					case "priority":
+						mapped.openai = "priority";
+						mapped.anthropic = "priority";
+						mapped.google = "priority";
+						break;
+					case "openai-only":
+						mapped.openai = "priority";
+						break;
+					case "claude-only":
+						mapped.anthropic = "priority";
+						break;
+					case "auto":
+					case "default":
+					case "flex":
+					case "scale":
+						mapped.openai = legacy;
+						break;
+				}
+				const family = path.slice("tier.".length);
+				if (family in mapped) {
+					delete mapped[family];
+					const tierObj = isRecord(target.tier) ? target.tier : {};
+					for (const [name, value] of Object.entries(mapped)) {
+						if (!(name in tierObj)) {
+							tierObj[name] = value;
+						}
+					}
+					if (Object.keys(tierObj).length > 0) {
+						target.tier = tierObj;
+					} else {
+						delete target.tier;
+					}
+					delete target.serviceTier;
+				}
+			}
+		}
 	}
 
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {

@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- Hot Handoff waits leftover author time at the commit threshold. An oversized post-checkpoint tail is recut once through the current leaf; the recut author may overlap the raw window, and `firstKeptEntryId` uses the stock `keepRecentTokens` cut. Recut failure keeps the original armed result. After commit, the next author waits until residual context grows by the speculation lead, and checkpoint-bound residuals skip stock shake.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 - Fixed an issue where custom model overrides were lost during configuration updates
 - Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration

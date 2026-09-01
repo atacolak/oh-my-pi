@@ -67,7 +67,7 @@ describe("hot handoff speculative lifecycle", () => {
 			"compaction.asyncEnabled": true,
 			"compaction.methodOrder": ["soft"],
 			"compaction.thresholdPercent": 70,
-			"compaction.keepRecentTokens": 1,
+			"compaction.keepRecentTokens": 8_000,
 			"compaction.autoContinue": false,
 			...(options.minLead !== undefined ? { "compaction.speculationMinLeadTokens": options.minLead } : {}),
 		});
@@ -237,7 +237,7 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(compactSpy.mock.calls[0]![0].recentMessages).toEqual([]);
 		expect(compactSpy.mock.calls[0]![0].messagesToSummarize.length).toBeGreaterThan(0);
 
-		sessionManager.appendMessage(userMessage("raw continuation ".repeat(2_000)));
+		sessionManager.appendMessage(userMessage("raw continuation"));
 		sessionManager.appendMessage(assistantMessage("continued after checkpoint", model));
 		const firstRawId = sessionManager.getBranch().find(entry => {
 			if (entry.type !== "message") return false;
@@ -256,6 +256,107 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).toBe(firstRawId);
 		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).not.toBe(checkpointId);
 		expect(agent.state.messages.some(message => JSON.stringify(message).includes("raw continuation"))).toBe(true);
+	});
+
+	it("waits leftover author time then recuts an oversized post-checkpoint burst", async () => {
+		let authorCalls = 0;
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
+			authorCalls += 1;
+			return {
+				summary: authorCalls === 1 ? "Handoff Document early" : "Handoff Document recut",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			};
+		});
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+
+		sessionManager.appendMessage(userMessage("raw continuation ".repeat(2_000)));
+		sessionManager.appendMessage(assistantMessage("continued after checkpoint", model));
+		const recutLeafId = sessionManager.getBranch().at(-1)!.id;
+		await maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD + 9_000,
+		});
+		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(
+			compactSpy.mock.calls[1]![0].messagesToSummarize.some(message =>
+				JSON.stringify(message).includes("raw continuation"),
+			),
+		).toBe(true);
+		expect(
+			compactSpy.mock.calls[1]![0].messagesToSummarize.some(message =>
+				JSON.stringify(message).includes("continued after checkpoint"),
+			),
+		).toBe(true);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document recut");
+		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).not.toBe(recutLeafId);
+		expect(entry?.type === "compaction" ? entry.preserveData : undefined).toMatchObject({
+			recutCycle: { recut: true, authorCalls: 2 },
+		});
+		expect(agent.state.messages.some(message => JSON.stringify(message).includes("raw continuation"))).toBe(true);
+	});
+
+	it("keeps the original armed result when the recut author fails", async () => {
+		const compactSpy = vi
+			.spyOn(compactionModule, "compact")
+			.mockImplementationOnce(async preparation => ({
+				summary: "Handoff Document early",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			}))
+			.mockRejectedValueOnce(new Error("recut author failed"));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		sessionManager.appendMessage(userMessage("raw continuation ".repeat(2_000)));
+		sessionManager.appendMessage(assistantMessage("continued after checkpoint", model));
+		await maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD + 9_000,
+		});
+		expect(compactSpy).toHaveBeenCalledTimes(2);
+		expect(notices).toEqual([]);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document early");
+		expect(agent.state.messages.some(message => JSON.stringify(message).includes("raw continuation"))).toBe(true);
+	});
+
+
+	it("does not recut a committed checkpoint-bound raw continuation until residual grows by the lead", async () => {
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "Handoff Document",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		sessionManager.appendMessage(userMessage("raw continuation"));
+		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.preserveData : undefined).toMatchObject({
+			hotHandoff: { version: 1 },
+		});
+		expect(maintenance.speculationState).toBe("idle");
+
+		const residual =
+			entry?.type === "compaction"
+				? typeof entry.tokensAfter === "number"
+					? entry.tokensAfter
+					: entry.tokensBefore
+				: 0;
+		maintenance.maybeStartSpeculativeCompaction(Math.min(residual, THRESHOLD - 1), CONTEXT_WINDOW);
+		expect(maintenance.speculationState).toBe("idle");
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		expect(maintenance.deferThresholdCompactionToSpeculation(residual, CONTEXT_WINDOW)).toBe(true);
+		expect(maintenance.speculationState).toBe("idle");
+		expect(compactSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not wedge the session when the speculative author fails", async () => {
@@ -313,6 +414,35 @@ describe("hot handoff speculative lifecycle", () => {
 		});
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 	});
+
+	it("awaits leftover author time at threshold instead of aborting", async () => {
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
+			started.resolve();
+			await release.promise;
+			return {
+				summary: "Handoff Document leftover",
+				firstKeptEntryId: preparation.firstKeptEntryId,
+				tokensBefore: preparation.tokensBefore,
+				details: {},
+			};
+		});
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await started.promise;
+		expect(maintenance.speculationState).toBe("running");
+
+		const compacting = maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD,
+		});
+		release.resolve();
+		await compacting;
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document leftover");
+	});
+
 
 	it("uses the configured minimum speculation lead when larger than native", async () => {
 		vi.spyOn(compactionModule, "compact").mockResolvedValue({

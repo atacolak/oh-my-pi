@@ -218,9 +218,15 @@ interface ArmedSpeculation {
 	contextTokensAtStart: number;
 	/**
 	 * When true, the semantic artifact is anchored to snapshotLeafId.
-	 * Everything after that checkpoint must remain raw; do not recut on growth.
+	 * A recut still sees through the current leaf; only the original
+	 * checkpoint-bound commit keeps everything after snapshotLeafId raw.
 	 */
 	checkpointBound?: boolean;
+	/** Recut author: firstKept uses the stock keepRecentTokens cut. */
+	recut?: boolean;
+	originalSnapshotLeafId?: string;
+	originalTailTokens?: number;
+	waitedMs?: number;
 }
 
 /** One background speculative-compaction run and (once resolved) its armed result. */
@@ -229,6 +235,10 @@ interface SpeculationRun {
 	promise: Promise<void>;
 	contextTokensAtStart: number;
 	armed?: ArmedSpeculation;
+	recut?: boolean;
+	originalArmed?: ArmedSpeculation;
+	originalTailTokens?: number;
+	startedAt: number;
 }
 
 function mergeLlmCompactionPreserveData(
@@ -258,6 +268,28 @@ function firstEntryIdAfter(branch: SessionEntry[], snapshotLeafId: string): stri
 	const idx = branch.findIndex(entry => entry.id === snapshotLeafId);
 	if (idx < 0) return undefined;
 	return branch[idx + 1]?.id;
+}
+
+function isCheckpointBoundPreserveData(preserveData: Record<string, unknown> | undefined): boolean {
+	if (!preserveData || !("hotHandoff" in preserveData)) return false;
+	const hotHandoff = preserveData.hotHandoff;
+	if (hotHandoff === null || typeof hotHandoff !== "object" || Array.isArray(hotHandoff)) return false;
+	return "version" in hotHandoff && hotHandoff.version === 1;
+}
+
+function countMessageTokensAfter(
+	branch: SessionEntry[],
+	entryId: string,
+	countMessage: (message: AgentMessage) => number,
+): number {
+	const idx = branch.findIndex(entry => entry.id === entryId);
+	if (idx < 0) return 0;
+	let tokens = 0;
+	for (let i = idx + 1; i < branch.length; i++) {
+		const entry = branch[i];
+		if (entry.type === "message") tokens += countMessage(entry.message);
+	}
+	return tokens;
 }
 
 /** Wrap a handoff document as a compaction summary: append the cumulative file-operations tag and derive entry details. */
@@ -1274,6 +1306,7 @@ export class SessionMaintenance {
 			resolveSpeculationLeadTokens(thresholdTokens, settings.speculationMinLeadTokens)
 		)
 			return;
+		if (this.#checkpointBoundRawContinuationHolds(contextTokens, thresholdTokens)) return;
 		const current = this.#speculation;
 		if (current) {
 			if (!current.armed) return; // one run at a time
@@ -1301,13 +1334,26 @@ export class SessionMaintenance {
 	}
 
 	/** Install and launch one background speculation run for `method`. */
-	#startSpeculationRun(contextTokens: number, method: "remote" | "handoff" | "soft"): void {
+	#startSpeculationRun(
+		contextTokens: number,
+		method: "remote" | "handoff" | "soft",
+		recut?: { originalArmed: ArmedSpeculation; originalTailTokens: number },
+	): void {
 		const controller = new AbortController();
-		const run: SpeculationRun = { controller, promise: Promise.resolve(), contextTokensAtStart: contextTokens };
+		const run: SpeculationRun = {
+			controller,
+			promise: Promise.resolve(),
+			contextTokensAtStart: contextTokens,
+			recut: Boolean(recut),
+			originalArmed: recut?.originalArmed,
+			originalTailTokens: recut?.originalTailTokens,
+			startedAt: Date.now(),
+		};
 		this.#speculation = run;
 		run.promise = this.#runSpeculation(run, method, contextTokens).catch(error => {
 			logger.debug("Speculative compaction failed", {
 				method,
+				recut: Boolean(recut),
 				error: error instanceof Error ? error.message : String(error),
 			});
 			if (this.#speculation === run) this.#speculation = undefined;
@@ -1347,6 +1393,7 @@ export class SessionMaintenance {
 			thresholdTokens + resolveSpeculationLeadTokens(thresholdTokens, settings.speculationMinLeadTokens),
 			contextWindow - SPECULATION_LEAD_MIN_TOKENS,
 		);
+		if (this.#checkpointBoundRawContinuationHolds(contextTokens, thresholdTokens)) return true;
 		if (contextTokens >= graceCapTokens) return false;
 		const run = this.#speculation;
 		if (run) {
@@ -1411,6 +1458,7 @@ export class SessionMaintenance {
 			const preparation = checkpointBound ? checkpointPreparation : stockPreparation;
 			if (!preparation) return clear();
 			const emitFailureNotice = () => {
+				if (run.recut) return;
 				const notice = compactionPrep.failureNotice?.trim();
 				if (notice) this.#host.emitNotice("warning", notice, "compaction");
 			};
@@ -1479,6 +1527,9 @@ export class SessionMaintenance {
 				snapshotLeafId,
 				contextTokensAtStart: contextTokens,
 				checkpointBound,
+				recut: run.recut,
+				originalSnapshotLeafId: run.originalArmed?.snapshotLeafId,
+				originalTailTokens: run.originalTailTokens,
 			};
 		}
 		if (signal.aborted || this.#speculation !== run) return;
@@ -1517,31 +1568,116 @@ export class SessionMaintenance {
 	}
 
 	/**
-	 * Consume the speculation slot for a real maintenance pass. An in-flight run
-	 * is aborted (the real pass supersedes it); an armed result is returned only
-	 * when still valid for the current branch, model, and settings.
+	 * Consume the speculation slot for a real maintenance pass. An in-flight
+	 * checkpoint-bound author is awaited (leftover generation time, not a
+	 * second full compact). An oversized post-checkpoint tail is recut once
+	 * so the burst lands in the Handoff Document; firstKept then uses the
+	 * stock keepRecentTokens cut. An armed result is returned only when still
+	 * valid for the current branch, model, and settings.
 	 */
-	#claimArmedSpeculation(): ArmedSpeculation | undefined {
+	async #claimArmedSpeculation(): Promise<ArmedSpeculation | undefined> {
+		const waitedStart = Date.now();
+		const wasRunning = Boolean(this.#speculation && !this.#speculation.armed);
+		await this.#waitForInFlightSpeculation();
+		const waitedMs = wasRunning ? Date.now() - waitedStart : 0;
+		await this.#recutCheckpointBoundIfNeeded();
 		const run = this.#speculation;
 		if (!run) return undefined;
 		this.#speculation = undefined;
-		if (!run.armed) {
-			run.controller.abort();
-			return undefined;
-		}
+		if (!run.armed) return undefined;
 		const settings = this.#host.settings.getGroup("compaction");
 		if (settings.asyncEnabled === false) return undefined;
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
 		if (!this.#armedSpeculationValid(run.armed)) return undefined;
 		if (run.armed.checkpointBound) {
-			const nextId = firstEntryIdAfter(this.#host.sessionManager.getBranch(), run.armed.snapshotLeafId);
-			if (!nextId) return undefined;
+			const firstKeptEntryId = run.armed.recut
+				? this.#keepRecentFirstKeptEntryId()
+				: (firstEntryIdAfter(this.#host.sessionManager.getBranch(), run.armed.snapshotLeafId) ??
+					run.armed.snapshotLeafId);
+			if (!firstKeptEntryId) return undefined;
 			return {
 				...run.armed,
-				result: { ...run.armed.result, firstKeptEntryId: nextId },
+				waitedMs,
+				result: {
+					...run.armed.result,
+					firstKeptEntryId,
+					preserveData: this.#withRecutCycle(run.armed, firstKeptEntryId, waitedMs),
+				},
 			};
 		}
 		return run.armed;
+	}
+
+	#keepRecentFirstKeptEntryId(): string | undefined {
+		const model = this.#model;
+		if (!model) return undefined;
+		const settings = this.#host.settings.getGroup("compaction");
+		return prepareCompaction(
+			this.#host.sessionManager.getBranch(),
+			resolveMethodSettings(settings, "soft"),
+			model,
+			this.#tokenizer,
+		)?.firstKeptEntryId;
+	}
+
+	#withRecutCycle(
+		armed: ArmedSpeculation,
+		firstKeptEntryId: string,
+		waitedMs: number,
+	): Record<string, unknown> | undefined {
+		const recutCycle = {
+			recut: Boolean(armed.recut),
+			waitedMs,
+			originalSnapshotLeafId: armed.originalSnapshotLeafId ?? (armed.recut ? undefined : armed.snapshotLeafId),
+			originalTailTokens: armed.originalTailTokens,
+			authorSnapshotLeafId: armed.snapshotLeafId,
+			finalFirstKeptEntryId: firstKeptEntryId,
+			authorCalls: armed.recut ? 2 : 1,
+		};
+		return { ...(armed.result.preserveData ?? {}), recutCycle };
+	}
+
+	async #waitForInFlightSpeculation(): Promise<void> {
+		const run = this.#speculation;
+		if (!run || run.armed) return;
+		try {
+			await run.promise;
+		} catch {
+			// Failure is logged in #startSpeculationRun; the slot is already cleared.
+		}
+	}
+
+	/**
+	 * If the armed checkpoint-bound summary missed a post-checkpoint burst
+	 * larger than keepRecentTokens, run one more author through the current
+	 * leaf. On failure, keep the original armed result. At most one recut.
+	 */
+	async #recutCheckpointBoundIfNeeded(): Promise<void> {
+		const run = this.#speculation;
+		if (!run?.armed?.checkpointBound || run.armed.recut) return;
+		const method = run.armed.method;
+		if (method !== "remote" && method !== "handoff" && method !== "soft") return;
+		const settings = this.#host.settings.getGroup("compaction");
+		const tailTokens = countMessageTokensAfter(
+			this.#host.sessionManager.getBranch(),
+			run.armed.snapshotLeafId,
+			message => this.#tokenizer.countMessage(message),
+		);
+		if (tailTokens <= Math.max(0, settings.keepRecentTokens)) return;
+		const prior = run.armed;
+		this.#startSpeculationRun(run.contextTokensAtStart + tailTokens, method, {
+			originalArmed: prior,
+			originalTailTokens: tailTokens,
+		});
+		await this.#waitForInFlightSpeculation();
+		if (this.#speculation?.armed) return;
+		this.#speculation = {
+			controller: new AbortController(),
+			promise: Promise.resolve(),
+			contextTokensAtStart: prior.contextTokensAtStart,
+			armed: prior,
+			startedAt: Date.now(),
+		};
 	}
 
 	/**
@@ -2627,6 +2763,7 @@ export class SessionMaintenance {
 			this.#estimateStoredContextTokens(),
 		);
 		const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
+		if (this.#latestCompactionIsCheckpointBound()) return true;
 		const recoveryBand = Math.floor(thresholdTokens * COMPACTION_RECOVERY_BAND);
 		// Residual at/below the band is authoritative headroom: the band sits
 		// strictly under the compaction threshold, so the next turn cannot
@@ -2637,6 +2774,30 @@ export class SessionMaintenance {
 		// would suppress a valid continuation and emit a false no-progress warning
 		// even though compaction left the session safe.
 		return residualTokens <= recoveryBand;
+	}
+
+	#latestCompactionIsCheckpointBound(): boolean {
+		return isCheckpointBoundPreserveData(getLatestCompactionEntry(this.#host.sessionManager.getBranch())?.preserveData);
+	}
+
+	/**
+	 * After a checkpoint-bound compact, residual context is still inside the
+	 * speculation fire band (system prompt + handoff + raw tail). Starting
+	 * another author immediately recuts that tail. Hold until residual grows
+	 * by the speculation lead from `tokensAfter`.
+	 */
+	#checkpointBoundRawContinuationHolds(contextTokens: number, thresholdTokens: number): boolean {
+		const latest = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		if (!latest || !isCheckpointBoundPreserveData(latest.preserveData)) return false;
+		const lead = resolveSpeculationLeadTokens(
+			thresholdTokens,
+			this.#host.settings.getGroup("compaction").speculationMinLeadTokens,
+		);
+		const baseline =
+			typeof latest.tokensAfter === "number" && Number.isFinite(latest.tokensAfter)
+				? latest.tokensAfter
+				: latest.tokensBefore;
+		return contextTokens - baseline < lead;
 	}
 
 	/**
@@ -3040,12 +3201,12 @@ export class SessionMaintenance {
 		if (!method) return COMPACTION_CHECK_NONE;
 
 		// A speculative pass may have already produced this compaction's summary
-		// in the background. Claiming consumes the slot either way: an in-flight
-		// run is aborted (this real pass supersedes it) and an armed result is
-		// returned only when still valid for the current branch/model/settings.
-		// Snapcompact is local and instant, so an armed LLM summary (possible
-		// only when settings/model changed since arming) never overrides it.
-		const claimedSpec = this.#claimArmedSpeculation();
+		// in the background. An in-flight checkpoint-bound author is awaited for
+		// leftover generation time; a stale in-flight stock run is still aborted
+		// by claim when it never arms. Snapcompact is local and instant, so an
+		// armed LLM summary (possible only when settings/model changed since
+		// arming) never overrides it.
+		const claimedSpec = await this.#claimArmedSpeculation();
 		const armedSpec = method === "snapcompact" ? undefined : claimedSpec;
 
 		const effectiveSettings = resolveMethodSettings(compactionSettings, method);

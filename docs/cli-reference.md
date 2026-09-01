@@ -65,6 +65,8 @@ Argument handling:
 | `--config <file>` | Load an extra `config.yml`-style overlay for this run (repeatable). |
 | `--session-dir <dir>` | Directory for session storage and lookup. |
 | `--no-session` | Don't save the session (ephemeral). |
+| `--agent <name>` | Start this session as a discovered agent (user `~/.omp/agent/agents`, project `.omp/agents`, extension, or bundled). |
+| `--agent-cwd <dir>` | Project root used only to discover `--agent`; the session still runs in `--cwd`. |
 
 #### Session history
 

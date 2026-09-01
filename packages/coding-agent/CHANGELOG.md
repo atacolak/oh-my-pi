@@ -22,6 +22,7 @@
 - Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
 - Fixed `/settings` leaving a scoped status-line preview after close, and project saves overwriting newer same-key disk edits without firing adopted-change hooks.
+- Fixed project saves keeping a rejected local model-role override or blaming `.omp/config.yml` after adopting a newer on-disk role or inherited `shellPath`.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 
 ## [18.0.11] - 2026-08-29

@@ -257,6 +257,34 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(settings.get("statusLine.preset")).toBe("minimal");
 	});
 
+	it("previews the selected scope's status-line segment options", () => {
+		settings.set("statusLine.preset", "minimal", "project");
+		settings.set("statusLine.preset", "full", "global");
+		settings.set("statusLine.segmentOptions", { path: { abbreviate: true } }, "project");
+		settings.set("statusLine.segmentOptions", { path: { abbreviate: false } }, "global");
+		const previews: Array<{ segmentOptions?: Record<string, unknown> }> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onStatusLinePreview: payload => {
+					previews.push(payload);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: false } });
+		selector.handleInput("\x1b");
+		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: true } });
+	});
+
 	it("restores the scoped theme when canceling a theme submenu", () => {
 		const previews: string[] = [];
 		const selector = new SettingsSelectorComponent(

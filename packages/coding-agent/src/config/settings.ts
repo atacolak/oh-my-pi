@@ -1574,6 +1574,7 @@ export class Settings {
 
 	#captureGlobalMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
 		if (!this.#persist || !this.#configPath) return;
+		if (mutations.has(key)) return;
 		mutations.set(key, {
 			generation: this.#readYamlGeneration(this.#configPath),
 			baseValue: structuredClone(baseValue),
@@ -1582,6 +1583,7 @@ export class Settings {
 
 	#captureProjectMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
 		if (!this.#persist) return;
+		if (mutations.has(key)) return;
 		mutations.set(key, {
 			generation: this.#readYamlGeneration(path.join(this.#cwd, ".omp", "config.yml")),
 			baseValue: structuredClone(baseValue),

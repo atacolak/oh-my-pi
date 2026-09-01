@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
+- Fixed project saves discarding a second same-key edit when a sibling disk edit landed during debounce.
+- Fixed `/settings` scoped status-line previews omitting segment options from the selected layer.
 - Fixed `/settings` leaving a scoped status-line preview after close, and project saves overwriting newer same-key disk edits without firing adopted-change hooks.
 - Fixed project saves keeping a rejected local model-role override or blaming `.omp/config.yml` after adopting a newer on-disk role or inherited `shellPath`.
 - Fixed project inherit leaving a legacy flat `theme` override, and project saves treating an alias-backed clear as unconflicted when a newer legacy alias landed on disk.

@@ -734,6 +734,28 @@ describe("Settings", () => {
 			});
 		});
 
+		it("keeps a second same-key project edit when a sibling disk edit lands during debounce", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			settings.set("theme.dark", "titanium", "project");
+			settings.set("theme.dark", "alabaster", "project");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: false } }, null, 2),
+			);
+			await settings.flush();
+			expect(settings.get("theme.dark")).toBe("alabaster");
+			expect(settings.get("ask.enabled")).toBe(false);
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+				theme: { dark: "alabaster" },
+				ask: { enabled: false },
+			});
+		});
+
 		it("preserves a same-key external project edit made after a local save was queued", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "dark-one" } }, null, 2));

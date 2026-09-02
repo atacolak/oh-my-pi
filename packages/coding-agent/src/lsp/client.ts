@@ -613,14 +613,14 @@ function uriIsWithin(uri: string, root: string): boolean {
 /** Reconcile open overlays and file watchers with the ops a workspace edit actually performed. */
 async function reconcileExecutedChanges(
 	executed: ExecutedWorkspaceChange[],
-	cwd: string,
+	workspace: string | readonly string[],
 	signal?: AbortSignal,
 ): Promise<void> {
 	if (executed.length === 0) return;
 	const { finalUris, deletedRoots, watchedFiles } = workspaceEditChanges(executed);
-	const workspace = path.resolve(cwd);
+	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
 	const activeClients = Array.from(clients.values()).filter(
-		client => client.status === "ready" && isPathInsideWorkspace(client.cwd, workspace),
+		client => client.status === "ready" && workspaceRoots.some(root => isPathInsideWorkspace(client.cwd, root)),
 	);
 
 	for (const activeClient of activeClients) {
@@ -642,7 +642,7 @@ async function reconcileExecutedChanges(
 			await refreshFile(activeClient, uriToFile(uri), signal);
 		}
 	}
-	await notifyWorkspaceWatchedFiles(cwd, watchedFiles, signal);
+	await notifyWorkspaceWatchedFiles(workspaceRoots, watchedFiles, signal);
 }
 
 /**
@@ -652,12 +652,18 @@ async function reconcileExecutedChanges(
  * `ignoreIfExists`/`ignoreIfNotExists` neither closes overlays nor notifies watchers, and
  * when the edit fails partway the already-executed prefix is still reconciled before the
  * error propagates so mutated files never keep stale overlays.
+ *
+ * `workspace` is the session cwd or the full session workspace-root list. Relative edit
+ * paths resolve against the first root; overlay and watcher reconciliation covers every
+ * ready client inside those roots, including additional `--add-dir` / nested projects.
  */
 export async function applyWorkspaceEditWithLsp(
 	edit: WorkspaceEdit,
-	cwd: string,
+	workspace: string | readonly string[],
 	signal?: AbortSignal,
 ): Promise<string[]> {
+	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
+	const cwd = workspaceRoots[0] ?? path.resolve(".");
 	const executed: ExecutedWorkspaceChange[] = [];
 	let applied: string[];
 	try {
@@ -666,7 +672,7 @@ export async function applyWorkspaceEditWithLsp(
 		// Best-effort: overlays for the mutated prefix must not stay stale, but
 		// reconciliation problems must not mask the original apply failure.
 		try {
-			await reconcileExecutedChanges(executed, cwd, signal);
+			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 		} catch (reconcileErr) {
 			logger.warn("LSP overlay reconciliation after failed workspace edit failed", {
 				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
@@ -674,7 +680,7 @@ export async function applyWorkspaceEditWithLsp(
 		}
 		throw err;
 	}
-	await reconcileExecutedChanges(executed, cwd, signal);
+	await reconcileExecutedChanges(executed, workspaceRoots, signal);
 	return applied;
 }
 

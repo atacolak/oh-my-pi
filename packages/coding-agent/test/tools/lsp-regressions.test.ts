@@ -4171,6 +4171,96 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace edits refresh additional-workspace clients when the session root list is passed", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-add-dir-edit-reconcile-");
+		try {
+			const primaryRoot = path.join(tempDir.path(), "primary");
+			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(primaryRoot);
+			fs.mkdirSync(additionalRoot);
+			const additionalFile = path.join(additionalRoot, "extra.ts");
+			await Bun.write(additionalFile, "export const extra = 1;\n");
+			const additionalServer = installHandshakeLsp();
+			const additionalConfig: ServerConfig = {
+				command: "extra-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: additionalRoot,
+			};
+			const additionalClient = await lspClient.getOrCreateClient(additionalConfig, additionalRoot, 1_000);
+			await lspClient.ensureFileOpen(additionalClient, additionalFile);
+			await additionalServer.waitFor(message => message.method === "textDocument/didOpen");
+
+			await lspClient.applyWorkspaceEditWithLsp(
+				{
+					changes: {
+						[fileToUri(additionalFile)]: [
+							{
+								range: { start: { line: 0, character: 21 }, end: { line: 0, character: 22 } },
+								newText: "2",
+							},
+						],
+					},
+				},
+				[primaryRoot, additionalRoot],
+			);
+
+			const didChange = await additionalServer.waitFor(message => message.method === "textDocument/didChange");
+			const watched = await additionalServer.waitFor(
+				message => message.method === "workspace/didChangeWatchedFiles",
+			);
+			expect(watched.params).toEqual({ changes: [{ uri: fileToUri(additionalFile), type: 2 }] });
+			expect(didChange.params).toMatchObject({
+				textDocument: { uri: fileToUri(additionalFile) },
+				contentChanges: [{ text: "export const extra = 2;\n" }],
+			});
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("releasing a removed additional workspace root stops that session's client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-release-");
+		try {
+			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(additionalRoot);
+			const config: ServerConfig = {
+				command: "extra-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: additionalRoot,
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const session = { cwd: tempDir.path(), settings: lspTestSettings, lspClientOwner: owner } as ToolSession;
+			const tool = new LspTool(session);
+			await lspClient.getOrCreateClient(config, additionalRoot, 1_000, undefined, owner);
+
+			await tool.releaseRemovedWorkspaceRoots(additionalRoot);
+
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(server.received.map(message => message.method)).toContain("exit");
+
+			const replacementServer = installHandshakeLsp();
+			const replacementOwner = lspClient.createLspClientOwner();
+			const replacementConfig: ServerConfig = { ...config, args: ["--mode", "new"] };
+			const replacement = await lspClient.getOrCreateClient(
+				replacementConfig,
+				additionalRoot,
+				1_000,
+				undefined,
+				replacementOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {

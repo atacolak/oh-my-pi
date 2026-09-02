@@ -209,6 +209,19 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		this.session.registerDisposeCallback?.(() => releaseLspClientOwner(this.#clientOwner));
 	}
 
+	/**
+	 * Release this session's ownership of language servers started under a
+	 * workspace root that is no longer in the session. `/remove-dir` calls this
+	 * so a later `reload *` can see the client as stale and another session can
+	 * replace it after configuration changes.
+	 */
+	async releaseRemovedWorkspaceRoots(removedRoot: string, signal?: AbortSignal): Promise<string[]> {
+		const roots = [path.resolve(removedRoot)];
+		const stopped = await shutdownStaleClients(this.session.cwd, [], signal, roots, this.#clientOwner);
+		clearWorkspaceInitializationFailures(roots, this.#clientOwner);
+		return stopped;
+	}
+
 	static createIf(session: ToolSession): LspTool | null {
 		return session.enableLsp === false ? null : new LspTool(session);
 	}
@@ -1464,7 +1477,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const appliedAction = await applyCodeAction(selectedAction, {
 							resolveCodeAction: async actionItem =>
 								(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
-							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, this.session.cwd, signal),
+							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, workspaceRoots, signal),
 							executeCommand: async commandItem => {
 								await sendRequest(
 									client,
@@ -1560,7 +1573,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					} else {
 						const shouldApply = apply !== false;
 						if (shouldApply) {
-							const applied = await applyWorkspaceEditWithLsp(result, this.session.cwd, signal);
+							const applied = await applyWorkspaceEditWithLsp(result, workspaceRoots, signal);
 							output = `Applied rename:\n${applied.map(a => `  ${a}`).join("\n")}`;
 						} else {
 							const preview = formatWorkspaceEdit(result, this.session.cwd);

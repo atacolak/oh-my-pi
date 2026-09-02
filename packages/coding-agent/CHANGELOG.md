@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed creating a file under a workspace opened through a symlink skipping nested language-server formatting and diagnostics because the new path could not be realpath'd yet.
+- Fixed nested-root rename and code-action apply leaving sibling and root language servers with stale overlays when the workspace edit also changed files outside the nested project.
+- Fixed public `LspTool` construction allocating a new unreleasable owner on every call, so a later `reload *` could not stop clients started by an earlier tool on the same session.
 - Fixed `lsp reload *` leaving a nested initialization failure cached when the workspace was opened through a symlink but the file path used the canonical target.
 - Fixed nested language-server routing skipping files when a workspace is opened through a symlink but the file path uses the canonical target.
 - Fixed edit and write language-server clients started from a lazy session owner being treated as unowned and torn down by overlapping sessions.

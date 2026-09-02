@@ -4111,6 +4111,66 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace edits from a nested root refresh sibling clients at the session cwd", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-sibling-edit-reconcile-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const siblingRoot = path.join(tempDir.path(), "sibling");
+			fs.mkdirSync(nestedRoot);
+			fs.mkdirSync(siblingRoot);
+			const nestedFile = path.join(nestedRoot, "a.ts");
+			const siblingFile = path.join(siblingRoot, "b.ts");
+			await Bun.write(nestedFile, "export const a = 1;\n");
+			await Bun.write(siblingFile, 'import { a } from "../nested/a";\n');
+			const nestedServer = installHandshakeLsp();
+			const nestedConfig: ServerConfig = {
+				command: "nested-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const nestedClient = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000);
+			const siblingServer = installHandshakeLsp();
+			const siblingConfig: ServerConfig = {
+				command: "sibling-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: siblingRoot,
+			};
+			const siblingClient = await lspClient.getOrCreateClient(siblingConfig, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(nestedClient, nestedFile);
+			await lspClient.ensureFileOpen(siblingClient, siblingFile);
+			await nestedServer.waitFor(message => message.method === "textDocument/didOpen");
+			await siblingServer.waitFor(message => message.method === "textDocument/didOpen");
+
+			await lspClient.applyWorkspaceEditWithLsp(
+				{
+					changes: {
+						[fileToUri(siblingFile)]: [
+							{
+								range: { start: { line: 0, character: 9 }, end: { line: 0, character: 10 } },
+								newText: "b",
+							},
+						],
+					},
+				},
+				tempDir.path(),
+			);
+
+			const didChange = await siblingServer.waitFor(message => message.method === "textDocument/didChange");
+			const watched = await siblingServer.waitFor(message => message.method === "workspace/didChangeWatchedFiles");
+			expect(watched.params).toEqual({ changes: [{ uri: fileToUri(siblingFile), type: 2 }] });
+			expect(didChange.params).toMatchObject({
+				textDocument: { uri: fileToUri(siblingFile) },
+				contentChanges: [{ text: 'import { b } from "../nested/a";\n' }],
+			});
+			expect(nestedServer.received.some(message => message.method === "textDocument/didChange")).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {
@@ -4144,6 +4204,39 @@ describe("lsp regressions", () => {
 			const watchedA = await serverA.waitFor(message => message.method === "workspace/didChangeWatchedFiles");
 			expect(watchedA.params).toEqual({ changes: [{ uri: fileToUri(fileA), type: 3 }] });
 			expect(serverB.received.some(message => message.method === "workspace/didChangeWatchedFiles")).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reload from a second LspTool on the same session stops the first tool's client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-fallback-owner-reuse-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const config: ServerConfig = {
+				command: "fallback-owner-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const server = installHandshakeLsp();
+			const session = makeLspSession(tempDir.path());
+			const first = new LspTool(session);
+			expect(first).toBeInstanceOf(LspTool);
+			await lspClient.getOrCreateClient(
+				config,
+				tempDir.path(),
+				1_000,
+				undefined,
+				lspClient.fallbackLspClientOwner(session),
+			);
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, definitions: {} });
+			const second = new LspTool(session);
+			await second.execute("reload-fallback-owner", { action: "reload", file: "*" });
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(server.received.map(message => message.method)).toContain("exit");
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

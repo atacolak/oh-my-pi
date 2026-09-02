@@ -17,7 +17,7 @@
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
 - Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
-- Claude marketplace MCP servers now resolve environment placeholders in stdio environment values instead of passing strings such as `${NAME:-}` literally ([#10481](https://github.com/can1357/oh-my-pi/pull/10481) by [@mrexodia](https://github.com/mrexodia)).
+
 ## [18.1.3] - 2026-09-02
 
 ### Changed

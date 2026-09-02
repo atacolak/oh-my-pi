@@ -375,11 +375,11 @@ describe("nested LSP project roots", () => {
 			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
 			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
 			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
-			let extraDirs: string[] | undefined;
+			const extraDirs: string[] = [];
 			const session = {
 				cwd: primary.path(),
 				get additionalDirectories() {
-					return extraDirs;
+					return extraDirs.length > 0 ? extraDirs : undefined;
 				},
 				hasUI: false,
 				getSessionFile: () => null,
@@ -391,7 +391,7 @@ describe("nested LSP project roots", () => {
 				enableLsp: true,
 			} as ToolSession;
 			const tool = new WriteTool(session);
-			extraDirs = [additional.path()];
+			extraDirs.push(additional.path());
 			const getServers = vi.spyOn(lspConfig, "getServersForFile");
 
 			await tool.execute("add-dir-write", {

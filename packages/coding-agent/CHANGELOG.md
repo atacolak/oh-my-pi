@@ -16,6 +16,7 @@
 - Fixed project saves discarding a second same-key edit when a sibling disk edit landed during debounce.
 - Fixed overlapping project saves leaving live session state on an adopted disk value after a later same-key edit persisted.
 - Fixed project saves leaving live git-status TUI state on the rejected local value after adopting a newer disk edit.
+- Fixed overlapping project saves dropping a later edit after the in-flight save rejected.
 - Fixed `/settings` scoped status-line previews omitting segment options from the selected layer.
 - Fixed project saves leaving live session/editor state, original runtime model roles, or a stale project-config flag after adopting a sibling disk edit, role clear, or deleted `.omp/config.yml`.
 - Fixed project saves resetting a temporary `/thinking` level when adopting an unrelated session-runtime sibling edit.

@@ -3002,7 +3002,12 @@ export class Settings {
 		this.#saveTimer = setTimeout(() => {
 			this.#saveTimer = undefined;
 			const previousSave = this.#savePromise;
-			const savePromise = previousSave ? previousSave.then(() => this.#saveNow()) : this.#saveNow();
+			const savePromise = previousSave
+				? previousSave.then(
+						() => this.#saveNow(),
+						() => this.#saveNow(),
+					)
+				: this.#saveNow();
 			this.#savePromise = savePromise;
 			savePromise
 				.catch(err => {
@@ -3205,7 +3210,12 @@ export class Settings {
 		this.#projectSaveTimer = setTimeout(() => {
 			this.#projectSaveTimer = undefined;
 			const previousSave = this.#projectSavePromise;
-			const savePromise = previousSave ? previousSave.then(() => this.#saveProjectNow()) : this.#saveProjectNow();
+			const savePromise = previousSave
+				? previousSave.then(
+						() => this.#saveProjectNow(),
+						() => this.#saveProjectNow(),
+					)
+				: this.#saveProjectNow();
 			this.#projectSavePromise = savePromise;
 			savePromise
 				.catch(err => {

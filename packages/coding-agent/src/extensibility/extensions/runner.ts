@@ -17,7 +17,7 @@ import { type Settings, withActiveSettings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
-import type { AsyncJobSnapshot } from "../../session/agent-session";
+import type { AgentSnapshot, AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
@@ -447,6 +447,7 @@ export class ExtensionRunner {
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
+	#getAgentSnapshotFn: () => AgentSnapshot = () => ({ agents: [] });
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	#branchHandler: BranchHandler = async () => ({ cancelled: false });
 	#navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
@@ -607,10 +608,12 @@ export class ExtensionRunner {
 		private readonly settings?: Settings,
 		private readonly localProtocolOptions?: LocalProtocolOptions,
 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
+		getAgentSnapshot?: () => AgentSnapshot,
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
+		this.#getAgentSnapshotFn = getAgentSnapshot ?? (() => ({ agents: [] }));
 	}
 
 	/**
@@ -1173,6 +1176,7 @@ export class ExtensionRunner {
 			getContextUsage: () => this.#getContextUsageFn(),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			getAgentSnapshot: () => this.#getAgentSnapshotFn(),
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,

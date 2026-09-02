@@ -32,6 +32,7 @@ import type { ShapeTarget } from "@oh-my-pi/snapcompact";
 import {
 	getDefault,
 	getType,
+	isCredential,
 	isSettingsInitialized,
 	normalizeProviderMaxInFlightRequests,
 	onProjectSettingsReconciled,
@@ -1295,6 +1296,12 @@ export class SettingsSelectorComponent implements Component {
 	 * callback so session/editor side effects are not reapplied.
 	 */
 	#persistSetting(path: SettingPath, value: unknown): unknown {
+		if (this.#scope === "project" && isCredential(path)) {
+			const inherited = settings.getProjectInheritedValue(path);
+			if (Bun.deepEquals(value, inherited) && Bun.deepEquals(this.#scopedValue(path), inherited)) {
+				return settings.get(path);
+			}
+		}
 		const previous = settings.get(path);
 		settings.set(path, value as never, this.#scope);
 		return this.#notifyLiveChange(path, previous, settings.get(path));

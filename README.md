@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR:** [#9363](https://github.com/can1357/oh-my-pi/pull/9363) — respect project scope in `/settings`
-> - **Upstream base:** [OMP 18.1.3 (`984a4f2d`)](https://github.com/can1357/oh-my-pi/tree/984a4f2dc9e50f6645b8fe04a91570876f8d3c83)
+> - **Upstream base:** [OMP 18.1.4 (`39cf639c`)](https://github.com/can1357/oh-my-pi/tree/39cf639c7bb6b5014a1cc8ea8175558cccb23905)
 >
 > PR head `fix/settings-project-scope` stays independently reviewable without this banner.
 

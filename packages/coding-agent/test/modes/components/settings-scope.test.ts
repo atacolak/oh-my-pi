@@ -699,6 +699,47 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			retry: { fallbackChains: { slow: null } },
 		});
 	});
+
+	it("does not copy an unchanged inherited credential into the project layer", async () => {
+		settings.set("memory.backend", "hindsight", "global");
+		settings.set("hindsight.apiToken", "global-secret-token", "global");
+		const selector = createSelector();
+		for (const ch of "hindsight api token") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\n");
+		expect(settings.get("hindsight.apiToken")).toBe("global-secret-token");
+		expect(settings.getGlobalValue("hindsight.apiToken")).toBe("global-secret-token");
+		await settings.flush();
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			ask: { enabled: true },
+			custom: { keep: true },
+		});
+		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toMatchObject({
+			hindsight: { apiToken: "global-secret-token" },
+		});
+	});
+
+	it("persists a changed project credential without rewriting the global secret", async () => {
+		settings.set("memory.backend", "hindsight", "global");
+		settings.set("hindsight.apiToken", "global-secret-token", "global");
+		const selector = createSelector();
+		for (const ch of "hindsight api token") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x15");
+		selector.handleInput("project-secret-token");
+		selector.handleInput("\n");
+		expect(settings.get("hindsight.apiToken")).toBe("project-secret-token");
+		expect(settings.getGlobalValue("hindsight.apiToken")).toBe("global-secret-token");
+		await settings.flush();
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			ask: { enabled: true },
+			custom: { keep: true },
+			hindsight: { apiToken: "project-secret-token" },
+		});
+		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toMatchObject({
+			hindsight: { apiToken: "global-secret-token" },
+		});
+	});
 	it("rebuilds open rows after a skipped same-key project save", async () => {
 		settings.set("defaultThinkingLevel", Effort.Low, "project");
 		await settings.flush();

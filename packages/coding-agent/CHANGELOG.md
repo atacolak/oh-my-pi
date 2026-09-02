@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/settings` copying an unchanged inherited credential into `.omp/config.yml`.
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
 - Fixed `/settings` rendering unsanitized repository names in the project-scope title.
 - Fixed project saves leaving live git-status TUI state on the rejected local value after adopting a newer disk edit.

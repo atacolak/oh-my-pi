@@ -87,6 +87,26 @@ describe("workspaceRootForPath", () => {
 			fs.rmSync(linkRoot, { force: true });
 		}
 	});
+
+	it("prefers a nested additional workspace over a longer symlink cwd", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-symlink-rank-");
+		const realOuter = tempDir.path();
+		const nested = path.join(realOuter, "pkg");
+		fs.mkdirSync(nested, { recursive: true });
+		const filePath = path.join(nested, "src", "a.ts");
+		fs.mkdirSync(path.dirname(filePath), { recursive: true });
+		fs.writeFileSync(filePath, "export const a = 1;\n");
+		const linkRoot = path.join(path.dirname(realOuter), `${path.basename(realOuter)}-very-long-symlink-alias`);
+		fs.symlinkSync(realOuter, linkRoot);
+		try {
+			expect(linkRoot.length).toBeGreaterThan(nested.length);
+			const workspace = normalizeSessionWorkspace({ cwd: linkRoot, directories: [nested] });
+			expect(workspaceRootForPath(filePath, workspace)).toBe(path.resolve(nested));
+			expect(workspaceRootForPath(path.join(linkRoot, "pkg", "src", "a.ts"), workspace)).toBe(path.resolve(nested));
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+		}
+	});
 });
 
 describe("SessionManager workspace directories", () => {

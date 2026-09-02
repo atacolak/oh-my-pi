@@ -5,6 +5,7 @@ import {
 	pathIsWithin,
 	postmortem,
 	ptree,
+	resolveEquivalentPath,
 	stableStringifyJson,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
@@ -906,7 +907,7 @@ function clientKey(config: ServerConfig, cwd: string): string {
 		config.settings ?? null,
 		config.languageId ?? null,
 	]);
-	return `${spawnCommand}:${cwd}:${identity}`;
+	return `${spawnCommand}:${resolveEquivalentPath(cwd)}:${identity}`;
 }
 
 /**
@@ -1057,7 +1058,7 @@ export async function getOrCreateClient(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<LspClient> {
-	cwd = config.resolvedRoot ?? cwd;
+	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
 	const key = clientKey(config, cwd);
 	registerClientOwner(key, owner);
 	// Check if client already exists
@@ -1266,7 +1267,7 @@ export async function getActiveOrPendingClient(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<LspClient | undefined> {
-	cwd = config.resolvedRoot ?? cwd;
+	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
 	throwIfAborted(signal);
 	const key = clientKey(config, cwd);
 	registerClientOwner(key, owner);

@@ -305,6 +305,80 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("reuses one nested client when the same root is addressed through a symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-client-identity-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: { write: () => Promise.reject(new Error("identity probe")), flush: () => Promise.resolve() },
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+			const config = loadConfig(linkRoot);
+			const viaLink = resolveServersForFile(config, path.join(linkRoot, "python", "src", "example.py"), [linkRoot]);
+			const viaReal = resolveServersForFile(config, nested.filePath, [linkRoot]);
+			const linkServer = viaLink.find(server => server.name === "basedpyright");
+			const realServer = viaReal.find(server => server.name === "basedpyright");
+			expect(linkServer?.root).toBe(path.join(linkRoot, "python"));
+			expect(realServer?.root).toBe(nested.projectRoot);
+			expect(linkServer?.root).not.toBe(realServer?.root);
+			await expect(lspClient.getOrCreateClient(linkServer!.config, linkRoot)).rejects.toThrow("identity probe");
+			await expect(lspClient.getOrCreateClient(realServer!.config, linkRoot)).rejects.toThrow(
+				"failed to initialize recently",
+			);
+			expect(spawnCount).toBe(1);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not use the primary cwd executable for a nested additional workspace under a long symlink", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-rank-exec-");
+		const realOuter = tempDir.path();
+		fs.writeFileSync(path.join(realOuter, "package.json"), "{}\n");
+		const nested = path.join(realOuter, "pkg");
+		fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+		fs.writeFileSync(path.join(nested, "package.json"), "{}\n");
+		const filePath = path.join(nested, "src", "index.ts");
+		fs.writeFileSync(filePath, "export const value = 1;\n");
+		const binDir = path.join(realOuter, "node_modules", ".bin");
+		fs.mkdirSync(binDir, { recursive: true });
+		const primaryBin = path.join(binDir, "typescript-language-server");
+		fs.writeFileSync(primaryBin, "");
+		fs.chmodSync(primaryBin, 0o755);
+		const linkRoot = path.join(path.dirname(realOuter), `${path.basename(realOuter)}-very-long-symlink-alias`);
+		fs.symlinkSync(realOuter, linkRoot);
+		try {
+			expect(linkRoot.length).toBeGreaterThan(nested.length);
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+			const config = loadConfig(linkRoot);
+			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(
+				path.join(linkRoot, "node_modules", ".bin", "typescript-language-server"),
+			);
+			const resolved = resolveServersForFile(config, filePath, [linkRoot, nested]);
+			expect(resolved.find(server => server.name === "typescript-language-server")).toBeUndefined();
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not walk ancestors above the session workspace", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-boundary-");
 		try {

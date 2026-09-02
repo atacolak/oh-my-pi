@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed nested language-server clients being spawned twice when the same project was addressed through a symlink and its canonical path.
+- Fixed nested workspace routing attaching a file to the outer language server when a long symlink cwd outranked a shorter nested additional workspace.
 - Fixed creating a file under a workspace opened through a symlink skipping nested language-server formatting and diagnostics because the new path could not be realpath'd yet.
 - Fixed nested-root rename and code-action apply leaving sibling and root language servers with stale overlays when the workspace edit also changed files outside the nested project.
 - Fixed public `LspTool` construction allocating a new unreleasable owner on every call, so a later `reload *` could not stop clients started by an earlier tool on the same session.

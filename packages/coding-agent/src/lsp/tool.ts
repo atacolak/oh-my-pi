@@ -21,8 +21,8 @@ import {
 	applyWorkspaceEditWithLsp,
 	clearInitializationFailure,
 	clearWorkspaceInitializationFailures,
-	createLspClientOwner,
 	ensureFileOpen,
+	fallbackLspClientOwner,
 	getActiveClients,
 	getOrCreateClient,
 	isRustAnalyzerClient,
@@ -202,7 +202,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 	constructor(
 		private readonly session: ToolSession,
-		clientOwner = session.lspClientOwner ?? session.getLspClientOwner?.() ?? createLspClientOwner(),
+		clientOwner = session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 	) {
 		this.#clientOwner = clientOwner;
 		this.description = prompt.render(lspDescription);
@@ -1464,7 +1464,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const appliedAction = await applyCodeAction(selectedAction, {
 							resolveCodeAction: async actionItem =>
 								(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
-							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, client.cwd, signal),
+							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, this.session.cwd, signal),
 							executeCommand: async commandItem => {
 								await sendRequest(
 									client,
@@ -1560,7 +1560,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					} else {
 						const shouldApply = apply !== false;
 						if (shouldApply) {
-							const applied = await applyWorkspaceEditWithLsp(result, client.cwd, signal);
+							const applied = await applyWorkspaceEditWithLsp(result, this.session.cwd, signal);
 							output = `Applied rename:\n${applied.map(a => `  ${a}`).join("\n")}`;
 						} else {
 							const preview = formatWorkspaceEdit(result, this.session.cwd);

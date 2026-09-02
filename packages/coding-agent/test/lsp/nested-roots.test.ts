@@ -285,6 +285,26 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("routes a not-yet-created file when the workspace was opened through a symlink", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-new-file-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			writePythonProject(realRoot, "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const newFile = path.join(linkRoot, "python", "src", "new.py");
+			const config = loadConfig(linkRoot);
+			const resolved = resolveServersForFile(config, newFile, [linkRoot]);
+			expect(resolved.find(server => server.name === "basedpyright")?.root).toBe(path.join(linkRoot, "python"));
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not walk ancestors above the session workspace", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-boundary-");
 		try {

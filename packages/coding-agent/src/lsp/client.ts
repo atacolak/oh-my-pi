@@ -49,6 +49,17 @@ export function createLspClientOwner(): LspClientOwner {
 	return Symbol("lsp-client-owner");
 }
 
+const sessionFallbackOwners = new WeakMap<object, LspClientOwner>();
+
+/** Reuse one fallback owner for public ToolSession callers that omit both ownership fields. */
+export function fallbackLspClientOwner(session: object): LspClientOwner {
+	const existing = sessionFallbackOwners.get(session);
+	if (existing) return existing;
+	const owner = createLspClientOwner();
+	sessionFallbackOwners.set(session, owner);
+	return owner;
+}
+
 function registerClientOwner(key: string, owner: LspClientOwner | undefined): void {
 	if (!owner) return;
 	let owners = clientOwners.get(key);

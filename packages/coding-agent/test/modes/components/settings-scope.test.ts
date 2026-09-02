@@ -125,6 +125,34 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(selector.render(120).join("\n")).toContain("Settings · global");
 	});
 
+	it("sanitizes the project label before rendering the settings border", async () => {
+		resetSettingsForTest();
+		AgentStorage.close();
+		const hostileDir = tempDir.join("proj\tname\nwith\x1b[31mansi");
+		await Bun.write(path.join(hostileDir, ".omp", "config.yml"), YAML.stringify({ ask: { enabled: true } }, null, 2));
+		await Settings.init({ cwd: hostileDir, agentDir });
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: hostileDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onCancel: () => {},
+			},
+		);
+		const [title] = selector.render(120);
+		expect(title).toBeDefined();
+		expect(title).not.toMatch(/\t|\r|\n/);
+		expect(title).not.toContain("[31m");
+		const printable = Bun.stripANSI(title ?? "");
+		expect(printable).toContain("Settings · proj");
+		expect(printable).toContain("name withansi");
+	});
+
 	it("previews the selected scope's appearance when the selector opens", () => {
 		const previews: string[] = [];
 		settings.set("theme.dark", "dark-one", "project");

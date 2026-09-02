@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
+- Fixed `/settings` rendering unsanitized repository names in the project-scope title.
 - Fixed project saves leaving live git-status TUI state on the rejected local value after adopting a newer disk edit.
 - Fixed overlapping project saves leaving live session state on an adopted disk value after a later same-key edit persisted.
 - Fixed project saves discarding a second same-key edit when a sibling disk edit landed during debounce.

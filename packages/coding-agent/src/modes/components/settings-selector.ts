@@ -27,6 +27,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { ShapeTarget } from "@oh-my-pi/snapcompact";
 import {
 	getDefault,
@@ -1710,5 +1711,8 @@ function settingsProjectLabel(cwd: string): string {
 	}
 	const base = path.basename(primary ?? cwd);
 	const name = base.endsWith(".git") ? base.slice(0, -4) : base;
-	return name || "project";
+	const cleaned = replaceTabs(sanitizeText(name))
+		.replace(/[\r\n]+/g, " ")
+		.trim();
+	return cleaned || "project";
 }

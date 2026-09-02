@@ -348,6 +348,44 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("rename_file asks one nested server when symlink and canonical roots both match", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-rename-key-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			const destViaReal = path.join(nested.projectRoot, "src", "renamed.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const willRenameRequests: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameRequests.push(params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const sourceViaLink = path.join(linkRoot, "python", "src", "example.py");
+			const tool = new LspTool(makeLspSession(linkRoot));
+			const result = await tool.execute("symlink-rename-key", {
+				action: "rename_file",
+				file: sourceViaLink,
+				new_name: destViaReal,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameRequests).toHaveLength(1);
+			expect(fs.existsSync(sourceViaLink)).toBe(false);
+			expect(fs.existsSync(destViaReal)).toBe(true);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not use the primary cwd executable for a nested additional workspace under a long symlink", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rank-exec-");
 		const realOuter = tempDir.path();

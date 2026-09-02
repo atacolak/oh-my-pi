@@ -4487,6 +4487,45 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("cancelled workspace reload does not permanently tombstone a nested pending client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-abort-tombstone-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const nestedServer = installFakeLsp((message, server) => {
+				if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			const pending = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, owner);
+			const initialize = await nestedServer.waitFor(message => message.method === "initialize");
+			const controller = new AbortController();
+			const cleanup = lspClient.shutdownStaleClients(tempDir.path(), [], controller.signal, [tempDir.path()], owner);
+			controller.abort(new Error("reload cancelled"));
+			await expect(cleanup).rejects.toBeInstanceOf(ToolAbortError);
+
+			nestedServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			await expect(pending).resolves.toMatchObject({ config: { command: "nested-lsp" } });
+
+			const client = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner);
+			expect(client.config.command).toBe("nested-lsp");
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			expect(nestedServer.received.some(message => message.method === "shutdown")).toBe(true);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
 		try {

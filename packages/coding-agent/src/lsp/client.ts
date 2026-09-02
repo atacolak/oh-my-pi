@@ -962,57 +962,69 @@ export function shutdownStaleClients(
 		if (barrier && !previousBarriers.includes(barrier)) previousBarriers.push(barrier);
 	}
 	const cleanup = (async (): Promise<string[]> => {
-		for (const previousBarrier of previousBarriers) {
-			try {
-				await untilAborted(signal, previousBarrier);
-			} catch {
-				throwIfAborted(signal);
-				// A later explicit reload retries teardown after an earlier one
-				// failed; ordinary client creation remains blocked in between.
+		const restoreReleasedOwners = (): void => {
+			if (!owner) return;
+			for (const key of unownedStaleKeys) registerClientOwner(key, owner);
+		};
+		const clearTemporaryNestedTombstones = (entries: Iterable<[string, { cwd: string }]>): void => {
+			const primaryCwd = path.resolve(cwd);
+			for (const [key, entry] of entries) {
+				if (path.resolve(entry.cwd) !== primaryCwd) invalidatedClientKeys.delete(key);
 			}
-		}
-		for (const key of fresh) invalidatedClientKeys.delete(key);
-		// Tombstone stale identities before awaiting initialization. Existing
-		// callers keep sharing their in-flight promise; later callers cannot spawn
-		// another stale process while reload is blocked on teardown.
-		for (const [key] of stalePending) invalidatedClientKeys.add(key);
-		for (const [key] of staleClients) invalidatedClientKeys.add(key);
-		await Promise.all(
-			stalePending.map(async ([, pending]) => {
+		};
+		try {
+			for (const previousBarrier of previousBarriers) {
 				try {
-					await untilAborted(signal, pending.promise);
+					await untilAborted(signal, previousBarrier);
 				} catch {
 					throwIfAborted(signal);
+					// A later explicit reload retries teardown after an earlier one
+					// failed; ordinary client creation remains blocked in between.
 				}
-			}),
-		);
-
-		const stale = Array.from(clients.entries()).filter(
-			([key, client]) => unownedStaleKeys.has(key) && roots.some(root => isPathInsideWorkspace(client.cwd, root)),
-		);
-		const results = await Promise.all(stale.map(([, client]) => shutdownClientInstance(client)));
-		const failed = stale.filter((_entry, index) => results[index] !== true);
-		if (failed.length > 0) {
-			if (owner) {
-				for (const key of unownedStaleKeys) registerClientOwner(key, owner);
 			}
-			throw new Error(
-				"Failed to stop LSP server(s) with superseded configuration: " +
-					failed.map(([, client]) => client.config.command).join(", "),
+			for (const key of fresh) invalidatedClientKeys.delete(key);
+			// Tombstone stale identities before awaiting initialization. Existing
+			// callers keep sharing their in-flight promise; later callers cannot spawn
+			// another stale process while reload is blocked on teardown.
+			for (const [key] of stalePending) invalidatedClientKeys.add(key);
+			for (const [key] of staleClients) invalidatedClientKeys.add(key);
+			await Promise.all(
+				stalePending.map(async ([, pending]) => {
+					try {
+						await untilAborted(signal, pending.promise);
+					} catch {
+						throwIfAborted(signal);
+					}
+				}),
 			);
+
+			const stale = Array.from(clients.entries()).filter(
+				([key, client]) => unownedStaleKeys.has(key) && roots.some(root => isPathInsideWorkspace(client.cwd, root)),
+			);
+			const results = await Promise.all(stale.map(([, client]) => shutdownClientInstance(client)));
+			const failed = stale.filter((_entry, index) => results[index] !== true);
+			if (failed.length > 0) {
+				restoreReleasedOwners();
+				throw new Error(
+					"Failed to stop LSP server(s) with superseded configuration: " +
+						failed.map(([, client]) => client.config.command).join(", "),
+				);
+			}
+			for (const key of retainedOwnedKeys) invalidatedClientKeys.delete(key);
+			// Nested identities are rediscovered lazily from a concrete file after
+			// reload. Their temporary tombstones prevent reuse during teardown, but
+			// must not permanently block the same valid identity from starting again.
+			clearTemporaryNestedTombstones(stalePending);
+			clearTemporaryNestedTombstones(stale);
+			return stale.map(([, client]) => client.config.command);
+		} catch (error) {
+			if (signal?.aborted) {
+				restoreReleasedOwners();
+				clearTemporaryNestedTombstones(stalePending);
+				clearTemporaryNestedTombstones(staleClients);
+			}
+			throw error;
 		}
-		for (const key of retainedOwnedKeys) invalidatedClientKeys.delete(key);
-		// Nested identities are rediscovered lazily from a concrete file after
-		// reload. Their temporary tombstones prevent reuse during teardown, but
-		// must not permanently block the same valid identity from starting again.
-		const primaryCwd = path.resolve(cwd);
-		for (const [key, pending] of stalePending) {
-			if (path.resolve(pending.cwd) !== primaryCwd) invalidatedClientKeys.delete(key);
-		}
-		for (const [key, client] of stale) {
-			if (path.resolve(client.cwd) !== primaryCwd) invalidatedClientKeys.delete(key);
-		}
-		return stale.map(([, client]) => client.config.command);
 	})();
 	for (const root of barrierRoots) clientReloadBarriers.set(root, cleanup);
 	void cleanup.then(

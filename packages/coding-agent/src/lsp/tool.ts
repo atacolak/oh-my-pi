@@ -7,7 +7,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import { isEnoent, isFsError, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isEnoent, isFsError, logger, prompt, resolveEquivalentPath, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import { sessionWorkspaceDirectories, workspaceRootForPath } from "../session/session-workspace";
@@ -613,7 +613,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const servers: Array<[string, ServerConfig]> = [];
 			const collectRelevant = (filePath: string) => {
 				for (const [name, serverConfig] of getLspServersForFile(config, filePath, workspaceRoots)) {
-					const key = `${name}:${serverConfig.resolvedRoot ?? this.session.cwd}`;
+					const key = `${name}:${resolveEquivalentPath(serverConfig.resolvedRoot ?? this.session.cwd)}`;
 					if (seenServers.has(key)) continue;
 					seenServers.add(key);
 					servers.push([name, serverConfig]);

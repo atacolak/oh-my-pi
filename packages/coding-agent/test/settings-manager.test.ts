@@ -804,6 +804,48 @@ describe("Settings", () => {
 			}
 		});
 
+		it("persists a later project edit after an overlapping save rejects", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const firstSaveEntered = Promise.withResolvers<void>();
+			const releaseFirstSave = Promise.withResolvers<void>();
+			const withFileLock = fileLock.withFileLock;
+			let failFirstSave = true;
+			vi.spyOn(fileLock, "withFileLock").mockImplementation(async (filePath, fn, options) => {
+				return await withFileLock(
+					filePath,
+					async () => {
+						if (failFirstSave) {
+							failFirstSave = false;
+							firstSaveEntered.resolve();
+							await releaseFirstSave.promise;
+							throw new Error("project save lock failed");
+						}
+						return await fn();
+					},
+					options,
+				);
+			});
+			vi.useFakeTimers();
+			try {
+				settings.set("defaultThinkingLevel", Effort.High, "project");
+				vi.advanceTimersByTime(100);
+				await firstSaveEntered.promise;
+				settings.set("defaultThinkingLevel", Effort.Low, "project");
+				vi.advanceTimersByTime(100);
+				releaseFirstSave.resolve();
+				await settings.flush();
+				expect(settings.get("defaultThinkingLevel")).toBe(Effort.Low);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					defaultThinkingLevel: Effort.Low,
+				});
+			} finally {
+				releaseFirstSave.resolve();
+				vi.useRealTimers();
+			}
+		});
+
 		it("preserves a same-key external project edit made after a local save was queued", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "dark-one" } }, null, 2));

@@ -59,6 +59,9 @@ export function fallbackLspClientOwner(session: object): LspClientOwner {
 	if (existing) return existing;
 	const owner = createLspClientOwner();
 	sessionFallbackOwners.set(session, owner);
+	if ("registerDisposeCallback" in session && typeof session.registerDisposeCallback === "function") {
+		session.registerDisposeCallback(() => releaseLspClientOwner(owner));
+	}
 	return owner;
 }
 
@@ -87,7 +90,10 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	if (keys?.size === 0) ownerClientKeys.delete(owner);
 	return !clientOwners.has(key);
 }
-
+function releaseOwnerIfUnpublished(key: string, owner: LspClientOwner | undefined): void {
+	if (!owner || clients.has(key)) return;
+	releaseClientOwnerKey(key, owner);
+}
 /**
  * Release this session's ownership of language servers started under a
  * workspace root that is no longer in the session. `/remove-dir` calls this
@@ -652,7 +658,7 @@ function uriIsWithin(uri: string, root: string): boolean {
 }
 
 /** Reconcile open overlays and file watchers with the ops a workspace edit actually performed. */
-async function reconcileExecutedChanges(
+export async function reconcileExecutedChanges(
 	executed: ExecutedWorkspaceChange[],
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
@@ -1161,7 +1167,12 @@ export async function getOrCreateClient(
 	const existingLock = clientLocks.get(key);
 	if (existingLock) {
 		registerClientOwner(key, owner);
-		return existingLock.promise;
+		try {
+			return await existingLock.promise;
+		} catch (error) {
+			releaseOwnerIfUnpublished(key, owner);
+			throw error;
+		}
 	}
 	if (invalidatedClientKeys.has(key)) {
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
@@ -1195,7 +1206,12 @@ export async function getOrCreateClient(
 		const lockAfterReload = clientLocks.get(key);
 		if (lockAfterReload) {
 			registerClientOwner(key, owner);
-			return lockAfterReload.promise;
+			try {
+				return await lockAfterReload.promise;
+			} catch (error) {
+				releaseOwnerIfUnpublished(key, owner);
+				throw error;
+			}
 		}
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 	}
@@ -1356,6 +1372,7 @@ export async function getOrCreateClient(
 			) {
 				initFailures.set(key, { at: Date.now(), message, cwd, owner });
 			}
+			releaseOwnerIfUnpublished(key, owner);
 			throw err;
 		} finally {
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);

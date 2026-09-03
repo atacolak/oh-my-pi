@@ -28,6 +28,7 @@ import {
 	isRustAnalyzerClient,
 	type LspClientOwner,
 	type LspServerStatus,
+	reconcileExecutedChanges,
 	refreshFile,
 	releaseLspClientOwner,
 	releaseRemovedWorkspaceRoots as releaseOwnedWorkspaceRoots,
@@ -56,6 +57,7 @@ import {
 } from "./diagnostics";
 import {
 	applyEditsThenRename,
+	type ExecutedWorkspaceChange,
 	flattenWorkspaceTextEdits,
 	type RenameReferenceEdit,
 	rangesOverlap,
@@ -844,6 +846,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// the reference edits back so the source, destination, and every
 			// reference file are left unchanged.
 			await applyEditsThenRename(referenceEdits, source, dest);
+			const executed: ExecutedWorkspaceChange[] = referenceEdits.map(edit => ({
+				kind: "edit",
+				uri: fileToUri(edit.filePath),
+			}));
+			executed.push({ kind: "rename", oldUri: fileToUri(source), newUri: fileToUri(dest) });
+			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			for (const [serverName, serverConfig] of servers) {

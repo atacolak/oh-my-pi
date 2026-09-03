@@ -50,6 +50,7 @@ import {
 import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
@@ -4882,6 +4883,213 @@ describe("lsp regressions", () => {
 			);
 			expect(replacement.config.args).toEqual(["--mode", "new"]);
 			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("releases a fallback write-through owner when the session disposes", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-fallback-owner-dispose-");
+		try {
+			const filePath = path.join(tempDir.path(), "a.ts");
+			await Bun.write(filePath, "export const a = 1;\n");
+			const config: ServerConfig = {
+				command: "write-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const server = installHandshakeLsp();
+			const disposers: Array<() => void> = [];
+			const session = {
+				cwd: tempDir.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": false,
+				}),
+				enableLsp: true,
+				registerDisposeCallback: (callback: () => void) => {
+					disposers.push(callback);
+				},
+			} as ToolSession;
+
+			const owner = lspClient.fallbackLspClientOwner(session);
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, owner);
+			await new WriteTool(session).execute("fallback-owner-dispose", {
+				path: filePath,
+				content: "export const a = 2;\n",
+			});
+			expect(fs.readFileSync(filePath, "utf8")).toBe("export const a = 2;\n");
+			expect(server.received.map(message => message.method)).toContain("initialize");
+
+			for (const dispose of disposers) dispose();
+
+			const liveOwner = lspClient.createLspClientOwner();
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], liveOwner);
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(server.received.map(message => message.method)).toContain("exit");
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...config, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				liveOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("drops ownership after initialization fails so another session can replace the client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-failed-init-owner-");
+		try {
+			const config: ServerConfig = {
+				command: "broken-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const failedOwner = lspClient.createLspClientOwner();
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: {
+						write: () => Promise.reject(new Error("nested init failed")),
+						flush: () => Promise.resolve(),
+					},
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+			await expect(
+				lspClient.getOrCreateClient(config, tempDir.path(), undefined, undefined, failedOwner),
+			).rejects.toThrow("nested init failed");
+			lspClient.clearInitializationFailure(config, tempDir.path());
+
+			const liveOwner = lspClient.createLspClientOwner();
+			const server = installHandshakeLsp();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, liveOwner);
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], liveOwner);
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(server.received.map(message => message.method)).toContain("exit");
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...config, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				liveOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file refreshes a sibling nested overlay touched by willRenameFiles edits", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-sibling-overlay-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const siblingRoot = path.join(tempDir.path(), "sibling");
+			fs.mkdirSync(nestedRoot);
+			fs.mkdirSync(siblingRoot);
+			const sourceFile = path.join(nestedRoot, "old.ts");
+			const destFile = path.join(nestedRoot, "new.ts");
+			const siblingFile = path.join(siblingRoot, "import.ts");
+			await Bun.write(sourceFile, "export const value = 1;\n");
+			await Bun.write(siblingFile, "import { value } from './old';\n");
+			const siblingServer = installHandshakeLsp();
+			const siblingConfig: ServerConfig = {
+				command: "sibling-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: siblingRoot,
+			};
+			const siblingClient = await lspClient.getOrCreateClient(siblingConfig, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(siblingClient, siblingFile);
+			await siblingServer.waitFor(message => message.method === "textDocument/didOpen");
+
+			const nestedConfig: ServerConfig = {
+				command: "nested-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const nestedClient: LspClient = {
+				name: "nested-lsp",
+				cwd: nestedRoot,
+				config: nestedConfig,
+				proc: { stdin: { write() {}, flush: async () => {} } } as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "nested-lsp": nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(nestedClient);
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method) => {
+				if (method === "workspace/willRenameFiles") {
+					return {
+						changes: {
+							[fileToUri(siblingFile)]: [
+								{
+									range: {
+										start: { line: 0, character: 22 },
+										end: { line: 0, character: 29 },
+									},
+									newText: "'./new'",
+								},
+							],
+						},
+					};
+				}
+				return null;
+			});
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("rename-sibling-overlay", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(fs.existsSync(sourceFile)).toBe(false);
+			expect(fs.existsSync(destFile)).toBe(true);
+			expect(fs.readFileSync(siblingFile, "utf8")).toBe("import { value } from './new';\n");
+			const didChange = await siblingServer.waitFor(message => message.method === "textDocument/didChange");
+			expect(didChange.params).toMatchObject({
+				textDocument: { uri: fileToUri(siblingFile) },
+				contentChanges: [{ text: "import { value } from './new';\n" }],
+			});
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

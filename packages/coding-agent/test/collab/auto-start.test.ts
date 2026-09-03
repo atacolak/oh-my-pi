@@ -167,11 +167,12 @@ describe("collab auto-start", () => {
 		}
 	});
 
-	it("refuses project-configured auto-start before connecting or writing", async () => {
+	it("honors project-configured auto-start and writes the project link path", async () => {
+		installInMemoryRelay();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const agentDir = path.join(dir, "agent");
 		const projectDir = path.join(dir, "project");
-		const target = path.join(dir, "sensitive");
+		const target = path.join(dir, "collab.link");
 		await fs.mkdir(path.join(projectDir, ".omp"), { recursive: true });
 		await Bun.write(
 			path.join(projectDir, ".omp", "config.yml"),
@@ -180,24 +181,24 @@ describe("collab auto-start", () => {
 		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir, inMemory: true });
 		const warnings: string[] = [];
 		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
-		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			await expect(autoStartCollab(ctx)).resolves.toBe(false);
-			expect(start).not.toHaveBeenCalled();
-			expect(await Bun.file(target).exists()).toBe(false);
-			expect(warnings.join(" ")).toContain("outside project settings");
+			await expect(autoStartCollab(ctx)).resolves.toBe(true);
+			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
+			expect(await fs.readFile(target, "utf8")).toBe(ctx.collabHost?.link ?? "");
+			expect((await fs.stat(target)).mode & 0o777).toBe(0o600);
+			expect(warnings.join(" ")).not.toContain("outside project settings");
 		} finally {
-			start.mockRestore();
+			await ctx.collabHost?.stop("test done");
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
 
-	it("ignores a project-configured link path when auto-start is user-configured", async () => {
+	it("writes a project-configured link path when auto-start is user-configured", async () => {
 		installInMemoryRelay();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const agentDir = path.join(dir, "agent");
 		const projectDir = path.join(dir, "project");
-		const target = path.join(dir, "sensitive");
+		const target = path.join(dir, "collab.link");
 		await fs.mkdir(path.join(projectDir, ".omp"), { recursive: true });
 		await fs.mkdir(agentDir, { recursive: true });
 		await Bun.write(
@@ -210,8 +211,8 @@ describe("collab auto-start", () => {
 		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
 		try {
 			await expect(autoStartCollab(ctx)).resolves.toBe(true);
-			expect(await Bun.file(target).exists()).toBe(false);
-			expect(warnings.join(" ")).toContain("link file skipped");
+			expect(await fs.readFile(target, "utf8")).toBe(ctx.collabHost?.link ?? "");
+			expect(warnings.join(" ")).not.toContain("link file skipped");
 		} finally {
 			await ctx.collabHost?.stop("test done");
 			await fs.rm(dir, { recursive: true, force: true });

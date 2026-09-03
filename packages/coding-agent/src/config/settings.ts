@@ -654,16 +654,6 @@ export class Settings {
 		return getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]) !== undefined;
 	}
 
-	/** Return the highest-precedence layer that explicitly supplies `path`. */
-	getProvenance(path: SettingPath): "runtime" | "overlay" | "project" | "global" | "default" {
-		const segments = SETTING_PATH_SEGMENTS[path];
-		if (getByPath(this.#overrides, segments) !== undefined) return "runtime";
-		if (getByPath(this.#configOverlay, segments) !== undefined) return "overlay";
-		if (getByPath(this.#project, segments) !== undefined) return "project";
-		if (getByPath(this.#global, segments) !== undefined) return "global";
-		return "default";
-	}
-
 	/**
 	 * Set a setting value (sync).
 	 * Updates global settings and queues a background save.

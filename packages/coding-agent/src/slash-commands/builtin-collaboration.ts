@@ -1,7 +1,7 @@
 import { Spacer } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import type { CollabHost } from "../collab/host";
-import { resolveRelayUrl, startCollabGuest, startCollabHost } from "../collab/start";
+import { resolveRelayUrl, startCollabGuest, startCollabHost, stopCollabHost } from "../collab/start";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import { parseExportArgs } from "../export/html/args";
@@ -302,11 +302,10 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			const args = command.args.trim();
 			const { verb, rest } = parseSubcommand(args);
 			if (verb === "stop") {
-				if (!ctx.collabHost) {
+				if (!(await stopCollabHost(ctx))) {
 					ctx.showStatus("Not hosting a collab session");
 					return;
 				}
-				await ctx.collabHost.stop("host stopped");
 				ctx.showStatus("Collab stopped");
 				return;
 			}
@@ -411,8 +410,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				await ctx.collabGuest.leave("left");
 				return;
 			}
-			if (ctx.collabHost) {
-				await ctx.collabHost.stop("host stopped");
+			if (await stopCollabHost(ctx)) {
 				ctx.showStatus("Collab stopped");
 				return;
 			}

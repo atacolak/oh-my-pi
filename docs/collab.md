@@ -115,11 +115,13 @@ Set `collab.webUrl` when the browser UI is hosted separately from the websocket 
 Auto-start is interactive-TUI-only and is opt-in. Configure `collab.autoStart`
 in user config, a runtime overlay, or project settings (`.omp/config.yml`).
 Project-scoped auto-start only hosts sessions whose cwd loads that project
-file; it does not turn on every omp. Auto-start skips guests and sessions
-already hosting, starts at most once per TUI lifetime, and refuses the
-implicit public relay until `collab.relayUrl` is explicitly configured. It
-keeps the credential out of terminal output; use `/collab` or `/collab status`
-to display the link and QR code.
+file; it does not turn on every omp. Auto-start waits until startup
+reconciliation, setup, and the initial transcript have finished, skips guests
+and sessions already hosting, starts at most once per TUI lifetime, and
+refuses the implicit public relay until `collab.relayUrl` is explicitly
+configured. `/collab stop` and `/leave` cancel an in-flight host handshake.
+It keeps the credential out of terminal output; use `/collab` or
+`/collab status` to display the link and QR code.
 
 ## Self-hosting the relay
 

@@ -7,6 +7,10 @@ import { CollabGuestLink } from "./guest";
 import { CollabHost } from "./host";
 import { DEFAULT_RELAY_URL } from "./protocol";
 
+const hostStartAborts = new WeakMap<Promise<CollabHost>, AbortController>();
+
+export const COLLAB_HOST_START_CANCELLED = "Collab host start cancelled";
+
 export interface StartCollabOptions {
 	relayUrl: string;
 	webUrl?: string;
@@ -18,12 +22,17 @@ export async function startCollabHost(ctx: InteractiveModeContext, options: Star
 	if (ctx.collabGuest || ctx.collabGuestStart) throw new Error("Cannot host while joining as a guest");
 	if (ctx.collabHost) return ctx.collabHost;
 	if (ctx.collabHostStart) return ctx.collabHostStart;
-	const start = startCollabHostOnce(ctx, options);
+	const abort = new AbortController();
+	ctx.collabHostAbort = abort;
+	const start = startCollabHostOnce(ctx, options, abort.signal);
+	hostStartAborts.set(start, abort);
 	ctx.collabHostStart = start;
 	try {
 		return await start;
 	} finally {
 		if (ctx.collabHostStart === start) ctx.collabHostStart = undefined;
+		if (ctx.collabHostAbort === abort) ctx.collabHostAbort = undefined;
+		hostStartAborts.delete(start);
 	}
 }
 
@@ -42,12 +51,21 @@ export async function startCollabGuest(ctx: InteractiveModeContext, link: string
 	}
 }
 
-async function startCollabHostOnce(ctx: InteractiveModeContext, options: StartCollabOptions): Promise<CollabHost> {
+async function startCollabHostOnce(
+	ctx: InteractiveModeContext,
+	options: StartCollabOptions,
+	signal: AbortSignal,
+): Promise<CollabHost> {
 	const host = new CollabHost(ctx);
-	await host.start(options.relayUrl, options.webUrl ?? "");
-	if (ctx.collabGuest || ctx.collabGuestStart) {
-		await host.stop("guest joined while host was starting");
-		throw new Error("Cannot host while joined as a guest");
+	try {
+		await host.start(options.relayUrl, options.webUrl ?? "", signal);
+	} catch (error) {
+		if (signal.aborted) throw new Error(COLLAB_HOST_START_CANCELLED);
+		throw error;
+	}
+	if (signal.aborted || ctx.collabGuest || ctx.collabGuestStart) {
+		await host.stop(signal.aborted ? "host start cancelled" : "guest joined while host was starting");
+		throw new Error(signal.aborted ? COLLAB_HOST_START_CANCELLED : "Cannot host while joined as a guest");
 	}
 	ctx.collabHost = host;
 	if (options.writeLinkPath?.trim()) {
@@ -59,6 +77,23 @@ async function startCollabHostOnce(ctx: InteractiveModeContext, options: StartCo
 		}
 	}
 	return host;
+}
+
+/** Cancel an in-flight host handshake or stop an attached host. */
+export async function stopCollabHost(ctx: InteractiveModeContext, reason = "host stopped"): Promise<boolean> {
+	const pending = ctx.collabHostStart;
+	const abort = pending ? hostStartAborts.get(pending) : undefined;
+	const settled = pending?.then(
+		() => undefined,
+		() => undefined,
+	);
+	abort?.abort();
+	ctx.collabHostAbort?.abort();
+	if (settled) await settled;
+	const host = ctx.collabHost;
+	if (!host) return pending !== undefined;
+	await host.stop(reason);
+	return true;
 }
 
 async function writeCollabLink(rawPath: string, link: string, ctxCwd: string): Promise<void> {
@@ -114,6 +149,7 @@ export async function autoStartCollab(ctx: InteractiveModeContext): Promise<bool
 		ctx.showStatus("Collab auto-started", { dim: true });
 		return true;
 	} catch (error) {
+		if (error instanceof Error && error.message === COLLAB_HOST_START_CANCELLED) return false;
 		ctx.showError(`Failed to auto-start collab session: ${error instanceof Error ? error.message : String(error)}`);
 		return false;
 	}

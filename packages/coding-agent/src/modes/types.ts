@@ -93,8 +93,6 @@ export interface InteractiveModeInitOptions {
 	clearInitialTerminalHistory?: boolean;
 	/** Recent-session rows loaded by the prepaint composer while runtime modules initialized. */
 	recentSessions?: Promise<RecentSession[] | undefined>;
-	/** Disable settings-driven collab hosting for headless renderers. */
-	autoStartCollab?: boolean;
 }
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
@@ -161,6 +159,7 @@ export interface InteractiveModeContext {
 	lspServers?: LspStartupServerInfo[];
 	collabHost?: CollabHost;
 	collabHostStart?: Promise<CollabHost>;
+	collabHostAbort?: AbortController;
 	collabGuest?: CollabGuestLink;
 	collabGuestStart?: Promise<CollabGuestLink>;
 	eventController: EventController;

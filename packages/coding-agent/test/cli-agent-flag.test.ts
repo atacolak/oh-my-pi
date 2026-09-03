@@ -322,6 +322,32 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
+	it("restores agentName from the session header without a CLI --agent", async () => {
+		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+		try {
+			authStorage = await AuthStorage.create(":memory:");
+			const registry = new ModelRegistry(authStorage);
+			const settings = Settings.isolated({
+				"async.enabled": false,
+				"marketplace.autoUpdate": "off",
+			});
+			const parsed = parseArgs(["--continue"]);
+			parsed.cwd = cwd;
+			const sessionManager = {
+				getHeader: () => ({ rootAgent: "flag-probe" }),
+				setRootAgent: async () => {},
+			};
+			const options = await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
+			expect(options.agentName).toBe("flag-probe");
+			expect(options.rootAgentName).toBe("flag-probe");
+			expect(options.agentDisplayName).toBeUndefined();
+			expect(options.toolNames).toBeUndefined();
+			expect(options.customSystemPrompt).toBeUndefined();
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects a conflicting restore-time --agent", async () => {
 		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
 		try {

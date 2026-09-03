@@ -17,6 +17,13 @@ export const launchHelp = {
 		model: Flags.string({
 			description: 'Model to use (fuzzy match: "opus", "gpt-5.2", or "openai/gpt-5.2")',
 		}),
+		agent: Flags.string({
+			description:
+				"Start this session as a discovered agent (user ~/.omp/agent/agents, project .omp/agents, or bundled)",
+		}),
+		"agent-cwd": Flags.string({
+			description: "Project root used only to discover --agent; the session still runs in --cwd",
+		}),
 		smol: Flags.string({ description: "Smol/fast model for lightweight tasks (or PI_SMOL_MODEL env)" }),
 		slow: Flags.string({ description: "Slow/reasoning model for thorough analysis (or PI_SLOW_MODEL env)" }),
 		plan: Flags.string({ description: "Plan model for architectural planning (or PI_PLAN_MODEL env)" }),
@@ -114,6 +121,7 @@ export const launchHelp = {
 		`# Continue previous session\n  ${APP_NAME} --continue "What did we discuss?"`,
 		`# Create a shell shortcut for a work profile\n  ${APP_NAME} --profile work --alias omp-work`,
 		`# Use different model (fuzzy matching)\n  ${APP_NAME} --model opus "Help me refactor this code"`,
+		`# Start as a named agent (tools, thinking, model, body)\n  ${APP_NAME} --agent navigator`,
 		`# Limit model cycling to specific models\n  ${APP_NAME} --models claude-sonnet,claude-haiku,gpt-4o`,
 		`# Export a session file to HTML\n  ${APP_NAME} --export ~/.omp/agent/sessions/--path--/session.jsonl`,
 	],

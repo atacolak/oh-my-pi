@@ -6,7 +6,7 @@ import { reset as resetCapabilities } from "../capability";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import { loadSlashCommands } from "../extensibility/slash-commands";
-import { LspTool } from "../lsp";
+import { releaseRemovedWorkspaceRoots } from "../lsp";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
@@ -718,10 +718,11 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				await runtime.output(`Not a workspace directory: ${resolved}`);
 				return commandConsumed();
 			}
-			const lspTool = runtime.session.getToolByName("lsp");
-			if (lspTool instanceof LspTool) {
-				await lspTool.releaseRemovedWorkspaceRoots(removed);
-			}
+			await releaseRemovedWorkspaceRoots(
+				runtime.sessionManager.getCwd(),
+				removed,
+				runtime.session.getLspClientOwner(),
+			);
 			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));
 			return commandConsumed();

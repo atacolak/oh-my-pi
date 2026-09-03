@@ -30,6 +30,7 @@ import {
 	type LspServerStatus,
 	refreshFile,
 	releaseLspClientOwner,
+	releaseRemovedWorkspaceRoots as releaseOwnedWorkspaceRoots,
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
@@ -216,10 +217,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 	 * replace it after configuration changes.
 	 */
 	async releaseRemovedWorkspaceRoots(removedRoot: string, signal?: AbortSignal): Promise<string[]> {
-		const roots = [path.resolve(removedRoot)];
-		const stopped = await shutdownStaleClients(this.session.cwd, [], signal, roots, this.#clientOwner);
-		clearWorkspaceInitializationFailures(roots, this.#clientOwner);
-		return stopped;
+		return releaseOwnedWorkspaceRoots(this.session.cwd, removedRoot, this.#clientOwner, signal);
 	}
 
 	static createIf(session: ToolSession): LspTool | null {

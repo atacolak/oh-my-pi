@@ -87,6 +87,25 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	return !clientOwners.has(key);
 }
 
+/**
+ * Release this session's ownership of language servers started under a
+ * workspace root that is no longer in the session. `/remove-dir` calls this
+ * even when the model-facing LSP tool is not registered, so write/edit
+ * writethrough clients do not remain owned after the root is removed.
+ */
+export async function releaseRemovedWorkspaceRoots(
+	sessionCwd: string,
+	removedRoot: string,
+	owner: LspClientOwner | undefined,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	if (!owner) return [];
+	const roots = [path.resolve(removedRoot)];
+	const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner);
+	clearWorkspaceInitializationFailures(roots, owner);
+	return stopped;
+}
+
 /** Release all client identities associated with a disposed tool session. */
 export function releaseLspClientOwner(owner: LspClientOwner): void {
 	for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) releaseClientOwnerKey(key, owner);
@@ -619,9 +638,18 @@ async function reconcileExecutedChanges(
 	if (executed.length === 0) return;
 	const { finalUris, deletedRoots, watchedFiles } = workspaceEditChanges(executed);
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
-	const activeClients = Array.from(clients.values()).filter(
-		client => client.status === "ready" && workspaceRoots.some(root => isPathInsideWorkspace(client.cwd, root)),
-	);
+	const activeClients = Array.from(clients.values()).filter(client => {
+		if (client.status !== "ready") return false;
+		if (workspaceRoots.some(root => isPathInsideWorkspace(client.cwd, root))) return true;
+		if (watchedFiles.some(change => isPathInsideWorkspace(change.filePath, client.cwd))) return true;
+		if (Array.from(finalUris).some(uri => client.openFiles.has(uri))) return true;
+		for (const uri of client.openFiles.keys()) {
+			for (const root of deletedRoots) {
+				if (uriIsWithin(uri, root)) return true;
+			}
+		}
+		return false;
+	});
 
 	for (const activeClient of activeClients) {
 		for (const uri of Array.from(activeClient.openFiles.keys())) {
@@ -642,7 +670,10 @@ async function reconcileExecutedChanges(
 			await refreshFile(activeClient, uriToFile(uri), signal);
 		}
 	}
-	await notifyWorkspaceWatchedFiles(workspaceRoots, watchedFiles, signal);
+	const notifyRoots = Array.from(
+		new Set([...workspaceRoots, ...activeClients.map(client => path.resolve(client.cwd))]),
+	);
+	await notifyWorkspaceWatchedFiles(notifyRoots, watchedFiles, signal);
 }
 
 /**
@@ -654,8 +685,10 @@ async function reconcileExecutedChanges(
  * error propagates so mutated files never keep stale overlays.
  *
  * `workspace` is the session cwd or the full session workspace-root list. Relative edit
- * paths resolve against the first root; overlay and watcher reconciliation covers every
- * ready client inside those roots, including additional `--add-dir` / nested projects.
+ * paths resolve against the first root. Overlay and watcher reconciliation covers every
+ * ready client inside those roots, plus any ready client that owns an overlay or watched
+ * path the edit actually touched, so a nested `workspace/applyEdit` still refreshes
+ * sibling and session-root clients.
  */
 export async function applyWorkspaceEditWithLsp(
 	edit: WorkspaceEdit,

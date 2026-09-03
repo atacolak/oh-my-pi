@@ -467,7 +467,8 @@ describe("Settings", () => {
 
 		it("clears remaining migrated native aliases on inherit", async () => {
 			await writeSettings({
-				"task.isolation.mode": "none",
+				"task.isolation.enabled": false,
+				"isolation.backend": "auto",
 				"compaction.methodOrder": ["soft"],
 				"memory.backend": "off",
 			});
@@ -476,7 +477,7 @@ describe("Settings", () => {
 				projectConfigPath,
 				YAML.stringify(
 					{
-						task: { isolation: { enabled: true } },
+						task: { isolation: { mode: "reflink" } },
 						compaction: { strategy: "handoff", remoteEnabled: false },
 						memories: { enabled: true },
 					},
@@ -485,13 +486,16 @@ describe("Settings", () => {
 				),
 			);
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			expect(settings.get("task.isolation.mode")).toBe("auto");
+			expect(settings.get("task.isolation.enabled")).toBe(true);
+			expect(settings.get("isolation.backend")).toBe("reflink");
 			expect(settings.get("compaction.methodOrder")).toEqual(["handoff", "soft"]);
 			expect(settings.get("memory.backend")).toBe("local");
-			expect(settings.clearProject("task.isolation.mode")).toBe(true);
+			expect(settings.clearProject("task.isolation.enabled")).toBe(true);
+			expect(settings.clearProject("isolation.backend")).toBe(true);
 			expect(settings.clearProject("compaction.methodOrder")).toBe(true);
 			expect(settings.clearProject("memory.backend")).toBe(true);
-			expect(settings.get("task.isolation.mode")).toBe("none");
+			expect(settings.get("task.isolation.enabled")).toBe(false);
+			expect(settings.get("isolation.backend")).toBe("auto");
 			expect(settings.get("compaction.methodOrder")).toEqual(["soft"]);
 			expect(settings.get("memory.backend")).toBe("off");
 			await settings.flush();

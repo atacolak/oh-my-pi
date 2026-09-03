@@ -8,6 +8,7 @@
 - Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
 - Resume and fork now restore a session's original `--agent` identity from the session header. A conflicting `--agent` is refused, and a persisted privileged role that is missing from discovery fails closed.
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
+
 ## [18.1.8] - 2026-09-03
 
 ### Fixed

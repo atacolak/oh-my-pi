@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-ai";
 import {
 	normalizeProviderMaxInFlightRequests,
 	resetSettingsForTest,
@@ -72,9 +73,10 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		);
 	}
 
-	it("writes the global layer while callbacks receive the shadowing effective value", async () => {
+	it("writes the global layer without live callbacks when the project value still wins", async () => {
 		// Start both layers at true, then toggle only the global fallback to
-		// false. The persisted scope and active effective value must diverge.
+		// false. The persisted scope and active effective value must diverge,
+		// and session side effects must not rerun for an unchanged merge.
 		settings.set("ask.enabled", true, "global");
 		const selector = createSelector();
 		expect(selector.render(120).join("\n")).toContain(`Settings · ${path.basename(projectDir)}`);
@@ -90,9 +92,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 
 		expect(settings.getGlobalValue("ask.enabled")).toBe(false);
 		expect(settings.get("ask.enabled")).toBe(true);
-		// Side-effect handlers receive the merged effective value, not the
-		// global fallback displayed in the row.
-		expect(changes.at(-1)).toEqual({ path: "ask.enabled", value: true });
+		expect(changes).toEqual([]);
 
 		await settings.flush();
 		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toEqual({ ask: { enabled: false } });
@@ -123,6 +123,34 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(selector.render(120).join("\n")).toContain(`Settings · ${path.basename(projectDir)}`);
 		selector.handleInput("\x1bs");
 		expect(selector.render(120).join("\n")).toContain("Settings · global");
+	});
+
+	it("sanitizes the project label before rendering the settings border", async () => {
+		resetSettingsForTest();
+		AgentStorage.close();
+		const hostileDir = tempDir.join("proj\tname\nwith\x1b[31mansi");
+		await Bun.write(path.join(hostileDir, ".omp", "config.yml"), YAML.stringify({ ask: { enabled: true } }, null, 2));
+		await Settings.init({ cwd: hostileDir, agentDir });
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: hostileDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onCancel: () => {},
+			},
+		);
+		const [title] = selector.render(120);
+		expect(title).toBeDefined();
+		expect(title).not.toMatch(/\t|\r|\n/);
+		expect(title).not.toContain("[31m");
+		const printable = Bun.stripANSI(title ?? "");
+		expect(printable).toContain("Settings · proj");
+		expect(printable).toContain("name withansi");
 	});
 
 	it("previews the selected scope's appearance when the selector opens", () => {
@@ -257,6 +285,34 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(settings.get("statusLine.preset")).toBe("minimal");
 	});
 
+	it("previews the selected scope's status-line segment options", () => {
+		settings.set("statusLine.preset", "minimal", "project");
+		settings.set("statusLine.preset", "full", "global");
+		settings.set("statusLine.segmentOptions", { path: { abbreviate: true } }, "project");
+		settings.set("statusLine.segmentOptions", { path: { abbreviate: false } }, "global");
+		const previews: Array<{ segmentOptions?: Record<string, unknown> }> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onStatusLinePreview: payload => {
+					previews.push(payload);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: false } });
+		selector.handleInput("\x1b");
+		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: true } });
+	});
+
 	it("restores the scoped theme when canceling a theme submenu", () => {
 		const previews: string[] = [];
 		const selector = new SettingsSelectorComponent(
@@ -287,6 +343,41 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		selector.handleInput("\x1b");
 		expect(previews.at(-1)).toBe("titanium");
 		expect(settings.get("theme.dark")).toBe("dark-one");
+	});
+
+	it("reapplies the scoped theme after a shadowed global theme submenu commit", () => {
+		const previews: string[] = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium", "alabaster"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: themeName => {
+					previews.push(themeName);
+				},
+				onCancel: () => {},
+			},
+		);
+		settings.set("theme.dark", "dark-one", "project");
+		settings.set("theme.dark", "titanium", "global");
+		// Alt+S previews the global layer. Confirming a different global dark
+		// theme persists only that layer; the live preview must stay on the
+		// scoped (global) value instead of snapping back to the still-winning
+		// project mapping that Settings.set() re-evaluates.
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)).toBe("titanium");
+		for (const ch of "dark theme") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		expect(settings.getGlobalValue("theme.dark")).toBe("alabaster");
+		expect(settings.get("theme.dark")).toBe("dark-one");
+		expect(previews.at(-1)).toBe("alabaster");
 	});
 
 	it("keeps the dark/light theme slot of the terminal when closing after a preview", async () => {
@@ -429,6 +520,37 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		selector.handleInput("\x1b");
 		expect(previews.at(-1)?.preset).toBe("full");
 		expect(previews.at(-1)?.showHookStatus).toBe(true);
+	});
+
+	it("keeps the selected scope's status-line preview after committing a submenu", () => {
+		settings.set("statusLine.preset", "minimal", "project");
+		settings.set("statusLine.preset", "full", "global");
+		const previews: Array<{ preset?: string }> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: [],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onStatusLinePreview: payload => {
+					previews.push(payload);
+				},
+				onCancel: () => {},
+			},
+		);
+		selector.handleInput("\x1bs");
+		expect(previews.at(-1)?.preset).toBe("full");
+		for (const ch of "status line preset") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		expect(settings.getGlobalValue("statusLine.preset")).toBe("nerd");
+		expect(settings.get("statusLine.preset")).toBe("minimal");
+		expect(previews.at(-1)?.preset).toBe("nerd");
 	});
 	it("clears a provider limit inherited from the global layer when editing in project scope", () => {
 		// Global caps "anthropic"; the project layer has no override. A project
@@ -576,5 +698,75 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			custom: { keep: true },
 			retry: { fallbackChains: { slow: null } },
 		});
+	});
+
+	it("does not copy an unchanged inherited credential into the project layer", async () => {
+		settings.set("memory.backend", "hindsight", "global");
+		settings.set("hindsight.apiToken", "global-secret-token", "global");
+		const selector = createSelector();
+		for (const ch of "hindsight api token") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\n");
+		expect(settings.get("hindsight.apiToken")).toBe("global-secret-token");
+		expect(settings.getGlobalValue("hindsight.apiToken")).toBe("global-secret-token");
+		await settings.flush();
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			ask: { enabled: true },
+			custom: { keep: true },
+		});
+		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toMatchObject({
+			hindsight: { apiToken: "global-secret-token" },
+		});
+	});
+
+	it("persists a changed project credential without rewriting the global secret", async () => {
+		settings.set("memory.backend", "hindsight", "global");
+		settings.set("hindsight.apiToken", "global-secret-token", "global");
+		const selector = createSelector();
+		for (const ch of "hindsight api token") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x15");
+		selector.handleInput("project-secret-token");
+		selector.handleInput("\n");
+		expect(settings.get("hindsight.apiToken")).toBe("project-secret-token");
+		expect(settings.getGlobalValue("hindsight.apiToken")).toBe("global-secret-token");
+		await settings.flush();
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			ask: { enabled: true },
+			custom: { keep: true },
+			hindsight: { apiToken: "project-secret-token" },
+		});
+		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toMatchObject({
+			hindsight: { apiToken: "global-secret-token" },
+		});
+	});
+
+	it("rebuilds open rows after a skipped same-key project save", async () => {
+		settings.set("defaultThinkingLevel", Effort.Low, "project");
+		await settings.flush();
+		const selector = createSelector();
+		for (const char of "thinking level") selector.handleInput(char);
+		const thinkingRow = (text: string) =>
+			Bun.stripANSI(text)
+				.split("\n")
+				.find(line => line.includes("Thinking Level") && !line.includes("Compact"));
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("low");
+
+		settings.set("defaultThinkingLevel", Effort.High, "project");
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("low");
+
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify(
+				{ ask: { enabled: true }, custom: { keep: true }, defaultThinkingLevel: Effort.Medium },
+				null,
+				2,
+			),
+		);
+		await settings.flush();
+
+		expect(settings.get("defaultThinkingLevel")).toBe(Effort.Medium);
+		expect(thinkingRow(selector.render(120).join("\n"))).toContain("medium");
+		selector.handleInput("\x1b");
 	});
 });

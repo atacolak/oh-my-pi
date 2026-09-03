@@ -73,6 +73,20 @@ describe("workspaceRootForPath", () => {
 			fs.rmSync(linkRoot, { force: true });
 		}
 	});
+
+	it("matches a not-yet-created file when the workspace was opened through a symlink", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-symlink-new-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const filePath = path.join(linkRoot, "src", "new.ts");
+			const workspace = normalizeSessionWorkspace({ cwd: linkRoot });
+			expect(workspaceRootForPath(filePath, workspace)).toBe(path.resolve(linkRoot));
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+		}
+	});
 });
 
 describe("SessionManager workspace directories", () => {

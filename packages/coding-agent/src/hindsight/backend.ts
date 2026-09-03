@@ -253,9 +253,12 @@ async function installPrimaryState(
 	const displaced = session.setHindsightSessionState(state);
 	if (displaced && displaced !== previous) {
 		await displaced.flushRetainQueue();
+		displaced.replaceWith(state);
 		displaced.dispose();
 	}
+	previous?.replaceWith(state);
 	previous?.dispose();
+
 	state.attachSessionListeners();
 
 	// Kick off mental-model bootstrap. Resolves asynchronously; the first

@@ -1,14 +1,15 @@
 import { Spacer } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import type { CollabHost } from "../collab/host";
-import { resolveRelayUrl, startCollabGuest, startCollabHost } from "../collab/start";
+import { resolveRelayUrl, startCollabGuest, startCollabHost, stopCollabHost } from "../collab/start";
 import type { SettingPath, SettingValue } from "../config/settings";
 import { settings } from "../config/settings";
 import { parseExportArgs } from "../export/html/args";
 import { shareSession } from "../export/share";
 import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
-import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
+import { extractLastCodeBlock, extractLastCommand, extractLastLink } from "../modes/utils/copy-targets";
+import { openPath } from "../utils/open";
 import { copyToClipboard } from "../utils/clipboard";
 import { refreshStatusLine } from "./builtin-modes";
 import { CollabQrCodeComponent, collabBrowserLink } from "./helpers/collab-qrcode";
@@ -191,6 +192,33 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		},
 	},
 	{
+		name: "trace",
+		icon: "stats",
+		description: "Open this session's trace in the stats dashboard",
+		handle: async (_command, runtime) => {
+			const sessionFile = runtime.session.sessionFile;
+			if (!sessionFile) {
+				await runtime.output("No session file yet — send a message first.");
+				return commandConsumed();
+			}
+			try {
+				// Lazy: the stats dashboard (server + sqlite) loads on demand only,
+				// matching src/cli/stats-cli.ts, to keep CLI startup fast.
+				const { formatStatsDashboardUrl, startServer } = await import("@oh-my-pi/omp-stats");
+				const { hostname, port } = await startServer();
+				const url = `${formatStatsDashboardUrl(hostname, port)}/#/traces?s=${encodeURIComponent(sessionFile)}`;
+				await runtime.output(url);
+				return commandConsumed();
+			} catch (err) {
+				return usage(`Failed to open trace: ${errorMessage(err)}`, runtime);
+			}
+		},
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.handleTraceCommand();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "dump",
 		icon: "clipboard",
 		description: "Copy session transcript to clipboard (and write LLM request JSON to tmp)",
@@ -274,11 +302,10 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			const args = command.args.trim();
 			const { verb, rest } = parseSubcommand(args);
 			if (verb === "stop") {
-				if (!ctx.collabHost) {
+				if (!(await stopCollabHost(ctx))) {
 					ctx.showStatus("Not hosting a collab session");
 					return;
 				}
-				await ctx.collabHost.stop("host stopped");
 				ctx.showStatus("Collab stopped");
 				return;
 			}
@@ -383,8 +410,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				await ctx.collabGuest.leave("left");
 				return;
 			}
-			if (ctx.collabHost) {
-				await ctx.collabHost.stop("host stopped");
+			if (await stopCollabHost(ctx)) {
 				ctx.showStatus("Collab stopped");
 				return;
 			}
@@ -503,7 +529,42 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus("Usage: /copy [code|cmd]");
+			if (arg === "link" || arg === "url") {
+				const link = extractLastLink(runtime.ctx.session.messages);
+				if (!link) {
+					runtime.ctx.showStatus("No link to copy.");
+					runtime.ctx.editor.setText("");
+					return;
+				}
+				await copyToClipboard(link.href);
+				runtime.ctx.showStatus("Copied link to clipboard");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /copy [code|cmd|link]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "open",
+		icon: "globe",
+		description: "Open the last link from the conversation in your browser (or pick one with /copy)",
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg && arg !== "link" && arg !== "url") {
+				runtime.ctx.showStatus("Usage: /open [link]  (pick a specific link: /copy, → blocks, o)");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			const link = extractLastLink(runtime.ctx.session.messages);
+			if (!link) {
+				runtime.ctx.showStatus("No link to open.");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			openPath(link.href);
+			runtime.ctx.showStatus(`Opening ${link.href}`);
 			runtime.ctx.editor.setText("");
 		},
 	},

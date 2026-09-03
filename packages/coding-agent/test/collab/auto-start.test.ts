@@ -6,7 +6,12 @@ import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { COLLAB_PROTO, DEFAULT_RELAY_URL, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
-import { autoStartCollab, startCollabGuest, startCollabHost } from "@oh-my-pi/pi-coding-agent/collab/start";
+import {
+	autoStartCollab,
+	startCollabGuest,
+	startCollabHost,
+	stopCollabHost,
+} from "@oh-my-pi/pi-coding-agent/collab/start";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
@@ -19,6 +24,7 @@ function context(
 	return {
 		settings,
 		collabHost: undefined,
+		collabHostAbort: undefined,
 		collabGuest: undefined,
 		sessionManager: {
 			getSessionId: () => "auto-start-test",
@@ -167,6 +173,47 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("cancels a pending host handshake from stop before the host attaches", async () => {
+		const ctx = context();
+		const connect = spyOn(CollabSocket.prototype, "connect").mockImplementation(() => {});
+		try {
+			const pending = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			pending.catch(() => {});
+			await Promise.resolve();
+			expect(ctx.collabHostAbort).toBeDefined();
+			expect(ctx.collabHostStart).toBeDefined();
+			await expect(stopCollabHost(ctx)).resolves.toBe(true);
+			await expect(pending).rejects.toThrow("Collab host start cancelled");
+			expect(ctx.collabHost).toBeUndefined();
+			expect(ctx.collabHostStart).toBeUndefined();
+		} finally {
+			connect.mockRestore();
+		}
+	});
+
+	it("does not attach or write a link after a cancelled pending start", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const file = path.join(dir, "collab.link");
+		const connect = spyOn(CollabSocket.prototype, "connect").mockImplementation(() => {});
+		try {
+			const ctx = context({
+				"collab.autoStart": true,
+				"collab.relayUrl": "ws://localhost:8787",
+				"collab.writeLinkPath": file,
+			});
+			const pending = autoStartCollab(ctx);
+			pending.catch(() => {});
+			await Promise.resolve();
+			await expect(stopCollabHost(ctx)).resolves.toBe(true);
+			await expect(pending).resolves.toBe(false);
+			expect(ctx.collabHost).toBeUndefined();
+			expect(await Bun.file(file).exists()).toBe(false);
+		} finally {
+			connect.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("honors project-configured auto-start and writes the project link path", async () => {
 		installInMemoryRelay();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
@@ -235,7 +282,7 @@ describe("collab auto-start", () => {
 		});
 		try {
 			await expect(autoStartCollab(ctx)).resolves.toBe(true);
-			expect(start).toHaveBeenCalledWith(DEFAULT_RELAY_URL, "");
+			expect(start.mock.calls[0]?.[0]).toBe(DEFAULT_RELAY_URL);
 		} finally {
 			start.mockRestore();
 		}

@@ -246,6 +246,8 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.thinkingLevel).toBe(ThinkingLevel.Medium);
 			expect(options.customSystemPrompt).toContain("you are flag-probe");
 			expect(options.agentDisplayName).toBe("flag-probe");
+			expect(options.agentName).toBe("flag-probe");
+			expect(options.rootAgentName).toBe("flag-probe");
 			expect(options.model).toBeUndefined();
 			expect(options.modelPattern).toBeUndefined();
 		} finally {
@@ -269,6 +271,7 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.thinkingLevel).toBe(ThinkingLevel.Medium);
 			expect(options.autoloadSkills).toEqual(["proof-skill"]);
 			expect(options.spawns).toBe("scout,reviewer");
+			expect(options.agentName).toBe("hidden-probe");
 			expect(options.rootAgentName).toBe("hidden-probe");
 			expect(options.automationAuthor).toBeUndefined();
 		} finally {
@@ -312,6 +315,34 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.toolNames).toBeUndefined();
 			expect(options.customSystemPrompt).toBeUndefined();
 			expect(options.agentDisplayName).toBeUndefined();
+			expect(options.agentName).toBe("flag-probe");
+			expect(options.rootAgentName).toBe("flag-probe");
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("restores agentName from the session header without a CLI --agent", async () => {
+		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+		try {
+			authStorage = await AuthStorage.create(":memory:");
+			const registry = new ModelRegistry(authStorage);
+			const settings = Settings.isolated({
+				"async.enabled": false,
+				"marketplace.autoUpdate": "off",
+			});
+			const parsed = parseArgs(["--continue"]);
+			parsed.cwd = cwd;
+			const sessionManager = {
+				getHeader: () => ({ rootAgent: "flag-probe" }),
+				setRootAgent: async () => {},
+			};
+			const options = await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
+			expect(options.agentName).toBe("flag-probe");
+			expect(options.rootAgentName).toBe("flag-probe");
+			expect(options.agentDisplayName).toBeUndefined();
+			expect(options.toolNames).toBeUndefined();
+			expect(options.customSystemPrompt).toBeUndefined();
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}
@@ -373,6 +404,7 @@ describe("buildSessionOptions — --agent", () => {
 				roleRoot,
 			);
 			expect(options.cwd).toBe(executionCwd);
+			expect(options.agentName).toBe("runtime-maintainer");
 			expect(options.rootAgentName).toBe("runtime-maintainer");
 			expect(options.agentDisplayName).toBe("runtime-maintainer");
 			expect(options.spawns).toBe("scout");

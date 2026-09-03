@@ -93,8 +93,6 @@ export interface InteractiveModeInitOptions {
 	clearInitialTerminalHistory?: boolean;
 	/** Recent-session rows loaded by the prepaint composer while runtime modules initialized. */
 	recentSessions?: Promise<RecentSession[] | undefined>;
-	/** Disable settings-driven collab hosting for headless renderers. */
-	autoStartCollab?: boolean;
 }
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions & Pick<HookSelectorOptions, "disabledIndices">;
@@ -104,6 +102,12 @@ export interface RenderSessionContextOptions {
 	reuseSettledComponents?: boolean;
 	/** Tool calls whose existing live component remains the sole render owner across a rebuild. */
 	preservedLiveToolCallIds?: ReadonlySet<string>;
+}
+
+export interface AgentHubOpenOptions {
+	requireContent?: boolean;
+	armCloseTap?: boolean;
+	initialSection?: "agents" | "activity";
 }
 
 export interface InteractiveModeContext {
@@ -155,6 +159,7 @@ export interface InteractiveModeContext {
 	lspServers?: LspStartupServerInfo[];
 	collabHost?: CollabHost;
 	collabHostStart?: Promise<CollabHost>;
+	collabHostAbort?: AbortController;
 	collabGuest?: CollabGuestLink;
 	collabGuestStart?: Promise<CollabGuestLink>;
 	eventController: EventController;
@@ -381,6 +386,7 @@ export interface InteractiveModeContext {
 
 	// Command handling
 	handleExportCommand(text: string): Promise<void>;
+	handleTraceCommand(): Promise<void>;
 	handleShareCommand(): Promise<void>;
 	handleTodoCommand(args: string): Promise<void>;
 	handleSessionCommand(): Promise<void>;
@@ -411,6 +417,8 @@ export interface InteractiveModeContext {
 	handleHandoffCommand(customInstructions?: string): Promise<void>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
 	handleMoveCommand(targetPath?: string): Promise<void>;
+	/** `/wt`: fork the checkout into a new worktree (keeping changes) and move there. */
+	handleWorktreeCommand(branch?: string): Promise<void>;
 	handleRenameCommand(title: string): Promise<void>;
 	handleMemoryCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
@@ -428,6 +436,8 @@ export interface InteractiveModeContext {
 
 	// Selector handling
 	showSettingsSelector(): void;
+	/** Open the fullscreen `/usage` dashboard overlay for the given reports. */
+	showUsageDashboard(reports: UsageReport[]): void;
 	showAdvisorConfigure(): void;
 	showHistorySearch(): void;
 	showExtensionsDashboard(): void;
@@ -448,7 +458,7 @@ export interface InteractiveModeContext {
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;
-	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void;
+	showAgentHub(options?: AgentHubOpenOptions): void;
 	resetObserverRegistry(): void;
 
 	// Input handling

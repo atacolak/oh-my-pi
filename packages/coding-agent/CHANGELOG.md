@@ -5,6 +5,12 @@
 ### Added
 
 - Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output.
+
+### Fixed
+
+- Delayed collab auto-hosting until interactive startup reconciliation, setup, and the initial transcript are ready.
+- Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
+
 ## [18.1.6] - 2026-09-03
 
 ### Breaking Changes

@@ -32,6 +32,7 @@
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
+
 ## [18.1.7] - 2026-09-03
 
 ### Breaking Changes

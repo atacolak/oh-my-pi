@@ -113,13 +113,13 @@ Set `collab.webUrl` when the browser UI is hosted separately from the websocket 
 | `share.redactSecrets` | `true`                | Run the secret obfuscator over `/share` snapshots before upload                                                |
 
 Auto-start is interactive-TUI-only and is opt-in. Configure `collab.autoStart`
-in user config or a runtime overlay; project settings cannot enable unattended
-hosting. A project-configured `collab.writeLinkPath` is likewise ignored during
-auto-start, though `/collab` can still use it after an explicit user command.
-Auto-start skips guests and sessions already hosting, starts at most once per
-TUI lifetime, and refuses the implicit public relay until `collab.relayUrl` is
-explicitly configured. It keeps the credential out of terminal output; use
-`/collab` or `/collab status` to display the link and QR code.
+in user config, a runtime overlay, or project settings (`.omp/config.yml`).
+Project-scoped auto-start only hosts sessions whose cwd loads that project
+file; it does not turn on every omp. Auto-start skips guests and sessions
+already hosting, starts at most once per TUI lifetime, and refuses the
+implicit public relay until `collab.relayUrl` is explicitly configured. It
+keeps the credential out of terminal output; use `/collab` or `/collab status`
+to display the link and QR code.
 
 ## Self-hosting the relay
 

@@ -94,10 +94,6 @@ export function resolveRelayUrl(input: string): string {
 /** Start the configured host once during interactive startup. */
 export async function autoStartCollab(ctx: InteractiveModeContext): Promise<boolean> {
 	if (ctx.collabGuest || ctx.collabHost || !ctx.settings.get("collab.autoStart")) return false;
-	if (ctx.settings.getProvenance("collab.autoStart") === "project") {
-		ctx.showWarning("Collab auto-start skipped: configure collab.autoStart outside project settings.");
-		return false;
-	}
 	const relayInput = ctx.settings.get("collab.relayUrl")?.trim() ?? "";
 	if (!relayInput) {
 		ctx.showWarning("Collab auto-start skipped: set collab.relayUrl to a relay endpoint.");
@@ -108,11 +104,7 @@ export async function autoStartCollab(ctx: InteractiveModeContext): Promise<bool
 		ctx.showWarning("Collab auto-start skipped: configure collab.relayUrl explicitly before using the public relay.");
 		return false;
 	}
-	const configuredLinkPath = ctx.settings.get("collab.writeLinkPath") ?? "";
-	const writeLinkPath = ctx.settings.getProvenance("collab.writeLinkPath") === "project" ? "" : configuredLinkPath;
-	if (configuredLinkPath.trim() && !writeLinkPath) {
-		ctx.showWarning("Collab link file skipped: configure collab.writeLinkPath outside project settings.");
-	}
+	const writeLinkPath = ctx.settings.get("collab.writeLinkPath") ?? "";
 	try {
 		await startCollabHost(ctx, {
 			relayUrl,

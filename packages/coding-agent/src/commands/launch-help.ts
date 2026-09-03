@@ -59,6 +59,9 @@ export const launchHelp = {
 			multiple: true,
 		}),
 		print: Flags.boolean({ char: "p", description: "Non-interactive mode: process prompt and exit" }),
+		alt: Flags.boolean({
+			description: "Experimental: use the app-viewport TUI render backend (interactive only)",
+		}),
 		continue: Flags.boolean({ char: "c", description: "Continue previous session" }),
 		resume: Flags.string({ char: "r", description: "Resume a session (by ID prefix, path, or picker if omitted)" }),
 		"from-claude": Flags.boolean({ description: "Import a Claude Code session into OMP" }),

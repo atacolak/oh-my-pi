@@ -722,6 +722,8 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				runtime.sessionManager.getCwd(),
 				removed,
 				runtime.session.getLspClientOwner(),
+				undefined,
+				[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
 			);
 			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));

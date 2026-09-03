@@ -217,7 +217,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 	 * replace it after configuration changes.
 	 */
 	async releaseRemovedWorkspaceRoots(removedRoot: string, signal?: AbortSignal): Promise<string[]> {
-		return releaseOwnedWorkspaceRoots(this.session.cwd, removedRoot, this.#clientOwner, signal);
+		return releaseOwnedWorkspaceRoots(
+			this.session.cwd,
+			removedRoot,
+			this.#clientOwner,
+			signal,
+			sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
+		);
 	}
 
 	static createIf(session: ToolSession): LspTool | null {

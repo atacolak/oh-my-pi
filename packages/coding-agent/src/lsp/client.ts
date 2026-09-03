@@ -10,6 +10,7 @@ import {
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../jsonrpc/message-framing";
+import { normalizeSessionWorkspace, workspaceRootForPath } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
@@ -92,18 +93,45 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
  * workspace root that is no longer in the session. `/remove-dir` calls this
  * even when the model-facing LSP tool is not registered, so write/edit
  * writethrough clients do not remain owned after the root is removed.
+ *
+ * Clients still covered by `sessionCwd` or `remainingWorkspaceRoots` are left
+ * alone: an additional root may be an ancestor or symlink alias of a retained
+ * workspace, and tearing those clients down would tombstone the primary root.
  */
 export async function releaseRemovedWorkspaceRoots(
 	sessionCwd: string,
 	removedRoot: string,
 	owner: LspClientOwner | undefined,
 	signal?: AbortSignal,
+	remainingWorkspaceRoots: readonly string[] = [sessionCwd],
 ): Promise<string[]> {
 	if (!owner) return [];
 	const roots = [path.resolve(removedRoot)];
-	const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner);
-	clearWorkspaceInitializationFailures(roots, owner);
+	const retainClient = (clientCwd: string) =>
+		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots, removedRoot);
+	const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
+	clearWorkspaceInitializationFailures(roots, owner, retainClient);
 	return stopped;
+}
+
+/** True when a later workspace ranking still attaches this client to a remaining root. */
+function clientCoveredByRemainingWorkspace(
+	clientCwd: string,
+	sessionCwd: string,
+	remainingWorkspaceRoots: readonly string[],
+	removedRoot: string,
+): boolean {
+	const remaining = normalizeSessionWorkspace({
+		cwd: sessionCwd,
+		directories: remainingWorkspaceRoots.filter(root => path.resolve(root) !== path.resolve(sessionCwd)),
+	});
+	const remainingMatch = workspaceRootForPath(clientCwd, remaining);
+	if (!remainingMatch) return false;
+	const includingRemoved = normalizeSessionWorkspace({
+		cwd: sessionCwd,
+		directories: [...remaining.directories.filter(directory => directory !== remaining.cwd), removedRoot],
+	});
+	return workspaceRootForPath(clientCwd, includingRemoved) === remainingMatch;
 }
 
 /** Release all client identities associated with a disposed tool session. */
@@ -966,16 +994,19 @@ export function shutdownStaleClients(
 	signal?: AbortSignal,
 	workspaceRoots: readonly string[] = [cwd],
 	owner?: LspClientOwner,
+	retainClient?: (clientCwd: string) => boolean,
 ): Promise<string[]> {
 	const fresh = new Set(configs.map(config => clientKey(config, config.resolvedRoot ?? cwd)));
 	const roots = workspaceRoots.map(root => path.resolve(root));
+	const isRelevant = (clientCwd: string) =>
+		roots.some(root => isPathInsideWorkspace(clientCwd, root)) && !retainClient?.(clientCwd);
 	const relevantPending = Array.from(clientLocks.entries()).filter(([key, pending]) => {
 		const owners = clientOwners.get(key);
-		return (!owner || !owners || owners.has(owner)) && roots.some(root => isPathInsideWorkspace(pending.cwd, root));
+		return (!owner || !owners || owners.has(owner)) && isRelevant(pending.cwd);
 	});
 	const relevantClients = Array.from(clients.entries()).filter(([key, client]) => {
 		const owners = clientOwners.get(key);
-		return (!owner || !owners || owners.has(owner)) && roots.some(root => isPathInsideWorkspace(client.cwd, root));
+		return (!owner || !owners || owners.has(owner)) && isRelevant(client.cwd);
 	});
 	const staleOwnedKeys = new Set([
 		...relevantPending.filter(([key]) => !fresh.has(key)).map(([key]) => key),
@@ -1083,12 +1114,16 @@ export function clearInitializationFailure(config: ServerConfig, cwd: string): v
 	initFailures.delete(clientKey(config, config.resolvedRoot ?? cwd));
 }
 
-/** Clear failures attempted by one session within its workspace roots. */
-export function clearWorkspaceInitializationFailures(workspaceRoots: readonly string[], owner?: LspClientOwner): void {
+export function clearWorkspaceInitializationFailures(
+	workspaceRoots: readonly string[],
+	owner?: LspClientOwner,
+	retainFailure?: (cwd: string) => boolean,
+): void {
 	const roots = workspaceRoots.map(root => path.resolve(root));
 	const ownedKeys = owner ? ownerClientKeys.get(owner) : undefined;
 	for (const [key, failure] of initFailures) {
 		if (owner && !ownedKeys?.has(key) && failure.owner !== owner) continue;
+		if (retainFailure?.(failure.cwd)) continue;
 		if (roots.some(root => isPathInsideWorkspace(failure.cwd, root))) initFailures.delete(key);
 	}
 }

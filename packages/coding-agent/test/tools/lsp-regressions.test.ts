@@ -4374,6 +4374,32 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("releasing an overlapping additional root keeps remaining workspace clients", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-overlap-");
+		try {
+			const sessionCwd = path.join(tempDir.path(), "nested");
+			fs.mkdirSync(sessionCwd);
+			const config: ServerConfig = {
+				command: "cwd-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sessionCwd,
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, sessionCwd, 1_000, undefined, owner);
+
+			await lspClient.releaseRemovedWorkspaceRoots(sessionCwd, tempDir.path(), owner, undefined, [sessionCwd]);
+
+			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(await lspClient.getActiveOrPendingClient(config, sessionCwd, undefined, owner)).toBe(client);
+			await expect(lspClient.getOrCreateClient(config, sessionCwd, 1_000, undefined, owner)).resolves.toBe(client);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {

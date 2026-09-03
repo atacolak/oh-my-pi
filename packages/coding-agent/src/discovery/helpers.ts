@@ -983,6 +983,8 @@ export interface ClaudePluginRoot {
 	path: string;
 	/** Whether this is a user or project scope plugin */
 	scope: "user" | "project";
+	/** Registry or explicit CLI source that supplied this root. */
+	origin: "claude" | "omp" | "plugin-dir";
 }
 
 /**
@@ -1202,6 +1204,7 @@ export async function listClaudePluginRoots(
 						version: entry.version || "unknown",
 						path: entry.installPath,
 						scope: entry.scope === "local" ? "project" : entry.scope || "user",
+						origin: "claude",
 					});
 				}
 			}
@@ -1250,6 +1253,7 @@ export async function listClaudePluginRoots(
 						version: entry.version || "unknown",
 						path: entry.installPath,
 						scope: entry.scope === "local" ? "project" : entry.scope || "user",
+						origin: "omp",
 					});
 				}
 			}
@@ -1288,6 +1292,7 @@ export async function listClaudePluginRoots(
 							version: entry.version || "unknown",
 							path: entry.installPath,
 							scope: "project",
+							origin: "omp",
 						});
 					}
 				}

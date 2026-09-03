@@ -2138,6 +2138,12 @@ export class Settings {
 			deleteByPath(target, ["task", "isolation", "mode"]);
 			delete target["task.isolation.mode"];
 		}
+		if (path === "task.isolation.enabled") {
+			delete target["task.isolation.enabled"];
+		}
+		if (path === "isolation.backend") {
+			delete target["isolation.backend"];
+		}
 		if (path === "compaction.methodOrder") {
 			deleteByPath(target, ["compaction", "strategy"]);
 			deleteByPath(target, ["compaction", "remoteEnabled"]);

@@ -15,6 +15,7 @@ import {
 import { formatContent, getDiagnosticsForFile } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
 import { discoverStartupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers";
 import type { LinterClient, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import { fileToUri } from "@oh-my-pi/pi-coding-agent/lsp/utils";
 import { createLspWritethrough } from "@oh-my-pi/pi-coding-agent/lsp/writethrough";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
@@ -305,6 +306,177 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("reuses one nested client when the same root is addressed through a symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-client-identity-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: { write: () => Promise.reject(new Error("identity probe")), flush: () => Promise.resolve() },
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+			const config = loadConfig(linkRoot);
+			const viaLink = resolveServersForFile(config, path.join(linkRoot, "python", "src", "example.py"), [linkRoot]);
+			const viaReal = resolveServersForFile(config, nested.filePath, [linkRoot]);
+			const linkServer = viaLink.find(server => server.name === "basedpyright");
+			const realServer = viaReal.find(server => server.name === "basedpyright");
+			expect(linkServer?.root).toBe(path.join(linkRoot, "python"));
+			expect(realServer?.root).toBe(nested.projectRoot);
+			expect(linkServer?.root).not.toBe(realServer?.root);
+			await expect(lspClient.getOrCreateClient(linkServer!.config, linkRoot)).rejects.toThrow("identity probe");
+			await expect(lspClient.getOrCreateClient(realServer!.config, linkRoot)).rejects.toThrow(
+				"failed to initialize recently",
+			);
+			expect(spawnCount).toBe(1);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
+	it("reuses one nested client when a project-local executable is reached through a symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-exec-identity-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			const realBin = writeLocalPythonServer(nested.projectRoot);
+			const linkBin = path.join(linkRoot, path.relative(realRoot, realBin));
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: { write: () => Promise.reject(new Error("identity probe")), flush: () => Promise.resolve() },
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+			const config = loadConfig(linkRoot);
+			const viaLink = resolveServersForFile(config, path.join(linkRoot, "python", "src", "example.py"), [linkRoot]);
+			const viaReal = resolveServersForFile(config, nested.filePath, [linkRoot]);
+			const linkServer = viaLink.find(server => server.name === "basedpyright");
+			const realServer = viaReal.find(server => server.name === "basedpyright");
+			expect(linkServer?.config.resolvedCommand).toBe(linkBin);
+			expect(realServer?.config.resolvedCommand).toBe(realBin);
+			expect(linkServer?.config.resolvedCommand).not.toBe(realServer?.config.resolvedCommand);
+			await expect(lspClient.getOrCreateClient(linkServer!.config, linkRoot)).rejects.toThrow("identity probe");
+			await expect(lspClient.getOrCreateClient(realServer!.config, linkRoot)).rejects.toThrow(
+				"failed to initialize recently",
+			);
+			expect(spawnCount).toBe(1);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
+	it("emits the canonical document URI for a file addressed through a symlink", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-doc-uri-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			const viaLink = path.join(linkRoot, "python", "src", "example.py");
+			expect(fileToUri(viaLink)).toBe(fileToUri(nested.filePath));
+			expect(fileToUri(viaLink)).toBe(Bun.pathToFileURL(nested.filePath).href);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file asks one nested server when symlink and canonical roots both match", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-rename-key-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			const destViaReal = path.join(nested.projectRoot, "src", "renamed.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const willRenameRequests: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameRequests.push(params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const sourceViaLink = path.join(linkRoot, "python", "src", "example.py");
+			const tool = new LspTool(makeLspSession(linkRoot));
+			const result = await tool.execute("symlink-rename-key", {
+				action: "rename_file",
+				file: sourceViaLink,
+				new_name: destViaReal,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameRequests).toHaveLength(1);
+			expect(fs.existsSync(sourceViaLink)).toBe(false);
+			expect(fs.existsSync(destViaReal)).toBe(true);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not use the primary cwd executable for a nested additional workspace under a long symlink", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-rank-exec-");
+		const realOuter = tempDir.path();
+		fs.writeFileSync(path.join(realOuter, "package.json"), "{}\n");
+		const nested = path.join(realOuter, "pkg");
+		fs.mkdirSync(path.join(nested, "src"), { recursive: true });
+		fs.writeFileSync(path.join(nested, "package.json"), "{}\n");
+		const filePath = path.join(nested, "src", "index.ts");
+		fs.writeFileSync(filePath, "export const value = 1;\n");
+		const binDir = path.join(realOuter, "node_modules", ".bin");
+		fs.mkdirSync(binDir, { recursive: true });
+		const primaryBin = path.join(binDir, "typescript-language-server");
+		fs.writeFileSync(primaryBin, "");
+		fs.chmodSync(primaryBin, 0o755);
+		const linkRoot = path.join(path.dirname(realOuter), `${path.basename(realOuter)}-very-long-symlink-alias`);
+		fs.symlinkSync(realOuter, linkRoot);
+		try {
+			expect(linkRoot.length).toBeGreaterThan(nested.length);
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+			const config = loadConfig(linkRoot);
+			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(
+				path.join(linkRoot, "node_modules", ".bin", "typescript-language-server"),
+			);
+			const resolved = resolveServersForFile(config, filePath, [linkRoot, nested]);
+			expect(resolved.find(server => server.name === "typescript-language-server")).toBeUndefined();
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not walk ancestors above the session workspace", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-boundary-");
 		try {
@@ -399,7 +571,7 @@ describe("nested LSP project roots", () => {
 			const session = {
 				cwd: primary.path(),
 				get additionalDirectories() {
-					return extraDirs;
+					return extraDirs.length > 0 ? extraDirs : undefined;
 				},
 				hasUI: false,
 				getSessionFile: () => null,
@@ -463,6 +635,47 @@ describe("nested LSP project roots", () => {
 			});
 
 			expect(createdOwners).toContain(owner);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("assigns a reusable fallback owner when write-through has no session owner", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-fallback-owner-write-");
+		try {
+			const { filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const createdOwners: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(
+				async (config, cwd, _timeout, _signal, clientOwner) => {
+					createdOwners.push(clientOwner);
+					return mockLspClient(config, cwd);
+				},
+			);
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: tempDir.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": true,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+
+			await new WriteTool(session).execute("fallback-owner-write", {
+				path: filePath,
+				content: "def example():\n    return 2\n",
+			});
+
+			expect(createdOwners.length).toBeGreaterThan(0);
+			expect(new Set(createdOwners)).toEqual(new Set([lspClient.fallbackLspClientOwner(session)]));
 		} finally {
 			tempDir.removeSync();
 		}

@@ -7,7 +7,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import { isEnoent, isFsError, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isEnoent, isFsError, logger, prompt, resolveEquivalentPath, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import { sessionWorkspaceDirectories, workspaceRootForPath } from "../session/session-workspace";
@@ -28,8 +28,10 @@ import {
 	isRustAnalyzerClient,
 	type LspClientOwner,
 	type LspServerStatus,
+	reconcileExecutedChanges,
 	refreshFile,
 	releaseLspClientOwner,
+	releaseRemovedWorkspaceRoots as releaseOwnedWorkspaceRoots,
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
@@ -55,6 +57,7 @@ import {
 } from "./diagnostics";
 import {
 	applyEditsThenRename,
+	type ExecutedWorkspaceChange,
 	flattenWorkspaceTextEdits,
 	type RenameReferenceEdit,
 	rangesOverlap,
@@ -207,6 +210,22 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		this.#clientOwner = clientOwner;
 		this.description = prompt.render(lspDescription);
 		this.session.registerDisposeCallback?.(() => releaseLspClientOwner(this.#clientOwner));
+	}
+
+	/**
+	 * Release this session's ownership of language servers started under a
+	 * workspace root that is no longer in the session. `/remove-dir` calls this
+	 * so a later `reload *` can see the client as stale and another session can
+	 * replace it after configuration changes.
+	 */
+	async releaseRemovedWorkspaceRoots(removedRoot: string, signal?: AbortSignal): Promise<string[]> {
+		return releaseOwnedWorkspaceRoots(
+			this.session.cwd,
+			removedRoot,
+			this.#clientOwner,
+			signal,
+			sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
+		);
 	}
 
 	static createIf(session: ToolSession): LspTool | null {
@@ -613,7 +632,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const servers: Array<[string, ServerConfig]> = [];
 			const collectRelevant = (filePath: string) => {
 				for (const [name, serverConfig] of getLspServersForFile(config, filePath, workspaceRoots)) {
-					const key = `${name}:${serverConfig.resolvedRoot ?? this.session.cwd}`;
+					const key = `${name}:${resolveEquivalentPath(serverConfig.resolvedRoot ?? this.session.cwd)}`;
 					if (seenServers.has(key)) continue;
 					seenServers.add(key);
 					servers.push([name, serverConfig]);
@@ -827,6 +846,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// the reference edits back so the source, destination, and every
 			// reference file are left unchanged.
 			await applyEditsThenRename(referenceEdits, source, dest);
+			const executed: ExecutedWorkspaceChange[] = referenceEdits.map(edit => ({
+				kind: "edit",
+				uri: fileToUri(edit.filePath),
+			}));
+			executed.push({ kind: "rename", oldUri: fileToUri(source), newUri: fileToUri(dest) });
+			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			for (const [serverName, serverConfig] of servers) {
@@ -1464,7 +1489,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const appliedAction = await applyCodeAction(selectedAction, {
 							resolveCodeAction: async actionItem =>
 								(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
-							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, this.session.cwd, signal),
+							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, workspaceRoots, signal),
 							executeCommand: async commandItem => {
 								await sendRequest(
 									client,
@@ -1560,7 +1585,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					} else {
 						const shouldApply = apply !== false;
 						if (shouldApply) {
-							const applied = await applyWorkspaceEditWithLsp(result, this.session.cwd, signal);
+							const applied = await applyWorkspaceEditWithLsp(result, workspaceRoots, signal);
 							output = `Applied rename:\n${applied.map(a => `  ${a}`).join("\n")}`;
 						} else {
 							const preview = formatWorkspaceEdit(result, this.session.cwd);

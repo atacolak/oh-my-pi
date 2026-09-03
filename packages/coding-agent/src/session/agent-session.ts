@@ -117,7 +117,9 @@ import {
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
+import { releaseCompletionHandles } from "../eval/completion-bridge";
 import type { PythonResult } from "../eval/py/executor";
+import { WorkPoolRegistry } from "../task/workpool";
 import type { BashPtyOptions, BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
@@ -157,6 +159,7 @@ import { countRetainableUserTurns } from "../hindsight/transcript";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
+import type { LspClientOwner } from "../lsp/client";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
@@ -218,6 +221,7 @@ import {
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
+import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import { parseCommandArgs } from "../utils/command-args";
 import type { EditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
@@ -569,6 +573,7 @@ export class AgentSession {
 
 	readonly #models: ModelControls;
 	readonly #tools: SessionTools;
+	readonly #lspClientOwner: LspClientOwner | undefined;
 	readonly #prewalk: PrewalkCoordinator;
 
 	readonly #providerBoundary: SessionProviderBoundary;
@@ -629,6 +634,7 @@ export class AgentSession {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
 	/** Resolved TITLE_SYSTEM.md override applied to every automatic session-title
 	 *  generation path. Refresh via {@link AgentSession.setTitleSystemPrompt} when
@@ -1166,6 +1172,7 @@ export class AgentSession {
 		this.sessionManager = config.sessionManager;
 		this.loadedUserTurnCount = countRetainableUserTurns(this.sessionManager);
 		this.settings = config.settings;
+		this.#lspClientOwner = config.lspClientOwner;
 		this.#modelRegistry = config.modelRegistry;
 		this.#extensionRoots =
 			config.extensionRoots ??
@@ -1222,12 +1229,10 @@ export class AgentSession {
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
 			setModelTemporary: (model, thinkingLevel, options) => this.setModelTemporary(model, thinkingLevel, options),
 			setActiveToolsByName: names => this.setActiveToolsByName(names),
-			setActiveToolPresentation: (toolNames, mountedToolNames) =>
-				this.setActiveToolPresentation(toolNames, mountedToolNames),
-			runToolRegistryMutation: mutation => this.runToolRegistryMutation(mutation),
+			restoreNonMCPToolPresentation: (nonMCPToolNames, nonMCPMountedToolNames) =>
+				this.restoreNonMCPToolPresentation(nonMCPToolNames, nonMCPMountedToolNames),
 			getActiveToolNames: () => this.getActiveToolNames(),
 			getEnabledToolNames: () => this.getEnabledToolNames(),
-			getSelectedMCPToolNames: () => this.getSelectedMCPToolNames(),
 			getMountedXdevToolNames: () => this.getMountedXdevToolNames(),
 			hasBuiltInTool: name => this.hasBuiltInTool(name),
 			getPlanModeState: () => this.getPlanModeState(),
@@ -2166,6 +2171,8 @@ export class AgentSession {
 	 */
 	#cancelOwnAsyncJobs(reason?: unknown): void {
 		if (!this.#agentId) return;
+		releaseCompletionHandles(this.#agentId);
+		WorkPoolRegistry.global().releaseOwner(this.#agentId);
 		const manager = this.#asyncJobManager;
 		manager?.cancelAll({ ownerId: this.#agentId }, reason);
 		manager?.evictCompletedJobs({ ownerId: this.#agentId });
@@ -3678,8 +3685,33 @@ export class AgentSession {
 					return { status: "skipped", reason: "session-unavailable" };
 				}
 			}
-			await this.agent.continue(signal);
-			return { status: "completed" };
+			for (;;) {
+				try {
+					await this.agent.continue(signal);
+					return { status: "completed" };
+				} catch (error) {
+					if (!(error instanceof AgentBusyError)) throw error;
+
+					// A local scheduling overlap is not a failed continuation. Let the
+					// active run and its async agent_end routing settle, then revalidate
+					// this request before claiming the agent again.
+					logger.debug("agent.continue waiting for active run", {
+						source: request.options.source,
+						schedulerToken: request.schedulerToken,
+					});
+					await this.agent.waitForIdle();
+					await this.#drainInFlightEventHandlers();
+					if (signal.aborted || this.#isDisposed || this.isCompacting || this.isGeneratingHandoff) {
+						return { status: "skipped", reason: "session-unavailable" };
+					}
+					if (request.options.generation !== undefined && this.#promptGeneration !== request.options.generation) {
+						return { status: "skipped", reason: "stale-generation" };
+					}
+					if (request.options.shouldContinue && !request.options.shouldContinue()) {
+						return { status: "skipped", reason: "should-continue-false" };
+					}
+				}
+			}
 		} catch (error) {
 			logger.warn("agent.continue failed after scheduling", {
 				source: request.options.source,
@@ -5110,6 +5142,11 @@ export class AgentSession {
 		return this.#tools.getToolByName(name);
 	}
 
+	/** Shared identity for LSP clients acquired by this session's tools. */
+	getLspClientOwner(): LspClientOwner | undefined {
+		return this.#lspClientOwner;
+	}
+
 	/** Looks up an enabled eval-bridge tool with the session's permission gate applied. */
 	getToolForEvalBridge(name: string): AgentTool | undefined {
 		return this.#tools.getToolForEvalBridge(name);
@@ -5240,6 +5277,11 @@ export class AgentSession {
 		signal?: AbortSignal,
 	): Promise<void> {
 		return this.#tools.setActiveToolPresentation(toolNames, mountedToolNames, forcePromptRefresh, signal);
+	}
+
+	/** Restores a non-MCP presentation snapshot while retaining the current MCP selection. */
+	restoreNonMCPToolPresentation(nonMCPToolNames: string[], nonMCPMountedToolNames: string[]): Promise<void> {
+		return this.#tools.restoreNonMCPToolPresentation(nonMCPToolNames, nonMCPMountedToolNames);
 	}
 
 	/**
@@ -5994,6 +6036,7 @@ export class AgentSession {
 					content: renderWorkflowNotice({
 						taskBatch: this.settings.get("task.batch"),
 						scoutAvailable: this.#isScoutAvailable(),
+						evalTools: this.settings.get("eval.tools.enabled"),
 					}),
 					display: false,
 					attribution: "user",
@@ -7394,6 +7437,16 @@ export class AgentSession {
 
 	setTodoPhases(phases: TodoPhase[]): void {
 		this.#todo.setPhases(phases);
+	}
+
+	/** Active item labels accepted by this pooled turn's incremental yield tool. */
+	getWorkPoolYieldItems(): readonly WorkPoolYieldItem[] {
+		return this.#workPoolYieldItems;
+	}
+
+	/** Replace the item labels before starting a pooled turn. */
+	setWorkPoolYieldItems(items: readonly WorkPoolYieldItem[]): void {
+		this.#workPoolYieldItems = items.map(item => ({ ...item }));
 	}
 
 	#buildReplanTitleContext(): string {

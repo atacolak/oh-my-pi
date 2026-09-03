@@ -17,6 +17,17 @@
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
 - Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
+## [18.1.8] - 2026-09-03
+
+### Fixed
+
+- Improved background task results with structured output schemas: parsed results are now available through the `agent://<id>` resource, while large or invalid inline JSON is replaced with a reliable pointer to the complete result.
+- Background task artifacts are retained long enough for follow-up turns to read them, including failed tasks that lack valid structured output, and are cleaned up without blocking shutdown or leaking resources.
+- Fixed context compaction incorrectly accepting archived history that was larger because of opaque reasoning data, allowing the next compaction strategy to run instead.
+- Fixed the Model Hub sidebar jumping to the top when provider refreshes rebuild the list; the focused model, or its nearest remaining entry, is now preserved.
+- Fixed the `inspect_image` status hint showing the wrong model after switching between image-capable model roles.
+- Fixed multi-minute TUI freezes during subagent activity and batch execution.
+
 ## [18.1.7] - 2026-09-03
 
 ### Breaking Changes

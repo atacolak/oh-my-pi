@@ -3679,8 +3679,8 @@ describe("lsp regressions", () => {
 
 			const renameOp: RenameFile = {
 				kind: "rename",
-				oldUri: fileToUri(filePath),
-				newUri: fileToUri(aliasPath),
+				oldUri: Bun.pathToFileURL(filePath).href,
+				newUri: Bun.pathToFileURL(aliasPath).href,
 				options: { overwrite: true },
 			};
 			expect(renameOp.oldUri).not.toBe(renameOp.newUri);

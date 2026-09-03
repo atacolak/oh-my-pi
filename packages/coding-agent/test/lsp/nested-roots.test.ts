@@ -15,6 +15,7 @@ import {
 import { formatContent, getDiagnosticsForFile } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
 import { discoverStartupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers";
 import type { LinterClient, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import { fileToUri } from "@oh-my-pi/pi-coding-agent/lsp/utils";
 import { createLspWritethrough } from "@oh-my-pi/pi-coding-agent/lsp/writethrough";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
@@ -342,6 +343,65 @@ describe("nested LSP project roots", () => {
 				"failed to initialize recently",
 			);
 			expect(spawnCount).toBe(1);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
+	it("reuses one nested client when a project-local executable is reached through a symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-exec-identity-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			const realBin = writeLocalPythonServer(nested.projectRoot);
+			const linkBin = path.join(linkRoot, path.relative(realRoot, realBin));
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+			let spawnCount = 0;
+			vi.spyOn(piUtils.ptree, "spawn").mockImplementation((() => {
+				spawnCount++;
+				const { promise: exited, resolve } = Promise.withResolvers<number>();
+				return {
+					stdin: { write: () => Promise.reject(new Error("identity probe")), flush: () => Promise.resolve() },
+					stdout: new ReadableStream<Uint8Array>(),
+					stderr: new ReadableStream<Uint8Array>(),
+					exited,
+					exitCode: null,
+					kill: () => resolve(1),
+					peekStderr: () => "",
+				};
+			}) as unknown as typeof piUtils.ptree.spawn);
+			const config = loadConfig(linkRoot);
+			const viaLink = resolveServersForFile(config, path.join(linkRoot, "python", "src", "example.py"), [linkRoot]);
+			const viaReal = resolveServersForFile(config, nested.filePath, [linkRoot]);
+			const linkServer = viaLink.find(server => server.name === "basedpyright");
+			const realServer = viaReal.find(server => server.name === "basedpyright");
+			expect(linkServer?.config.resolvedCommand).toBe(linkBin);
+			expect(realServer?.config.resolvedCommand).toBe(realBin);
+			expect(linkServer?.config.resolvedCommand).not.toBe(realServer?.config.resolvedCommand);
+			await expect(lspClient.getOrCreateClient(linkServer!.config, linkRoot)).rejects.toThrow("identity probe");
+			await expect(lspClient.getOrCreateClient(realServer!.config, linkRoot)).rejects.toThrow(
+				"failed to initialize recently",
+			);
+			expect(spawnCount).toBe(1);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+			tempDir.removeSync();
+		}
+	});
+
+	it("emits the canonical document URI for a file addressed through a symlink", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-doc-uri-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			const viaLink = path.join(linkRoot, "python", "src", "example.py");
+			expect(fileToUri(viaLink)).toBe(fileToUri(nested.filePath));
+			expect(fileToUri(viaLink)).toBe(Bun.pathToFileURL(nested.filePath).href);
 		} finally {
 			fs.rmSync(linkRoot, { force: true });
 			tempDir.removeSync();

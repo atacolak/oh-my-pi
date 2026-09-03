@@ -965,6 +965,10 @@ const EXIT_TIMEOUT_MS = 1_000;
  * (`resolvedCommand ?? command`), so two configs naming the same binary
  * differently still share, while the same name resolving to different binaries
  * does not. JSON-encoded so no value can forge the separator.
+ *
+ * Path-like executables are canonicalized: a nested `.venv/bin/server` reached
+ * through a symlink workspace must not mint a second client beside the same
+ * physical binary addressed by its real path. Bare PATH names stay as names.
  */
 function clientKey(config: ServerConfig, cwd: string): string {
 	const spawnCommand = config.resolvedCommand ?? config.command;
@@ -974,7 +978,11 @@ function clientKey(config: ServerConfig, cwd: string): string {
 		config.settings ?? null,
 		config.languageId ?? null,
 	]);
-	return `${spawnCommand}:${resolveEquivalentPath(cwd)}:${identity}`;
+	const canonicalCommand =
+		spawnCommand.includes("/") || spawnCommand.includes("\\") || path.isAbsolute(spawnCommand)
+			? resolveEquivalentPath(spawnCommand)
+			: spawnCommand;
+	return `${canonicalCommand}:${resolveEquivalentPath(cwd)}:${identity}`;
 }
 
 /**

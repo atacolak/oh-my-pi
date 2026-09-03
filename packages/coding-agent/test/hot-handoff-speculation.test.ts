@@ -51,7 +51,6 @@ function uselessGrepResult(text: string, toolCallId = "call-raw"): ToolResultMes
 	};
 }
 
-
 describe("hot handoff speculative lifecycle", () => {
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
@@ -264,7 +263,18 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document");
 		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).not.toBe(checkpointId);
 		expect(agent.state.messages.some(message => JSON.stringify(message).includes("raw continuation"))).toBe(true);
-		const recutCycle = entry?.type === "compaction" ? (entry.preserveData as { recutCycle?: { recut?: boolean; authorCalls?: number; nativeCut?: { fellBackToCheckpoint?: boolean } } })?.recutCycle : undefined;
+		const recutCycle =
+			entry?.type === "compaction"
+				? (
+						entry.preserveData as {
+							recutCycle?: {
+								recut?: boolean;
+								authorCalls?: number;
+								nativeCut?: { fellBackToCheckpoint?: boolean };
+							};
+						}
+					)?.recutCycle
+				: undefined;
 		expect(recutCycle?.recut).toBe(false);
 		expect(recutCycle?.authorCalls).toBe(1);
 		expect(recutCycle?.nativeCut?.fellBackToCheckpoint).toBe(false);
@@ -300,8 +310,13 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
 		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).toBe(unseenId);
-		expect(agent.state.messages.some(message => JSON.stringify(message).includes("unseen after checkpoint"))).toBe(true);
-		const recutCycle = entry?.type === "compaction" ? (entry.preserveData as { recutCycle?: { nativeCut?: { fellBackToCheckpoint?: boolean } } })?.recutCycle : undefined;
+		expect(agent.state.messages.some(message => JSON.stringify(message).includes("unseen after checkpoint"))).toBe(
+			true,
+		);
+		const recutCycle =
+			entry?.type === "compaction"
+				? (entry.preserveData as { recutCycle?: { nativeCut?: { fellBackToCheckpoint?: boolean } } })?.recutCycle
+				: undefined;
 		expect(recutCycle?.nativeCut?.fellBackToCheckpoint).toBe(true);
 	});
 
@@ -371,7 +386,6 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document early");
 		expect(agent.state.messages.some(message => JSON.stringify(message).includes("raw continuation"))).toBe(true);
 	});
-
 
 	it("does not recut a committed checkpoint-bound raw continuation until residual grows by the lead", async () => {
 		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
@@ -459,7 +473,6 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(texts.some(text => text.includes(USELESS_NOTICE))).toBe(true);
 	});
 
-
 	it("does not wedge the session when the speculative author fails", async () => {
 		const compactSpy = vi
 			.spyOn(compactionModule, "compact")
@@ -543,7 +556,6 @@ describe("hot handoff speculative lifecycle", () => {
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document leftover");
 	});
-
 
 	it("uses the configured minimum speculation lead when larger than native", async () => {
 		vi.spyOn(compactionModule, "compact").mockResolvedValue({

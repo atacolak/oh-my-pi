@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { HOT_HANDOFF_CUSTOM_TYPE } from "../hot-handoff/types";
 
 const ENABLED = process.env.HOT_HANDOFF_VALIDATE === "1";
@@ -47,7 +47,11 @@ function textOf(content: unknown): string {
 }
 
 function classify(role: Role, text: string, customType?: string): string {
-	if (customType === HOT_HANDOFF_CUSTOM_TYPE || text.includes("<LIVE_STATE") || text.includes("This LIVE_STATE block was generated mechanically")) {
+	if (
+		customType === HOT_HANDOFF_CUSTOM_TYPE ||
+		text.includes("<LIVE_STATE") ||
+		text.includes("This LIVE_STATE block was generated mechanically")
+	) {
 		return "RESUME STATE";
 	}
 	if (text.includes("<summary>") && text.includes("Prior model work/tool state available")) {
@@ -75,13 +79,7 @@ function dumpPath(sessionId: string | undefined): string {
 }
 
 function roleOf(value: unknown): Role {
-	if (
-		value === "system" ||
-		value === "user" ||
-		value === "assistant" ||
-		value === "developer" ||
-		value === "tool"
-	) {
+	if (value === "system" || value === "user" || value === "assistant" || value === "developer" || value === "tool") {
 		return value;
 	}
 	return "unknown";
@@ -110,7 +108,8 @@ export default function hotHandoffValidationRecorder(pi: ExtensionAPI): void {
 			compactionId: event.compactionEntry.id,
 			firstKeptEntryId: event.compactionEntry.firstKeptEntryId,
 			tokensBefore: event.compactionEntry.tokensBefore,
-			tokensAfter: "tokensAfter" in event.compactionEntry ? optionalNumber(event.compactionEntry.tokensAfter) : undefined,
+			tokensAfter:
+				"tokensAfter" in event.compactionEntry ? optionalNumber(event.compactionEntry.tokensAfter) : undefined,
 			method: "method" in event.compactionEntry ? optionalString(event.compactionEntry.method) : undefined,
 			preserveData,
 		};
@@ -185,12 +184,18 @@ export default function hotHandoffValidationRecorder(pi: ExtensionAPI): void {
 			workingModel: current ? `${current.provider}/${current.id}` : undefined,
 			totals: {
 				approxTokens: rows.reduce((sum, row) => sum + row.approxTokens, 0),
-				handoffTokens: rows.filter(row => row.origin === "HANDOFF DOCUMENT").reduce((s, r) => s + r.approxTokens, 0),
+				handoffTokens: rows
+					.filter(row => row.origin === "HANDOFF DOCUMENT")
+					.reduce((s, r) => s + r.approxTokens, 0),
 				rawContinuationTokens: rows
 					.filter(row => row.origin === "RAW CONTINUATION")
 					.reduce((s, r) => s + r.approxTokens, 0),
-				resumeStateTokens: rows.filter(row => row.origin === "RESUME STATE").reduce((s, r) => s + r.approxTokens, 0),
-				systemProjectTokens: rows.filter(row => row.origin === "system/project").reduce((s, r) => s + r.approxTokens, 0),
+				resumeStateTokens: rows
+					.filter(row => row.origin === "RESUME STATE")
+					.reduce((s, r) => s + r.approxTokens, 0),
+				systemProjectTokens: rows
+					.filter(row => row.origin === "system/project")
+					.reduce((s, r) => s + r.approxTokens, 0),
 				memoryTokens: rows.filter(row => row.origin === "memory/backend").reduce((s, r) => s + r.approxTokens, 0),
 			},
 			markers: {

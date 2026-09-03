@@ -1630,10 +1630,12 @@ export class SessionMaintenance {
 		return run.armed;
 	}
 
-	#checkpointBoundKeepRecentCut(snapshotLeafId: string): {
-		firstKeptEntryId: string;
-		nativeCut: Record<string, unknown>;
-	} | undefined {
+	#checkpointBoundKeepRecentCut(snapshotLeafId: string):
+		| {
+				firstKeptEntryId: string;
+				nativeCut: Record<string, unknown>;
+		  }
+		| undefined {
 		const model = this.#model;
 		if (!model) return undefined;
 		const branch = this.#host.sessionManager.getBranch();
@@ -1665,7 +1667,8 @@ export class SessionMaintenance {
 							: snapshotIdx === selectedIdx
 								? "at"
 								: "after",
-				selectedRetainedTokens: selectedIdx >= 0 ? tokensFromIndex(branch, selectedIdx, m => this.#tokenizer.countMessage(m)) : 0,
+				selectedRetainedTokens:
+					selectedIdx >= 0 ? tokensFromIndex(branch, selectedIdx, m => this.#tokenizer.countMessage(m)) : 0,
 				neighbors,
 			},
 		};
@@ -2846,7 +2849,9 @@ export class SessionMaintenance {
 	}
 
 	#latestCompactionIsCheckpointBound(): boolean {
-		return isCheckpointBoundPreserveData(getLatestCompactionEntry(this.#host.sessionManager.getBranch())?.preserveData);
+		return isCheckpointBoundPreserveData(
+			getLatestCompactionEntry(this.#host.sessionManager.getBranch())?.preserveData,
+		);
 	}
 
 	/**

@@ -138,10 +138,9 @@ interface TaskDescriptionOptions {
 function renderDescription(options: TaskDescriptionOptions): string {
 	const spawnPolicy = resolveSpawnPolicy(options.parentSpawns);
 	const spawningDisabled = !spawnPolicy.enabled;
-	let filteredAgents =
-		options.disabledAgents.length > 0
-			? options.agents.filter(agent => !options.disabledAgents.includes(agent.name))
-			: options.agents;
+	let filteredAgents = options.agents.filter(
+		agent => agent.hide !== true && !options.disabledAgents.includes(agent.name),
+	);
 	if (spawningDisabled) {
 		filteredAgents = [];
 	} else if (spawnPolicy.allowedAgents !== null) {

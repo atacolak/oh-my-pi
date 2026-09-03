@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed `lsp reload *` letting a nested language server start from old config after the reload snapshot, so that process could survive teardown.
+- Fixed write and edit language-server clients started without a session owner being treated as unowned, so a reload from an overlapping session could shut them down.
+- Fixed `/remove-dir` shutting down a nested language-server client still covered by a remaining workspace root when the removed additional directory was more specific than that root.
 - Fixed nested language servers spawning twice when a project-local executable was reached through a symlink workspace and its canonical path.
 - Fixed language-server document URIs using a symlink spelling after the client initialized at the canonical project root, so later canonical-path operations no longer sent a second didOpen.
 - Fixed `/remove-dir` shutting down language-server clients still covered by the session cwd or remaining additional roots when the removed directory overlapped those roots.

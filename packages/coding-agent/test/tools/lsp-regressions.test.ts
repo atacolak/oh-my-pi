@@ -4298,7 +4298,9 @@ describe("lsp regressions", () => {
 	it("releasing a removed additional workspace root stops that session's client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-release-");
 		try {
+			const sessionCwd = path.join(tempDir.path(), "app");
 			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(sessionCwd);
 			fs.mkdirSync(additionalRoot);
 			const config: ServerConfig = {
 				command: "extra-lsp",
@@ -4309,7 +4311,7 @@ describe("lsp regressions", () => {
 			};
 			const server = installHandshakeLsp();
 			const owner = lspClient.createLspClientOwner();
-			const session = { cwd: tempDir.path(), settings: lspTestSettings, lspClientOwner: owner } as ToolSession;
+			const session = { cwd: sessionCwd, settings: lspTestSettings, lspClientOwner: owner } as ToolSession;
 			const tool = new LspTool(session);
 			await lspClient.getOrCreateClient(config, additionalRoot, 1_000, undefined, owner);
 
@@ -4339,7 +4341,9 @@ describe("lsp regressions", () => {
 	it("releasing a removed additional workspace root does not require the LSP tool", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-no-tool-");
 		try {
+			const sessionCwd = path.join(tempDir.path(), "app");
 			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(sessionCwd);
 			fs.mkdirSync(additionalRoot);
 			const config: ServerConfig = {
 				command: "extra-lsp",
@@ -4352,7 +4356,7 @@ describe("lsp regressions", () => {
 			const owner = lspClient.createLspClientOwner();
 			await lspClient.getOrCreateClient(config, additionalRoot, 1_000, undefined, owner);
 
-			await lspClient.releaseRemovedWorkspaceRoots(tempDir.path(), additionalRoot, owner);
+			await lspClient.releaseRemovedWorkspaceRoots(sessionCwd, additionalRoot, owner);
 
 			expect(server.received.map(message => message.method)).toContain("shutdown");
 			expect(server.received.map(message => message.method)).toContain("exit");
@@ -4394,6 +4398,32 @@ describe("lsp regressions", () => {
 			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
 			expect(await lspClient.getActiveOrPendingClient(config, sessionCwd, undefined, owner)).toBe(client);
 			await expect(lspClient.getOrCreateClient(config, sessionCwd, 1_000, undefined, owner)).resolves.toBe(client);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("releasing a nested additional root keeps a client still covered by the session cwd", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-nested-remain-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "pkg");
+			fs.mkdirSync(nestedRoot);
+			const config: ServerConfig = {
+				command: "nested-remain-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, nestedRoot, 1_000, undefined, owner);
+
+			await lspClient.releaseRemovedWorkspaceRoots(tempDir.path(), nestedRoot, owner, undefined, [tempDir.path()]);
+
+			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(await lspClient.getActiveOrPendingClient(config, nestedRoot, undefined, owner)).toBe(client);
+			await expect(lspClient.getOrCreateClient(config, nestedRoot, 1_000, undefined, owner)).resolves.toBe(client);
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
@@ -4749,6 +4779,51 @@ describe("lsp regressions", () => {
 			expect(client.config.command).toBe("nested-lsp");
 			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
 			expect(nestedServer.received.some(message => message.method === "shutdown")).toBe(true);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload blocks a nested client that was not in the snapshot", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-unseen-root-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const cwdConfig: ServerConfig = {
+				command: "cwd-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const nestedConfig: ServerConfig = {
+				command: "unseen-nested-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const cwdServer = installFakeLsp((message, server) => {
+				if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			const pendingCwd = lspClient.getOrCreateClient(cwdConfig, tempDir.path(), undefined, undefined, owner);
+			const initialize = await cwdServer.waitFor(message => message.method === "initialize");
+			const cleanup = lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+
+			const nestedPending = lspClient.getOrCreateClient(nestedConfig, nestedRoot, 1_000, undefined, owner);
+			await Promise.resolve();
+			expect(cwdServer.spawnCount).toBe(1);
+
+			const nestedServer = installHandshakeLsp();
+			cwdServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			await expect(pendingCwd).rejects.toThrow("superseded during initialization");
+			await cleanup;
+			await expect(nestedPending).resolves.toMatchObject({ config: { command: "unseen-nested-lsp" } });
+			expect(nestedServer.received.map(message => message.method)).toContain("initialize");
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

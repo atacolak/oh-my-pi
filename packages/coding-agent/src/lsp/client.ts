@@ -95,8 +95,9 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
  * writethrough clients do not remain owned after the root is removed.
  *
  * Clients still covered by `sessionCwd` or `remainingWorkspaceRoots` are left
- * alone: an additional root may be an ancestor or symlink alias of a retained
- * workspace, and tearing those clients down would tombstone the primary root.
+ * alone: an additional root may be nested under, an ancestor of, or a symlink
+ * alias of a retained workspace. Tearing those clients down would drop a
+ * still-valid nested server or tombstone the primary root.
  */
 export async function releaseRemovedWorkspaceRoots(
 	sessionCwd: string,
@@ -108,30 +109,23 @@ export async function releaseRemovedWorkspaceRoots(
 	if (!owner) return [];
 	const roots = [path.resolve(removedRoot)];
 	const retainClient = (clientCwd: string) =>
-		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots, removedRoot);
+		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots);
 	const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
 	clearWorkspaceInitializationFailures(roots, owner, retainClient);
 	return stopped;
 }
 
-/** True when a later workspace ranking still attaches this client to a remaining root. */
+/** True when a remaining workspace root still contains this client. */
 function clientCoveredByRemainingWorkspace(
 	clientCwd: string,
 	sessionCwd: string,
 	remainingWorkspaceRoots: readonly string[],
-	removedRoot: string,
 ): boolean {
 	const remaining = normalizeSessionWorkspace({
 		cwd: sessionCwd,
 		directories: remainingWorkspaceRoots.filter(root => path.resolve(root) !== path.resolve(sessionCwd)),
 	});
-	const remainingMatch = workspaceRootForPath(clientCwd, remaining);
-	if (!remainingMatch) return false;
-	const includingRemoved = normalizeSessionWorkspace({
-		cwd: sessionCwd,
-		directories: [...remaining.directories.filter(directory => directory !== remaining.cwd), removedRoot],
-	});
-	return workspaceRootForPath(clientCwd, includingRemoved) === remainingMatch;
+	return workspaceRootForPath(clientCwd, remaining) !== null;
 }
 
 /** Release all client identities associated with a disposed tool session. */
@@ -1171,12 +1165,19 @@ export async function getOrCreateClient(
 	if (invalidatedClientKeys.has(key)) {
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 	}
-
 	// Do not start a fresh identity until superseded processes are confirmed stopped.
-	const reloadBarrier = clientReloadBarriers.get(path.resolve(cwd));
-	if (reloadBarrier) {
+	// Workspace reload barriers are keyed by known roots, so a nested client that
+	// was not in the snapshot must still wait on any ancestor workspace barrier.
+	const reloadBarriers: Promise<unknown>[] = [];
+	for (const [root, barrier] of clientReloadBarriers) {
+		if (!isPathInsideWorkspace(cwd, root) || reloadBarriers.includes(barrier)) continue;
+		reloadBarriers.push(barrier);
+	}
+	if (reloadBarriers.length > 0) {
 		try {
-			await untilAborted(signal, reloadBarrier);
+			for (const reloadBarrier of reloadBarriers) {
+				await untilAborted(signal, reloadBarrier);
+			}
 		} catch (error) {
 			throwIfAborted(signal);
 			throw error;

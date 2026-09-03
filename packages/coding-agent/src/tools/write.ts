@@ -27,7 +27,13 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import { couldBecomeXdUrl, parseXdUrl } from "../internal-urls/xd-protocol";
-import { createLspWritethrough, type FileDiagnosticsResult, type WritethroughCallback, writethroughNoop } from "../lsp";
+import {
+	createLspWritethrough,
+	fallbackLspClientOwner,
+	type FileDiagnosticsResult,
+	type WritethroughCallback,
+	writethroughNoop,
+} from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
@@ -596,7 +602,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					enableFormat,
 					enableDiagnostics,
 					additionalDirectories: () => session.additionalDirectories,
-					owner: session.lspClientOwner ?? session.getLspClientOwner?.(),
+					owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 					transformDiagnostics: dedup
 						? (path, result) => getDiagnosticsLedger(session).reduce(path, result)
 						: undefined,

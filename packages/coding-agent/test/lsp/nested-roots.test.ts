@@ -640,6 +640,47 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("assigns a reusable fallback owner when write-through has no session owner", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-fallback-owner-write-");
+		try {
+			const { filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const createdOwners: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(
+				async (config, cwd, _timeout, _signal, clientOwner) => {
+					createdOwners.push(clientOwner);
+					return mockLspClient(config, cwd);
+				},
+			);
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: tempDir.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": true,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+
+			await new WriteTool(session).execute("fallback-owner-write", {
+				path: filePath,
+				content: "def example():\n    return 2\n",
+			});
+
+			expect(createdOwners.length).toBeGreaterThan(0);
+			expect(new Set(createdOwners)).toEqual(new Set([lspClient.fallbackLspClientOwner(session)]));
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("roots custom linter diagnostics and formatting at each nested project", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-linter-");
 		try {

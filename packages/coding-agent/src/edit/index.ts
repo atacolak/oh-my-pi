@@ -5,7 +5,13 @@ import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "tex
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { isEnoent, isEnotdir, logger, prompt } from "@oh-my-pi/pi-utils";
-import { createLspWritethrough, flushLspWritethroughBatch, type WritethroughCallback, writethroughNoop } from "../lsp";
+import {
+	createLspWritethrough,
+	fallbackLspClientOwner,
+	flushLspWritethroughBatch,
+	type WritethroughCallback,
+	writethroughNoop,
+} from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import applyPatchDescription from "../prompts/tools/apply-patch.md" with { type: "text" };
@@ -158,7 +164,7 @@ function createEditWritethrough(session: ToolSession): WritethroughCallback {
 				enableFormat,
 				enableDiagnostics,
 				additionalDirectories: () => session.additionalDirectories,
-				owner: session.lspClientOwner ?? session.getLspClientOwner?.(),
+				owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 				transformDiagnostics: dedup
 					? (path, result) => getDiagnosticsLedger(session).reduce(path, result)
 					: undefined,

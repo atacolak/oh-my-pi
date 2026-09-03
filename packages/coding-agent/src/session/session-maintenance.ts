@@ -294,6 +294,26 @@ function countMessageTokensAfter(
 	return tokens;
 }
 
+function isSafeRecentCutEntry(entry: SessionEntry): boolean {
+	if (entry.type === "custom") return true;
+	if (entry.type !== "message") return false;
+	const role = entry.message.role as string;
+	return role === "user" || role === "assistant" || role === "bashExecution" || role === "hookMessage";
+}
+
+function tokensFromIndex(
+	branch: SessionEntry[],
+	startIndex: number,
+	countMessage: (message: AgentMessage) => number,
+): number {
+	let tokens = 0;
+	for (let i = startIndex; i < branch.length; i++) {
+		const entry = branch[i];
+		if (entry.type === "message") tokens += countMessage(entry.message);
+	}
+	return tokens;
+}
+
 /** Wrap a handoff document as a compaction summary: append the cumulative file-operations tag and derive entry details. */
 function handoffSummaryFromDocument(
 	document: string,
@@ -1576,9 +1596,9 @@ export class SessionMaintenance {
 	 * Consume the speculation slot for a real maintenance pass. An in-flight
 	 * checkpoint-bound author is awaited (leftover generation time, not a
 	 * second full compact). An oversized post-checkpoint tail is recut once
-	 * so the burst lands in the Handoff Document; firstKept then uses the
-	 * stock keepRecentTokens cut. An armed result is returned only when still
-	 * valid for the current branch, model, and settings.
+	 * so the burst lands in the Handoff Document. firstKept always uses the
+	 * stock keepRecentTokens cut, with a hole-guard if that cut would skip
+	 * post-snapshot entries the semantic author never saw.
 	 */
 	async #claimArmedSpeculation(): Promise<ArmedSpeculation | undefined> {
 		const waitedStart = Date.now();
@@ -1595,40 +1615,82 @@ export class SessionMaintenance {
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return undefined;
 		if (!this.#armedSpeculationValid(run.armed)) return undefined;
 		if (run.armed.checkpointBound) {
-			const firstKeptEntryId =
-				run.armed.recut || this.#latestCompactionIsCheckpointBound()
-					? this.#keepRecentFirstKeptEntryId()
-					: (firstEntryIdAfter(this.#host.sessionManager.getBranch(), run.armed.snapshotLeafId) ??
-						run.armed.snapshotLeafId);
-			if (!firstKeptEntryId) return undefined;
+			const cut = this.#checkpointBoundKeepRecentCut(run.armed.snapshotLeafId);
+			if (!cut) return undefined;
 			return {
 				...run.armed,
 				waitedMs,
 				result: {
 					...run.armed.result,
-					firstKeptEntryId,
-					preserveData: this.#withRecutCycle(run.armed, firstKeptEntryId, waitedMs),
+					firstKeptEntryId: cut.firstKeptEntryId,
+					preserveData: this.#withRecutCycle(run.armed, cut, waitedMs),
 				},
 			};
 		}
 		return run.armed;
 	}
 
-	#keepRecentFirstKeptEntryId(): string | undefined {
+	#checkpointBoundKeepRecentCut(snapshotLeafId: string): {
+		firstKeptEntryId: string;
+		nativeCut: Record<string, unknown>;
+	} | undefined {
 		const model = this.#model;
 		if (!model) return undefined;
+		const branch = this.#host.sessionManager.getBranch();
 		const settings = this.#host.settings.getGroup("compaction");
-		return prepareCompaction(
-			this.#host.sessionManager.getBranch(),
-			resolveMethodSettings(settings, "soft"),
-			model,
-			this.#tokenizer,
-		)?.firstKeptEntryId;
+		const keepRecentTokens = Math.max(0, settings.keepRecentTokens);
+		const snapshotIdx = branch.findIndex(entry => entry.id === snapshotLeafId);
+		const fallbackId = firstEntryIdAfter(branch, snapshotLeafId) ?? snapshotLeafId;
+		const preparation = prepareCompaction(branch, resolveMethodSettings(settings, "soft"), model, this.#tokenizer);
+		const nativeId = preparation?.firstKeptEntryId;
+		const nativeIdx = nativeId ? branch.findIndex(entry => entry.id === nativeId) : -1;
+		const hole = snapshotIdx >= 0 && nativeIdx > snapshotIdx;
+		const firstKeptEntryId = hole || nativeIdx < 0 ? fallbackId : nativeId!;
+		const selectedIdx = branch.findIndex(entry => entry.id === firstKeptEntryId);
+		const neighbors = this.#neighborSafeCuts(branch, selectedIdx);
+		return {
+			firstKeptEntryId,
+			nativeCut: {
+				configuredKeepRecentTokens: keepRecentTokens,
+				nativeFirstKeptEntryId: nativeId,
+				selectedFirstKeptEntryId: firstKeptEntryId,
+				fellBackToCheckpoint: hole || nativeIdx < 0,
+				checkpointIndex: snapshotIdx,
+				selectedIndex: selectedIdx,
+				checkpointRelativeToSelected:
+					snapshotIdx < 0 || selectedIdx < 0
+						? "unknown"
+						: snapshotIdx < selectedIdx
+							? "before"
+							: snapshotIdx === selectedIdx
+								? "at"
+								: "after",
+				selectedRetainedTokens: selectedIdx >= 0 ? tokensFromIndex(branch, selectedIdx, m => this.#tokenizer.countMessage(m)) : 0,
+				neighbors,
+			},
+		};
+	}
+
+	#neighborSafeCuts(branch: SessionEntry[], selectedIdx: number): Array<Record<string, unknown>> {
+		if (selectedIdx < 0) return [];
+		const safe: number[] = [];
+		for (let i = 0; i < branch.length; i++) {
+			if (isSafeRecentCutEntry(branch[i])) safe.push(i);
+		}
+		const pos = safe.indexOf(selectedIdx);
+		const around = pos < 0 ? [selectedIdx] : safe.slice(Math.max(0, pos - 1), pos + 2);
+		if (!around.includes(selectedIdx)) around.push(selectedIdx);
+		return around.map(index => ({
+			id: branch[index]?.id,
+			index,
+			retainedTokens: tokensFromIndex(branch, index, m => this.#tokenizer.countMessage(m)),
+			selected: index === selectedIdx,
+		}));
 	}
 
 	#withRecutCycle(
 		armed: ArmedSpeculation,
-		firstKeptEntryId: string,
+		cut: { firstKeptEntryId: string; nativeCut: Record<string, unknown> },
 		waitedMs: number,
 	): Record<string, unknown> | undefined {
 		const recutCycle = {
@@ -1637,8 +1699,9 @@ export class SessionMaintenance {
 			originalSnapshotLeafId: armed.originalSnapshotLeafId ?? (armed.recut ? undefined : armed.snapshotLeafId),
 			originalTailTokens: armed.originalTailTokens,
 			authorSnapshotLeafId: armed.snapshotLeafId,
-			finalFirstKeptEntryId: firstKeptEntryId,
+			finalFirstKeptEntryId: cut.firstKeptEntryId,
 			authorCalls: armed.recut ? 2 : 1,
+			nativeCut: cut.nativeCut,
 		};
 		return { ...(armed.result.preserveData ?? {}), recutCycle };
 	}

@@ -205,9 +205,10 @@ export default function hotHandoffValidationRecorder(pi: ExtensionAPI): void {
 		const dest = dumpPath(ctx.sessionManager.getSessionId());
 		await fs.mkdir(path.dirname(dest), { recursive: true });
 		const recutCycle = asRecord(asRecord(compactMeta?.preserveData)?.recutCycle);
+		const nativeCut = asRecord(recutCycle?.nativeCut);
 		await Bun.write(
 			dest,
-			`${JSON.stringify({ compact: compactMeta, recutCycle, firstResume: out }, null, 2)}\n`,
+			`${JSON.stringify({ compact: compactMeta, recutCycle, nativeCut, firstResume: out }, null, 2)}\n`,
 		);
 		ctx.ui.notify(`hot-handoff validation dump: ${dest}`, "info");
 		return undefined;

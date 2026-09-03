@@ -235,7 +235,7 @@ describe("hot handoff speculative lifecycle", () => {
 		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document");
 	});
 
-	it("cuts at the speculation checkpoint, not keepRecentTokens, and derives firstKeptEntryId after it", async () => {
+	it("uses the native keepRecent cut on a small-tail first compact", async () => {
 		const checkpointId = sessionManager.getBranch().at(-1)!.id;
 		let semanticFirstKept: string | undefined;
 		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => {
@@ -256,23 +256,53 @@ describe("hot handoff speculative lifecycle", () => {
 
 		sessionManager.appendMessage(userMessage("raw continuation"));
 		sessionManager.appendMessage(assistantMessage("continued after checkpoint", model));
-		const firstRawId = sessionManager.getBranch().find(entry => {
-			if (entry.type !== "message") return false;
-			return JSON.stringify(entry.message).includes("raw continuation");
-		})?.id;
-		expect(firstRawId).toBeDefined();
-		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START + 9_000, CONTEXT_WINDOW);
-		expect(maintenance.speculationState).toBe("armed");
-		expect(compactSpy).toHaveBeenCalledTimes(1);
-
 		await maintenance.runAutoCompaction("threshold", false, false, false, {
 			triggerContextTokens: THRESHOLD + 9_000,
 		});
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
-		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).toBe(firstRawId);
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("Handoff Document");
 		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).not.toBe(checkpointId);
 		expect(agent.state.messages.some(message => JSON.stringify(message).includes("raw continuation"))).toBe(true);
+		const recutCycle = entry?.type === "compaction" ? (entry.preserveData as { recutCycle?: { recut?: boolean; authorCalls?: number; nativeCut?: { fellBackToCheckpoint?: boolean } } })?.recutCycle : undefined;
+		expect(recutCycle?.recut).toBe(false);
+		expect(recutCycle?.authorCalls).toBe(1);
+		expect(recutCycle?.nativeCut?.fellBackToCheckpoint).toBe(false);
+	});
+
+	it("falls back to the checkpoint if native keepRecent would skip unseen post-snapshot entries", async () => {
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "Handoff Document",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		sessionManager.appendMessage(userMessage("unseen after checkpoint"));
+		sessionManager.appendMessage(assistantMessage("also unseen", model));
+		const unseenId = sessionManager.getBranch().find(entry => {
+			if (entry.type !== "message") return false;
+			return JSON.stringify(entry.message).includes("unseen after checkpoint");
+		})?.id;
+		expect(unseenId).toBeDefined();
+		const afterUnseenId = sessionManager.getBranch().at(-1)!.id;
+		const originalPrepare = compactionModule.prepareCompaction;
+		vi.spyOn(compactionModule, "prepareCompaction").mockImplementation((branch, settings, model, tokenizer) => {
+			const result = originalPrepare(branch, settings, model, tokenizer);
+			if (!result) return result;
+			return { ...result, firstKeptEntryId: afterUnseenId };
+		});
+		await maintenance.runAutoCompaction("threshold", false, false, false, {
+			triggerContextTokens: THRESHOLD + 9_000,
+		});
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+		const entry = sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.firstKeptEntryId : undefined).toBe(unseenId);
+		expect(agent.state.messages.some(message => JSON.stringify(message).includes("unseen after checkpoint"))).toBe(true);
+		const recutCycle = entry?.type === "compaction" ? (entry.preserveData as { recutCycle?: { nativeCut?: { fellBackToCheckpoint?: boolean } } })?.recutCycle : undefined;
+		expect(recutCycle?.nativeCut?.fellBackToCheckpoint).toBe(true);
 	});
 
 	it("waits leftover author time then recuts an oversized post-checkpoint burst", async () => {

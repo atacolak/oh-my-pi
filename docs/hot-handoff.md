@@ -126,7 +126,7 @@ OMP owns scheduling, cursor, invalidation, and commit:
 - reset/branch/compaction after the checkpoint invalidates the armed result
 - if the Commit Threshold arrives while the author is still running, the real pass waits leftover generation time instead of aborting
 - a checkpoint-bound armed result does **not** refresh-on-growth during the band; at commit, a post-checkpoint tail larger than `keepRecentTokens` is recut once through the current leaf. The recut author may see the region later kept raw. `firstKeptEntryId` then uses the stock keepRecentTokens cut. Recut failure keeps the original armed result and does not emit the yellow fallback
-- after commit, the next author does **not** start until residual context grows by the speculation lead from that compact's `tokensAfter`; a checkpoint-bound residual is treated as headroom so stock shake/prune does not eat the raw continuation. The same hold applies while a checkpoint-bound author is in flight or armed
+- after commit, the next author does **not** start until residual context grows by the speculation lead from that compact's `tokensAfter`; a checkpoint-bound residual is treated as headroom so stock shake/prune does not eat the raw continuation. The same hold applies while a checkpoint-bound author is in flight or armed. An unresolved `session.compacting` hook is held conservatively; once it resolves without a Hot Handoff model, stock prune/shake resume
 
 If speculative generation fails, the armed slot is discarded and OMP emits the extension's `failureNotice` once (warning). The next automatic maintenance pass uses stock compaction rather than blocking the main model on a fresh Hot Handoff call. Manual `/compact` still runs Hot Handoff synchronously.
 

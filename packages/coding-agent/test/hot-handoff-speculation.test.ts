@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
+import { USELESS_NOTICE } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import type { AssistantMessage, Model, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -38,13 +39,14 @@ function assistantMessage(text: string, model: Model): AssistantMessage {
 	};
 }
 
-function toolResultMessage(text: string, toolCallId = "call-raw"): ToolResultMessage {
+function uselessGrepResult(text: string, toolCallId = "call-raw"): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
-		toolName: "read",
+		toolName: "grep",
 		content: [{ type: "text", text }],
 		isError: false,
+		useless: true,
 		timestamp: Date.now(),
 	};
 }
@@ -70,7 +72,7 @@ describe("hot handoff speculative lifecycle", () => {
 		sessionManager.appendMessage(assistantMessage("final response", model));
 	}
 
-	function createMaintenance(options: { minLead?: number } = {}): SessionMaintenance {
+	function createMaintenance(options: { minLead?: number; hotHandoff?: boolean } = {}): SessionMaintenance {
 		agent = new Agent({
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 		});
@@ -81,14 +83,17 @@ describe("hot handoff speculative lifecycle", () => {
 			"compaction.thresholdPercent": 70,
 			"compaction.keepRecentTokens": 8_000,
 			"compaction.autoContinue": false,
+			"compaction.dropUseless": true,
 			...(options.minLead !== undefined ? { "compaction.speculationMinLeadTokens": options.minLead } : {}),
 		});
+		const hotHandoff = options.hotHandoff !== false;
 		const extensionRunner = {
 			hasHandlers: (eventType: string) => eventType === "session.compacting",
 			emit: async (event: { type: string; source?: string; messages?: unknown[] }) => {
 				if (event.type !== "session.compacting") return undefined;
 				compactingSources.push(event.source);
 				if (event.source === "auto") return undefined;
+				if (!hotHandoff) return undefined;
 				return {
 					prompt: "independent handoff author",
 					model: `${authorModel.provider}/${authorModel.id}`,
@@ -384,16 +389,44 @@ describe("hot handoff speculative lifecycle", () => {
 		sessionManager.appendMessage(userMessage("raw continuation"));
 		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
 
-		const bulky = "exact recent evidence ".repeat(8_000);
-		sessionManager.appendMessage(toolResultMessage(bulky));
+		const bulky = "match line\n".repeat(20_000);
+		sessionManager.appendMessage(uselessGrepResult(bulky));
 		await maintenance.checkCompaction(assistantMessage("continued after compact", model), true, false, false);
 
 		const texts = sessionManager
 			.getBranch()
 			.filter(entry => entry.type === "message" && entry.message.role === "toolResult")
 			.map(entry => JSON.stringify(entry.type === "message" ? entry.message : undefined));
-		expect(texts.some(text => text.includes("exact recent evidence"))).toBe(true);
-		expect(texts.some(text => text.includes("[shaken") || text.includes("Output truncated"))).toBe(false);
+		expect(texts.some(text => text.includes("match line"))).toBe(true);
+		expect(
+			texts.some(
+				text => text.includes("[shaken") || text.includes("Output truncated") || text.includes(USELESS_NOTICE),
+			),
+		).toBe(false);
+	});
+
+	it("keeps stock prune when Hot Handoff is inactive", async () => {
+		maintenance = createMaintenance({ hotHandoff: false });
+		vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "stock summary",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+		await maintenance.runAutoCompaction("threshold", false, false, false, { triggerContextTokens: THRESHOLD });
+
+		const bulky = "match line\n".repeat(20_000);
+		sessionManager.appendMessage(uselessGrepResult(bulky));
+		await maintenance.checkCompaction(assistantMessage("continued after compact", model), true, false, false);
+
+		const texts = sessionManager
+			.getBranch()
+			.filter(entry => entry.type === "message" && entry.message.role === "toolResult")
+			.map(entry => JSON.stringify(entry.type === "message" ? entry.message : undefined));
+		expect(texts.some(text => text.includes(USELESS_NOTICE))).toBe(true);
 	});
 
 

@@ -239,6 +239,8 @@ interface SpeculationRun {
 	originalArmed?: ArmedSpeculation;
 	originalTailTokens?: number;
 	startedAt: number;
+	/** Set once session.compacting resolves: true only for Hot Handoff. */
+	checkpointBound?: boolean;
 }
 
 function mergeLlmCompactionPreserveData(
@@ -1457,6 +1459,7 @@ export class SessionMaintenance {
 			// the guard just narrows the union.
 			if (compactionPrep.kind === "fromHook") return clear();
 			const checkpointBound = Boolean(compactionPrep.hookModel);
+			run.checkpointBound = checkpointBound;
 			const preparation = checkpointBound ? checkpointPreparation : stockPreparation;
 			if (!preparation) return clear();
 			const emitFailureNotice = () => {
@@ -2786,14 +2789,17 @@ export class SessionMaintenance {
 	/**
 	 * After a Hot Handoff compact, the keep region is the exact raw window.
 	 * Also hold that window while a checkpoint-bound author is in flight or
-	 * armed: per-turn prune/shake would stub the accumulating tail so recut
-	 * never sees 15–25k.
+	 * armed. An unresolved session.compacting hook is held conservatively;
+	 * once it resolves without a Hot Handoff model, stock prune/shake resume.
 	 */
 	#preserveCheckpointBoundRawWindow(): boolean {
 		if (this.#latestCompactionIsCheckpointBound()) return true;
 		const run = this.#speculation;
-		if (run?.armed?.checkpointBound) return true;
-		return Boolean(run && !run.armed && this.#host.extensionRunner?.hasHandlers("session.compacting"));
+		if (!run) return false;
+		if (run.armed) return run.armed.checkpointBound === true;
+		if (run.checkpointBound === false) return false;
+		if (run.checkpointBound === true) return true;
+		return Boolean(this.#host.extensionRunner?.hasHandlers("session.compacting"));
 	}
 
 	/**

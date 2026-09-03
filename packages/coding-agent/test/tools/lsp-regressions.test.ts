@@ -4616,6 +4616,45 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload retries a nested identity whose pending init was superseded", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-teardown-failure-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const nestedServer = installFakeLsp((message, server) => {
+				if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, idleTimeoutMs: undefined });
+			const owner = lspClient.createLspClientOwner();
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			const pending = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, owner);
+			const initialize = await nestedServer.waitFor(message => message.method === "initialize");
+			const reload = tool.execute("nested-reload-teardown-failure", { action: "reload", file: "*" });
+			nestedServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			await expect(pending).rejects.toThrow("superseded during initialization");
+			await reload;
+			expect(nestedServer.spawnCount).toBe(1);
+
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner),
+			).rejects.not.toThrow("failed to initialize recently");
+			expect(nestedServer.spawnCount).toBe(2);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
 		try {

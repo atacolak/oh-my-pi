@@ -95,7 +95,7 @@ const fileOperationLocks = new Map<string, Promise<void>>();
 
 /** Negative cache of recent init failures so a broken server fails fast instead of re-spawning per call. */
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
-const initFailures = new Map<string, { at: number; message: string; cwd: string }>();
+const initFailures = new Map<string, { at: number; message: string; cwd: string; owner?: LspClientOwner }>();
 const READER_EXIT_GRACE_MS = 100;
 
 // Idle timeout configuration (disabled by default)
@@ -1003,6 +1003,7 @@ export function shutdownStaleClients(
 					}
 				}),
 			);
+			for (const key of unownedStaleKeys) initFailures.delete(key);
 
 			const stale = Array.from(clients.entries()).filter(
 				([key, client]) => unownedStaleKeys.has(key) && roots.some(root => isPathInsideWorkspace(client.cwd, root)),
@@ -1054,7 +1055,7 @@ export function clearWorkspaceInitializationFailures(workspaceRoots: readonly st
 	const roots = workspaceRoots.map(root => path.resolve(root));
 	const ownedKeys = owner ? ownerClientKeys.get(owner) : undefined;
 	for (const [key, failure] of initFailures) {
-		if (owner && !ownedKeys?.has(key)) continue;
+		if (owner && !ownedKeys?.has(key) && failure.owner !== owner) continue;
 		if (roots.some(root => isPathInsideWorkspace(failure.cwd, root))) initFailures.delete(key);
 	}
 }
@@ -1265,8 +1266,12 @@ export async function getOrCreateClient(
 			// caller-shortened deadline (warmup/writethrough) and caller-signal
 			// aborts are transient — the server may simply be slow or the user may
 			// have cancelled, so a later call with a fresh deadline should retry.
-			if (!signal?.aborted && !(initTimeoutMs !== undefined && message.includes("timed out"))) {
-				initFailures.set(key, { at: Date.now(), message, cwd });
+			if (
+				!signal?.aborted &&
+				!message.includes("configuration was superseded") &&
+				!(initTimeoutMs !== undefined && message.includes("timed out"))
+			) {
+				initFailures.set(key, { at: Date.now(), message, cwd, owner });
 			}
 			throw err;
 		} finally {

@@ -11,6 +11,11 @@ Prefer current state over history.
 Prefer actionable invariants over explanations.
 Discard anything that no longer constrains current work.
 
+Use as much space as necessary to preserve the active working state.
+Prefer dense factual structure over historical narration.
+Do not target a fixed token count.
+Do not reproduce recent raw logs verbatim merely because they remain available.
+
 The supplied LIVE_STATE snapshot is authoritative for volatile runtime facts.
 Do not copy volatile machine/runtime facts into prose merely for completeness.
 Do not contradict LIVE_STATE.

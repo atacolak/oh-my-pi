@@ -1390,10 +1390,13 @@ export async function buildSessionOptions(
 	if (titleSystemPrompt) {
 		options.titleSystemPrompt = titleSystemPrompt;
 	}
+	if (launchAgent) {
+		options.agentName = launchAgent.name;
+		options.rootAgentName = launchAgent.name;
+	}
 
 	if (launchAgent && !restoringSession) {
 		options.agentDisplayName = launchAgent.name;
-		options.rootAgentName = launchAgent.name;
 		if (launchAgent.automationAuthor) {
 			options.automationAuthor = launchAgent.automationAuthor;
 		}

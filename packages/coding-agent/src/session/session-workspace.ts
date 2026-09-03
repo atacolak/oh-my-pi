@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathIsWithin } from "@oh-my-pi/pi-utils";
+import { pathIsWithin, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 
 /**
  * Filesystem workspace of a session: one current/default directory plus a
@@ -56,15 +56,23 @@ export function additionalWorkspaceDirectories(workspace: SessionWorkspace): str
 /**
  * Longest matching workspace directory that contains `filePath`.
  * Additional roots are not a hierarchy; the most specific prefix wins.
+ * Specificity is actual containment of equivalent paths, not raw string length,
+ * so a long symlink cwd cannot outrank a nested additional workspace.
  */
 export function workspaceRootForPath(filePath: string, workspace: SessionWorkspace): string | null {
 	const resolved = path.resolve(filePath);
 	let best: string | null = null;
 	for (const directory of workspace.directories) {
 		if (!pathIsWithin(directory, resolved)) continue;
-		if (best === null || directory.length > best.length) best = directory;
+		if (best === null || isMoreSpecificWorkspaceRoot(directory, best)) best = directory;
 	}
 	return best;
+}
+
+function isMoreSpecificWorkspaceRoot(candidate: string, current: string): boolean {
+	if (pathIsWithin(current, candidate) && !pathIsWithin(candidate, current)) return true;
+	if (pathIsWithin(candidate, current) && !pathIsWithin(current, candidate)) return false;
+	return resolveEquivalentPath(candidate).length > resolveEquivalentPath(current).length;
 }
 
 /** Ordered workspace directories for a cwd plus optional additional roots. */

@@ -4,6 +4,26 @@
 
 ### Fixed
 
+- Fixed write and edit language-server fallback owners remaining after a public ToolSession disposed, so an overlapping session could not replace those clients.
+- Fixed a failed language-server initialization leaving the session as a phantom owner, so a later successful session could not reload or replace that identity.
+- Fixed `rename_file` leaving sibling nested language servers with stale overlays when `workspace/willRenameFiles` also edited files outside the renamed project.
+- Fixed `lsp reload *` starting a nested language server from a config captured before the reload barrier, so a changed command, args, or settings could survive teardown.
+- Fixed format-on-write probes recording a session as a language-server owner when no client existed, so an overlapping session could not replace that later-started identity.
+- Fixed `lsp reload *` letting a nested language server start from old config after the reload snapshot, so that process could survive teardown.
+- Fixed write and edit language-server clients started without a session owner being treated as unowned, so a reload from an overlapping session could shut them down.
+- Fixed `/remove-dir` shutting down a nested language-server client still covered by a remaining workspace root when the removed additional directory was more specific than that root.
+- Fixed nested language servers spawning twice when a project-local executable was reached through a symlink workspace and its canonical path.
+- Fixed language-server document URIs using a symlink spelling after the client initialized at the canonical project root, so later canonical-path operations no longer sent a second didOpen.
+- Fixed `/remove-dir` shutting down language-server clients still covered by the session cwd or remaining additional roots when the removed directory overlapped those roots.
+- Fixed nested language servers sending `workspace/applyEdit` for a sibling or session-root file leaving those clients with stale overlays after the filesystem edit.
+- Fixed `/remove-dir` skipping language-server cleanup when write or edit could still start clients because the model-facing `lsp` tool was not registered.
+- Fixed `lsp reload *` caching a nested initialization failure when teardown superseded an in-flight client, so the next file operation retried instead of failing from the three-minute negative cache.
+- Fixed code-action and rename workspace edits under `--add-dir` leaving additional-root language servers with stale overlays after the files changed on disk.
+- Fixed `/remove-dir` leaving language-server processes from the removed workspace running for the rest of the session, so a later `reload *` could not release them and another session could not replace them.
+- Fixed `lsp reload *` leaving a cancelled nested client permanently tombstoned, so later requests for that identity failed with “configuration was superseded”.
+- Fixed `rename_file` sending duplicate will/didRenameFiles requests when the same nested root was addressed through a symlink and its canonical path.
+- Fixed nested language-server clients being spawned twice when the same project was addressed through a symlink and its canonical path.
+- Fixed nested workspace routing attaching a file to the outer language server when a long symlink cwd outranked a shorter nested additional workspace.
 - Fixed creating a file under a workspace opened through a symlink skipping nested language-server formatting and diagnostics because the new path could not be realpath'd yet.
 - Fixed nested-root rename and code-action apply leaving sibling and root language servers with stale overlays when the workspace edit also changed files outside the nested project.
 - Fixed public `LspTool` construction allocating a new unreleasable owner on every call, so a later `reload *` could not stop clients started by an earlier tool on the same session.

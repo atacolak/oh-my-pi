@@ -712,7 +712,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	skillCommands: Map<string, Skill> = new Map();
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
 	collabHost?: CollabHost;
+	collabHostStart?: Promise<CollabHost>;
+	collabHostAbort?: AbortController;
 	collabGuest?: CollabGuestLink;
+	collabGuestStart?: Promise<CollabGuestLink>;
 
 	#pendingCommandOutput: Component[] = [];
 	#pendingCommandOutputSessionId: string | undefined;
@@ -1303,7 +1306,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		});
 
-		// Initialize hooks with TUI-based UI context
 		await logger.time("InteractiveMode.init:hooks", () => this.initHooksAndCustomTools());
 
 		// Restore mode from session (e.g. plan mode on resume)

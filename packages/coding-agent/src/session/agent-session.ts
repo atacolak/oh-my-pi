@@ -104,13 +104,16 @@ import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mod
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
+import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
 import {
 	onAppendOnlyModeChanged,
 	onCodeModeChanged,
+	onConversationFlowChanged,
 	onExtendedContextChanged,
 	onModelRolesChanged,
+	onSessionRuntimeChanged,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
@@ -485,6 +488,11 @@ function cloneMessageEndNotificationField(value: unknown): unknown {
 	return String(value);
 }
 
+/** Map a settings sampling number onto the live agent field (`-1` means provider default). */
+function samplingValue(value: number): number | undefined {
+	return value >= 0 ? value : undefined;
+}
+
 /** Build a detached, notification-only snapshot of an AgentMessage. */
 function cloneMessageEndNotification(message: AgentMessage): AgentMessage {
 	const snapshot: Record<PropertyKey, unknown> = {};
@@ -576,6 +584,8 @@ export class AgentSession {
 	#unsubscribeModelRoles?: () => void;
 	#unsubscribeExtendedContext?: () => void;
 	#unsubscribeCodeMode?: () => void;
+	#unsubscribeConversationFlow?: () => void;
+	#unsubscribeSessionRuntime?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
 	#eventListeners: AgentSessionEventListener[] = [];
@@ -1831,6 +1841,78 @@ export class AgentSession {
 			void this.#tools.reconcileCodeMode().catch(error => {
 				logger.warn("Code Mode reconcile after setting change failed", { error: String(error) });
 			});
+		});
+		this.#unsubscribeConversationFlow = onConversationFlowChanged(() => {
+			this.setSteeringMode(this.settings.get("steeringMode"), false);
+			this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			this.setInterruptMode(this.settings.get("interruptMode"), false);
+		});
+		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged((paths, source) => {
+			if (source !== this.settings) return;
+			const changed = new Set(paths);
+			if (changed.has("steeringMode")) {
+				this.setSteeringMode(this.settings.get("steeringMode"), false);
+			}
+			if (changed.has("followUpMode")) {
+				this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			}
+			if (changed.has("interruptMode")) {
+				this.setInterruptMode(this.settings.get("interruptMode"), false);
+			}
+			if (changed.has("defaultThinkingLevel")) {
+				this.setThinkingLevel(this.settings.get("defaultThinkingLevel"), false);
+			}
+			if (changed.has("advisor.enabled")) {
+				this.setAdvisorEnabled(this.settings.get("advisor.enabled"));
+			}
+			if (changed.has("memory.backend")) {
+				void this.applyMemoryBackend().catch(error => {
+					logger.warn("Memory backend reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("inspect_image.mode")) {
+				void this.applyInspectImageModeChange().catch(error => {
+					logger.warn("Inspect-image mode reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("externalThinking")) {
+				void this.setThinkToolEnabled(this.settings.get("externalThinking")).catch(error => {
+					logger.warn("External thinking reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (changed.has("omitThinking")) {
+				this.agent.hideThinkingSummary = this.settings.get("omitThinking");
+			}
+			if (changed.has("temperature")) {
+				this.agent.temperature = samplingValue(this.settings.get("temperature"));
+			}
+			if (changed.has("topP")) {
+				this.agent.topP = samplingValue(this.settings.get("topP"));
+			}
+			if (changed.has("topK")) {
+				this.agent.topK = samplingValue(this.settings.get("topK"));
+			}
+			if (changed.has("minP")) {
+				this.agent.minP = samplingValue(this.settings.get("minP"));
+			}
+			if (changed.has("presencePenalty")) {
+				this.agent.presencePenalty = samplingValue(this.settings.get("presencePenalty"));
+			}
+			if (changed.has("repetitionPenalty")) {
+				this.agent.repetitionPenalty = samplingValue(this.settings.get("repetitionPenalty"));
+			}
+			if (changed.has("personality") || changed.has("tools.xdevDocs")) {
+				void this.refreshBaseSystemPrompt().catch(error => {
+					logger.warn("System prompt reconcile after skipped project save failed", { error: String(error) });
+				});
+			}
+			if (
+				changed.has("providers.webSearchExclude") ||
+				changed.has("providers.webSearchOrder") ||
+				changed.has("providers.imageOrder")
+			) {
+				applyProviderGlobalsFromSettings(this.settings);
+			}
 		});
 
 		// Config-declared resolution done against the catalog as it stands at
@@ -4533,6 +4615,14 @@ export class AgentSession {
 		if (this.#unsubscribeCodeMode) {
 			this.#unsubscribeCodeMode();
 			this.#unsubscribeCodeMode = undefined;
+		}
+		if (this.#unsubscribeConversationFlow) {
+			this.#unsubscribeConversationFlow();
+			this.#unsubscribeConversationFlow = undefined;
+		}
+		if (this.#unsubscribeSessionRuntime) {
+			this.#unsubscribeSessionRuntime();
+			this.#unsubscribeSessionRuntime = undefined;
 		}
 		this.#eventListeners = [];
 		this.#runStateListeners.clear();
@@ -7923,29 +8013,29 @@ export class AgentSession {
 
 	/**
 	 * Set steering mode.
-	 * Saves to settings.
+	 * Persists to settings unless `persist` is false (live /settings side effect).
 	 */
-	setSteeringMode(mode: "all" | "one-at-a-time"): void {
+	setSteeringMode(mode: "all" | "one-at-a-time", persist: boolean = true): void {
 		this.agent.setSteeringMode(mode);
-		this.settings.set("steeringMode", mode);
+		if (persist) this.settings.set("steeringMode", mode);
 	}
 
 	/**
 	 * Set follow-up mode.
-	 * Saves to settings.
+	 * Persists to settings unless `persist` is false (live /settings side effect).
 	 */
-	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
+	setFollowUpMode(mode: "all" | "one-at-a-time", persist: boolean = true): void {
 		this.agent.setFollowUpMode(mode);
-		this.settings.set("followUpMode", mode);
+		if (persist) this.settings.set("followUpMode", mode);
 	}
 
 	/**
 	 * Set interrupt mode.
-	 * Saves to settings.
+	 * Persists to settings unless `persist` is false (live /settings side effect).
 	 */
-	setInterruptMode(mode: "immediate" | "wait"): void {
+	setInterruptMode(mode: "immediate" | "wait", persist: boolean = true): void {
 		this.agent.setInterruptMode(mode);
-		this.settings.set("interruptMode", mode);
+		if (persist) this.settings.set("interruptMode", mode);
 	}
 
 	/**

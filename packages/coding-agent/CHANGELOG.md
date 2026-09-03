@@ -17,6 +17,36 @@
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
 - Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
+### Fixed
+
+- Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
+- Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
+- Fixed `/settings` rendering unsanitized repository names in the project-scope title.
+- Fixed `/settings` leaving a scoped status-line preview after close, and project saves overwriting newer same-key disk edits without firing adopted-change hooks.
+- Fixed project saves keeping a rejected local model-role override or blaming `.omp/config.yml` after adopting a newer on-disk role or inherited `shellPath`.
+- Fixed project inherit leaving a legacy flat `theme` override, and project saves treating an alias-backed clear as unconflicted when a newer legacy alias landed on disk.
+- Fixed project inherit leaving a quoted-dotted `features.unexpectedStopDetection` alias, and skipped project queue-mode saves leaving the live session on the rejected local value.
+- Fixed skipped project thinking and memory saves leaving the live session on the rejected local value.
+- Fixed project inherit leaving mnemosyne, hindsight, and Exa aliases, and skipped autocompleteMaxVisible saves leaving the editor on the rejected local value.
+- Fixed project saves discarding a second same-key edit when a sibling disk edit landed during debounce.
+- Fixed overlapping project saves leaving live session state on an adopted disk value after a later same-key edit persisted.
+- Fixed project saves leaving live git-status TUI state on the rejected local value after adopting a newer disk edit.
+- Fixed overlapping project saves dropping a later edit after the in-flight save rejected.
+- Fixed `/settings` copying an unchanged inherited credential into `.omp/config.yml`.
+- Fixed `/settings` scoped status-line previews omitting segment options from the selected layer.
+- Fixed project saves leaving live session/editor state, original runtime model roles, or a stale project-config flag after adopting a sibling disk edit, role clear, or deleted `.omp/config.yml`.
+- Fixed project saves resetting a temporary `/thinking` level when adopting an unrelated session-runtime sibling edit.
+- Fixed project edits to a renamed native object dropping sibling legacy fields.
+- Fixed project inherit of one renamed native field dropping sibling legacy fields.
+- Fixed adopted project settings reapplying live session state across Settings clones, and `/settings` keeping stale row snapshots after a skipped project save.
+- Fixed project saves leaving live sampling parameters on the rejected local value after adopting a newer disk edit.
+- Fixed project saves leaving live omit-thinking and auto-compact session state on the rejected local value after adopting a newer disk edit.
+- Fixed project saves leaving the live auto-compact status indicator stale after adopting a `compaction.methodOrder` disk edit.
+- Fixed project saves leaving live web-search eligibility, tool-activity visibility, remaining display toggles, MCP notification subscriptions, composer shape, spelling, and TUI tightness/scrollback/mermaid state on the rejected local value after adopting a newer disk edit.
+- Fixed `/settings` shadowed global theme submenu commits snapping the live theme back to the project-effective mapping.
+- Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
+- Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
+- Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
 
 ## [18.1.6] - 2026-09-03
 

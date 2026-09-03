@@ -1,8 +1,7 @@
 export { truncate } from "@oh-my-pi/pi-utils";
 
 import * as fs from "node:fs/promises";
-import path from "node:path";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { isEnoent, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import { formatGroupedFiles } from "../tools/grouped-file-output";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
@@ -30,9 +29,12 @@ export { detectLanguageId } from "../utils/lang-from-path";
  * Uses the URL machinery so special characters (`%`, `#`, `?`, spaces) are
  * percent-encoded; plain concatenation produced URIs that broke round-trips.
  * Handles Windows drive letters correctly.
+ *
+ * Paths are canonicalized so a symlink workspace and its physical target share
+ * one document URI, matching the canonical client root used at initialize.
  */
 export function fileToUri(filePath: string): string {
-	return Bun.pathToFileURL(path.resolve(filePath)).href;
+	return Bun.pathToFileURL(resolveEquivalentPath(filePath)).href;
 }
 
 /**
@@ -82,7 +84,7 @@ function laxUriToFile(uri: string): string {
 export class EquivalentUriMap<Value> extends Map<string, Value> {
 	#key(uri: string): string {
 		if (!uri.startsWith("file://")) return uri;
-		const filePath = path.normalize(uriToFile(uri));
+		const filePath = resolveEquivalentPath(uriToFile(uri));
 		return process.platform === "win32" ? filePath.toLowerCase() : filePath;
 	}
 

@@ -144,11 +144,80 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			// Discoverable extension tools mount as xd:// devices, not top-level active tools.
 			const deviceNames = session.getXdevToolEntries().map(entry => entry.name);
 			expect(deviceNames).toContain("default_active_tool");
+			expect(session.getToolByName("xd://default_active_tool")?.name).toBe("default_active_tool");
 			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
 			expect(deviceNames).not.toContain("default_inactive_tool");
 			expect(session.getActiveToolNames()).not.toContain("default_inactive_tool");
 			expect(session.systemPrompt.join("\n")).toContain("default_active_tool");
 			expect(session.systemPrompt.join("\n")).not.toContain("default_inactive_tool");
+
+			// Presentation lookup must survive Code Mode clearing the live mount set
+			// so historical prefixed calls retain their canonical renderer.
+			await session.setActiveToolPresentation(session.getActiveToolNames(), []);
+			expect(session.getMountedXdevToolNames()).not.toContain("default_active_tool");
+			expect(session.getToolByName("xd://default_active_tool")?.name).toBe("default_active_tool");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("mounts discoverable tools under xd:// for explicit tool lists omitting write", async () => {
+		const tempDir = makeTempDir();
+
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			toolNames: ["read", "grep", "glob"],
+			extensions: [toolActivationExtension],
+		});
+
+		try {
+			// The device-only xd:// transport write is surfaced in the active set...
+			expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "grep", "glob", "write"]));
+			// ...so a discoverable extension tool mounts under xd:// instead of
+			// shipping its full schema top-level on every request.
+			const deviceNames = session.getXdevToolEntries().map(entry => entry.name);
+			expect(deviceNames).toContain("default_active_tool");
+			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
+			expect(session.getActiveToolNames()).not.toContain("default_inactive_tool");
+
+			// The transport write rejects filesystem targets: the grant is xd:// only.
+			const write = session.getToolByName("write");
+			expect(write).toBeDefined();
+			await expect(
+				write!.execute("device-only-fs", { path: path.join(tempDir, "nope.txt"), content: "x" }),
+			).rejects.toThrow("Filesystem writes are not available");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("preserves a deferrable-only write transport across enabled-set reapplication", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			toolNames: ["read", "ast_edit"],
+		});
+
+		try {
+			expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "ast_edit", "write"]));
+			expect(session.getMountedXdevToolNames()).toEqual([]);
+			const write = session.getToolByName("write");
+			expect(write).toBeDefined();
+			await expect(
+				write!.execute("deferrable-transport-before", {
+					path: path.join(tempDir, "before.txt"),
+					content: "x",
+				}),
+			).rejects.toThrow("Filesystem writes are not available");
+
+			await session.setActiveToolsByName(session.getEnabledToolNames());
+
+			await expect(
+				write!.execute("deferrable-transport-after", {
+					path: path.join(tempDir, "after.txt"),
+					content: "x",
+				}),
+			).rejects.toThrow("Filesystem writes are not available");
 		} finally {
 			await session.dispose();
 		}

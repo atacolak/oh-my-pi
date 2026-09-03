@@ -2134,9 +2134,9 @@ export class Settings {
 			deleteByPath(target, ["inspect_image", "enabled"]);
 			delete target["inspect_image.enabled"];
 		}
-		if (path === "task.isolation.mode") {
-			deleteByPath(target, ["task", "isolation", "enabled"]);
-			delete target["task.isolation.enabled"];
+		if (path === "task.isolation.enabled" || path === "isolation.backend") {
+			deleteByPath(target, ["task", "isolation", "mode"]);
+			delete target["task.isolation.mode"];
 		}
 		if (path === "compaction.methodOrder") {
 			deleteByPath(target, ["compaction", "strategy"]);

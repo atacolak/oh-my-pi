@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
+- Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
+- Added `hindsight.retainUpdateMode` (`replace` | `append`, default `replace`) so full-session retain can append only newly accumulated turns to the same session document.
+
+### Changed
+
+- Hindsight now retains any remaining below-cadence session tail on clean close (`AgentSession.dispose` / session-memory teardown), independent of `retainUpdateMode`.
+
+### Fixed
+
+- Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
+- Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
+- Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
+
 ## [18.1.6] - 2026-09-03
 
 ### Breaking Changes

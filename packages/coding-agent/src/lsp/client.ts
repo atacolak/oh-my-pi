@@ -1149,10 +1149,10 @@ export async function getOrCreateClient(
 ): Promise<LspClient> {
 	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
 	const key = clientKey(config, cwd);
-	registerClientOwner(key, owner);
 	// Check if client already exists
 	const existingClient = clients.get(key);
 	if (existingClient && !invalidatedClientKeys.has(key)) {
+		registerClientOwner(key, owner);
 		existingClient.lastActivity = Date.now();
 		return existingClient;
 	}
@@ -1160,6 +1160,7 @@ export async function getOrCreateClient(
 	// Check if another coroutine is already creating this client
 	const existingLock = clientLocks.get(key);
 	if (existingLock) {
+		registerClientOwner(key, owner);
 		return existingLock.promise;
 	}
 	if (invalidatedClientKeys.has(key)) {
@@ -1168,6 +1169,9 @@ export async function getOrCreateClient(
 	// Do not start a fresh identity until superseded processes are confirmed stopped.
 	// Workspace reload barriers are keyed by known roots, so a nested client that
 	// was not in the snapshot must still wait on any ancestor workspace barrier.
+	// After that wait, the captured `config`/`key` may itself be stale — reject it
+	// so the caller re-resolves from the reloaded definition instead of spawning
+	// the pre-reload command/args/settings.
 	const reloadBarriers: Promise<unknown>[] = [];
 	for (const [root, barrier] of clientReloadBarriers) {
 		if (!isPathInsideWorkspace(cwd, root) || reloadBarriers.includes(barrier)) continue;
@@ -1184,14 +1188,16 @@ export async function getOrCreateClient(
 		}
 		const clientAfterReload = clients.get(key);
 		if (clientAfterReload && !invalidatedClientKeys.has(key)) {
+			registerClientOwner(key, owner);
 			clientAfterReload.lastActivity = Date.now();
 			return clientAfterReload;
 		}
 		const lockAfterReload = clientLocks.get(key);
-		if (lockAfterReload) return lockAfterReload.promise;
-		if (invalidatedClientKeys.has(key)) {
-			throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
+		if (lockAfterReload) {
+			registerClientOwner(key, owner);
+			return lockAfterReload.promise;
 		}
+		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 	}
 
 	// Fail fast on a recent deterministic init failure instead of re-spawning
@@ -1355,7 +1361,7 @@ export async function getOrCreateClient(
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);
 		}
 	})();
-
+	registerClientOwner(key, owner);
 	clientLocks.set(key, { promise: clientPromise, cwd, config, token: lockToken });
 	return clientPromise;
 }
@@ -1370,9 +1376,9 @@ export async function getActiveOrPendingClient(
 	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
 	throwIfAborted(signal);
 	const key = clientKey(config, cwd);
-	registerClientOwner(key, owner);
 	const client = clients.get(key);
 	if (client) {
+		registerClientOwner(key, owner);
 		client.lastActivity = Date.now();
 		return client;
 	}
@@ -1380,7 +1386,9 @@ export async function getActiveOrPendingClient(
 	const pending = clientLocks.get(key);
 	if (!pending) return undefined;
 	try {
-		return await untilAborted(signal, pending.promise);
+		const pendingClient = await untilAborted(signal, pending.promise);
+		registerClientOwner(key, owner);
+		return pendingClient;
 	} catch {
 		throwIfAborted(signal);
 		return undefined;

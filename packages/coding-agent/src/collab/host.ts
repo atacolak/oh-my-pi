@@ -209,7 +209,17 @@ export class CollabHost {
 		}
 	}
 
-	async start(relayUrl: string, webUrl = ""): Promise<void> {
+	async start(relayUrl: string, webUrl = "", signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) throw new Error("Collab host start cancelled");
+		const cancelled = new Promise<never>((_, reject) => {
+			const onAbort = (): void => reject(new Error("Collab host start cancelled"));
+			if (!signal) return;
+			if (signal.aborted) {
+				onAbort();
+				return;
+			}
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
 		const rawKey = generateRoomKey();
 		const writeToken = generateWriteToken();
 		const roomId = generateRoomId();
@@ -220,7 +230,8 @@ export class CollabHost {
 		this.#webViewLink = formatCollabWebLink(relayUrl, roomId, rawKey, undefined, webUrl);
 		const parsed = parseCollabLink(this.#link);
 		if ("error" in parsed) throw new Error(parsed.error);
-		const key = await importRoomKey(rawKey);
+		const key = await Promise.race([importRoomKey(rawKey), cancelled]);
+		if (signal?.aborted) throw new Error("Collab host start cancelled");
 
 		const socket = new CollabSocket({ wsUrl: parsed.wsUrl, role: "host", key });
 		this.#socket = socket;
@@ -258,7 +269,7 @@ export class CollabHost {
 			CONNECT_TIMEOUT_MS,
 		);
 		try {
-			await firstOpen.promise;
+			await Promise.race([firstOpen.promise, cancelled]);
 		} catch (err) {
 			this.#stopped = true;
 			socket.close();
@@ -267,6 +278,8 @@ export class CollabHost {
 		} finally {
 			clearTimeout(timeout);
 		}
+
+		if (signal?.aborted) throw new Error("Collab host start cancelled");
 
 		this.#unsubscribe = this.#ctx.session.subscribe(event => {
 			if (isWireAgentEvent(event)) this.#broadcast({ t: "event", event: shrinkForReplication(event) });

@@ -6,6 +6,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import {
 	additionalWorkspaceDirectories,
 	normalizeSessionWorkspace,
+	workspaceRootForPath,
 } from "@oh-my-pi/pi-coding-agent/session/session-workspace";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { makeAssistantMessage } from "./helpers";
@@ -38,6 +39,53 @@ describe("additionalWorkspaceDirectories", () => {
 	it("is empty for a single-root workspace", () => {
 		const workspace = normalizeSessionWorkspace({ cwd: "/a" });
 		expect(additionalWorkspaceDirectories(workspace)).toEqual([]);
+	});
+});
+
+describe("workspaceRootForPath", () => {
+	it("returns the longest matching workspace directory", () => {
+		const workspace = normalizeSessionWorkspace({
+			cwd: "/repo",
+			directories: ["/repo/apps", "/other"],
+		});
+		expect(workspaceRootForPath("/repo/apps/web/src/a.ts", workspace)).toBe(path.resolve("/repo/apps"));
+		expect(workspaceRootForPath("/repo/src/a.ts", workspace)).toBe(path.resolve("/repo"));
+		expect(workspaceRootForPath("/other/lib/b.ts", workspace)).toBe(path.resolve("/other"));
+	});
+
+	it("does not treat a path outside every workspace directory as contained", () => {
+		const workspace = normalizeSessionWorkspace({ cwd: "/repo", directories: ["/other"] });
+		expect(workspaceRootForPath("/home/user/secret.py", workspace)).toBeNull();
+	});
+
+	it("matches a canonical file path when the workspace was opened through a symlink", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-symlink-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const filePath = path.join(realRoot, "src", "a.ts");
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "export const a = 1;\n");
+			const workspace = normalizeSessionWorkspace({ cwd: linkRoot });
+			expect(workspaceRootForPath(filePath, workspace)).toBe(path.resolve(linkRoot));
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+		}
+	});
+
+	it("matches a not-yet-created file when the workspace was opened through a symlink", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-symlink-new-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const filePath = path.join(linkRoot, "src", "new.ts");
+			const workspace = normalizeSessionWorkspace({ cwd: linkRoot });
+			expect(workspaceRootForPath(filePath, workspace)).toBe(path.resolve(linkRoot));
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
+		}
 	});
 });
 

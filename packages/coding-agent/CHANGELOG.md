@@ -8,6 +8,37 @@
 - Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
 - Resume and fork now restore a session's original `--agent` identity from the session header. A conflicting `--agent` is refused, and a persisted privileged role that is missing from discovery fails closed.
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
+## [18.1.7] - 2026-09-03
+
+### Breaking Changes
+
+- Removed the Ruby and Julia eval backends and related interpreter configuration; eval now supports Python and JavaScript only.
+- Removed the eval parallel() and pipeline() helpers. agent() and completion() now return handles immediately, and wait(handles) provides synchronization.
+- Python eval tool calls are now asynchronous coroutines, matching JavaScript; use await tool.read({...}) and similar calls.
+
+### Added
+
+- Added asynchronous eval agent and completion handles with status, cancellation, messaging, waiting, and automatic result delivery for unwaited background work.
+- Added eval workpools for queueing items onto the least context-loaded keep-alive subagent with configurable concurrency; the pool name is its async-job ID for `hub wait`, `.peek()` gives a non-consuming snapshot, per-item `{key, data|error}` yields finish batches incrementally, and `eval.workpool.freshAgents` opts into a new agent per item.
+- Added support for defining eval tools in Python with @tool or JavaScript with tool(fn, schema), and exposing them to subagents through task, agent, and workpool calls. Configure availability with eval.tools.enabled.
+- Added native Windows ARM64 binaries with architecture-aware installation and updates.
+- Added an MLX backend for running local tiny models on Apple silicon. Configure providers.tinyModelDevice=mlx, or use PI_TINY_DEVICE=mlx or metal, to run title generation, memory tasks, and automatic thinking classification with MLX models, with an ONNX CPU fallback when Python is unavailable.
+- Added Qwen3 1.7B as a local memory and thinking-classification model for the MLX backend.
+
+### Changed
+
+- Local tiny models for titles, memory, and automatic thinking classification now share on-demand workers across omp processes, reducing redundant resource usage; workers stop automatically after inactivity.
+- PI_TINY_DEVICE=metal now selects the MLX backend on macOS.
+- Updated agent reactions to trigger on the opening emoji instead of requiring a newline, consuming any following whitespace.
+
+### Fixed
+
+- Fixed transient provider retries incorrectly failing with an “Agent is already processing” error.
+- Fixed user-scope marketplace plugins installed through omp losing their skills when the Claude plugin source was not separately enabled.
+- Fixed hashline edits failing when targets included apply_patch markers, while rejecting ambiguous bracketed targets instead of editing the wrong path.
+- Fixed bracketed hashline edit targets being reported as undefined to extension path allowlists.
+- Fixed MCP tools discovered during startup disappearing after plan-mode approval or when leaving default-on plan mode.
+- Fixed ACP clients receiving invalid file locations or updates for released terminals, preventing invalid worktree scans and terminal errors on Windows.
 
 ## [18.1.6] - 2026-09-03
 

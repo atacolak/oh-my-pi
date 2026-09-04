@@ -1410,6 +1410,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					"statusLine.showHookStatus",
 					"statusLine.transparent",
 					"terminal.showImages",
+					"tui.hyperlinks",
 					"tui.renderMermaid",
 					"tui.resizeScrollback",
 					"tui.tight",

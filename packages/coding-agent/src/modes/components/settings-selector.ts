@@ -1494,7 +1494,10 @@ export class SettingsSelectorComponent implements Component {
 			list &&
 			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths))
 		) {
-			list.refreshOpenSubmenu();
+			const refreshed = list.refreshOpenSubmenu();
+			if (!refreshed && this.#textInputActive && !list.hasOpenSubmenu()) {
+				this.#textInputActive = false;
+			}
 		}
 		if (this.#currentTabId === "appearance" && !this.#searchList) {
 			this.#previewAppearanceForScope();

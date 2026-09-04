@@ -454,6 +454,64 @@ describe("multiselect settings (array-of-enum)", () => {
 			await tempDir.remove();
 		}
 	});
+
+	it("releases text-input mode when an adopted sibling hides the open editor", async () => {
+		resetSettingsForTest();
+		const tempDir = TempDir.createSync("@pi-settings-text-hidden-row-");
+		try {
+			const projectDir = tempDir.join("project");
+			const agentDir = tempDir.join("agent");
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{
+						memory: { backend: "hindsight" },
+						hindsight: { apiUrl: "http://localhost:8888" },
+						ask: { enabled: true },
+					},
+					null,
+					2,
+				),
+			);
+			await Settings.init({ cwd: projectDir, agentDir });
+
+			const comp = new SettingsSelectorComponent(
+				{
+					availableThinkingLevels: [],
+					thinkingLevel: undefined,
+					availableThemes: ["dark"],
+					providers: [],
+					cwd: projectDir,
+				},
+				{
+					onChange: () => {},
+					onCancel: () => {},
+				},
+			);
+
+			for (const ch of "hindsight api url") comp.handleInput(ch);
+			comp.handleInput("\n");
+			for (const ch of "/tmp/hindsight-draft") comp.handleInput(ch);
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("/tmp/hindsight-draft");
+
+			settings.set("ask.enabled", false, "project");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ memory: { backend: "off" }, ask: { enabled: true } }, null, 2),
+			);
+			await settings.flush();
+
+			expect(settings.get("memory.backend")).toBe("off");
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).not.toContain("Hindsight API URL");
+
+			comp.handleInput("\x1bs");
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("Settings · global");
+		} finally {
+			resetSettingsForTest();
+			await tempDir.remove();
+		}
+	});
 });
 
 describe("settings section sidebar", () => {

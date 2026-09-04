@@ -216,11 +216,18 @@ export class SettingsList implements Component {
 	/**
 	 * Recreate the open submenu from the current item factory. Used after
 	 * `setItems()` so a live editor cannot keep a snapshot older than the
-	 * rebuilt rows (setItems leaves an open submenu untouched).
+	 * rebuilt rows (setItems leaves an open submenu untouched). When the
+	 * backing row is gone, cancel through the live submenu so its completion
+	 * callback can drop host flags such as text-input mode.
 	 */
 	refreshOpenSubmenu(): boolean {
 		if (!this.#submenuComponent || this.#submenuItemId === null) return false;
 		const itemId = this.#submenuItemId;
+		if (!this.hasItem(itemId)) {
+			this.#submenuComponent.handleInput?.("\x1b");
+			if (this.#submenuComponent) this.#closeSubmenu();
+			return false;
+		}
 		this.#closeSubmenu();
 		if (!this.selectItem(itemId)) return false;
 		const item = this.getSelectedItem();

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed `/settings` trapping Tab and Alt+S after an adopted disk edit hid an open text editor.
+- Fixed project saves leaving already-rendered OSC 8 links on a rejected `tui.hyperlinks` value.
 - Fixed `/settings` discarding an in-progress global editor after adopting a project disk edit.
 - Fixed `/settings` discarding in-progress editors after adopting an unrelated disk edit.
 - Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.

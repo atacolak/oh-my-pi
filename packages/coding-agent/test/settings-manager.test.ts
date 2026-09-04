@@ -1407,6 +1407,36 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting a sibling tui.hyperlinks disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ tui: { hyperlinks: "off" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: string; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("tui.hyperlinks"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ tui: { hyperlinks: "always" }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("tui.hyperlinks")).toBe("always");
+				expect(received).toEqual([{ value: "always", paths: ["tui.hyperlinks"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					tui: { hyperlinks: "always" },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires session-runtime hooks after adopting sibling status-line disk edits", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

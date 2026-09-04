@@ -3695,6 +3695,7 @@ export type SessionRuntimePath =
 	| "tools.xdevDocs"
 	| "topK"
 	| "topP"
+	| "tui.hyperlinks"
 	| "tui.renderMermaid"
 	| "tui.resizeScrollback"
 	| "tui.tight";
@@ -3746,6 +3747,7 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"tools.xdevDocs": true,
 	topK: true,
 	topP: true,
+	"tui.hyperlinks": true,
 	"tui.renderMermaid": true,
 	"tui.resizeScrollback": true,
 	"tui.tight": true,

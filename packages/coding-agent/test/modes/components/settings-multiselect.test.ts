@@ -357,6 +357,56 @@ describe("multiselect settings (array-of-enum)", () => {
 			await tempDir.remove();
 		}
 	});
+
+	it("keeps in-progress text after adopting an unrelated project setting", async () => {
+		resetSettingsForTest();
+		const tempDir = TempDir.createSync("@pi-settings-text-sibling-");
+		try {
+			const projectDir = tempDir.join("project");
+			const agentDir = tempDir.join("agent");
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
+			);
+			await Settings.init({ cwd: projectDir, agentDir });
+
+			const comp = new SettingsSelectorComponent(
+				{
+					availableThinkingLevels: [],
+					thinkingLevel: undefined,
+					availableThemes: ["dark"],
+					providers: [],
+					cwd: projectDir,
+				},
+				{
+					onChange: () => {},
+					onCancel: () => {},
+				},
+			);
+
+			for (const ch of "image upload command") comp.handleInput(ch);
+			comp.handleInput("\n");
+			for (const ch of "/tmp/upload") comp.handleInput(ch);
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("/tmp/upload");
+
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [secondChoice!.value] } }, null, 2),
+			);
+			settings.set("git.enabled", false, "project");
+			await settings.flush();
+
+			expect(settings.get("providers.webSearchExclude")).toEqual([secondChoice!.value]);
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("/tmp/upload");
+
+			comp.handleInput("\n");
+			expect(settings.get("images.urls.command")).toBe("/tmp/upload");
+		} finally {
+			resetSettingsForTest();
+			await tempDir.remove();
+		}
+	});
 });
 
 describe("settings section sidebar", () => {

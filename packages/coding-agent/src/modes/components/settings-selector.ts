@@ -649,9 +649,9 @@ export class SettingsSelectorComponent implements Component {
 		// appearance so an overlay cannot pin the live theme/status.
 		this.#switchToTab("appearance");
 		this.#previewAppearanceForScope();
-		this.#unsubscribeProjectSettings = onProjectSettingsReconciled(source => {
+		this.#unsubscribeProjectSettings = onProjectSettingsReconciled((paths, source) => {
 			if (!isSettingsInitialized() || source !== Settings.instance) return;
-			this.#resyncItemsFromSettings();
+			this.#resyncItemsFromSettings(paths);
 		});
 	}
 
@@ -1472,13 +1472,14 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Rebuild the visible list after a project save adopts disk values so a
 	 * skipped same-key edit cannot leave stale item snapshots on screen.
-	 * Open submenus are recreated from the reconciled factory: SettingsList
-	 * leaves them untouched across setItems, and MultiSelectSubmenu keeps
-	 * its own #value.
+	 * Open submenus are recreated only when their backing setting (or a
+	 * setting they filter by) was adopted: SettingsList leaves them
+	 * untouched across setItems, and an unrelated sibling adoption must not
+	 * discard in-progress text or select cursor state.
 	 */
-	#resyncItemsFromSettings(): void {
+	#resyncItemsFromSettings(adoptedPaths: readonly SettingPath[]): void {
 		const list = this.#searchList ?? this.#currentList;
-		const hadOpenSubmenu = list?.hasOpenSubmenu() === true;
+		const openSubmenuId = list?.getOpenSubmenuItemId() ?? null;
 		if (this.#searchList) {
 			this.#setSearchQuery(this.#searchQuery);
 		} else if (this.#currentTabId !== "plugins") {
@@ -1486,11 +1487,22 @@ export class SettingsSelectorComponent implements Component {
 			this.#refreshCurrentTabItems(getSettingsForTab(this.#currentTabId));
 			if (selectedId) this.#currentList?.selectItem(selectedId);
 		}
-		if (hadOpenSubmenu) list?.refreshOpenSubmenu();
+		if (
+			openSubmenuId &&
+			list &&
+			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths))
+		) {
+			list.refreshOpenSubmenu();
+		}
 		if (this.#currentTabId === "appearance" && !this.#searchList) {
 			this.#previewAppearanceForScope();
 		}
 		this.context.requestRender?.();
+	}
+
+	#openSubmenuDependsOnAdoptedPaths(itemId: string, adoptedPaths: readonly SettingPath[]): boolean {
+		if (adoptedPaths.includes(itemId as SettingPath)) return true;
+		return itemId === "providers.webSearchOrder" && adoptedPaths.includes("providers.webSearchExclude");
 	}
 
 	/**

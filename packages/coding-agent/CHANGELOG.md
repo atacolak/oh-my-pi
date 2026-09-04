@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/settings` discarding in-progress editors after adopting an unrelated disk edit.
 - Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
 - Fixed `/settings` resetting an open multi-select cursor after an ordinary project save.
 - Fixed project inherit treating the native `.omp/config.yml` as a non-native source when cwd is relative.

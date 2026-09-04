@@ -203,6 +203,16 @@ export class SettingsList implements Component {
 		return this.#submenuComponent !== null;
 	}
 
+	/** Item id of the open submenu, or null when the list owns input. */
+	getOpenSubmenuItemId(): string | null {
+		return this.#submenuItemId;
+	}
+
+	/** True when `id` is a non-heading row in the current item set. */
+	hasItem(id: string): boolean {
+		return this.#items.some(item => !item.heading && item.id === id);
+	}
+
 	/**
 	 * Recreate the open submenu from the current item factory. Used after
 	 * `setItems()` so a live editor cannot keep a snapshot older than the

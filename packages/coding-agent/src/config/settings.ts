@@ -245,6 +245,20 @@ export function dropSettingsGroupShadows(data: RawSettings, sourcePath: string, 
 }
 
 /**
+ * Setting-schema keys whose nested values differ between two raw snapshots.
+ */
+function changedSettingPaths(before: RawSettings, after: RawSettings): SettingPath[] {
+	const paths: SettingPath[] = [];
+	for (const key of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
+		const segments = SETTING_PATH_SEGMENTS[key];
+		if (!Bun.deepEquals(getByPath(before, segments), getByPath(after, segments))) {
+			paths.push(key);
+		}
+	}
+	return paths;
+}
+
+/**
  * Delete a nested value and prune empty parent objects.
  */
 function deleteByPath(obj: RawSettings, segments: readonly string[]): boolean {
@@ -3313,6 +3327,7 @@ export class Settings {
 		this.#modifiedProjectPathMutations.clear();
 		this.#modifiedProjectModelRoleMutations.clear();
 		let adoptedNativeLayer = false;
+		let adoptedPaths: SettingPath[] = [];
 		try {
 			await fs.promises.mkdir(path.dirname(projectConfigPath), { recursive: true });
 			await this.#withYamlWriteLock(projectConfigPath, async writePath => {
@@ -3403,6 +3418,12 @@ export class Settings {
 				}
 				adoptedNativeLayer =
 					skippedProjectModelRoles.length > 0 || !Bun.deepEquals(projectSettings, this.#projectFileSettings);
+				if (adoptedNativeLayer) {
+					adoptedPaths = changedSettingPaths(this.#projectFileSettings, projectSettings);
+					if (skippedProjectModelRoles.length > 0 && !adoptedPaths.includes("modelRoles")) {
+						adoptedPaths.push("modelRoles");
+					}
+				}
 				this.#projectFileSettings = structuredClone(projectSettings);
 				this.#rebuildProjectLayer();
 				this.#syncProjectShellPathSource();
@@ -3471,7 +3492,7 @@ export class Settings {
 			sessionRuntimeSignal.fire(changedSessionRuntimePaths, this);
 		}
 		if (adoptedNativeLayer) {
-			projectSettingsReconciledSignal.fire(this);
+			projectSettingsReconciledSignal.fire(adoptedPaths, this);
 		}
 	}
 
@@ -3825,16 +3846,21 @@ export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source
 	sessionRuntimeSignal.on(cb);
 
 /** Fires after a project save adopts disk values into the live native layer. */
-const projectSettingsReconciledSignal = new SettingSignal<[source: Settings]>("project settings reconciled");
+const projectSettingsReconciledSignal = new SettingSignal<[paths: SettingPath[], source: Settings]>(
+	"project settings reconciled",
+);
 
 /**
  * Subscribe to project-layer adoption after `#saveProjectNow()`. Returns an
- * unsubscribe function. Ordinary local writes do not fire. Callers that
- * display live settings (the open `/settings` selector) should ignore events
- * from other Settings instances and rebuild their item snapshots from the
- * adopted values.
+ * unsubscribe function. Ordinary local writes do not fire. The `paths` list is
+ * the native-layer keys that changed. Callers that display live settings (the
+ * open `/settings` selector) should ignore events from other Settings
+ * instances, rebuild item snapshots from the adopted values, and recreate an
+ * open submenu only when its backing setting (or a setting it filters by) is
+ * in `paths`.
  */
-export const onProjectSettingsReconciled = (cb: (source: Settings) => void) => projectSettingsReconciledSignal.on(cb);
+export const onProjectSettingsReconciled = (cb: (paths: SettingPath[], source: Settings) => void) =>
+	projectSettingsReconciledSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");

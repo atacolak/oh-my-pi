@@ -677,5 +677,8 @@ describe("SettingsList", () => {
 		expect(list.hasOpenSubmenu()).toBe(true);
 		expect(list.render(60).join("\n")).toContain("submenu adopted");
 		expect(factoryCalls).toBe(2);
+		expect(list.getOpenSubmenuItemId()).toBe("picker");
+		expect(list.hasItem("picker")).toBe(true);
+		expect(list.hasItem("missing")).toBe(false);
 	});
 });

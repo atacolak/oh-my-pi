@@ -775,13 +775,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				await runtime.output(`Not a workspace directory: ${resolved}`);
 				return commandConsumed();
 			}
-			await releaseRemovedWorkspaceRoots(
-				runtime.sessionManager.getCwd(),
-				removed,
-				runtime.session.getLspClientOwner(),
-				undefined,
-				[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
-			);
+			try {
+				await releaseRemovedWorkspaceRoots(
+					runtime.sessionManager.getCwd(),
+					removed,
+					runtime.session.getLspClientOwner(),
+					undefined,
+					[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
+				);
+			} catch (err) {
+				logger.warn("Failed to stop language servers for a removed workspace directory", {
+					removed,
+					error: errorMessage(err),
+				});
+			}
 			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));
 			return commandConsumed();

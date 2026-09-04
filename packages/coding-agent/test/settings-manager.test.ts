@@ -444,23 +444,23 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
-		it("clears migrated native changelog and inspect_image aliases on inherit", async () => {
+		it("clears migrated native changelog and inspect_image timeout aliases on inherit", async () => {
 			await writeSettings({
 				"startup.changelogMode": "summary",
-				"inspect_image.mode": "auto",
+				"images.questionTimeoutMs": 300_000,
 			});
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
-				YAML.stringify({ collapseChangelog: false, inspect_image: { enabled: false } }, null, 2),
+				YAML.stringify({ collapseChangelog: false, inspect_image: { timeoutMs: 42 } }, null, 2),
 			);
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			expect(settings.get("startup.changelogMode")).toBe("expanded");
-			expect(settings.get("inspect_image.mode")).toBe("off");
+			expect(settings.get("images.questionTimeoutMs")).toBe(42);
 			expect(settings.clearProject("startup.changelogMode")).toBe(true);
-			expect(settings.clearProject("inspect_image.mode")).toBe(true);
+			expect(settings.clearProject("images.questionTimeoutMs")).toBe(true);
 			expect(settings.get("startup.changelogMode")).toBe("summary");
-			expect(settings.get("inspect_image.mode")).toBe("auto");
+			expect(settings.get("images.questionTimeoutMs")).toBe(300_000);
 			await settings.flush();
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
@@ -3210,6 +3210,17 @@ describe("Settings", () => {
 		});
 	});
 	describe("migrations", () => {
+		it("moves the legacy image question timeout and removes its tool settings", async () => {
+			await writeSettings({ inspect_image: { mode: "on", timeoutMs: 42 } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("images.questionTimeoutMs")).toBe(42);
+			settings.set("display.showTokenUsage", true);
+			await settings.flush();
+			expect((await readSettings()).inspect_image).toBeUndefined();
+		});
+
 		it("migrates nested task isolation mode none to disabled", async () => {
 			await writeSettings({ task: { isolation: { mode: "none" } } });
 

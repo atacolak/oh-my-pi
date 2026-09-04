@@ -381,6 +381,61 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("does not delete a pre-existing link when write-link publication fails", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const file = path.join(dir, "collab.link");
+		await fs.writeFile(file, "stale-link", { mode: 0o600 });
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": "ws://localhost:8787",
+			"collab.writeLinkPath": file,
+		});
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async function (this: CollabHost) {
+			Object.defineProperties(this, { link: { value: "dead-room-link", configurable: true } });
+		});
+		const publish = spyOn(atomicFile, "replaceFileAtomically").mockImplementation(async () => {
+			ctx.collabHost = undefined;
+			throw new Error("ENOSPC: no space left on device");
+		});
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(ctx.collabHost).toBeUndefined();
+			expect(await fs.readFile(file, "utf8")).toBe("stale-link");
+		} finally {
+			start.mockRestore();
+			publish.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not delete a write-link another process replaced after publication", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const file = path.join(dir, "collab.link");
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": "ws://localhost:8787",
+			"collab.writeLinkPath": file,
+		});
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async function (this: CollabHost) {
+			Object.defineProperties(this, { link: { value: "dead-room-link", configurable: true } });
+		});
+		const originalPublish = atomicFile.replaceFileAtomically;
+		const publish = spyOn(atomicFile, "replaceFileAtomically").mockImplementation(async (tempPath, targetPath) => {
+			await originalPublish(tempPath, targetPath);
+			await fs.writeFile(targetPath, "other-owner-link");
+			ctx.collabHost = undefined;
+		});
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(ctx.collabHost).toBeUndefined();
+			expect(await fs.readFile(file, "utf8")).toBe("other-owner-link");
+		} finally {
+			start.mockRestore();
+			publish.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("sanitizes write-link failures before showing them", async () => {
 		const home = os.homedir();
 		const leaked = path.join(home, "secret", "collab-link");

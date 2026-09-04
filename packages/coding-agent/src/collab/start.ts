@@ -78,15 +78,17 @@ async function startCollabHostOnce(
 	const writeLinkPath = options.writeLinkPath?.trim()
 		? resolveCollabLinkPath(options.writeLinkPath, ctx.sessionManager.getCwd())
 		: undefined;
+	let publishedWriteLink = false;
 	if (writeLinkPath) {
 		try {
 			await writeCollabLink(writeLinkPath, host.link);
+			publishedWriteLink = true;
 		} catch (error) {
 			ctx.showError(`Failed to write collab link file: ${sanitizeCollabError(error)}`);
 		}
 	}
 	if (ctx.collabHost !== host) {
-		if (writeLinkPath) await fs.rm(writeLinkPath, { force: true }).catch(() => {});
+		if (publishedWriteLink && writeLinkPath) await removePublishedCollabLink(writeLinkPath, host.link);
 		await host.stop("host start cancelled");
 		throw new Error(COLLAB_HOST_START_CANCELLED);
 	}
@@ -136,6 +138,12 @@ async function writeCollabLink(target: string, link: string): Promise<void> {
 	} finally {
 		if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
 	}
+}
+
+async function removePublishedCollabLink(target: string, link: string): Promise<void> {
+	const current = await fs.readFile(target, "utf8").catch(() => null);
+	if (current !== link) return;
+	await fs.rm(target, { force: true }).catch(() => {});
 }
 
 function sanitizeCollabError(error: unknown): string {

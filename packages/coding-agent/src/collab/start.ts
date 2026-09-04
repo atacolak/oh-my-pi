@@ -177,7 +177,8 @@ export function resolveRelayUrl(input: string): string {
 /** Start the configured host once during interactive startup. */
 export async function autoStartCollab(ctx: InteractiveModeContext): Promise<boolean> {
 	if (ctx.collabGuest || ctx.collabHost || !ctx.settings.get("collab.autoStart")) return false;
-	if (ctx.settings.getProvenance("collab.autoStart") === "project") {
+	const autoStartProvenance = ctx.settings.getProvenance("collab.autoStart");
+	if (autoStartProvenance === "project" || autoStartProvenance === "overlay") {
 		ctx.showWarning("Collab auto-start skipped: configure collab.autoStart outside project settings.");
 		return false;
 	}
@@ -192,7 +193,9 @@ export async function autoStartCollab(ctx: InteractiveModeContext): Promise<bool
 		return false;
 	}
 	const configuredLinkPath = ctx.settings.get("collab.writeLinkPath") ?? "";
-	const writeLinkPath = ctx.settings.getProvenance("collab.writeLinkPath") === "project" ? "" : configuredLinkPath;
+	const writeLinkProvenance = ctx.settings.getProvenance("collab.writeLinkPath");
+	const writeLinkPath =
+		writeLinkProvenance === "project" || writeLinkProvenance === "overlay" ? "" : configuredLinkPath;
 	if (configuredLinkPath.trim() && !writeLinkPath) {
 		ctx.showWarning("Collab link file skipped: configure collab.writeLinkPath outside project settings.");
 	}

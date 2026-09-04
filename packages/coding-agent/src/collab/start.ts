@@ -1,7 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { InteractiveModeContext } from "../modes/types";
 import { expandTilde } from "../tools/path-utils";
+import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
 import { CollabGuestLink } from "./guest";
 import { CollabHost } from "./host";
@@ -73,13 +75,20 @@ async function startCollabHostOnce(
 		);
 	}
 	ctx.collabHost = host;
-	if (options.writeLinkPath?.trim()) {
+	const writeLinkPath = options.writeLinkPath?.trim()
+		? resolveCollabLinkPath(options.writeLinkPath, ctx.sessionManager.getCwd())
+		: undefined;
+	if (writeLinkPath) {
 		try {
-			await writeCollabLink(options.writeLinkPath, host.link, ctx.sessionManager.getCwd());
+			await writeCollabLink(writeLinkPath, host.link);
 		} catch (error) {
-			const detail = error instanceof Error ? error.message : String(error);
-			ctx.showError(`Failed to write collab link file: ${detail}`);
+			ctx.showError(`Failed to write collab link file: ${sanitizeWriteLinkError(error)}`);
 		}
+	}
+	if (ctx.collabHost !== host) {
+		if (writeLinkPath) await fs.rm(writeLinkPath, { force: true }).catch(() => {});
+		await host.stop("host start cancelled");
+		throw new Error(COLLAB_HOST_START_CANCELLED);
 	}
 	return host;
 }
@@ -101,9 +110,12 @@ export async function stopCollabHost(ctx: InteractiveModeContext, reason = "host
 	return true;
 }
 
-async function writeCollabLink(rawPath: string, link: string, ctxCwd: string): Promise<void> {
+function resolveCollabLinkPath(rawPath: string, ctxCwd: string): string {
 	const expanded = expandTilde(rawPath.trim());
-	const target = path.isAbsolute(expanded) ? expanded : path.resolve(ctxCwd, expanded);
+	return path.isAbsolute(expanded) ? expanded : path.resolve(ctxCwd, expanded);
+}
+
+async function writeCollabLink(target: string, link: string): Promise<void> {
 	const tempPath = path.join(
 		path.dirname(target),
 		`.${path.basename(target)}.${process.pid}.${crypto.randomUUID()}.tmp`,
@@ -124,6 +136,29 @@ async function writeCollabLink(rawPath: string, link: string, ctxCwd: string): P
 	} finally {
 		if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
 	}
+}
+
+function sanitizeWriteLinkError(error: unknown): string {
+	const detail = error instanceof Error ? error.message : String(error);
+	const text = shortenEmbeddedPaths(
+		replaceTabs(sanitizeText(detail))
+			.replace(/[\r\n]+/g, " ")
+			.trim(),
+	);
+	return truncateToWidth(text.length > 0 ? text : "Unknown error", TRUNCATE_LENGTHS.CONTENT);
+}
+
+function shortenEmbeddedPaths(text: string): string {
+	return text
+		.split(" ")
+		.map(segment => {
+			const leading = segment.match(/^[("'`[]*/)?.[0] ?? "";
+			const trailing = segment.match(/[)"'`,.;:\]]*$/)?.[0] ?? "";
+			const end = segment.length - trailing.length;
+			if (leading.length >= end) return segment;
+			return `${leading}${shortenPath(segment.slice(leading.length, end))}${trailing}`;
+		})
+		.join(" ");
 }
 
 export function resolveRelayUrl(input: string): string {

@@ -11,6 +11,8 @@
 - Delayed collab auto-hosting until interactive startup reconciliation, setup, and the initial transcript are ready.
 - Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
 - Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
+- Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
+- Sanitized collab write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
 
 ## [18.1.9] - 2026-09-04
 

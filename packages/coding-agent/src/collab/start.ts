@@ -64,16 +64,21 @@ async function startCollabHostOnce(
 	const host = new CollabHost(ctx);
 	try {
 		await host.start(options.relayUrl, options.webUrl ?? "", signal);
+		await Promise.resolve();
 	} catch (error) {
 		if (signal.aborted) throw new Error(COLLAB_HOST_START_CANCELLED);
 		throw error;
 	}
-	if (signal.aborted || ctx.session.isDisposed || ctx.collabGuest || ctx.collabGuestStart) {
+	if (host.isStopped || signal.aborted || ctx.session.isDisposed || ctx.collabGuest || ctx.collabGuestStart) {
 		await host.stop(
-			signal.aborted || ctx.session.isDisposed ? "host start cancelled" : "guest joined while host was starting",
+			signal.aborted || ctx.session.isDisposed || host.isStopped
+				? "host start cancelled"
+				: "guest joined while host was starting",
 		);
 		throw new Error(
-			signal.aborted || ctx.session.isDisposed ? COLLAB_HOST_START_CANCELLED : "Cannot host while joined as a guest",
+			signal.aborted || ctx.session.isDisposed || host.isStopped
+				? COLLAB_HOST_START_CANCELLED
+				: "Cannot host while joined as a guest",
 		);
 	}
 	ctx.collabHost = host;
@@ -168,6 +173,13 @@ export function resolveRelayUrl(input: string): string {
 
 type CollabSettingPath = Extract<SettingPath, `collab.${string}`>;
 
+const PROJECT_DOTENV_GLOBAL_DIR_KEYS = [
+	"PI_CODING_AGENT_DIR",
+	"OMP_CODING_AGENT_DIR",
+	"PI_CONFIG_DIR",
+	"OMP_CONFIG_DIR",
+] as const;
+
 function globalCollabValue(settings: Settings, path: CollabSettingPath): unknown {
 	let current: unknown = settings.getGlobalSettings();
 	for (const segment of path.split(".")) {
@@ -180,22 +192,20 @@ function globalCollabValue(settings: Settings, path: CollabSettingPath): unknown
 function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, path: P): SettingValue<P> {
 	const provenance = settings.getProvenance(path);
 	if (provenance === "runtime" || provenance === "default") return settings.get(path);
-	if (env.isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR") || env.isEnvOwnedByProjectDotenv("OMP_CODING_AGENT_DIR")) {
-		return getDefault(path);
-	}
+	const effective = settings.get(path);
+	if (path === "collab.autoStart" && effective === false) return false as SettingValue<P>;
+	if (PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name))) return getDefault(path);
 	if (provenance === "project" || provenance === "overlay") {
 		const globalValue = globalCollabValue(settings, path);
 		return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
 	}
-	return settings.get(path);
+	return effective;
 }
 
 function isTrustedCollabConfigured(settings: Settings, path: CollabSettingPath): boolean {
 	const provenance = settings.getProvenance(path);
 	if (provenance === "runtime") return true;
-	if (env.isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR") || env.isEnvOwnedByProjectDotenv("OMP_CODING_AGENT_DIR")) {
-		return false;
-	}
+	if (PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name))) return false;
 	if (provenance === "global") return true;
 	if (provenance !== "project" && provenance !== "overlay") return false;
 	return globalCollabValue(settings, path) !== undefined;

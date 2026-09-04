@@ -285,7 +285,8 @@ const launchProjectDotenv = (() => {
 
 /**
  * True when `name` entered the process from the launch project's dotenv files
- * rather than the parent shell. Used to distrust redirected global agent dirs.
+ * rather than the parent shell. Used to distrust redirected global agent and
+ * config directories.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if (projectEnvNamesLoadedByOmp.has(name)) return true;

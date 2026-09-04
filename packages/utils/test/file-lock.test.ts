@@ -137,7 +137,7 @@ describe("native file-lock ownership", () => {
 		const waiting = Promise.withResolvers<void>();
 		const sleep = spyOn(Bun, "sleep").mockImplementation(async () => {
 			waiting.resolve();
-			return await new Promise<void>(() => {});
+			return await Promise.withResolvers<void>().promise;
 		});
 		try {
 			const controller = new AbortController();

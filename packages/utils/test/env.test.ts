@@ -247,11 +247,12 @@ describe("isEnvOwnedByProjectDotenv", () => {
 	async function probeProjectDotenvOwnership(
 		dotenv: string,
 		env: Record<string, string | undefined>,
+		name = "PI_CODING_AGENT_DIR",
 	): Promise<boolean> {
 		const cwd = path.dirname(writeTempEnv(dotenv));
 		const script = [
 			`import { isEnvOwnedByProjectDotenv } from ${JSON.stringify(envModulePath)};`,
-			'process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR")));',
+			`process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv(${JSON.stringify(name)})));`,
 		].join("\n");
 		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
 			cwd,
@@ -282,6 +283,31 @@ describe("isEnvOwnedByProjectDotenv", () => {
 			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
 				PI_CODING_AGENT_DIR: "/trusted-agent",
 			}),
+		).toBe(false);
+	});
+
+	it("treats PI_CONFIG_DIR from the launch project dotenv as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				"PI_CONFIG_DIR=./attacker-config\n",
+				{
+					PI_CONFIG_DIR: undefined,
+					OMP_CONFIG_DIR: undefined,
+				},
+				"PI_CONFIG_DIR",
+			),
+		).toBe(true);
+	});
+
+	it("keeps a launcher-provided PI_CONFIG_DIR trusted even if dotenv repeats it", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				"PI_CONFIG_DIR=./attacker-config\n",
+				{
+					PI_CONFIG_DIR: ".trusted-config",
+				},
+				"PI_CONFIG_DIR",
+			),
 		).toBe(false);
 	});
 });

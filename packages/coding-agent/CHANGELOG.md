@@ -19,6 +19,9 @@
 - Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
 - Ignored project- and overlay-sourced `collab.relayUrl` and `collab.webUrl` during auto-start so a repository overlay cannot retarget a user-enabled host.
 - Rejected collab auto-start from a global config.yml whose agent directory was redirected by a project dotenv `PI_CODING_AGENT_DIR`.
+- Rejected collab auto-start from a global config.yml whose config directory was redirected by a project dotenv `PI_CONFIG_DIR`.
+- Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
+- Refused to attach a collab host that closed fatally before start completed.
 - Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
 
 ## [18.1.10] - 2026-09-04

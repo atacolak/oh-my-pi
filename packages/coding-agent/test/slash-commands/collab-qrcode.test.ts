@@ -87,7 +87,7 @@ describe("/collab slash command QR code rendering", () => {
 
 		expect(handled).toBe(true);
 		expect(harness.setText).toHaveBeenCalledWith("");
-		expect(startSpy).toHaveBeenCalledWith("wss://relay.example.com", "");
+		expect(startSpy).toHaveBeenCalledWith("wss://relay.example.com", "", expect.any(AbortSignal));
 		expect(harness.ctx.collabHost).toBeInstanceOf(CollabHost);
 		const statusText = harness.showStatus.mock.calls[0]?.[0] as string;
 		expect(statusText).toContain("my.omp.sh/#started-full");
@@ -106,7 +106,7 @@ describe("/collab slash command QR code rendering", () => {
 		const handled = await executeBuiltinSlashCommand("/collab view", harness.runtime);
 
 		expect(handled).toBe(true);
-		expect(startSpy).toHaveBeenCalledWith("wss://relay.example.com", "");
+		expect(startSpy).toHaveBeenCalledWith("wss://relay.example.com", "", expect.any(AbortSignal));
 		expect(harness.ctx.collabHost).toBeInstanceOf(CollabHost);
 		const statusText = harness.showStatus.mock.calls[0]?.[0] as string;
 		expect(statusText).toContain("my.omp.sh/#started-view");

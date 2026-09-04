@@ -611,6 +611,44 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("rename_file sends each nested server only the pairs under its root", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dir-rename-sibling-");
+		try {
+			const pkgs = path.join(tempDir.path(), "pkgs");
+			const a = writePythonProject(pkgs, "a", "a.py");
+			const b = writePythonProject(pkgs, "b", "b.py");
+			const dest = path.join(tempDir.path(), "moved");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const willRenameByRoot = new Map<string, unknown>();
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameByRoot.set(client.cwd, params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("sibling-dir-rename", {
+				action: "rename_file",
+				file: pkgs,
+				new_name: dest,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameByRoot.size).toBeGreaterThanOrEqual(2);
+			const aParams = willRenameByRoot.get(a.projectRoot) as { files: Array<{ oldUri: string }> } | undefined;
+			const bParams = willRenameByRoot.get(b.projectRoot) as { files: Array<{ oldUri: string }> } | undefined;
+			expect(aParams?.files.every(pair => pair.oldUri.includes("/a/"))).toBe(true);
+			expect(bParams?.files.every(pair => pair.oldUri.includes("/b/"))).toBe(true);
+			expect(aParams?.files.some(pair => pair.oldUri.includes("/b/"))).toBe(false);
+			expect(bParams?.files.some(pair => pair.oldUri.includes("/a/"))).toBe(false);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not use the primary cwd executable for a nested additional workspace under a long symlink", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rank-exec-");
 		const realOuter = tempDir.path();
@@ -760,6 +798,48 @@ describe("nested LSP project roots", () => {
 		} finally {
 			primary.removeSync();
 			additional.removeSync();
+		}
+	});
+
+	it("routes writes through a cwd changed after write-tool construction", async () => {
+		const original = TempDir.createSync("@omp-lsp-move-cwd-original-");
+		const moved = TempDir.createSync("@omp-lsp-move-cwd-moved-");
+		try {
+			const nested = writePythonProject(moved.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: original.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": true,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+			const tool = new WriteTool(session);
+			session.cwd = moved.path();
+			const getServers = vi.spyOn(lspConfig, "getServersForFile");
+
+			await tool.execute("move-cwd-write", {
+				path: nested.filePath,
+				content: "def example():\n    return 2\n",
+			});
+
+			expect(getServers.mock.calls.some(call => call[2]?.includes(moved.path()))).toBe(true);
+			expect(
+				getServers.mock.calls.every(call => !call[2]?.includes(original.path()) || call[2]?.includes(moved.path())),
+			).toBe(true);
+		} finally {
+			original.removeSync();
+			moved.removeSync();
 		}
 	});
 

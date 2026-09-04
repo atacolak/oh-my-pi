@@ -1156,19 +1156,15 @@ export function shutdownStaleClients(
 				// Clear their temporary tombstones and drop this cleanup's barriers
 				// on those roots so a later reload can rediscover them; survivors
 				// keep both until teardown actually succeeds.
-				const gone = stale.filter(([key]) => !clients.has(key) && !clientLocks.has(key));
+				const gone = [
+					...stale.filter(([key]) => !clients.has(key) && !clientLocks.has(key)),
+					...stalePending.filter(([key]) => !clients.has(key) && !clientLocks.has(key)),
+				];
 				clearTemporaryNestedTombstones(gone);
 				const survivingRoots = new Set(failed.map(([, client]) => path.resolve(client.cwd)));
 				for (const root of barrierRoots) {
 					if (clientReloadBarriers.get(root) !== cleanupHolder.promise) continue;
-					let keep = false;
-					for (const surviving of survivingRoots) {
-						if (isPathInsideWorkspace(surviving, root)) {
-							keep = true;
-							break;
-						}
-					}
-					if (!keep) clientReloadBarriers.delete(root);
+					if (!survivingRoots.has(root)) clientReloadBarriers.delete(root);
 				}
 				throw new Error(
 					"Failed to stop LSP server(s) with superseded configuration: " +

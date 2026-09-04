@@ -921,8 +921,6 @@ describe("lsp regressions", () => {
 					});
 				} else if (message.id === 9002 && message.method === undefined) {
 					dynamicRegistrationAccepted = message.error === undefined;
-				} else if (message.method === "textDocument/hover" && dynamicRegistrationAccepted) {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: { contents: "Atas.version()" } });
 				} else if (message.method === "shutdown") {
 					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
 				} else if (message.method === "exit") {
@@ -4847,6 +4845,74 @@ describe("lsp regressions", () => {
 			await expect(
 				lspClient.getOrCreateClient(nestedConfig, nestedRoot, 1_000, undefined, owner),
 			).resolves.toMatchObject({ config: { command: "nested-lsp" } });
+			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
+	it("failed mixed reload clears tombstones for nested pending starts that never published", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-mixed-pending-tombstone-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const extraRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(nestedRoot);
+			fs.mkdirSync(extraRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-pending-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const extraConfig: ServerConfig = {
+				command: "extra-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: extraRoot,
+			};
+			const nestedServer = installFakeLsp(() => {});
+			const owner = lspClient.createLspClientOwner();
+			const pending = lspClient.getOrCreateClient(nestedConfig, nestedRoot, undefined, undefined, owner);
+			const initialize = await nestedServer.waitFor(message => message.method === "initialize");
+			const extraServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			await lspClient.getOrCreateClient(extraConfig, extraRoot, 1_000, undefined, owner);
+
+			const cleanup = lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			nestedServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			await expect(pending).rejects.toThrow(/superseded/);
+			await expect(cleanup).rejects.toThrow("Failed to stop LSP server(s) with superseded configuration");
+
+			const siblingRoot = path.join(tempDir.path(), "sibling");
+			fs.mkdirSync(siblingRoot);
+			const siblingConfig: ServerConfig = {
+				command: "sibling-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: siblingRoot,
+			};
+			const siblingServer = installHandshakeLsp();
+			await expect(
+				lspClient.getOrCreateClient(siblingConfig, siblingRoot, 1_000, undefined, owner),
+			).resolves.toMatchObject({ config: { command: "sibling-lsp" } });
+			expect(siblingServer.received.map(message => message.method)).toContain("initialize");
+
+			extraServer.exit(0);
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+
+			const rediscoveredServer = installHandshakeLsp();
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, nestedRoot, 1_000, undefined, owner),
+			).resolves.toMatchObject({ config: { command: "nested-pending-lsp" } });
 			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
 		} finally {
 			await lspClient.shutdownAll();

@@ -7,7 +7,15 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import { isEnoent, isFsError, logger, prompt, resolveEquivalentPath, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	isEnoent,
+	isFsError,
+	logger,
+	pathIsWithin,
+	prompt,
+	resolveEquivalentPath,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import { sessionWorkspaceDirectories, workspaceRootForPath } from "../session/session-workspace";
@@ -622,13 +630,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				};
 			}
 
-			const lspParams = { files: pairs };
-			// Filter to servers whose fileTypes match either the source or any
-			// destination path. Asking every configured server about a .md/.sql/.txt
-			// rename used to stack up willRenameFiles requests against irrelevant
-			// language servers and hit the wall-clock timeout. A server only has
-			// something useful to say about a rename if it understands one of the
-			// affected file extensions.
 			const seenServers = new Set<string>();
 			const servers: Array<[string, ServerConfig]> = [];
 			const collectRelevant = (filePath: string) => {
@@ -645,6 +646,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				collectRelevant(uriToFile(pair.oldUri));
 				collectRelevant(uriToFile(pair.newUri));
 			}
+			const pairsForServer = (serverConfig: ServerConfig): FileRenamePair[] => {
+				const root = resolveEquivalentPath(serverConfig.resolvedRoot ?? this.session.cwd);
+				return pairs.filter(
+					pair => pathIsWithin(root, uriToFile(pair.oldUri)) || pathIsWithin(root, uriToFile(pair.newUri)),
+				);
+			};
 			const respondingServers = new Set<string>();
 			const perServerEdits: Array<{ serverName: string; edit: WorkspaceEdit }> = [];
 			const serverNotes: string[] = [];
@@ -657,6 +664,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			for (const [serverName, serverConfig] of servers) {
 				throwIfAborted(signal);
+				const serverPairs = pairsForServer(serverConfig);
+				if (serverPairs.length === 0) continue;
 				let client: LspClient;
 				try {
 					client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal, this.#clientOwner);
@@ -677,7 +686,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					const result = (await sendRequest(
 						client,
 						"workspace/willRenameFiles",
-						lspParams,
+						{ files: serverPairs },
 						signal,
 					)) as WorkspaceEdit | null;
 					respondingServers.add(serverName);
@@ -860,6 +869,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			for (const [serverName, serverConfig] of servers) {
+				const serverPairs = pairsForServer(serverConfig);
+				if (serverPairs.length === 0) continue;
 				try {
 					const client = await getOrCreateClient(
 						serverConfig,
@@ -868,7 +879,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						signal,
 						this.#clientOwner,
 					);
-					for (const pair of pairs) {
+					for (const pair of serverPairs) {
 						const overlayOldUri = fileToUri(uriToFile(pair.oldUri));
 						if (client.openFiles.has(overlayOldUri)) {
 							await sendNotification(
@@ -880,7 +891,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							client.openFiles.delete(overlayOldUri);
 						}
 					}
-					await sendNotification(client, "workspace/didRenameFiles", lspParams, signal);
+					await sendNotification(client, "workspace/didRenameFiles", { files: serverPairs }, signal);
 				} catch (err) {
 					if (err instanceof ToolAbortError || signal?.aborted) {
 						throw err;

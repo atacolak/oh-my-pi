@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Fixed write and edit language-server routing after `/move`, `/wt`, or interactive `!cd`, so format-on-write and diagnostics use the new cwd instead of the construction-time workspace.
+- Fixed `rename_file` sending every nested language server the full directory rename pair list, so a sibling project no longer rejects or duplicates another project's file operations.
+- Fixed `lsp reload *` leaving a nested pending start permanently tombstoned when another server survived mixed teardown, so later operations for that project no longer fail as “configuration was superseded.”
+- Fixed `lsp reload *` keeping a workspace-wide reload barrier after mixed teardown when only one nested server survived, so sibling projects could still start.
 - Fixed language-server routing following a leaf symlink out of the workspace, so hover and diagnostics on an in-workspace alias stay on that project's server.
 - Fixed `lsp reload *` restoring ownership of nested servers that already exited during a mixed teardown, so a later reload could not rediscover that project.
 - Fixed language-server document URIs following a leaf symlink out of the workspace, so hover and diagnostics stay on the alias's project instead of the target's.

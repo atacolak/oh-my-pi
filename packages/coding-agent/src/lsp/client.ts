@@ -1248,6 +1248,28 @@ export function clearWorkspaceInitializationFailures(
 	}
 }
 
+function collectReloadBarriers(config: ServerConfig, cwd: string): Promise<unknown>[] {
+	const reloadBarriers: Promise<unknown>[] = [];
+	const leftoverBarrier = clientIdentityReloadBarriers.get(clientServerRootKey(config, cwd));
+	if (leftoverBarrier) reloadBarriers.push(leftoverBarrier);
+	for (const [root, barrier] of clientReloadBarriers) {
+		if (!isPathInsideWorkspace(cwd, root) || reloadBarriers.includes(barrier)) continue;
+		reloadBarriers.push(barrier);
+	}
+	return reloadBarriers;
+}
+
+function canReuseClientDuringReload(
+	key: string,
+	owner: LspClientOwner | undefined,
+	reloadBarriers: readonly Promise<unknown>[],
+): boolean {
+	if (reloadBarriers.length === 0 || !owner) return true;
+	// A reloading owner is released before teardown; reattaching here would
+	// revive that owner on a client kept alive for an overlapping session.
+	return clientOwners.get(key)?.has(owner) === true;
+}
+
 /**
  * Get or create an LSP client for the given server configuration and working directory.
  * @param config - Server configuration
@@ -1267,9 +1289,10 @@ export async function getOrCreateClient(
 ): Promise<LspClient> {
 	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
 	const key = clientKey(config, cwd);
+	const reloadBarriers = collectReloadBarriers(config, cwd);
 	// Check if client already exists
 	const existingClient = clients.get(key);
-	if (existingClient && !invalidatedClientKeys.has(key)) {
+	if (existingClient && !invalidatedClientKeys.has(key) && canReuseClientDuringReload(key, owner, reloadBarriers)) {
 		registerClientOwner(key, owner);
 		existingClient.lastActivity = Date.now();
 		return existingClient;
@@ -1277,7 +1300,7 @@ export async function getOrCreateClient(
 
 	// Check if another coroutine is already creating this client
 	const existingLock = clientLocks.get(key);
-	if (existingLock) {
+	if (existingLock && canReuseClientDuringReload(key, owner, reloadBarriers)) {
 		registerClientOwner(key, owner);
 		try {
 			return await existingLock.promise;
@@ -1296,14 +1319,9 @@ export async function getOrCreateClient(
 	// on the command+cwd identities that did not exit rather than their shared
 	// root. After that wait, the captured `config`/`key` may itself be stale —
 	// reject it so the caller re-resolves from the reloaded definition instead
-	// of spawning the pre-reload command/args/settings.
-	const reloadBarriers: Promise<unknown>[] = [];
-	const leftoverBarrier = clientIdentityReloadBarriers.get(clientServerRootKey(config, cwd));
-	if (leftoverBarrier) reloadBarriers.push(leftoverBarrier);
-	for (const [root, barrier] of clientReloadBarriers) {
-		if (!isPathInsideWorkspace(cwd, root) || reloadBarriers.includes(barrier)) continue;
-		reloadBarriers.push(barrier);
-	}
+	// of spawning the pre-reload command/args/settings. Cached reuse above is
+	// also barrier-aware: a reloading owner cannot reattach to a client kept
+	// alive by another session until this wait finishes.
 	if (reloadBarriers.length > 0) {
 		try {
 			for (const reloadBarrier of reloadBarriers) {
@@ -1527,15 +1545,16 @@ export async function getActiveOrPendingClient(
 	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
 	throwIfAborted(signal);
 	const key = clientKey(config, cwd);
+	const reloadBarriers = collectReloadBarriers(config, cwd);
 	const client = clients.get(key);
-	if (client) {
+	if (client && canReuseClientDuringReload(key, owner, reloadBarriers)) {
 		registerClientOwner(key, owner);
 		client.lastActivity = Date.now();
 		return client;
 	}
 
 	const pending = clientLocks.get(key);
-	if (!pending) return undefined;
+	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers)) return undefined;
 	try {
 		const pendingClient = await untilAborted(signal, pending.promise);
 		registerClientOwner(key, owner);

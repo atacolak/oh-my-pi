@@ -4749,6 +4749,88 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload does not reattach a reloading owner to a cached overlapping client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-overlapping-reload-reattach-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			const extraRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(nestedRoot);
+			fs.mkdirSync(extraRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-session-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const extraConfig: ServerConfig = {
+				command: "extra-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: extraRoot,
+			};
+			const nestedServer = installHandshakeLsp();
+			const reloadingOwner = lspClient.createLspClientOwner();
+			const overlappingOwner = lspClient.createLspClientOwner();
+			const nestedClient = await lspClient.getOrCreateClient(
+				nestedConfig,
+				tempDir.path(),
+				1_000,
+				undefined,
+				reloadingOwner,
+			);
+			await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, overlappingOwner);
+			const extraServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			await lspClient.getOrCreateClient(extraConfig, extraRoot, 1_000, undefined, reloadingOwner);
+
+			const teardown = lspClient.shutdownStaleClients(
+				tempDir.path(),
+				[],
+				undefined,
+				[tempDir.path()],
+				reloadingOwner,
+			);
+			await extraServer.waitFor(message => message.method === "shutdown");
+			const concurrent = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, reloadingOwner);
+			let concurrentSettled = false;
+			void concurrent.finally(() => {
+				concurrentSettled = true;
+			});
+			await Promise.resolve();
+			expect(concurrentSettled).toBe(false);
+			expect(lspClient.getActiveClients(reloadingOwner).map(client => client.name)).not.toContain(
+				"nested-session-lsp",
+			);
+			expect(
+				await lspClient.getActiveOrPendingClient(nestedConfig, tempDir.path(), undefined, reloadingOwner),
+			).toBeUndefined();
+			expect(
+				await lspClient.getActiveOrPendingClient(nestedConfig, tempDir.path(), undefined, overlappingOwner),
+			).toBe(nestedClient);
+			expect(nestedServer.received.some(message => message.method === "shutdown")).toBe(false);
+
+			extraServer.exit(0);
+			await expect(teardown).resolves.toEqual(["extra-lsp"]);
+			await expect(concurrent).resolves.toBe(nestedClient);
+			expect(lspClient.getActiveClients(reloadingOwner).map(client => client.name)).toContain("nested-session-lsp");
+			expect(lspClient.getActiveClients(overlappingOwner).map(client => client.name)).toContain(
+				"nested-session-lsp",
+			);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("workspace reload blocks fresh client creation until stale teardown finishes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-fresh-race-");
 		try {

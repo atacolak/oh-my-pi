@@ -4481,6 +4481,54 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("releasing a removed additional root drops ownership when teardown fails", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-failed-owner-");
+		try {
+			const sessionCwd = path.join(tempDir.path(), "app");
+			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(sessionCwd);
+			fs.mkdirSync(additionalRoot);
+			const extraConfig: ServerConfig = {
+				command: "extra-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: additionalRoot,
+			};
+			const extraServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(extraConfig, additionalRoot, 1_000, undefined, owner);
+
+			await expect(
+				lspClient.releaseRemovedWorkspaceRoots(sessionCwd, additionalRoot, owner, undefined, [sessionCwd]),
+			).rejects.toThrow("Failed to stop LSP server(s) with superseded configuration");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain("extra-lsp");
+			expect(lspClient.getActiveClients().map(client => client.name)).toContain("extra-lsp");
+			const shutdownsAfterRemove = extraServer.received.filter(message => message.method === "shutdown").length;
+
+			const replacementOwner = lspClient.createLspClientOwner();
+			await expect(
+				lspClient.shutdownStaleClients(sessionCwd, [], undefined, [additionalRoot], replacementOwner),
+			).rejects.toThrow("Failed to stop LSP server(s) with superseded configuration");
+			expect(extraServer.received.filter(message => message.method === "shutdown").length).toBeGreaterThan(
+				shutdownsAfterRemove,
+			);
+			extraServer.exit(0);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {

@@ -116,9 +116,25 @@ export async function releaseRemovedWorkspaceRoots(
 	const roots = [path.resolve(removedRoot)];
 	const retainClient = (clientCwd: string) =>
 		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots);
-	const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
-	clearWorkspaceInitializationFailures(roots, owner, retainClient);
-	return stopped;
+	try {
+		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
+		clearWorkspaceInitializationFailures(roots, owner, retainClient);
+		return stopped;
+	} catch (error) {
+		// The directory is already gone. Keep this session from remaining a
+		// phantom owner of a process it can no longer clean up, even when
+		// force-kill could not confirm exit.
+		for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
+			const cwd = clients.get(key)?.cwd ?? clientLocks.get(key)?.cwd;
+			if (cwd) {
+				if (retainClient(cwd)) continue;
+				if (!roots.some(root => isPathInsideWorkspace(cwd, root))) continue;
+			}
+			releaseClientOwnerKey(key, owner);
+		}
+		clearWorkspaceInitializationFailures(roots, owner, retainClient);
+		throw error;
+	}
 }
 
 /** True when a remaining workspace root still contains this client. */

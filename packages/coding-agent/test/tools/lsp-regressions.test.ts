@@ -4604,6 +4604,40 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("watched-file routing reaches nested clients for leaf symlink writes", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-leaf-symlink-watched-files-");
+		const shared = TempDir.createSync("@omp-lsp-leaf-symlink-watched-shared-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "python");
+			fs.mkdirSync(nestedRoot, { recursive: true });
+			const sharedFile = path.join(shared.path(), "shared.py");
+			fs.writeFileSync(sharedFile, "def shared():\n    return 1\n");
+			const alias = path.join(nestedRoot, "alias.py");
+			fs.symlinkSync(sharedFile, alias);
+			const server = installHandshakeLsp();
+			const config: ServerConfig = {
+				command: "nested-leaf-watch",
+				fileTypes: [".py"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+
+			await lspClient.notifyWorkspaceWatchedFiles(
+				[tempDir.path()],
+				[{ filePath: alias, type: lspClient.FileChangeType.Changed }],
+			);
+
+			const watched = await server.waitFor(message => message.method === "workspace/didChangeWatchedFiles");
+			expect(watched.params).toEqual({ changes: [{ uri: fileToUri(alias), type: 2 }] });
+			expect(fileToUri(alias)).not.toBe(fileToUri(sharedFile));
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("reload from a second LspTool on the same session stops the first tool's client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-fallback-owner-reuse-");
 		try {

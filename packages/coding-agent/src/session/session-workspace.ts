@@ -81,7 +81,11 @@ export function workspaceRootForPath(filePath: string, workspace: SessionWorkspa
 	return best;
 }
 
-function workspaceContainsPath(directory: string, filePath: string): boolean {
+/**
+ * Whether `filePath` is contained by `directory` without following a leaf symlink.
+ * Workspace-root aliases still compare through equivalent paths.
+ */
+export function workspaceContainsPath(directory: string, filePath: string): boolean {
 	const normalizedRoot = normalizePathForComparison(directory);
 	const entry = workspaceEntryPath(filePath);
 	const normalizedEntry = process.platform === "win32" ? entry.toLowerCase() : entry;

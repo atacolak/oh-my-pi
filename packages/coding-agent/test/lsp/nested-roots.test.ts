@@ -649,6 +649,53 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("rename_file keeps a leaf symlink pair on the containing nested server", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-leaf-symlink-rename-pairs-");
+		const shared = TempDir.createSync("@omp-lsp-leaf-symlink-rename-pairs-shared-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const sharedFile = path.join(shared.path(), "shared.py");
+			fs.writeFileSync(sharedFile, "def shared():\n    return 1\n");
+			const alias = path.join(nested.projectRoot, "src", "alias.py");
+			const dest = path.join(nested.projectRoot, "src", "renamed-alias.py");
+			fs.symlinkSync(sharedFile, alias);
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const willRenameRequests: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameRequests.push(params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("leaf-symlink-rename-pairs", {
+				action: "rename_file",
+				file: alias,
+				new_name: dest,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameRequests).toEqual([
+				{
+					files: [
+						{
+							oldUri: Bun.pathToFileURL(path.resolve(alias)).href,
+							newUri: Bun.pathToFileURL(path.resolve(dest)).href,
+						},
+					],
+				},
+			]);
+			expect(fs.lstatSync(dest).isSymbolicLink()).toBe(true);
+			expect(fs.existsSync(sharedFile)).toBe(true);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("does not use the primary cwd executable for a nested additional workspace under a long symlink", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rank-exec-");
 		const realOuter = tempDir.path();

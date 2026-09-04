@@ -10,7 +10,7 @@ import {
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../jsonrpc/message-framing";
-import { normalizeSessionWorkspace, workspaceRootForPath } from "../session/session-workspace";
+import { normalizeSessionWorkspace, workspaceContainsPath, workspaceRootForPath } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
@@ -731,7 +731,7 @@ export async function reconcileExecutedChanges(
 	const activeClients = Array.from(clients.values()).filter(client => {
 		if (client.status !== "ready") return false;
 		if (workspaceRoots.some(root => isPathInsideWorkspace(client.cwd, root))) return true;
-		if (watchedFiles.some(change => isPathInsideWorkspace(change.filePath, client.cwd))) return true;
+		if (watchedFiles.some(change => workspaceContainsPath(client.cwd, change.filePath))) return true;
 		if (Array.from(finalUris).some(uri => client.openFiles.has(uri))) return true;
 		for (const uri of client.openFiles.keys()) {
 			for (const root of deletedRoots) {
@@ -1726,7 +1726,7 @@ export async function notifyWorkspaceWatchedFiles(
 		activeClients.map(async client => {
 			const clientRoot = path.resolve(client.cwd);
 			const clientChanges = changes
-				.filter(change => isPathInsideWorkspace(change.filePath, clientRoot))
+				.filter(change => workspaceContainsPath(clientRoot, change.filePath))
 				.map(change => {
 					const uri = fileToUri(change.filePath);
 					client.diagnostics.delete(uri);

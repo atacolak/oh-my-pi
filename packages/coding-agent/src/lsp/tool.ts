@@ -7,18 +7,10 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import {
-	isEnoent,
-	isFsError,
-	logger,
-	pathIsWithin,
-	prompt,
-	resolveEquivalentPath,
-	untilAborted,
-} from "@oh-my-pi/pi-utils";
+import { isEnoent, isFsError, logger, prompt, resolveEquivalentPath, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
-import { sessionWorkspaceDirectories, workspaceRootForPath } from "../session/session-workspace";
+import { sessionWorkspaceDirectories, workspaceContainsPath, workspaceRootForPath } from "../session/session-workspace";
 import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
@@ -649,7 +641,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const pairsForServer = (serverConfig: ServerConfig): FileRenamePair[] => {
 				const root = resolveEquivalentPath(serverConfig.resolvedRoot ?? this.session.cwd);
 				return pairs.filter(
-					pair => pathIsWithin(root, uriToFile(pair.oldUri)) || pathIsWithin(root, uriToFile(pair.newUri)),
+					pair =>
+						workspaceContainsPath(root, uriToFile(pair.oldUri)) ||
+						workspaceContainsPath(root, uriToFile(pair.newUri)),
 				);
 			};
 			const respondingServers = new Set<string>();

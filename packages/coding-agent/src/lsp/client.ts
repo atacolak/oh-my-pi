@@ -721,6 +721,27 @@ function uriIsWithin(uri: string, root: string): boolean {
 	return uri === root || uri.startsWith(root.endsWith("/") ? root : `${root}/`);
 }
 
+/** Open overlay URI for an edit URI, translating across directory-symlink spellings. */
+function openDocumentUriForChange(client: LspClient, uri: string): string | undefined {
+	if (client.openFiles.has(uri)) return uri;
+	const translated = fileToUri(uriToFile(uri), client.cwd);
+	if (client.openFiles.has(translated)) return translated;
+	for (const openUri of client.openFiles.keys()) {
+		if (equivalentDocumentUri(openUri, uri)) return openUri;
+	}
+	return undefined;
+}
+
+function equivalentDocumentUri(left: string, right: string): boolean {
+	if (left === right) return true;
+	return resolveEquivalentPath(uriToFile(left)) === resolveEquivalentPath(uriToFile(right));
+}
+
+function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boolean {
+	if (uriIsWithin(uri, deletedRoot)) return true;
+	return workspaceContainsPath(uriToFile(deletedRoot), uriToFile(uri));
+}
+
 /** Reconcile open overlays and file watchers with the ops a workspace edit actually performed. */
 export async function reconcileExecutedChanges(
 	executed: ExecutedWorkspaceChange[],
@@ -734,10 +755,10 @@ export async function reconcileExecutedChanges(
 		if (client.status !== "ready") return false;
 		if (workspaceRoots.some(root => clientIsInsideWorkspace(client, root))) return true;
 		if (watchedFiles.some(change => workspaceContainsPath(clientWorkspaceCwd(client), change.filePath))) return true;
-		if (Array.from(finalUris).some(uri => client.openFiles.has(uri))) return true;
+		if (Array.from(finalUris).some(uri => openDocumentUriForChange(client, uri))) return true;
 		for (const uri of client.openFiles.keys()) {
 			for (const root of deletedRoots) {
-				if (uriIsWithin(uri, root)) return true;
+				if (openDocumentMatchesDeletedRoot(uri, root)) return true;
 			}
 		}
 		return false;
@@ -747,7 +768,7 @@ export async function reconcileExecutedChanges(
 		for (const uri of Array.from(activeClient.openFiles.keys())) {
 			let deleted = false;
 			for (const root of deletedRoots) {
-				if (uriIsWithin(uri, root)) {
+				if (openDocumentMatchesDeletedRoot(uri, root)) {
 					deleted = true;
 					break;
 				}
@@ -758,8 +779,9 @@ export async function reconcileExecutedChanges(
 			activeClient.diagnostics.delete(uri);
 		}
 		for (const uri of finalUris) {
-			if (!activeClient.openFiles.has(uri)) continue;
-			await refreshFile(activeClient, uriToFile(uri), signal);
+			const openUri = openDocumentUriForChange(activeClient, uri);
+			if (!openUri) continue;
+			await refreshFile(activeClient, uriToFile(openUri), signal);
 		}
 	}
 	const notifyRoots = Array.from(
@@ -1784,13 +1806,13 @@ export async function notifyWorkspaceWatchedFiles(
 	const results = await Promise.allSettled(
 		activeClients.map(async client => {
 			const clientRoot = path.resolve(clientWorkspaceCwd(client));
-			const clientChanges = changes
-				.filter(change => workspaceContainsPath(clientRoot, change.filePath))
-				.map(change => {
-					const uri = fileToUri(change.filePath, client.cwd);
-					client.diagnostics.delete(uri);
-					return { uri, type: change.type };
-				});
+			const clientChanges = changes.flatMap(change => {
+				const openUri = openDocumentUriForChange(client, fileToUri(change.filePath, client.cwd));
+				if (!workspaceContainsPath(clientRoot, change.filePath) && !openUri) return [];
+				const uri = openUri ?? fileToUri(change.filePath, client.cwd);
+				client.diagnostics.delete(uri);
+				return [{ uri, type: change.type }];
+			});
 			if (clientChanges.length === 0) return;
 			await sendNotification(client, "workspace/didChangeWatchedFiles", { changes: clientChanges }, sendSignal);
 		}),

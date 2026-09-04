@@ -4296,6 +4296,81 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace edits refresh each client's overlay URI across a directory symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dir-symlink-edit-uri-");
+		const shared = TempDir.createSync("@omp-lsp-dir-symlink-edit-uri-shared-");
+		try {
+			const sharedProject = path.join(shared.path(), "project");
+			fs.mkdirSync(sharedProject, { recursive: true });
+			const sharedFile = path.join(sharedProject, "foo.ts");
+			await Bun.write(sharedFile, "export const foo = 1;\n");
+			const aliasDir = path.join(tempDir.path(), "link");
+			fs.symlinkSync(sharedProject, aliasDir);
+			const alias = path.join(aliasDir, "foo.ts");
+			const outerUri = fileToUri(alias, tempDir.path());
+			const innerUri = fileToUri(alias, sharedProject);
+			expect(outerUri).not.toBe(innerUri);
+
+			const outerServer = installHandshakeLsp();
+			const outerConfig: ServerConfig = {
+				command: "outer-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const outerClient = await lspClient.getOrCreateClient(outerConfig, tempDir.path(), 1_000);
+			const innerServer = installHandshakeLsp();
+			const innerConfig: ServerConfig = {
+				command: "inner-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sharedProject,
+			};
+			const innerClient = await lspClient.getOrCreateClient(innerConfig, sharedProject, 1_000);
+			await lspClient.ensureFileOpen(outerClient, alias);
+			await lspClient.ensureFileOpen(innerClient, alias);
+			await outerServer.waitFor(message => message.method === "textDocument/didOpen");
+			await innerServer.waitFor(message => message.method === "textDocument/didOpen");
+
+			await lspClient.applyWorkspaceEditWithLsp(
+				{
+					changes: {
+						[innerUri]: [
+							{
+								range: { start: { line: 0, character: 19 }, end: { line: 0, character: 20 } },
+								newText: "2",
+							},
+						],
+					},
+				},
+				tempDir.path(),
+			);
+
+			const outerChange = await outerServer.waitFor(message => message.method === "textDocument/didChange");
+			const innerChange = await innerServer.waitFor(message => message.method === "textDocument/didChange");
+			const outerWatched = await outerServer.waitFor(
+				message => message.method === "workspace/didChangeWatchedFiles",
+			);
+			const innerWatched = await innerServer.waitFor(
+				message => message.method === "workspace/didChangeWatchedFiles",
+			);
+			expect(outerChange.params).toMatchObject({
+				textDocument: { uri: outerUri },
+				contentChanges: [{ text: "export const foo = 2;\n" }],
+			});
+			expect(innerChange.params).toMatchObject({
+				textDocument: { uri: innerUri },
+				contentChanges: [{ text: "export const foo = 2;\n" }],
+			});
+			expect(outerWatched.params).toEqual({ changes: [{ uri: outerUri, type: 2 }] });
+			expect(innerWatched.params).toEqual({ changes: [{ uri: innerUri, type: 2 }] });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("releasing a removed additional workspace root stops that session's client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-release-");
 		try {

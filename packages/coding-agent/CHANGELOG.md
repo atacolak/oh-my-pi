@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed workspace-edit overlay refresh and watched-file notifications using one language server's document URI for every client when a file sits on both sides of an in-workspace directory symlink.
 - Fixed language-server reload and removed-root cleanup missing a nested client whose project root is a workspace symlink, so that process no longer survives beside its replacement.
 - Fixed diagnostics and format-on-write querying every language server with the first server's document URI when a file sits on both sides of an in-workspace directory symlink.
 - Fixed idle language-server shutdown dropping ownership of a replacement client published under the same identity before the old process exited.

@@ -1,10 +1,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import * as env from "@oh-my-pi/pi-utils/env";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
 import type { InteractiveModeContext } from "../modes/types";
 import { expandTilde } from "../tools/path-utils";
-import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import { sanitizeStatusText, TRUNCATE_LENGTHS } from "../tools/render-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
 import { CollabGuestLink } from "./guest";
 import { CollabHost } from "./host";
@@ -22,10 +23,10 @@ export interface StartCollabOptions {
 
 /** Start a host and attach it to the interactive context. */
 export async function startCollabHost(ctx: InteractiveModeContext, options: StartCollabOptions): Promise<CollabHost> {
+	if (ctx.session.isDisposed) throw new Error(COLLAB_HOST_START_CANCELLED);
 	if (ctx.collabGuest || ctx.collabGuestStart) throw new Error("Cannot host while joining as a guest");
 	if (ctx.collabHost) return ctx.collabHost;
 	if (ctx.collabHostStart) return ctx.collabHostStart;
-	if (ctx.session.isDisposed) throw new Error(COLLAB_HOST_START_CANCELLED);
 	const abort = new AbortController();
 	ctx.collabHostAbort = abort;
 	const start = startCollabHostOnce(ctx, options, abort.signal);
@@ -63,31 +64,35 @@ async function startCollabHostOnce(
 	const host = new CollabHost(ctx);
 	try {
 		await host.start(options.relayUrl, options.webUrl ?? "", signal);
+		await Promise.resolve();
 	} catch (error) {
 		if (signal.aborted) throw new Error(COLLAB_HOST_START_CANCELLED);
 		throw error;
 	}
-	if (signal.aborted || ctx.session.isDisposed || ctx.collabGuest || ctx.collabGuestStart) {
+	if (host.isStopped || signal.aborted || ctx.session.isDisposed || ctx.collabGuest || ctx.collabGuestStart) {
 		await host.stop(
-			signal.aborted || ctx.session.isDisposed ? "host start cancelled" : "guest joined while host was starting",
+			signal.aborted || ctx.session.isDisposed || host.isStopped
+				? "host start cancelled"
+				: "guest joined while host was starting",
 		);
 		throw new Error(
-			signal.aborted || ctx.session.isDisposed ? COLLAB_HOST_START_CANCELLED : "Cannot host while joined as a guest",
+			signal.aborted || ctx.session.isDisposed || host.isStopped
+				? COLLAB_HOST_START_CANCELLED
+				: "Cannot host while joined as a guest",
 		);
 	}
 	ctx.collabHost = host;
 	const writeLinkPath = options.writeLinkPath?.trim()
 		? resolveCollabLinkPath(options.writeLinkPath, ctx.sessionManager.getCwd())
 		: undefined;
-	if (writeLinkPath) {
+	if (writeLinkPath && ctx.collabHost === host && !signal.aborted && !ctx.session.isDisposed) {
 		try {
-			await writeCollabLink(writeLinkPath, host.link);
+			await writeCollabLink(writeLinkPath, host.link, signal);
 		} catch (error) {
-			ctx.showError(`Failed to write collab link file: ${sanitizeWriteLinkError(error)}`);
+			ctx.showError(`Failed to write collab link file: ${sanitizeCollabError(error)}`);
 		}
 	}
-	if (ctx.collabHost !== host) {
-		if (writeLinkPath) await fs.rm(writeLinkPath, { force: true }).catch(() => {});
+	if (ctx.collabHost !== host || signal.aborted || ctx.session.isDisposed) {
 		await host.stop("host start cancelled");
 		throw new Error(COLLAB_HOST_START_CANCELLED);
 	}
@@ -104,11 +109,10 @@ export async function stopCollabHost(ctx: InteractiveModeContext, reason = "host
 	);
 	abort?.abort();
 	ctx.collabHostAbort?.abort();
-	if (settled) await settled;
 	const host = ctx.collabHost;
-	if (!host) return pending !== undefined;
-	await host.stop(reason);
-	return true;
+	if (host) await host.stop(reason);
+	if (settled) await settled;
+	return host !== undefined || pending !== undefined;
 }
 
 function resolveCollabLinkPath(rawPath: string, ctxCwd: string): string {
@@ -116,50 +120,50 @@ function resolveCollabLinkPath(rawPath: string, ctxCwd: string): string {
 	return path.isAbsolute(expanded) ? expanded : path.resolve(ctxCwd, expanded);
 }
 
-async function writeCollabLink(target: string, link: string): Promise<void> {
+async function withCollabLinkLock<T>(target: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+	await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+	return await withFileLock(target, fn, { signal });
+}
+
+async function writeCollabLink(target: string, link: string, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return;
 	const tempPath = path.join(
 		path.dirname(target),
 		`.${path.basename(target)}.${process.pid}.${crypto.randomUUID()}.tmp`,
 	);
-	await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-	let removeTemp = false;
 	try {
-		const handle = await fs.open(tempPath, "wx", 0o600);
-		removeTemp = true;
-		try {
-			await handle.writeFile(link, "utf8");
-			await handle.sync();
-		} finally {
-			await handle.close();
-		}
-		await replaceFileAtomically(tempPath, target);
-		removeTemp = false;
-	} finally {
-		if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
+		await withCollabLinkLock(
+			target,
+			async () => {
+				if (signal?.aborted) return;
+				let removeTemp = false;
+				try {
+					const handle = await fs.open(tempPath, "wx", 0o600);
+					removeTemp = true;
+					try {
+						await handle.writeFile(link, "utf8");
+						await handle.sync();
+					} finally {
+						await handle.close();
+					}
+					if (signal?.aborted) return;
+					await replaceFileAtomically(tempPath, target);
+					removeTemp = false;
+				} finally {
+					if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
+				}
+			},
+			signal,
+		);
+	} catch (error) {
+		if (signal?.aborted) return;
+		throw error;
 	}
 }
 
-function sanitizeWriteLinkError(error: unknown): string {
+function sanitizeCollabError(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
-	const text = shortenEmbeddedPaths(
-		replaceTabs(sanitizeText(detail))
-			.replace(/[\r\n]+/g, " ")
-			.trim(),
-	);
-	return truncateToWidth(text.length > 0 ? text : "Unknown error", TRUNCATE_LENGTHS.CONTENT);
-}
-
-function shortenEmbeddedPaths(text: string): string {
-	return text
-		.split(" ")
-		.map(segment => {
-			const leading = segment.match(/^[("'`[]*/)?.[0] ?? "";
-			const trailing = segment.match(/[)"'`,.;:\]]*$/)?.[0] ?? "";
-			const end = segment.length - trailing.length;
-			if (leading.length >= end) return segment;
-			return `${leading}${shortenPath(segment.slice(leading.length, end))}${trailing}`;
-		})
-		.join(" ");
+	return sanitizeStatusText(detail, TRUNCATE_LENGTHS.CONTENT, "Unknown error");
 }
 
 export function resolveRelayUrl(input: string): string {
@@ -168,6 +172,13 @@ export function resolveRelayUrl(input: string): string {
 }
 
 type CollabSettingPath = Extract<SettingPath, `collab.${string}`>;
+
+const PROJECT_DOTENV_GLOBAL_DIR_KEYS = [
+	"PI_CODING_AGENT_DIR",
+	"OMP_CODING_AGENT_DIR",
+	"PI_CONFIG_DIR",
+	"OMP_CONFIG_DIR",
+] as const;
 
 function collabLayerValue(layer: unknown, path: CollabSettingPath): unknown {
 	let current: unknown = layer;
@@ -178,27 +189,46 @@ function collabLayerValue(layer: unknown, path: CollabSettingPath): unknown {
 	return current;
 }
 
+function redirectedGlobalConfig(): boolean {
+	return PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name));
+}
+
 function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, path: P): SettingValue<P> {
-	if (settings.getProvenance(path) !== "overlay") return settings.get(path);
-	const projectValue = collabLayerValue(settings.getProjectSettings(), path);
-	if (projectValue !== undefined) return projectValue as SettingValue<P>;
-	const globalValue = collabLayerValue(settings.getGlobalSettings(), path);
-	return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
+	const provenance = settings.getProvenance(path);
+	if (provenance === "runtime" || provenance === "default") return settings.get(path);
+	const effective = settings.get(path);
+	if (path === "collab.autoStart" && effective === false) return false as SettingValue<P>;
+	if (redirectedGlobalConfig() && provenance !== "project") return getDefault(path);
+	if (provenance === "overlay") {
+		const projectValue = collabLayerValue(settings.getProjectSettings(), path);
+		if (projectValue !== undefined) return projectValue as SettingValue<P>;
+		const globalValue = collabLayerValue(settings.getGlobalSettings(), path);
+		return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
+	}
+	return effective;
 }
 
 function isTrustedCollabConfigured(settings: Settings, path: CollabSettingPath): boolean {
-	if (settings.getProvenance(path) !== "overlay") return settings.isConfigured(path);
-	return (
-		collabLayerValue(settings.getProjectSettings(), path) !== undefined ||
-		collabLayerValue(settings.getGlobalSettings(), path) !== undefined
-	);
+	const provenance = settings.getProvenance(path);
+	if (provenance === "runtime") return true;
+	if (redirectedGlobalConfig()) return provenance === "project";
+	if (provenance === "overlay") {
+		return (
+			collabLayerValue(settings.getProjectSettings(), path) !== undefined ||
+			collabLayerValue(settings.getGlobalSettings(), path) !== undefined
+		);
+	}
+	return settings.isConfigured(path);
 }
 
 /** Start the configured host once during interactive startup. */
 export async function autoStartCollab(ctx: InteractiveModeContext): Promise<boolean> {
-	if (ctx.collabGuest || ctx.collabHost || !ctx.settings.get("collab.autoStart")) return false;
-	if (ctx.settings.getProvenance("collab.autoStart") === "overlay") {
-		ctx.showWarning("Collab auto-start skipped: configure collab.autoStart outside config overlays.");
+	if (ctx.collabGuest || ctx.collabHost) return false;
+	const autoStart = trustedCollabSetting(ctx.settings, "collab.autoStart");
+	if (!autoStart) {
+		if (ctx.settings.get("collab.autoStart")) {
+			ctx.showWarning("Collab auto-start skipped: configure collab.autoStart outside config overlays.");
+		}
 		return false;
 	}
 	const relayInput = trustedCollabSetting(ctx.settings, "collab.relayUrl")?.trim() ?? "";
@@ -215,7 +245,10 @@ export async function autoStartCollab(ctx: InteractiveModeContext): Promise<bool
 		ctx.showWarning("Collab auto-start ignored an overlay collab.relayUrl.");
 	}
 	const configuredLinkPath = ctx.settings.get("collab.writeLinkPath") ?? "";
-	const writeLinkPath = ctx.settings.getProvenance("collab.writeLinkPath") === "overlay" ? "" : configuredLinkPath;
+	const writeLinkPath =
+		ctx.settings.getProvenance("collab.writeLinkPath") === "overlay"
+			? ""
+			: (trustedCollabSetting(ctx.settings, "collab.writeLinkPath") ?? "");
 	if (configuredLinkPath.trim() && !writeLinkPath) {
 		ctx.showWarning("Collab link file skipped: configure collab.writeLinkPath outside config overlays.");
 	}
@@ -233,7 +266,7 @@ export async function autoStartCollab(ctx: InteractiveModeContext): Promise<bool
 		return true;
 	} catch (error) {
 		if (error instanceof Error && error.message === COLLAB_HOST_START_CANCELLED) return false;
-		ctx.showError(`Failed to auto-start collab session: ${error instanceof Error ? error.message : String(error)}`);
+		ctx.showError(`Failed to auto-start collab session: ${sanitizeCollabError(error)}`);
 		return false;
 	}
 }

@@ -12,9 +12,17 @@
 - Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
 - Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
 - Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
-- Sanitized collab write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
+- Sanitized collab auto-start and write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
+- Avoided deleting a collab write-link file that this start never published, including a destination replaced after publication.
+- Stopped an already-attached collab host immediately on `/collab stop` and shutdown instead of waiting out write-link publication.
+- Stopped collab hosting on signal teardown before waiting for draft persistence.
 - Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
 - Ignored overlay-sourced collab relay and web URLs during auto-start so a config overlay cannot retarget a trusted host.
+- Rejected collab auto-start from a global config.yml whose agent or config directory was redirected by a project dotenv.
+- Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
+- Refused to attach a collab host that closed fatally before start completed.
+- Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
+
 ## [18.1.10] - 2026-09-04
 
 ### Changed

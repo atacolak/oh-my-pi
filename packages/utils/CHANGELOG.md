@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `isEnvOwnedByProjectDotenv` to identify environment variables that came from the launch project's dotenv files rather than the parent shell.
+
 ### Changed
 
 - `withFileLock` now honors an optional `AbortSignal` and cancels lock-acquisition retries immediately.

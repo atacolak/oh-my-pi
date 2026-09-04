@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
 import type { InteractiveModeContext } from "../modes/types";
@@ -178,14 +179,24 @@ function globalCollabValue(settings: Settings, path: CollabSettingPath): unknown
 
 function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, path: P): SettingValue<P> {
 	const provenance = settings.getProvenance(path);
-	if (provenance !== "project" && provenance !== "overlay") return settings.get(path);
-	const globalValue = globalCollabValue(settings, path);
-	return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
+	if (provenance === "runtime" || provenance === "default") return settings.get(path);
+	if (env.isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR") || env.isEnvOwnedByProjectDotenv("OMP_CODING_AGENT_DIR")) {
+		return getDefault(path);
+	}
+	if (provenance === "project" || provenance === "overlay") {
+		const globalValue = globalCollabValue(settings, path);
+		return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
+	}
+	return settings.get(path);
 }
 
 function isTrustedCollabConfigured(settings: Settings, path: CollabSettingPath): boolean {
 	const provenance = settings.getProvenance(path);
-	if (provenance === "runtime" || provenance === "global") return true;
+	if (provenance === "runtime") return true;
+	if (env.isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR") || env.isEnvOwnedByProjectDotenv("OMP_CODING_AGENT_DIR")) {
+		return false;
+	}
+	if (provenance === "global") return true;
 	if (provenance !== "project" && provenance !== "overlay") return false;
 	return globalCollabValue(settings, path) !== undefined;
 }

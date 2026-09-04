@@ -15,6 +15,7 @@ import {
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import * as atomicFile from "@oh-my-pi/pi-coding-agent/utils/atomic-file";
+import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
@@ -309,6 +310,36 @@ describe("collab auto-start", () => {
 			expect(await Bun.file(target).exists()).toBe(false);
 			expect(warnings.join(" ")).toContain("outside project settings");
 		} finally {
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses auto-start from a project-local redirected global config", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const projectDir = path.join(dir, "project");
+		const agentDir = path.join(projectDir, "attacker-dir");
+		const target = path.join(dir, "sensitive");
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			`collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n  writeLinkPath: ${target}\n`,
+		);
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const warnings: string[] = [];
+		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		const owned = spyOn(env, "isEnvOwnedByProjectDotenv").mockImplementation(
+			(name: string) => name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR",
+		);
+		try {
+			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(start).not.toHaveBeenCalled();
+			expect(await Bun.file(target).exists()).toBe(false);
+			expect(warnings.join(" ")).toContain("outside project settings");
+		} finally {
+			owned.mockRestore();
 			start.mockRestore();
 			await fs.rm(dir, { recursive: true, force: true });
 		}

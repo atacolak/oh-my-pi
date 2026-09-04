@@ -241,6 +241,51 @@ describe("filterChildShellEnv", () => {
 	});
 });
 
+describe("isEnvOwnedByProjectDotenv", () => {
+	const envModulePath = path.join(import.meta.dir, "..", "src", "env.ts");
+
+	async function probeProjectDotenvOwnership(
+		dotenv: string,
+		env: Record<string, string | undefined>,
+	): Promise<boolean> {
+		const cwd = path.dirname(writeTempEnv(dotenv));
+		const script = [
+			`import { isEnvOwnedByProjectDotenv } from ${JSON.stringify(envModulePath)};`,
+			'process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR")));',
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: { ...process.env, ...env },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		return JSON.parse(stdout) as boolean;
+	}
+
+	it("treats PI_CODING_AGENT_DIR from the launch project dotenv as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("keeps a launcher-provided PI_CODING_AGENT_DIR trusted even if dotenv repeats it", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: "/trusted-agent",
+			}),
+		).toBe(false);
+	});
+});
+
 describe("isBunTestRuntime", () => {
 	it("does not treat shared application env names as a test runner signal", async () => {
 		expect(await runRuntimeProbe({ NODE_ENV: "test", BUN_ENV: undefined, PI_TEST_RUNTIME: undefined })).toBe(false);

@@ -1648,6 +1648,36 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires session-runtime hooks after adopting a sibling advisor.enabled disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ advisor: { enabled: false }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("advisor.enabled"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ advisor: { enabled: true }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("advisor.enabled")).toBe(true);
+				expect(received).toEqual([{ value: true, paths: ["advisor.enabled"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					advisor: { enabled: true },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires runtime hooks for an adopted sibling project edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

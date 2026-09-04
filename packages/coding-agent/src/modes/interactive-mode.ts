@@ -1385,6 +1385,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (paths.includes("compaction.enabled") || paths.includes("compaction.methodOrder")) {
 					this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 				}
+				if (paths.includes("advisor.enabled")) {
+					this.statusLine.invalidate();
+					this.ui.requestRender();
+				}
 				const selectorManagedPaths = [
 					"composer.shape",
 					"display.cacheMissMarker",

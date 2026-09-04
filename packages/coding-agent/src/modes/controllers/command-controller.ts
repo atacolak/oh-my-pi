@@ -1383,7 +1383,7 @@ export class CommandController {
 
 	async #moveInteractiveCwd(resolvedPath: string): Promise<void> {
 		const previousState = this.ctx.sessionManager.captureState();
-		await this.ctx.sessionManager.moveTo(resolvedPath);
+		await this.ctx.session.moveSession(resolvedPath);
 		let applied = false;
 		try {
 			applied = await this.ctx.applyCwdChange(resolvedPath);

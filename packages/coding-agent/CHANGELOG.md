@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/remove-dir` installing a language-server reload barrier over the retained session cwd, so a stuck extra-root teardown could block or supersede new clients under the remaining workspace.
 - Fixed write and edit language-server fallback owners remaining after a public ToolSession disposed, so an overlapping session could not replace those clients.
 - Fixed a failed language-server initialization leaving the session as a phantom owner, so a later successful session could not reload or replace that identity.
 - Fixed `rename_file` leaving sibling nested language servers with stale overlays when `workspace/willRenameFiles` also edited files outside the renamed project.

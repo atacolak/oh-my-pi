@@ -4431,6 +4431,56 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("releasing a removed additional root does not barrier retained workspace clients", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-retain-barrier-");
+		try {
+			const sessionCwd = path.join(tempDir.path(), "app");
+			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(sessionCwd);
+			fs.mkdirSync(additionalRoot);
+			const extraConfig: ServerConfig = {
+				command: "extra-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: additionalRoot,
+			};
+			const cwdConfig: ServerConfig = {
+				command: "cwd-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sessionCwd,
+			};
+			const extraServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(extraConfig, additionalRoot, 1_000, undefined, owner);
+
+			await expect(
+				lspClient.releaseRemovedWorkspaceRoots(sessionCwd, additionalRoot, owner, undefined, [sessionCwd]),
+			).rejects.toThrow("Failed to stop LSP server(s) with superseded configuration");
+
+			const cwdServer = installHandshakeLsp();
+			const cwdOwner = lspClient.createLspClientOwner();
+			await expect(
+				lspClient.getOrCreateClient(cwdConfig, sessionCwd, 1_000, undefined, cwdOwner),
+			).resolves.toMatchObject({ config: { command: "cwd-lsp" } });
+			expect(cwdServer.received.map(message => message.method)).toContain("initialize");
+			extraServer.exit(0);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {

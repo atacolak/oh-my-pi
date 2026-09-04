@@ -1028,8 +1028,11 @@ export function shutdownStaleClients(
 		: new Set<string>();
 	const stalePending = relevantPending.filter(([key]) => unownedStaleKeys.has(key));
 	const staleClients = relevantClients.filter(([key]) => unownedStaleKeys.has(key));
+	// Barrier only the roots this cleanup actually covers. `/remove-dir` passes
+	// the retained session cwd as `cwd` while `workspaceRoots` is the removed
+	// directory; including `cwd` here would block unrelated clients under the
+	// remaining workspace, and a failed teardown would leave that barrier forever.
 	const barrierRoots = new Set([
-		path.resolve(cwd),
 		...roots,
 		...stalePending.map(([, pending]) => path.resolve(pending.cwd)),
 		...staleClients.map(([, client]) => path.resolve(client.cwd)),

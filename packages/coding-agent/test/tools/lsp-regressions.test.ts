@@ -4481,6 +4481,92 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("releasing a removed additional root drops ownership when teardown fails", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-failed-owner-");
+		try {
+			const sessionCwd = path.join(tempDir.path(), "app");
+			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(sessionCwd);
+			fs.mkdirSync(additionalRoot);
+			const extraConfig: ServerConfig = {
+				command: "extra-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: additionalRoot,
+			};
+			const extraServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(extraConfig, additionalRoot, 1_000, undefined, owner);
+
+			await expect(
+				lspClient.releaseRemovedWorkspaceRoots(sessionCwd, additionalRoot, owner, undefined, [sessionCwd]),
+			).rejects.toThrow("Failed to stop LSP server(s) with superseded configuration");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain("extra-lsp");
+			expect(lspClient.getActiveClients().map(client => client.name)).toContain("extra-lsp");
+			const shutdownsAfterRemove = extraServer.received.filter(message => message.method === "shutdown").length;
+
+			const replacementOwner = lspClient.createLspClientOwner();
+			await expect(
+				lspClient.shutdownStaleClients(sessionCwd, [], undefined, [additionalRoot], replacementOwner),
+			).rejects.toThrow("Failed to stop LSP server(s) with superseded configuration");
+			expect(extraServer.received.filter(message => message.method === "shutdown").length).toBeGreaterThan(
+				shutdownsAfterRemove,
+			);
+			extraServer.exit(0);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
+	it("releasing uncovered previous cwd drops ownership so another session can replace it", async () => {
+		const sourceDir = TempDir.createSync("@omp-lsp-move-source-");
+		const destDir = TempDir.createSync("@omp-lsp-move-dest-");
+		try {
+			const config: ServerConfig = {
+				command: "old-cwd-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sourceDir.path(),
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(config, sourceDir.path(), 1_000, undefined, owner);
+
+			await lspClient.releaseUncoveredWorkspaceRoots([sourceDir.path()], [destDir.path()], owner);
+
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain("old-cwd-lsp");
+
+			const replacementServer = installHandshakeLsp();
+			const replacementOwner = lspClient.createLspClientOwner();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...config, args: ["--mode", "new"] },
+				sourceDir.path(),
+				1_000,
+				undefined,
+				replacementOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			sourceDir.removeSync();
+			destDir.removeSync();
+		}
+	});
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {
@@ -5235,6 +5321,133 @@ describe("lsp regressions", () => {
 			await expect(
 				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, waiter),
 			).resolves.toMatchObject({ config: { command: "nested-shared-init-lsp" } });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload from an owner that only hit the init-failure cache retries that identity", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-cached-init-failure-reload-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-cached-init-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const failingServer = installFakeLsp((message, server) => {
+				if (message.method === "initialize") {
+					server.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						error: { code: -32000, message: "nested cached init failed" },
+					});
+				}
+			});
+			const starter = lspClient.createLspClientOwner();
+			const observer = lspClient.createLspClientOwner();
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, starter),
+			).rejects.toThrow("nested cached init failed");
+			expect(failingServer.spawnCount).toBe(1);
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, observer),
+			).rejects.toThrow("failed to initialize recently");
+
+			vi.restoreAllMocks();
+			const retryServer = installHandshakeLsp();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), observer);
+			const result = await tool.execute("cached-init-failure-reload", { action: "reload", file: "*" });
+
+			expect(textResult(result)).toContain("Reloaded nested");
+			expect(retryServer.received.map(message => message.method)).toContain("initialize");
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, observer),
+			).resolves.toMatchObject({ config: { command: "nested-cached-init-lsp" } });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("drops ownership when the language-server process exits so another session can replace it", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-exit-owner-");
+		try {
+			const config: ServerConfig = {
+				command: "exited-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const server = installHandshakeLsp();
+			const oldOwner = lspClient.createLspClientOwner();
+			const liveOwner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, oldOwner);
+			server.exit(1);
+			await Promise.resolve();
+			expect(await lspClient.getActiveOrPendingClient(config, tempDir.path())).toBeUndefined();
+
+			const replacementServer = installHandshakeLsp();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, liveOwner);
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], liveOwner);
+			expect(replacementServer.received.map(message => message.method)).toContain("shutdown");
+			expect(replacementServer.received.map(message => message.method)).toContain("exit");
+
+			const nextServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...config, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				liveOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(nextServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("drops ownership after idle shutdown so another session can replace the client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-idle-owner-");
+		try {
+			const config: ServerConfig = {
+				command: "idle-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const server = installHandshakeLsp();
+			const oldOwner = lspClient.createLspClientOwner();
+			const liveOwner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, oldOwner);
+			expect(await lspClient.shutdownClient(client.name)).toBe(true);
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+
+			const replacementServer = installHandshakeLsp();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, liveOwner);
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], liveOwner);
+			expect(replacementServer.received.map(message => message.method)).toContain("shutdown");
+			expect(replacementServer.received.map(message => message.method)).toContain("exit");
+
+			const nextServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...config, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				liveOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(nextServer.received.map(message => message.method)).toContain("initialize");
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

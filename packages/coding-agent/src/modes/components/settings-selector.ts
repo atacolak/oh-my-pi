@@ -50,7 +50,13 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
-import { detectTerminalAppearance, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
+import {
+	detectTerminalAppearance,
+	getCurrentThemeName,
+	getSelectListTheme,
+	getSettingsListTheme,
+	theme,
+} from "../../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import { getTabBarTheme } from "../shared";
 import { type ComposerPreviewStatusSource, ComposerShapePreview } from "./composer-shape-preview";
@@ -619,6 +625,8 @@ export class SettingsSelectorComponent implements Component {
 	#textInputActive = false;
 	#hasSectionJump = false;
 	#unsubscribeProjectSettings?: () => void;
+	/** Live theme before the first scoped preview; close restores this if the effective name cannot load. */
+	#themeBeforePreview: string | undefined;
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
 	#tabRowStart = 0;
@@ -630,6 +638,7 @@ export class SettingsSelectorComponent implements Component {
 		private readonly context: SettingsRuntimeContext,
 		private readonly callbacks: SettingsCallbacks,
 	) {
+		this.#themeBeforePreview = getCurrentThemeName();
 		this.#scope = settings.hasProjectConfig() ? "project" : "global";
 		// No label prefix (the frame title already says Settings) and no
 		// "(tab to cycle)" hint (folded into the footer hint line).
@@ -649,9 +658,9 @@ export class SettingsSelectorComponent implements Component {
 		// appearance so an overlay cannot pin the live theme/status.
 		this.#switchToTab("appearance");
 		this.#previewAppearanceForScope();
-		this.#unsubscribeProjectSettings = onProjectSettingsReconciled(source => {
+		this.#unsubscribeProjectSettings = onProjectSettingsReconciled((paths, source) => {
 			if (!isSettingsInitialized() || source !== Settings.instance) return;
-			this.#resyncItemsFromSettings();
+			this.#resyncItemsFromSettings(paths);
 		});
 	}
 
@@ -1472,13 +1481,15 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Rebuild the visible list after a project save adopts disk values so a
 	 * skipped same-key edit cannot leave stale item snapshots on screen.
-	 * Open submenus are recreated from the reconciled factory: SettingsList
-	 * leaves them untouched across setItems, and MultiSelectSubmenu keeps
-	 * its own #value.
+	 * Open submenus are recreated only in project scope when their backing
+	 * setting (or a setting they filter by) was adopted: SettingsList leaves
+	 * them untouched across setItems, an unrelated sibling adoption must not
+	 * discard in-progress text or select cursor state, and a global editor
+	 * is backed by the global layer so a project adoption cannot change it.
 	 */
-	#resyncItemsFromSettings(): void {
+	#resyncItemsFromSettings(adoptedPaths: readonly SettingPath[]): void {
 		const list = this.#searchList ?? this.#currentList;
-		const hadOpenSubmenu = list?.hasOpenSubmenu() === true;
+		const openSubmenuId = list?.getOpenSubmenuItemId() ?? null;
 		if (this.#searchList) {
 			this.#setSearchQuery(this.#searchQuery);
 		} else if (this.#currentTabId !== "plugins") {
@@ -1486,11 +1497,26 @@ export class SettingsSelectorComponent implements Component {
 			this.#refreshCurrentTabItems(getSettingsForTab(this.#currentTabId));
 			if (selectedId) this.#currentList?.selectItem(selectedId);
 		}
-		if (hadOpenSubmenu) list?.refreshOpenSubmenu();
+		if (
+			this.#scope === "project" &&
+			openSubmenuId &&
+			list &&
+			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths))
+		) {
+			const refreshed = list.refreshOpenSubmenu();
+			if (!refreshed && this.#textInputActive && !list.hasOpenSubmenu()) {
+				this.#textInputActive = false;
+			}
+		}
 		if (this.#currentTabId === "appearance" && !this.#searchList) {
 			this.#previewAppearanceForScope();
 		}
 		this.context.requestRender?.();
+	}
+
+	#openSubmenuDependsOnAdoptedPaths(itemId: string, adoptedPaths: readonly SettingPath[]): boolean {
+		if (adoptedPaths.includes(itemId as SettingPath)) return true;
+		return itemId === "providers.webSearchOrder" && adoptedPaths.includes("providers.webSearchExclude");
 	}
 
 	/**
@@ -1575,12 +1601,18 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Close the selector. Alt+S previews the selected layer's theme and
 	 * status line; reload the effective appearance so closing does not keep
-	 * rendering a scope that was never persisted.
+	 * rendering a scope that was never persisted. If the effective name
+	 * cannot load (deleted custom theme, overlay pointing at a missing file),
+	 * restore the live fallback captured before the first scoped preview.
 	 */
 	#close(): void {
 		this.#unsubscribeProjectSettings?.();
 		this.#unsubscribeProjectSettings = undefined;
-		const themeName = this.#effectiveThemeName();
+		const effective = this.#effectiveThemeName();
+		const themeName =
+			effective && this.context.availableThemes.includes(effective)
+				? effective
+				: (this.#themeBeforePreview ?? (effective ? "dark" : undefined));
 		if (themeName) void this.callbacks.onThemePreview?.(themeName);
 		this.#triggerEffectiveStatusLinePreview();
 		this.callbacks.onCancel();

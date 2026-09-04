@@ -1,6 +1,7 @@
 export { truncate } from "@oh-my-pi/pi-utils";
 
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { isEnoent, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import { formatGroupedFiles } from "../tools/grouped-file-output";
@@ -30,11 +31,29 @@ export { detectLanguageId } from "../utils/lang-from-path";
  * percent-encoded; plain concatenation produced URIs that broke round-trips.
  * Handles Windows drive letters correctly.
  *
- * Paths are canonicalized so a symlink workspace and its physical target share
- * one document URI, matching the canonical client root used at initialize.
+ * Ancestor directories are canonicalized so a symlink workspace and its
+ * physical target share one document URI, matching the canonical client root
+ * used at initialize. The final path component is kept so a leaf symlink
+ * inside the workspace (`src/foo.ts` → `/shared/foo.ts`) stays a workspace
+ * document instead of jumping to the target's project.
  */
 export function fileToUri(filePath: string): string {
-	return Bun.pathToFileURL(resolveEquivalentPath(filePath)).href;
+	return Bun.pathToFileURL(documentIdentityPath(filePath)).href;
+}
+
+function documentIdentityPath(filePath: string): string {
+	const resolved = path.resolve(filePath);
+	return path.join(resolveEquivalentPath(path.dirname(resolved)), path.basename(resolved));
+}
+
+/**
+ * Convert a filesystem rename path to a file:// URI without following a leaf
+ * symlink. `fileToUri` canonicalizes so workspace aliases share one document
+ * identity; `rename_file` of a symlink entry must name the alias that actually
+ * moves, not the unchanged target.
+ */
+export function fileToLexicalUri(filePath: string): string {
+	return Bun.pathToFileURL(path.resolve(filePath)).href;
 }
 
 /**
@@ -84,7 +103,7 @@ function laxUriToFile(uri: string): string {
 export class EquivalentUriMap<Value> extends Map<string, Value> {
 	#key(uri: string): string {
 		if (!uri.startsWith("file://")) return uri;
-		const filePath = resolveEquivalentPath(uriToFile(uri));
+		const filePath = documentIdentityPath(uriToFile(uri));
 		return process.platform === "win32" ? filePath.toLowerCase() : filePath;
 	}
 

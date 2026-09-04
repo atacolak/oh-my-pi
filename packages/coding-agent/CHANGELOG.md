@@ -19,6 +19,15 @@
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
 ### Fixed
 
+- Fixed conversation-flow setting signals reapplying queue modes onto unrelated Settings clones.
+- Fixed `SettingsManager.create()` missing a loaded instance when `cwd` or `agentDir` is relative.
+- Fixed persisted queue-mode changes restoring unrelated live-only conversation modes.
+- Fixed shadowed global queue-mode writes resetting the live session back to the project override.
+- Fixed `/settings` leaving a scoped theme preview after close when the effective theme name cannot load.
+- Fixed `/settings` trapping Tab and Alt+S after an adopted disk edit hid an open text editor.
+- Fixed project saves leaving already-rendered OSC 8 links on a rejected `tui.hyperlinks` value.
+- Fixed `/settings` discarding an in-progress global editor after adopting a project disk edit.
+- Fixed `/settings` discarding in-progress editors after adopting an unrelated disk edit.
 - Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
 - Fixed `/settings` resetting an open multi-select cursor after an ordinary project save.
 - Fixed project inherit treating the native `.omp/config.yml` as a non-native source when cwd is relative.
@@ -56,6 +65,13 @@
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
 ### Fixed
 
+- Fixed language-server document URIs following a leaf symlink out of the workspace, so hover and diagnostics stay on the alias's project instead of the target's.
+- Fixed `/move`, `/wt`, and interactive `!cd` leaving language-server ownership on the previous cwd, so a later session in that directory could not replace a superseded server.
+- Fixed `rename_file` using lexical overlay URIs when the workspace itself is a symlink, so an already-open canonical document was not closed and recreating the old path skipped `didOpen`.
+- Fixed `rename_file` telling language servers that a symlink target moved when only the alias was renamed, so import rewrites no longer miss the moved path.
+- Fixed `lsp reload *` skipping a nested initialization failure seen only through the three-minute fast-fail cache, so a later session still hit that cache after an explicit reload.
+- Fixed language-server ownership surviving process exit and idle shutdown, so another session that later started the same identity could not replace it.
+- Fixed `/remove-dir` restoring language-server ownership after a failed extra-root teardown, so a later replacement client stayed owned by the session that no longer had that workspace.
 - Fixed `lsp reload *` skipping a nested initialization failure when another session joined the same pending start, so the waiting session still hit the three-minute negative cache.
 - Fixed `/remove-dir` skipping the prompt refresh and confirmation when language-server teardown for the removed root failed, so the session stayed mutated while the command looked unfinished.
 - Fixed `/remove-dir` installing a language-server reload barrier over the retained session cwd, so a stuck extra-root teardown could block or supersede new clients under the remaining workspace.
@@ -96,7 +112,27 @@
 - Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
 - Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
 - Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
-- Sanitized collab write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
+- Sanitized collab auto-start and write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
+- Avoided deleting a collab write-link file that this start never published, including a destination replaced after publication.
+- Stopped an already-attached collab host immediately on `/collab stop` and shutdown instead of waiting out write-link publication.
+- Stopped collab hosting on signal teardown before waiting for draft persistence.
+- Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
+- Ignored overlay-sourced collab relay and web URLs during auto-start so a config overlay cannot retarget a trusted host.
+- Rejected collab auto-start from a global config.yml whose agent or config directory was redirected by a project dotenv.
+- Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
+- Refused to attach a collab host that closed fatally before start completed.
+- Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
+
+## [18.1.10] - 2026-09-04
+
+### Changed
+
+- Subagent `yield` now takes `data`/`error` directly instead of nesting them under a `result` wrapper.
+
+### Fixed
+
+- Fixed Codex V2 remote compaction rebuilding the request prefix differently from normal turns, restoring prompt-cache reuse ([#10786](https://github.com/can1357/oh-my-pi/issues/10786)).
+- Restored mouse clicks, hover, and wheel scrolling in Plan Review.
 
 ## [18.1.9] - 2026-09-04
 
@@ -188,12 +224,6 @@
 
 ### Added
 
-- Added `injectV1: false` option to `openai-models-list` discovery to fetch the model list from `{baseUrl}/models` without injecting `/v1`, for gateways that root their OpenAI-compatible surface at a versioned URL (e.g. `https://api.opper.ai/v3/compat`) where the `/v1`-injected endpoint returns only a small subset.
-- Added provider-reported credits and concrete routed-model counts to `/session` statistics ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
-- Added `CLINE_API_KEY` to the CLI environment help for native ClinePass subscription inference ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
-- Devin model selectors now accept the native CLI's short aliases (`devin/opus`, `devin/swe`), dotted upstream spellings (`devin/gemini-3.7-flash`), and raw effort-route wire uids for dynamically collapsed families ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
-- Added provider-supplied model metadata to the `/models` detail line: `new`, `beta`, and `recommended` badges beside the model name, and the upstream description after the context, cost, and perf facts ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
-- Standalone `CLAUDE.md` files in the project root (and ancestor directories) are now loaded as context, mirroring `AGENTS.md` discovery; config-directory context files still take precedence per scope.
 - Added agent reactions: a reply that opens with a lone emoji line shows the emoji as a badge on your message bubble instead of in the text; toggle the prompt invitation with the tui.reactions setting.
 - Added video attachment and reading support through ffmpeg, including preview grids with metadata and timestamp/frame selectors such as :412 and :1h5m42s.
 - Enhanced the model picker with intelligence indicators, catalog TPS estimates, provider-aware ranking, and provider-supplied badges and descriptions.

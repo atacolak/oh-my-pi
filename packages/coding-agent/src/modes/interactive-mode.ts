@@ -1416,6 +1416,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					"statusLine.showHookStatus",
 					"statusLine.transparent",
 					"terminal.showImages",
+					"tui.hyperlinks",
 					"tui.renderMermaid",
 					"tui.resizeScrollback",
 					"tui.tight",
@@ -3630,7 +3631,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: false,
 		});
 		this.ui.setFocus(overlay);
 		this.ui.requestRender();

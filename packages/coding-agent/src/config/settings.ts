@@ -245,6 +245,20 @@ export function dropSettingsGroupShadows(data: RawSettings, sourcePath: string, 
 }
 
 /**
+ * Setting-schema keys whose nested values differ between two raw snapshots.
+ */
+function changedSettingPaths(before: RawSettings, after: RawSettings): SettingPath[] {
+	const paths: SettingPath[] = [];
+	for (const key of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
+		const segments = SETTING_PATH_SEGMENTS[key];
+		if (!Bun.deepEquals(getByPath(before, segments), getByPath(after, segments))) {
+			paths.push(key);
+		}
+	}
+	return paths;
+}
+
+/**
  * Delete a nested value and prune empty parent objects.
  */
 function deleteByPath(obj: RawSettings, segments: readonly string[]): boolean {
@@ -754,6 +768,16 @@ export class Settings {
 		return getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]) !== undefined;
 	}
 
+	/** Return the highest-precedence layer that explicitly supplies `path`. */
+	getProvenance(path: SettingPath): "runtime" | "overlay" | "project" | "global" | "default" {
+		const segments = SETTING_PATH_SEGMENTS[path];
+		if (getByPath(this.#overrides, segments) !== undefined) return "runtime";
+		if (getByPath(this.#configOverlay, segments) !== undefined) return "overlay";
+		if (getByPath(this.#project, segments) !== undefined) return "project";
+		if (getByPath(this.#global, segments) !== undefined) return "global";
+		return "default";
+	}
+
 	/**
 	 * Set a setting value in a persistent layer.
 	 * Updates the global layer by default and triggers effective-value hooks.
@@ -822,7 +846,18 @@ export class Settings {
 		const next = this.get(path);
 		const hook = SETTING_HOOKS[path];
 		if (hook) {
-			hook(next, prev);
+			// Conversation-flow subscribers reread Settings.get() and overwrite the
+			// live agent. A shadowed global write (RPC persist) must not fire them
+			// when the effective value is unchanged. Other hooks still apply the
+			// written layer (request limits, theme mappings) even when shadowed.
+			if (
+				(path === "steeringMode" || path === "followUpMode" || path === "interruptMode") &&
+				Bun.deepEquals(next, prev)
+			) {
+				this.#fireEffectiveSettingChanged(path, next, prev);
+				return;
+			}
+			hook(next, prev, this);
 		}
 		this.#fireEffectiveSettingChanged(path, next, prev);
 	}
@@ -1047,7 +1082,7 @@ export class Settings {
 			for (const [key, previous] of previousHookValues) {
 				const next = this.get(key);
 				if (!Bun.deepEquals(next, previous)) {
-					SETTING_HOOKS[key]?.(next, previous);
+					SETTING_HOOKS[key]?.(next, previous, this);
 				}
 			}
 			return;
@@ -3250,7 +3285,7 @@ export class Settings {
 		for (const [key, previous] of previousHookValues) {
 			const next = this.get(key);
 			if (!Bun.deepEquals(next, previous)) {
-				SETTING_HOOKS[key]?.(next, previous);
+				SETTING_HOOKS[key]?.(next, previous, this);
 			}
 		}
 	}
@@ -3313,6 +3348,7 @@ export class Settings {
 		this.#modifiedProjectPathMutations.clear();
 		this.#modifiedProjectModelRoleMutations.clear();
 		let adoptedNativeLayer = false;
+		let adoptedPaths: SettingPath[] = [];
 		try {
 			await fs.promises.mkdir(path.dirname(projectConfigPath), { recursive: true });
 			await this.#withYamlWriteLock(projectConfigPath, async writePath => {
@@ -3403,6 +3439,12 @@ export class Settings {
 				}
 				adoptedNativeLayer =
 					skippedProjectModelRoles.length > 0 || !Bun.deepEquals(projectSettings, this.#projectFileSettings);
+				if (adoptedNativeLayer) {
+					adoptedPaths = changedSettingPaths(this.#projectFileSettings, projectSettings);
+					if (skippedProjectModelRoles.length > 0 && !adoptedPaths.includes("modelRoles")) {
+						adoptedPaths.push("modelRoles");
+					}
+				}
 				this.#projectFileSettings = structuredClone(projectSettings);
 				this.#rebuildProjectLayer();
 				this.#syncProjectShellPathSource();
@@ -3461,7 +3503,7 @@ export class Settings {
 		for (const [key, previous] of previousHookValues) {
 			const next = this.get(key);
 			if (!Bun.deepEquals(next, previous)) {
-				SETTING_HOOKS[key]?.(next, previous);
+				SETTING_HOOKS[key]?.(next, previous, this);
 			}
 		}
 		const changedSessionRuntimePaths = (
@@ -3471,7 +3513,7 @@ export class Settings {
 			sessionRuntimeSignal.fire(changedSessionRuntimePaths, this);
 		}
 		if (adoptedNativeLayer) {
-			projectSettingsReconciledSignal.fire(this);
+			projectSettingsReconciledSignal.fire(adoptedPaths, this);
 		}
 	}
 
@@ -3552,7 +3594,7 @@ export class Settings {
 			const hook = SETTING_HOOKS[key];
 			if (hook) {
 				const value = this.get(key);
-				hook(value, value);
+				hook(value, value, this);
 			}
 		}
 	}
@@ -3586,7 +3628,7 @@ export class Settings {
 // Setting Hooks
 // ═══════════════════════════════════════════════════════════════════════════
 
-type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
+type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>, source: Settings) => void;
 
 /**
  * Minimal change-notification primitive backing the exported `on*Changed`
@@ -3674,6 +3716,7 @@ export type SessionRuntimePath =
 	| "tools.xdevDocs"
 	| "topK"
 	| "topP"
+	| "tui.hyperlinks"
 	| "tui.renderMermaid"
 	| "tui.resizeScrollback"
 	| "tui.tight";
@@ -3725,6 +3768,7 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	"tools.xdevDocs": true,
 	topK: true,
 	topP: true,
+	"tui.hyperlinks": true,
 	"tui.renderMermaid": true,
 	"tui.resizeScrollback": true,
 	"tui.tight": true,
@@ -3760,9 +3804,9 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	// track it the same instant path/resource links do. Runtime `/settings` edits
 	// also go through the selector controller to invalidate and repaint live views.
 	"tui.hyperlinks": value => applyHyperlinkSetting(value),
-	steeringMode: () => conversationFlowSignal.fire(),
-	followUpMode: () => conversationFlowSignal.fire(),
-	interruptMode: () => conversationFlowSignal.fire(),
+	steeringMode: (_value, _prev, source) => conversationFlowSignal.fire("steeringMode", source),
+	followUpMode: (_value, _prev, source) => conversationFlowSignal.fire("followUpMode", source),
+	interruptMode: (_value, _prev, source) => conversationFlowSignal.fire("interruptMode", source),
 	"provider.appendOnlyContext": value => {
 		if (typeof value === "string") {
 			appendOnlyModeSignal.fire(value);
@@ -3803,15 +3847,18 @@ const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.append
  */
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
 /** Fires when steering, follow-up, or interrupt mode changes at runtime. */
-const conversationFlowSignal = new SettingSignal("conversation flow");
+export type ConversationFlowPath = "steeringMode" | "followUpMode" | "interruptMode";
+const conversationFlowSignal = new SettingSignal<[path: ConversationFlowPath, source: Settings]>("conversation flow");
 
 /**
  * Subscribe to conversation-flow setting changes (`steeringMode`,
  * `followUpMode`, `interruptMode`). Returns an unsubscribe function. Callers
- * should re-read those settings and apply them to the live session without
- * persisting.
+ * should ignore events whose `source` is not the Settings instance they own,
+ * then re-read only the supplied path and apply it to the live session
+ * without persisting.
  */
-export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
+export const onConversationFlowChanged = (cb: (path: ConversationFlowPath, source: Settings) => void) =>
+	conversationFlowSignal.on(cb);
 /** Fires when adopted project session-runtime settings must reapply live session state. */
 const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], source: Settings]>("session runtime");
 
@@ -3828,16 +3875,21 @@ export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source
 	sessionRuntimeSignal.on(cb);
 
 /** Fires after a project save adopts disk values into the live native layer. */
-const projectSettingsReconciledSignal = new SettingSignal<[source: Settings]>("project settings reconciled");
+const projectSettingsReconciledSignal = new SettingSignal<[paths: SettingPath[], source: Settings]>(
+	"project settings reconciled",
+);
 
 /**
  * Subscribe to project-layer adoption after `#saveProjectNow()`. Returns an
- * unsubscribe function. Ordinary local writes do not fire. Callers that
- * display live settings (the open `/settings` selector) should ignore events
- * from other Settings instances and rebuild their item snapshots from the
- * adopted values.
+ * unsubscribe function. Ordinary local writes do not fire. The `paths` list is
+ * the native-layer keys that changed. Callers that display live settings (the
+ * open `/settings` selector) should ignore events from other Settings
+ * instances, rebuild item snapshots from the adopted values, and recreate an
+ * open submenu only when its backing setting (or a setting it filters by) is
+ * in `paths`.
  */
-export const onProjectSettingsReconciled = (cb: (source: Settings) => void) => projectSettingsReconciledSignal.on(cb);
+export const onProjectSettingsReconciled = (cb: (paths: SettingPath[], source: Settings) => void) =>
+	projectSettingsReconciledSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");
@@ -3948,8 +4000,8 @@ export function findScopedSettings(cwd?: string, agentDir?: string): Settings | 
 	const active = activeSettingsScope.getStore();
 	if (active) return active;
 
-	const wantCwd = cwd === undefined ? undefined : path.normalize(cwd);
-	const wantAgentDir = agentDir === undefined ? undefined : path.normalize(agentDir);
+	const wantCwd = cwd === undefined ? undefined : path.resolve(cwd);
+	const wantAgentDir = agentDir === undefined ? undefined : path.resolve(agentDir);
 	if (wantCwd === undefined && wantAgentDir === undefined) return globalInstance ?? undefined;
 
 	let found: Settings | undefined;

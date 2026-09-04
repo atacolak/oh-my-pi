@@ -97,6 +97,7 @@ import {
 	applyCodeAction,
 	dedupeWorkspaceSymbols,
 	extractHoverText,
+	fileToLexicalUri,
 	fileToUri,
 	filterWorkspaceSymbols,
 	formatCodeAction,
@@ -134,7 +135,7 @@ async function enumerateRenamePairs(
 	const stat = await fs.promises.stat(source);
 	if (!stat.isDirectory()) {
 		return {
-			pairs: [{ oldUri: fileToUri(source), newUri: fileToUri(dest) }],
+			pairs: [{ oldUri: fileToLexicalUri(source), newUri: fileToLexicalUri(dest) }],
 			directory: false,
 			exceeded: false,
 		};
@@ -150,8 +151,8 @@ async function enumerateRenamePairs(
 		const absOld = path.join(parent, entry.name);
 		const rel = path.relative(source, absOld);
 		pairs.push({
-			oldUri: fileToUri(absOld),
-			newUri: fileToUri(path.join(dest, rel)),
+			oldUri: fileToLexicalUri(absOld),
+			newUri: fileToLexicalUri(path.join(dest, rel)),
 		});
 	}
 	return { pairs, directory: true, exceeded: false };
@@ -850,7 +851,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				kind: "edit",
 				uri: fileToUri(edit.filePath),
 			}));
-			executed.push({ kind: "rename", oldUri: fileToUri(source), newUri: fileToUri(dest) });
+			executed.push({
+				kind: "rename",
+				oldUri: fileToUri(source),
+				newUri: fileToUri(dest),
+			});
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
@@ -863,10 +868,16 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						signal,
 						this.#clientOwner,
 					);
-					for (const { oldUri } of pairs) {
-						if (client.openFiles.has(oldUri)) {
-							await sendNotification(client, "textDocument/didClose", { textDocument: { uri: oldUri } }, signal);
-							client.openFiles.delete(oldUri);
+					for (const pair of pairs) {
+						const overlayOldUri = fileToUri(uriToFile(pair.oldUri));
+						if (client.openFiles.has(overlayOldUri)) {
+							await sendNotification(
+								client,
+								"textDocument/didClose",
+								{ textDocument: { uri: overlayOldUri } },
+								signal,
+							);
+							client.openFiles.delete(overlayOldUri);
 						}
 					}
 					await sendNotification(client, "workspace/didRenameFiles", lspParams, signal);

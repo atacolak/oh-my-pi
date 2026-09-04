@@ -35,7 +35,7 @@ describe("createSessionTeardown", () => {
 		expect(order).toEqual(["beginDispose", "saveDraft", "disposeSession"]);
 		expect(saved).toEqual(["unsent draft"]);
 	});
-	it("stops collab hosting after saving the draft and before disposing", async () => {
+	it("stops collab hosting before saving the draft and disposing", async () => {
 		const order: string[] = [];
 
 		const teardown = createSessionTeardown({
@@ -56,7 +56,7 @@ describe("createSessionTeardown", () => {
 
 		await teardown();
 
-		expect(order).toEqual(["beginDispose", "saveDraft", "stopCollab", "disposeSession"]);
+		expect(order).toEqual(["beginDispose", "stopCollab", "saveDraft", "disposeSession"]);
 	});
 
 	it("still disposes when stopCollab rejects — never leaves session_shutdown unemitted", async () => {
@@ -77,6 +77,48 @@ describe("createSessionTeardown", () => {
 		await teardown();
 
 		expect(disposed).toBe(true);
+	});
+
+	it("stops collab hosting before awaiting a hanging draft persist", async () => {
+		const order: string[] = [];
+		const release = Promise.withResolvers<void>();
+
+		const teardown = createSessionTeardown({
+			getDraftText: () => {
+				order.push("snapshot");
+				return "draft";
+			},
+			beginDispose: () => {
+				order.push("beginDispose");
+			},
+			saveDraft: async () => {
+				order.push("saveDraft:start");
+				await release.promise;
+				order.push("saveDraft:done");
+			},
+			stopCollab: async () => {
+				order.push("stopCollab");
+			},
+			disposeSession: async () => {
+				order.push("disposeSession");
+			},
+		});
+
+		const running = teardown();
+		expect(order).toEqual(["snapshot", "beginDispose", "stopCollab"]);
+		await Promise.resolve();
+		expect(order).toEqual(["snapshot", "beginDispose", "stopCollab", "saveDraft:start"]);
+		release.resolve();
+		await running;
+
+		expect(order).toEqual([
+			"snapshot",
+			"beginDispose",
+			"stopCollab",
+			"saveDraft:start",
+			"saveDraft:done",
+			"disposeSession",
+		]);
 	});
 
 

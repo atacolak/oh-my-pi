@@ -164,6 +164,11 @@ export class CollabHost {
 		return this.#webViewLink;
 	}
 
+	/** True after a terminal stop or fatal relay close. */
+	get isStopped(): boolean {
+		return this.#stopped;
+	}
+
 	get participants(): CollabParticipant[] {
 		const list: CollabParticipant[] = [{ name: collabDisplayName(this.#ctx), role: "host" }];
 		for (const peer of this.#peers.values()) {
@@ -211,15 +216,15 @@ export class CollabHost {
 
 	async start(relayUrl: string, webUrl = "", signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) throw new Error("Collab host start cancelled");
-		const cancelled = new Promise<never>((_, reject) => {
-			const onAbort = (): void => reject(new Error("Collab host start cancelled"));
-			if (!signal) return;
+		const { promise: cancelled, reject: rejectCancelled } = Promise.withResolvers<never>();
+		if (signal) {
+			const onAbort = (): void => rejectCancelled(new Error("Collab host start cancelled"));
 			if (signal.aborted) {
 				onAbort();
-				return;
+			} else {
+				signal.addEventListener("abort", onAbort, { once: true });
 			}
-			signal.addEventListener("abort", onAbort, { once: true });
-		});
+		}
 		const rawKey = generateRoomKey();
 		const writeToken = generateWriteToken();
 		const roomId = generateRoomId();
@@ -280,6 +285,11 @@ export class CollabHost {
 		}
 
 		if (signal?.aborted) throw new Error("Collab host start cancelled");
+		await Promise.resolve();
+		if (this.#stopped) {
+			await this.#teardown();
+			throw new Error("Collab host start cancelled");
+		}
 
 		this.#unsubscribe = this.#ctx.session.subscribe(event => {
 			if (isWireAgentEvent(event)) this.#broadcast({ t: "event", event: shrinkForReplication(event) });
@@ -305,6 +315,11 @@ export class CollabHost {
 			this.#scheduleStateBroadcast();
 		};
 		this.#updateStatusSegment();
+		await Promise.resolve();
+		if (this.#stopped || signal?.aborted) {
+			await this.#teardown();
+			throw new Error("Collab host start cancelled");
+		}
 	}
 
 	/** Broadcast a goodbye, detach all taps, and close the socket. */

@@ -90,6 +90,24 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	if (keys?.size === 0) ownerClientKeys.delete(owner);
 	return !clientOwners.has(key);
 }
+function dropClientOwnership(key: string): void {
+	const owners = clientOwners.get(key);
+	if (!owners) return;
+	for (const owner of owners) {
+		const keys = ownerClientKeys.get(owner);
+		keys?.delete(key);
+		if (keys?.size === 0) ownerClientKeys.delete(owner);
+	}
+	clientOwners.delete(key);
+}
+
+function unpublishClient(key: string, client: LspClient): boolean {
+	if (clients.get(key) !== client) return false;
+	clients.delete(key);
+	dropClientOwnership(key);
+	return true;
+}
+
 function releaseOwnerIfUnpublished(key: string, owner: LspClientOwner | undefined): void {
 	if (!owner || clients.has(key)) return;
 	releaseClientOwnerKey(key, owner);
@@ -116,9 +134,25 @@ export async function releaseRemovedWorkspaceRoots(
 	const roots = [path.resolve(removedRoot)];
 	const retainClient = (clientCwd: string) =>
 		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots);
-	const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
-	clearWorkspaceInitializationFailures(roots, owner, retainClient);
-	return stopped;
+	try {
+		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
+		clearWorkspaceInitializationFailures(roots, owner, retainClient);
+		return stopped;
+	} catch (error) {
+		// The directory is already gone. Keep this session from remaining a
+		// phantom owner of a process it can no longer clean up, even when
+		// force-kill could not confirm exit.
+		for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
+			const cwd = clients.get(key)?.cwd ?? clientLocks.get(key)?.cwd;
+			if (cwd) {
+				if (retainClient(cwd)) continue;
+				if (!roots.some(root => isPathInsideWorkspace(cwd, root))) continue;
+			}
+			releaseClientOwnerKey(key, owner);
+		}
+		clearWorkspaceInitializationFailures(roots, owner, retainClient);
+		throw error;
+	}
 }
 
 /** True when a remaining workspace root still contains this client. */
@@ -132,6 +166,36 @@ function clientCoveredByRemainingWorkspace(
 		directories: remainingWorkspaceRoots.filter(root => path.resolve(root) !== path.resolve(sessionCwd)),
 	});
 	return workspaceRootForPath(clientCwd, remaining) !== null;
+}
+
+/**
+ * Release this session's ownership of language servers that the current
+ * workspace no longer covers. `/move`, `/wt`, and interactive `!cd` keep
+ * additional roots that still exist, but the previous cwd is otherwise a
+ * dropped workspace.
+ */
+export async function releaseUncoveredWorkspaceRoots(
+	previousWorkspaceRoots: readonly string[],
+	remainingWorkspaceRoots: readonly string[],
+	owner: LspClientOwner | undefined,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (!owner) return;
+	const remainingCwd = remainingWorkspaceRoots[0];
+	if (!remainingCwd) return;
+	const droppedRoots = previousWorkspaceRoots.filter(
+		root => !clientCoveredByRemainingWorkspace(root, remainingCwd, remainingWorkspaceRoots),
+	);
+	for (const removedRoot of droppedRoots) {
+		try {
+			await releaseRemovedWorkspaceRoots(remainingCwd, removedRoot, owner, signal, remainingWorkspaceRoots);
+		} catch (error) {
+			logger.warn("Failed to stop language servers for a dropped workspace root", {
+				removedRoot,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 }
 
 /** Release all client identities associated with a disposed tool session. */
@@ -403,7 +467,7 @@ async function writeMessage(
  * callers do not grab the corpse before `proc.exited` cleans up.
  */
 function teardownWedgedClient(client: LspClient): void {
-	if (clients.get(client.name) === client) clients.delete(client.name);
+	unpublishClient(client.name, client);
 	try {
 		client.proc.kill();
 	} catch {
@@ -555,9 +619,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 		// so tear the client down — the next call respawns instead of timing out.
 		if (client.proc.exitCode === null) {
 			client.status = "error";
-			if (clients.get(client.name) === client) {
-				clients.delete(client.name);
-			}
+			unpublishClient(client.name, client);
 			const teardownErr = new Error("LSP reader stopped; client torn down");
 			for (const pending of client.pendingRequests.values()) {
 				pending.reject(teardownErr);
@@ -1224,6 +1286,10 @@ export async function getOrCreateClient(
 	const recentFailure = initFailures.get(key);
 	if (recentFailure) {
 		if (Date.now() - recentFailure.at < INIT_FAILURE_BACKOFF_MS) {
+			if (owner) {
+				if (!recentFailure.owners) recentFailure.owners = new Set();
+				recentFailure.owners.add(owner);
+			}
 			throw new Error(`LSP server ${config.command} failed to initialize recently: ${recentFailure.message}`);
 		}
 		initFailures.delete(key);
@@ -1288,7 +1354,10 @@ export async function getOrCreateClient(
 
 		// Register crash recovery - remove client on process exit
 		proc.exited.then(() => {
-			if (clients.get(key) === client) clients.delete(key);
+			if (clients.get(key) === client) {
+				clients.delete(key);
+				dropClientOwnership(key);
+			}
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);
 			client.resolveProjectLoaded();
 
@@ -1361,7 +1430,8 @@ export async function getOrCreateClient(
 		} catch (err) {
 			// Clean up on initialization failure
 			client.status = "error";
-			if (clients.get(key) === client) clients.delete(key);
+			const waitingOwners = clientOwners.get(key);
+			unpublishClient(key, client);
 			proc.kill();
 			const message = err instanceof Error ? err.message : String(err);
 			// Negative-cache deterministic failures. Timeouts under a
@@ -1373,7 +1443,6 @@ export async function getOrCreateClient(
 				!message.includes("configuration was superseded") &&
 				!(initTimeoutMs !== undefined && message.includes("timed out"))
 			) {
-				const waitingOwners = clientOwners.get(key);
 				initFailures.set(key, {
 					at: Date.now(),
 					message,
@@ -1752,7 +1821,8 @@ async function waitForExit(client: LspClient, timeoutMs: number): Promise<boolea
  * failed teardown, not a completed restart.
  */
 export async function shutdownClientInstance(client: LspClient): Promise<boolean> {
-	if (clients.get(client.name) === client) clients.delete(client.name);
+	const unpublished = clients.get(client.name) === client;
+	if (unpublished) clients.delete(client.name);
 
 	const err = new Error("LSP client shutdown");
 	for (const pending of Array.from(client.pendingRequests.values())) {
@@ -1766,13 +1836,20 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 	);
 	if (shutdownCompleted) {
 		await sendNotification(client, "exit", undefined).catch(() => {});
-		if (await waitForExit(client, EXIT_TIMEOUT_MS)) return true;
+		if (await waitForExit(client, EXIT_TIMEOUT_MS)) {
+			if (unpublished) dropClientOwnership(client.name);
+			return true;
+		}
 	}
 
 	client.proc.kill();
 	const exited = await waitForExit(client, EXIT_TIMEOUT_MS);
-	if (!exited && !clients.has(client.name)) clients.set(client.name, client);
-	return exited;
+	if (!exited) {
+		if (!clients.has(client.name)) clients.set(client.name, client);
+		return false;
+	}
+	if (unpublished) dropClientOwnership(client.name);
+	return true;
 }
 
 /**

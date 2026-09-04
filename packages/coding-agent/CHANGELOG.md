@@ -18,6 +18,8 @@
 - Stopped collab hosting on signal teardown before waiting for draft persistence.
 - Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
 - Ignored project- and overlay-sourced `collab.relayUrl` and `collab.webUrl` during auto-start so a repository overlay cannot retarget a user-enabled host.
+- Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
+
 ## [18.1.10] - 2026-09-04
 
 ### Changed

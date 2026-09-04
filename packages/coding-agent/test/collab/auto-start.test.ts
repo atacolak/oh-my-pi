@@ -15,6 +15,7 @@ import {
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import * as atomicFile from "@oh-my-pi/pi-coding-agent/utils/atomic-file";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 function context(
@@ -572,6 +573,58 @@ describe("collab auto-start", () => {
 			start.mockRestore();
 			stop.mockRestore();
 			publish.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("aborts a contended write-link lock wait from stop without a lock error", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const file = path.join(dir, "collab.link");
+		const errors: string[] = [];
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": "ws://localhost:8787",
+			"collab.writeLinkPath": file,
+			showError: (text: string) => errors.push(text),
+		});
+		let attachedHost: InteractiveModeContext["collabHost"];
+		const attached = Promise.withResolvers<void>();
+		Object.defineProperty(ctx, "collabHost", {
+			configurable: true,
+			enumerable: true,
+			get: () => attachedHost,
+			set: value => {
+				attachedHost = value;
+				if (value) attached.resolve();
+			},
+		});
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async function (this: CollabHost) {
+			Object.defineProperties(this, { link: { value: "live-room-link", configurable: true } });
+		});
+		const stop = spyOn(CollabHost.prototype, "stop").mockImplementation(async function (this: CollabHost) {
+			ctx.collabHost = undefined;
+		});
+		const acquired = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const holding = withFileLock(file, async () => {
+			acquired.resolve();
+			await release.promise;
+		});
+		try {
+			await acquired.promise;
+			const pending = autoStartCollab(ctx);
+			pending.catch(() => {});
+			await attached.promise;
+			await expect(stopCollabHost(ctx)).resolves.toBe(true);
+			await expect(pending).resolves.toBe(false);
+			expect(ctx.collabHost).toBeUndefined();
+			expect(errors.join(" ")).not.toContain("Failed to acquire lock");
+			expect(await Bun.file(file).exists()).toBe(false);
+		} finally {
+			release.resolve();
+			await holding;
+			start.mockRestore();
+			stop.mockRestore();
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `withFileLock` now honors an optional `AbortSignal` and cancels lock-acquisition retries immediately.
+
 ## [18.1.7] - 2026-09-03
 
 ### Added

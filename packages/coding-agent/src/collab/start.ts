@@ -1,11 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
 import type { InteractiveModeContext } from "../modes/types";
 import { expandTilde } from "../tools/path-utils";
-import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import { sanitizeStatusText, TRUNCATE_LENGTHS } from "../tools/render-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
 import { CollabGuestLink } from "./guest";
 import { CollabHost } from "./host";
@@ -115,9 +114,9 @@ function resolveCollabLinkPath(rawPath: string, ctxCwd: string): string {
 	return path.isAbsolute(expanded) ? expanded : path.resolve(ctxCwd, expanded);
 }
 
-async function withCollabLinkLock<T>(target: string, fn: () => Promise<T>): Promise<T> {
+async function withCollabLinkLock<T>(target: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 	await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-	return await withFileLock(target, fn);
+	return await withFileLock(target, fn, { signal });
 }
 
 async function writeCollabLink(target: string, link: string, signal?: AbortSignal): Promise<void> {
@@ -126,48 +125,39 @@ async function writeCollabLink(target: string, link: string, signal?: AbortSigna
 		path.dirname(target),
 		`.${path.basename(target)}.${process.pid}.${crypto.randomUUID()}.tmp`,
 	);
-	await withCollabLinkLock(target, async () => {
+	try {
+		await withCollabLinkLock(
+			target,
+			async () => {
+				if (signal?.aborted) return;
+				let removeTemp = false;
+				try {
+					const handle = await fs.open(tempPath, "wx", 0o600);
+					removeTemp = true;
+					try {
+						await handle.writeFile(link, "utf8");
+						await handle.sync();
+					} finally {
+						await handle.close();
+					}
+					if (signal?.aborted) return;
+					await replaceFileAtomically(tempPath, target);
+					removeTemp = false;
+				} finally {
+					if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
+				}
+			},
+			signal,
+		);
+	} catch (error) {
 		if (signal?.aborted) return;
-		let removeTemp = false;
-		try {
-			const handle = await fs.open(tempPath, "wx", 0o600);
-			removeTemp = true;
-			try {
-				await handle.writeFile(link, "utf8");
-				await handle.sync();
-			} finally {
-				await handle.close();
-			}
-			if (signal?.aborted) return;
-			await replaceFileAtomically(tempPath, target);
-			removeTemp = false;
-		} finally {
-			if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
-		}
-	});
+		throw error;
+	}
 }
 
 function sanitizeCollabError(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
-	const text = shortenEmbeddedPaths(
-		replaceTabs(sanitizeText(detail))
-			.replace(/[\r\n]+/g, " ")
-			.trim(),
-	);
-	return truncateToWidth(text.length > 0 ? text : "Unknown error", TRUNCATE_LENGTHS.CONTENT);
-}
-
-function shortenEmbeddedPaths(text: string): string {
-	return text
-		.split(" ")
-		.map(segment => {
-			const leading = segment.match(/^[("'`[]*/)?.[0] ?? "";
-			const trailing = segment.match(/[)"'`,.;:\]]*$/)?.[0] ?? "";
-			const end = segment.length - trailing.length;
-			if (leading.length >= end) return segment;
-			return `${leading}${shortenPath(segment.slice(leading.length, end))}${trailing}`;
-		})
-		.join(" ");
+	return sanitizeStatusText(detail, TRUNCATE_LENGTHS.CONTENT, "Unknown error");
 }
 
 export function resolveRelayUrl(input: string): string {

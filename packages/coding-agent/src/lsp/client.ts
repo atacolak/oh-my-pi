@@ -1623,12 +1623,12 @@ export async function getActiveOrPendingClient(
 
 	const pending = clientLocks.get(key);
 	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers)) return undefined;
+	registerClientOwner(key, owner);
 	if (owner) pending.owners.add(owner);
 	try {
-		const pendingClient = await untilAborted(signal, pending.promise);
-		registerClientOwner(key, owner);
-		return pendingClient;
+		return await untilAborted(signal, pending.promise);
 	} catch {
+		releaseOwnerIfUnpublished(key, owner);
 		throwIfAborted(signal);
 		return undefined;
 	}
@@ -1957,6 +1957,7 @@ async function waitForExit(client: LspClient, timeoutMs: number): Promise<boolea
  */
 export async function shutdownClientInstance(client: LspClient): Promise<boolean> {
 	const unpublished = clients.get(client.name) === client;
+	const previousOwners = unpublished ? Array.from(clientOwners.get(client.name) ?? []) : [];
 	if (unpublished) {
 		clients.delete(client.name);
 		dropClientOwnership(client.name);
@@ -1988,7 +1989,10 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 	client.proc.kill();
 	const exited = await waitForExit(client, EXIT_TIMEOUT_MS);
 	if (!exited) {
-		if (!clients.has(client.name)) clients.set(client.name, client);
+		if (!clients.has(client.name)) {
+			clients.set(client.name, client);
+			for (const owner of previousOwners) registerClientOwner(client.name, owner);
+		}
 		return false;
 	}
 	dropIfStillThisInstance();

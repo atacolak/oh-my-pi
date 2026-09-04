@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed a session that joined an in-flight language-server initialization through a format-on-write probe remaining invisible to `lsp reload *`, so that session could keep the superseded client beside its replacement.
+- Fixed idle language-server shutdown dropping live session owners when the process survived force-kill, so owner-filtered status went blank and an overlapping session could tear the still-running client down.
 - Fixed a shared language-server initialization that exited before initialize recorded only the creating session, so a waiting session's later `lsp reload *` still hit the three-minute negative cache.
 - Fixed `rename_file` leaving a nested language-server process initialized at a directory that was itself moved, so a later operation under the destination no longer kept the vanished-root server running.
 - Fixed workspace-edit overlay refresh and watched-file notifications using one language server's document URI for every client when a file sits on both sides of an in-workspace directory symlink.

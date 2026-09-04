@@ -170,8 +170,9 @@ function clientCoveredByRemainingWorkspace(
 
 /**
  * Release this session's ownership of language servers that the current
- * workspace no longer covers. `/move` and `/wt` keep additional roots that
- * still exist, but the previous cwd is otherwise a dropped workspace.
+ * workspace no longer covers. `/move`, `/wt`, and interactive `!cd` keep
+ * additional roots that still exist, but the previous cwd is otherwise a
+ * dropped workspace.
  */
 export async function releaseUncoveredWorkspaceRoots(
 	previousWorkspaceRoots: readonly string[],

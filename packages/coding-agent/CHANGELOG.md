@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/settings` leaving a scoped theme preview after close when the effective theme name cannot load.
 - Fixed `/settings` trapping Tab and Alt+S after an adopted disk edit hid an open text editor.
 - Fixed project saves leaving already-rendered OSC 8 links on a rejected `tui.hyperlinks` value.
 - Fixed `/settings` discarding an in-progress global editor after adopting a project disk edit.

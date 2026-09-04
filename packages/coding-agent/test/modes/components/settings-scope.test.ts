@@ -9,6 +9,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import {
+	getCurrentThemeName,
 	initTheme,
 	onTerminalAppearanceChange,
 	previewTheme,
@@ -202,6 +203,53 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(settings.get("theme.dark")).toBe("dark-one");
 		selector.handleInput("\x1bs");
 		expect(previews.at(-1)).toBe("dark-one");
+	});
+	it("restores the live fallback when the effective theme cannot load", async () => {
+		resetSettingsForTest();
+		AgentStorage.close();
+		const overlayPath = tempDir.join("overlay.yml");
+		await Bun.write(
+			overlayPath,
+			YAML.stringify({ theme: { dark: "missing-custom", light: "missing-custom" } }, null, 2),
+		);
+		await Settings.init({ cwd: projectDir, agentDir, configFiles: [overlayPath] });
+		settings.set("theme.dark", "titanium", "project");
+		settings.set("theme.light", "titanium", "project");
+		await setTheme("dark");
+		expect(getCurrentThemeName()).toBe("dark");
+		expect(settings.get("theme.dark")).toBe("missing-custom");
+		const fallbackAccent = theme.fg("accent", "*");
+
+		const previewed: string[] = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: async themeName => {
+					previewed.push(themeName);
+					const preview = previewTheme(themeName);
+					pendingPreviews.push(preview);
+					await preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("titanium");
+		expect(theme.fg("accent", "*")).not.toBe(fallbackAccent);
+
+		selector.handleInput("\x1b");
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("dark");
+		expect(previewed).not.toContain("missing-custom");
+		expect(theme.fg("accent", "*")).toBe(fallbackAccent);
 	});
 
 	it("shows hindsight settings in global scope when only the global backend is hindsight", () => {

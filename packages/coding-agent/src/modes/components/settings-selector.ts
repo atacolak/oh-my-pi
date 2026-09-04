@@ -50,7 +50,13 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
-import { detectTerminalAppearance, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
+import {
+	detectTerminalAppearance,
+	getCurrentThemeName,
+	getSelectListTheme,
+	getSettingsListTheme,
+	theme,
+} from "../../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import { getTabBarTheme } from "../shared";
 import { type ComposerPreviewStatusSource, ComposerShapePreview } from "./composer-shape-preview";
@@ -619,6 +625,8 @@ export class SettingsSelectorComponent implements Component {
 	#textInputActive = false;
 	#hasSectionJump = false;
 	#unsubscribeProjectSettings?: () => void;
+	/** Live theme before the first scoped preview; close restores this if the effective name cannot load. */
+	#themeBeforePreview: string | undefined;
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
 	#tabRowStart = 0;
@@ -630,6 +638,7 @@ export class SettingsSelectorComponent implements Component {
 		private readonly context: SettingsRuntimeContext,
 		private readonly callbacks: SettingsCallbacks,
 	) {
+		this.#themeBeforePreview = getCurrentThemeName();
 		this.#scope = settings.hasProjectConfig() ? "project" : "global";
 		// No label prefix (the frame title already says Settings) and no
 		// "(tab to cycle)" hint (folded into the footer hint line).
@@ -1592,12 +1601,18 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Close the selector. Alt+S previews the selected layer's theme and
 	 * status line; reload the effective appearance so closing does not keep
-	 * rendering a scope that was never persisted.
+	 * rendering a scope that was never persisted. If the effective name
+	 * cannot load (deleted custom theme, overlay pointing at a missing file),
+	 * restore the live fallback captured before the first scoped preview.
 	 */
 	#close(): void {
 		this.#unsubscribeProjectSettings?.();
 		this.#unsubscribeProjectSettings = undefined;
-		const themeName = this.#effectiveThemeName();
+		const effective = this.#effectiveThemeName();
+		const themeName =
+			effective && this.context.availableThemes.includes(effective)
+				? effective
+				: (this.#themeBeforePreview ?? (effective ? "dark" : undefined));
 		if (themeName) void this.callbacks.onThemePreview?.(themeName);
 		this.#triggerEffectiveStatusLinePreview();
 		this.callbacks.onCancel();

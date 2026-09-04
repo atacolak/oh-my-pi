@@ -142,7 +142,7 @@ const fileOperationLocks = new Map<string, Promise<void>>();
 
 /** Negative cache of recent init failures so a broken server fails fast instead of re-spawning per call. */
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
-const initFailures = new Map<string, { at: number; message: string; cwd: string; owner?: LspClientOwner }>();
+const initFailures = new Map<string, { at: number; message: string; cwd: string; owners?: Set<LspClientOwner> }>();
 const READER_EXIT_GRACE_MS = 100;
 
 // Idle timeout configuration (disabled by default)
@@ -1133,7 +1133,7 @@ export function clearWorkspaceInitializationFailures(
 	const roots = workspaceRoots.map(root => path.resolve(root));
 	const ownedKeys = owner ? ownerClientKeys.get(owner) : undefined;
 	for (const [key, failure] of initFailures) {
-		if (owner && !ownedKeys?.has(key) && failure.owner !== owner) continue;
+		if (owner && !ownedKeys?.has(key) && !failure.owners?.has(owner)) continue;
 		if (retainFailure?.(failure.cwd)) continue;
 		if (roots.some(root => isPathInsideWorkspace(failure.cwd, root))) initFailures.delete(key);
 	}
@@ -1373,7 +1373,18 @@ export async function getOrCreateClient(
 				!message.includes("configuration was superseded") &&
 				!(initTimeoutMs !== undefined && message.includes("timed out"))
 			) {
-				initFailures.set(key, { at: Date.now(), message, cwd, owner });
+				const waitingOwners = clientOwners.get(key);
+				initFailures.set(key, {
+					at: Date.now(),
+					message,
+					cwd,
+					owners:
+						waitingOwners && waitingOwners.size > 0
+							? new Set(waitingOwners)
+							: owner
+								? new Set([owner])
+								: undefined,
+				});
 			}
 			releaseOwnerIfUnpublished(key, owner);
 			throw err;

@@ -5185,6 +5185,62 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload from a waiting owner retries a nested identity that failed during shared init", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-shared-init-failure-reload-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-shared-init-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const waiterJoined = Promise.withResolvers<void>();
+			const failingServer = installFakeLsp(async (message, server) => {
+				if (message.method === "initialize") {
+					await waiterJoined.promise;
+					server.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						error: { code: -32000, message: "nested shared init failed" },
+					});
+				}
+			});
+			const starter = lspClient.createLspClientOwner();
+			const waiter = lspClient.createLspClientOwner();
+			const pending = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, starter);
+			pending.catch(() => {});
+			await failingServer.waitFor(message => message.method === "initialize");
+			const waiting = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, waiter);
+			waiting.catch(() => {});
+			waiterJoined.resolve();
+			await expect(waiting).rejects.toThrow("nested shared init failed");
+			await expect(pending).rejects.toThrow("nested shared init failed");
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, waiter),
+			).rejects.toThrow("failed to initialize recently");
+
+			vi.restoreAllMocks();
+			const retryServer = installHandshakeLsp();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), waiter);
+			const result = await tool.execute("shared-init-failure-reload", { action: "reload", file: "*" });
+
+			expect(textResult(result)).toContain("Reloaded nested");
+			expect(retryServer.received.map(message => message.method)).toContain("initialize");
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, waiter),
+			).resolves.toMatchObject({ config: { command: "nested-shared-init-lsp" } });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
 		try {

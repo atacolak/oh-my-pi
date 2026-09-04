@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed `lsp reload *` skipping a nested initialization failure when another session joined the same pending start, so the waiting session still hit the three-minute negative cache.
+- Fixed `/remove-dir` skipping the prompt refresh and confirmation when language-server teardown for the removed root failed, so the session stayed mutated while the active prompt still listed that workspace.
 - Fixed `/remove-dir` installing a language-server reload barrier over the retained session cwd, so a stuck extra-root teardown could block or supersede new clients under the remaining workspace.
 - Fixed write and edit language-server fallback owners remaining after a public ToolSession disposed, so an overlapping session could not replace those clients.
 - Fixed a failed language-server initialization leaving the session as a phantom owner, so a later successful session could not reload or replace that identity.

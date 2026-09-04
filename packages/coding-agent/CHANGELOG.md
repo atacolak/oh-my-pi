@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed language-server document URIs following a leaf symlink out of the workspace, so hover and diagnostics stay on the alias's project instead of the target's.
 - Fixed `/move` and `/wt` leaving language-server ownership on the previous cwd, so a later session in that directory could not replace a superseded server.
 - Fixed `rename_file` using lexical overlay URIs when the workspace itself is a symlink, so an already-open canonical document was not closed and recreating the old path skipped `didOpen`.
 - Fixed `rename_file` telling language servers that a symlink target moved when only the alias was renamed, so import rewrites no longer miss the moved path.

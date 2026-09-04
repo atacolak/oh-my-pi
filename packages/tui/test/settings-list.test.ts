@@ -677,5 +677,52 @@ describe("SettingsList", () => {
 		expect(list.hasOpenSubmenu()).toBe(true);
 		expect(list.render(60).join("\n")).toContain("submenu adopted");
 		expect(factoryCalls).toBe(2);
+		expect(list.getOpenSubmenuItemId()).toBe("picker");
+		expect(list.hasItem("picker")).toBe(true);
+		expect(list.hasItem("missing")).toBe(false);
+	});
+
+	it("cancels a vanished open submenu through its completion callback", () => {
+		let cancelled = 0;
+		const list = new SettingsList(
+			[
+				{
+					id: "editor",
+					label: "Editor",
+					currentValue: "draft",
+					submenu: (_current, done) => ({
+						render: () => ["submenu draft"],
+						handleInput(data: string) {
+							if (data === "\x1b") {
+								cancelled += 1;
+								done();
+							}
+						},
+					}),
+				},
+			],
+			5,
+			testTheme,
+			() => {},
+			() => {},
+		);
+		list.handleInput("\n");
+		expect(list.hasOpenSubmenu()).toBe(true);
+		expect(list.getOpenSubmenuItemId()).toBe("editor");
+
+		list.setItems([
+			{
+				id: "other",
+				label: "Other",
+				currentValue: "kept",
+			},
+		]);
+		expect(list.hasOpenSubmenu()).toBe(true);
+		expect(list.hasItem("editor")).toBe(false);
+
+		expect(list.refreshOpenSubmenu()).toBe(false);
+		expect(cancelled).toBe(1);
+		expect(list.hasOpenSubmenu()).toBe(false);
+		expect(list.getOpenSubmenuItemId()).toBeNull();
 	});
 });

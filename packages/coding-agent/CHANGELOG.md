@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Fixed conversation-flow setting signals reapplying queue modes onto unrelated Settings clones.
+- Fixed `SettingsManager.create()` missing a loaded instance when `cwd` or `agentDir` is relative.
+- Fixed persisted queue-mode changes restoring unrelated live-only conversation modes.
+- Fixed shadowed global queue-mode writes resetting the live session back to the project override.
+- Fixed `/settings` leaving a scoped theme preview after close when the effective theme name cannot load.
+- Fixed `/settings` trapping Tab and Alt+S after an adopted disk edit hid an open text editor.
+- Fixed project saves leaving already-rendered OSC 8 links on a rejected `tui.hyperlinks` value.
+- Fixed `/settings` discarding an in-progress global editor after adopting a project disk edit.
+- Fixed `/settings` discarding in-progress editors after adopting an unrelated disk edit.
 - Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
 - Fixed `/settings` resetting an open multi-select cursor after an ordinary project save.
 - Fixed project inherit treating the native `.omp/config.yml` as a non-native source when cwd is relative.

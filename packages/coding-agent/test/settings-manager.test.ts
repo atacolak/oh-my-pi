@@ -907,6 +907,56 @@ describe("Settings", () => {
 			}
 		});
 
+		it("does not fire conversation-flow hooks for a shadowed global queue-mode write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: string[] = [];
+			const unsubscribe = onConversationFlowChanged(() => {
+				received.push(settings.get("steeringMode"));
+			});
+			try {
+				expect(settings.get("steeringMode")).toBe("one-at-a-time");
+				settings.set("steeringMode", "all");
+				expect(settings.get("steeringMode")).toBe("one-at-a-time");
+				expect(received).toEqual([]);
+				await settings.flush();
+				expect(YAML.parse(await Bun.file(getConfigPath()).text())).toEqual({
+					steeringMode: "all",
+				});
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					steeringMode: "one-at-a-time",
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("does not attribute a clone's conversation-flow event to another Settings instance", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const otherDir = tempDir.join("other-project");
+			fs.mkdirSync(path.join(otherDir, ".omp"), { recursive: true });
+			await Bun.write(
+				path.join(otherDir, ".omp", "config.yml"),
+				YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2),
+			);
+			const cloned = await settings.cloneForCwd(otherDir);
+			const received: Settings[] = [];
+			const unsubscribe = onConversationFlowChanged((_path, source) => {
+				received.push(source);
+			});
+			try {
+				cloned.set("steeringMode", "all", "project");
+				expect(cloned.get("steeringMode")).toBe("all");
+				expect(settings.get("steeringMode")).toBe("one-at-a-time");
+				expect(received).toEqual([cloned]);
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires session-runtime hooks after skipping a stale project thinking write", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));
@@ -1400,6 +1450,36 @@ describe("Settings", () => {
 					composer: { shape: "box" },
 					spelling: { typoDetection: false, autocomplete: false, autocorrect: true },
 					tui: { tight: true, resizeScrollback: "preserve", renderMermaid: false },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires session-runtime hooks after adopting a sibling tui.hyperlinks disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ tui: { hyperlinks: "off" }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: string; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("tui.hyperlinks"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ tui: { hyperlinks: "always" }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("tui.hyperlinks")).toBe("always");
+				expect(received).toEqual([{ value: "always", paths: ["tui.hyperlinks"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					tui: { hyperlinks: "always" },
 					ask: { enabled: false },
 				});
 			} finally {

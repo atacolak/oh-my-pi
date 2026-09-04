@@ -13,7 +13,7 @@
 - Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
 - Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
 - Sanitized collab auto-start and write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
-- Avoided deleting a collab write-link file that this start never published, including a destination replaced after publication.
+- Avoided deleting a collab write-link file that this start never published, including a destination replaced after publication or during cleanup.
 
 ## [18.1.9] - 2026-09-04
 

@@ -436,6 +436,45 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("does not delete a write-link replaced after the ownership read", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const file = path.join(dir, "collab.link");
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": "ws://localhost:8787",
+			"collab.writeLinkPath": file,
+		});
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async function (this: CollabHost) {
+			Object.defineProperties(this, { link: { value: "dead-room-link", configurable: true } });
+		});
+		const originalPublish = atomicFile.replaceFileAtomically;
+		const publish = spyOn(atomicFile, "replaceFileAtomically").mockImplementation(async (tempPath, targetPath) => {
+			await originalPublish(tempPath, targetPath);
+			ctx.collabHost = undefined;
+		});
+		const originalReadFile = fs.readFile;
+		let replacedAfterRead = false;
+		const read = spyOn(fs, "readFile").mockImplementation((async (target: Parameters<typeof fs.readFile>[0]) => {
+			const current = await originalReadFile(target, "utf8");
+			if (!replacedAfterRead && target === file && current === "dead-room-link") {
+				replacedAfterRead = true;
+				await fs.writeFile(file, "other-owner-link");
+			}
+			return current;
+		}) as unknown as typeof fs.readFile);
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(ctx.collabHost).toBeUndefined();
+			expect(replacedAfterRead).toBe(true);
+			expect(await originalReadFile(file, "utf8")).toBe("other-owner-link");
+		} finally {
+			start.mockRestore();
+			publish.mockRestore();
+			read.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("sanitizes write-link failures before showing them", async () => {
 		const home = os.homedir();
 		const leaked = path.join(home, "secret", "collab-link");

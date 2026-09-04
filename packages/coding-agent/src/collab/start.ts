@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import type { InteractiveModeContext } from "../modes/types";
 import { expandTilde } from "../tools/path-utils";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
@@ -117,33 +118,47 @@ function resolveCollabLinkPath(rawPath: string, ctxCwd: string): string {
 	return path.isAbsolute(expanded) ? expanded : path.resolve(ctxCwd, expanded);
 }
 
+async function withCollabLinkLock<T>(target: string, fn: () => Promise<T>): Promise<T> {
+	await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+	return await withFileLock(target, fn);
+}
+
 async function writeCollabLink(target: string, link: string): Promise<void> {
 	const tempPath = path.join(
 		path.dirname(target),
 		`.${path.basename(target)}.${process.pid}.${crypto.randomUUID()}.tmp`,
 	);
-	await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-	let removeTemp = false;
-	try {
-		const handle = await fs.open(tempPath, "wx", 0o600);
-		removeTemp = true;
+	await withCollabLinkLock(target, async () => {
+		let removeTemp = false;
 		try {
-			await handle.writeFile(link, "utf8");
-			await handle.sync();
+			const handle = await fs.open(tempPath, "wx", 0o600);
+			removeTemp = true;
+			try {
+				await handle.writeFile(link, "utf8");
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+			await replaceFileAtomically(tempPath, target);
+			removeTemp = false;
 		} finally {
-			await handle.close();
+			if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
 		}
-		await replaceFileAtomically(tempPath, target);
-		removeTemp = false;
-	} finally {
-		if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
-	}
+	});
 }
 
 async function removePublishedCollabLink(target: string, link: string): Promise<void> {
-	const current = await fs.readFile(target, "utf8").catch(() => null);
-	if (current !== link) return;
-	await fs.rm(target, { force: true }).catch(() => {});
+	try {
+		await withCollabLinkLock(target, async () => {
+			const current = await fs.readFile(target, "utf8");
+			if (current !== link) return;
+			const still = await fs.readFile(target, "utf8");
+			if (still !== link) return;
+			await fs.rm(target, { force: true });
+		});
+	} catch {
+		// Missing destination or a contended lock is not fatal for start teardown.
+	}
 }
 
 function sanitizeCollabError(error: unknown): string {

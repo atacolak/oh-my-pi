@@ -12,6 +12,7 @@ import {
 	formatExpandHint,
 	formatParseErrors,
 	formatScreenshot,
+	sanitizeStatusText,
 	shortenPath,
 	truncateDiffByHunk,
 } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
@@ -119,6 +120,17 @@ describe("formatScreenshot", () => {
 		const home = String.raw`C:\Users\me`;
 		const sibling = String.raw`C:\Users\me2\projects\demo`;
 		expect(shortenPath(sibling, home)).toBe(sibling);
+	});
+
+	it("collapses layout characters, shortens home paths, and truncates status text", () => {
+		const homePath = `${os.homedir()}/.omp/mcp.log`;
+		const message = sanitizeStatusText(`failed at\t${homePath}\n${"x".repeat(120)}`, 80);
+
+		expect(message).not.toContain(os.homedir());
+		expect(message).not.toContain("\n");
+		expect(message).not.toContain("\t");
+		expect(message).toContain("~/.omp/mcp.log");
+		expect(message.length).toBeLessThanOrEqual(80);
 	});
 
 	it("formats non-home path without tilde", () => {

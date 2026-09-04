@@ -265,6 +265,39 @@ for (const file of [projectEnv, agentEnv, piEnv, homeEnv]) {
 // the profile name + home, so this re-reads only the directory vars.
 refreshDirsFromEnv();
 
+const launchProjectDotenv = (() => {
+	const cwd = getProjectDir();
+	const processValues = filterProcessEnv(process.env);
+	const launchNodeEnv = launchEnvValues?.get("NODE_ENV") ?? processValues.NODE_ENV;
+	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;
+	const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
+	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
+	const modeLocalEnv = parseEnvFile(path.join(cwd, `${nodeEnvName}.local`));
+	const raw = { ...projectEnv, ...modeEnv, ...localEnv, ...modeLocalEnv };
+	const expanded = {
+		...expandDotenvValues(projectEnv, processValues),
+		...expandDotenvValues(modeEnv, processValues),
+		...expandDotenvValues(localEnv, processValues),
+		...expandDotenvValues(modeLocalEnv, processValues),
+	};
+	return { names: new Set(Object.keys(raw)), raw, expanded };
+})();
+
+/**
+ * True when `name` entered the process from the launch project's dotenv files
+ * rather than the parent shell. Used to distrust redirected global agent and
+ * config directories.
+ */
+export function isEnvOwnedByProjectDotenv(name: string): boolean {
+	if (projectEnvNamesLoadedByOmp.has(name)) return true;
+	if (!launchProjectDotenv.names.has(name)) return false;
+	if (launchEnvValues?.has(name)) return false;
+	if (launchEnvValues) return true;
+	const current = process.env[name];
+	if (current === undefined) return false;
+	return current === launchProjectDotenv.raw[name] || current === launchProjectDotenv.expanded[name];
+}
+
 /**
  * Intentional re-export of Bun.env.
  *

@@ -1,8 +1,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { SEARCH_PROVIDER_CHOICES } from "@oh-my-pi/pi-coding-agent/web/search/types";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { YAML } from "bun";
 
 beforeAll(async () => {
 	await initTheme();
@@ -210,6 +213,149 @@ describe("multiselect settings (array-of-enum)", () => {
 		sendMouse(comp, 0, targetRow, "m");
 
 		expect(settings.get("providers.webSearchOrder")).toEqual([secondChoice!.value, firstChoice!.value]);
+	});
+
+	it("keeps a provider in the global search order when only the project layer excludes it", async () => {
+		resetSettingsForTest();
+		const tempDir = TempDir.createSync("@pi-settings-multiselect-scope-");
+		try {
+			const projectDir = tempDir.join("project");
+			const agentDir = tempDir.join("agent");
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
+			);
+			await Settings.init({ cwd: projectDir, agentDir });
+			settings.set("providers.webSearchOrder", [firstChoice!.value, secondChoice!.value], "global");
+
+			// The exclusion exists only on the project layer.
+			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value]);
+			expect(settings.getGlobalValue("providers.webSearchExclude")).toEqual([]);
+
+			const comp = new SettingsSelectorComponent(
+				{
+					availableThinkingLevels: [],
+					thinkingLevel: undefined,
+					availableThemes: ["dark"],
+					providers: [],
+					cwd: projectDir,
+				},
+				{
+					onChange: () => {},
+					onCancel: () => {},
+				},
+			);
+
+			// Switch to global scope: the project-only exclusion must not filter
+			// the global order's options or silently drop the provider on toggle.
+			comp.handleInput("\x1bs");
+			for (const ch of "web search provider order") comp.handleInput(ch);
+			comp.handleInput("\n");
+			expect(comp.render(120).join("\n")).toContain(firstChoice!.label);
+
+			comp.handleInput("\x1b[B");
+			comp.handleInput(" ");
+			expect(settings.getGlobalValue("providers.webSearchOrder")).toEqual([firstChoice!.value]);
+		} finally {
+			resetSettingsForTest();
+			await tempDir.remove();
+		}
+	});
+
+	it("rebuilds an open multi-select after a skipped same-key project save", async () => {
+		resetSettingsForTest();
+		const tempDir = TempDir.createSync("@pi-settings-multiselect-resync-");
+		try {
+			const projectDir = tempDir.join("project");
+			const agentDir = tempDir.join("agent");
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
+			);
+			await Settings.init({ cwd: projectDir, agentDir });
+
+			const comp = new SettingsSelectorComponent(
+				{
+					availableThinkingLevels: [],
+					thinkingLevel: undefined,
+					availableThemes: ["dark"],
+					providers: [],
+					cwd: projectDir,
+				},
+				{
+					onChange: () => {},
+					onCancel: () => {},
+				},
+			);
+
+			for (const ch of "excluded web search providers") comp.handleInput(ch);
+			comp.handleInput("\n");
+			comp.handleInput(" ");
+			expect(settings.get("providers.webSearchExclude")).toEqual([]);
+
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [secondChoice!.value] } }, null, 2),
+			);
+			await settings.flush();
+
+			expect(settings.get("providers.webSearchExclude")).toEqual([secondChoice!.value]);
+			const menu = Bun.stripANSI(comp.render(120).join("\n"));
+			expect(menu).toContain(secondChoice!.label);
+			expect(menu).not.toMatch(new RegExp(`●\\s+${firstChoice!.label}`));
+
+			comp.handleInput(" ");
+			expect(settings.get("providers.webSearchExclude")).toEqual([secondChoice!.value, firstChoice!.value]);
+		} finally {
+			resetSettingsForTest();
+			await tempDir.remove();
+		}
+	});
+
+	it("keeps the open multi-select cursor after an ordinary project save", async () => {
+		resetSettingsForTest();
+		const tempDir = TempDir.createSync("@pi-settings-multiselect-cursor-");
+		try {
+			const projectDir = tempDir.join("project");
+			const agentDir = tempDir.join("agent");
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
+			);
+			await Settings.init({ cwd: projectDir, agentDir });
+
+			const comp = new SettingsSelectorComponent(
+				{
+					availableThinkingLevels: [],
+					thinkingLevel: undefined,
+					availableThemes: ["dark"],
+					providers: [],
+					cwd: projectDir,
+				},
+				{
+					onChange: () => {},
+					onCancel: () => {},
+				},
+			);
+
+			for (const ch of "excluded web search providers") comp.handleInput(ch);
+			comp.handleInput("\n");
+			comp.handleInput("\x1b[B");
+			comp.handleInput(" ");
+			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value, secondChoice!.value]);
+
+			await settings.flush();
+			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value, secondChoice!.value]);
+
+			comp.handleInput(" ");
+			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value]);
+		} finally {
+			resetSettingsForTest();
+			await tempDir.remove();
+		}
 	});
 });
 

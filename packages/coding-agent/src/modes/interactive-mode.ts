@@ -57,6 +57,7 @@ import { reset as resetCapabilities } from "../capability";
 import { restartArgv } from "../cli/flag-tables";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
+import { stopCollabHost } from "../collab/start";
 import { formatKeyHint, KeybindingsManager } from "../config/keybindings";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
@@ -1131,6 +1132,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			getDraftText: () => this.#inputController.getDraftText(),
 			beginDispose: () => this.session.beginDispose(),
 			saveDraft: text => this.sessionManager.saveDraft(text),
+			stopCollab: async () => {
+				await stopCollabHost(this, "session shutdown");
+			},
 			disposeSession: reason =>
 				this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason }),
 		});
@@ -4874,6 +4878,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
 	async #teardown(): Promise<void> {
 		await this.#liveCommandController.stop();
+		try {
+			await stopCollabHost(this, "session shutdown");
+		} catch (err) {
+			logger.warn("Failed to stop collab host during teardown", { error: String(err) });
+		}
 
 		this.#btwController.dispose();
 		this.#omfgController.dispose();

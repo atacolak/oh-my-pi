@@ -19,6 +19,7 @@ export interface StartCollabOptions {
 
 /** Start a host and attach it to the interactive context. */
 export async function startCollabHost(ctx: InteractiveModeContext, options: StartCollabOptions): Promise<CollabHost> {
+	if (ctx.session.isDisposed) throw new Error(COLLAB_HOST_START_CANCELLED);
 	if (ctx.collabGuest || ctx.collabGuestStart) throw new Error("Cannot host while joining as a guest");
 	if (ctx.collabHost) return ctx.collabHost;
 	if (ctx.collabHostStart) return ctx.collabHostStart;
@@ -63,9 +64,13 @@ async function startCollabHostOnce(
 		if (signal.aborted) throw new Error(COLLAB_HOST_START_CANCELLED);
 		throw error;
 	}
-	if (signal.aborted || ctx.collabGuest || ctx.collabGuestStart) {
-		await host.stop(signal.aborted ? "host start cancelled" : "guest joined while host was starting");
-		throw new Error(signal.aborted ? COLLAB_HOST_START_CANCELLED : "Cannot host while joined as a guest");
+	if (signal.aborted || ctx.session.isDisposed || ctx.collabGuest || ctx.collabGuestStart) {
+		await host.stop(
+			signal.aborted || ctx.session.isDisposed ? "host start cancelled" : "guest joined while host was starting",
+		);
+		throw new Error(
+			signal.aborted || ctx.session.isDisposed ? COLLAB_HOST_START_CANCELLED : "Cannot host while joined as a guest",
+		);
 	}
 	ctx.collabHost = host;
 	if (options.writeLinkPath?.trim()) {

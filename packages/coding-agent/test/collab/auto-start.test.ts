@@ -44,6 +44,7 @@ function context(
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			isStreaming: false,
+			isDisposed: false,
 			queuedMessageCount: 0,
 			sessionName: "test",
 			model: undefined,
@@ -211,6 +212,46 @@ describe("collab auto-start", () => {
 		} finally {
 			connect.mockRestore();
 			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("stops an attached host from session teardown before dispose", async () => {
+		installInMemoryRelay();
+		const ctx = context({ "collab.autoStart": true, "collab.relayUrl": "ws://localhost:8787" });
+		await expect(autoStartCollab(ctx)).resolves.toBe(true);
+		expect(ctx.collabHost).toBeInstanceOf(CollabHost);
+		await expect(stopCollabHost(ctx, "session shutdown")).resolves.toBe(true);
+		expect(ctx.collabHost).toBeUndefined();
+		expect(ctx.collabHostStart).toBeUndefined();
+	});
+
+	it("does not attach a host after the session is disposed", async () => {
+		const session = {
+			subscribe: () => () => {},
+			emitNotice: () => {},
+			isStreaming: false,
+			isDisposed: false,
+			queuedMessageCount: 0,
+			sessionName: "test",
+			model: undefined,
+			thinkingLevel: undefined,
+		};
+		const ctx = context({ session });
+		const gate = Promise.withResolvers<void>();
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async () => gate.promise);
+		const stop = spyOn(CollabHost.prototype, "stop").mockResolvedValue();
+		try {
+			const pending = startCollabHost(ctx, { relayUrl: "ws://localhost:8787" });
+			pending.catch(() => {});
+			session.isDisposed = true;
+			gate.resolve();
+			await expect(pending).rejects.toThrow("Collab host start cancelled");
+			expect(stop).toHaveBeenCalledWith("host start cancelled");
+			expect(ctx.collabHost).toBeUndefined();
+			expect(ctx.collabHostStart).toBeUndefined();
+		} finally {
+			start.mockRestore();
+			stop.mockRestore();
 		}
 	});
 

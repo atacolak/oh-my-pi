@@ -36,6 +36,50 @@ describe("createSessionTeardown", () => {
 		expect(saved).toEqual(["unsent draft"]);
 	});
 
+	it("stops collab hosting after saving the draft and before disposing", async () => {
+		const order: string[] = [];
+
+		const teardown = createSessionTeardown({
+			getDraftText: () => "draft",
+			beginDispose: () => {
+				order.push("beginDispose");
+			},
+			saveDraft: async () => {
+				order.push("saveDraft");
+			},
+			stopCollab: async () => {
+				order.push("stopCollab");
+			},
+			disposeSession: async () => {
+				order.push("disposeSession");
+			},
+		});
+
+		await teardown();
+
+		expect(order).toEqual(["beginDispose", "saveDraft", "stopCollab", "disposeSession"]);
+	});
+
+	it("still disposes when stopCollab rejects — never leaves session_shutdown unemitted", async () => {
+		let disposed = false;
+
+		const teardown = createSessionTeardown({
+			getDraftText: () => "draft",
+			beginDispose: () => {},
+			saveDraft: async () => {},
+			stopCollab: async () => {
+				throw new Error("relay hung");
+			},
+			disposeSession: async () => {
+				disposed = true;
+			},
+		});
+
+		await teardown();
+
+		expect(disposed).toBe(true);
+	});
+
 	it("marks the session disposing before awaiting draft persistence", async () => {
 		const order: string[] = [];
 		const release = Promise.withResolvers<void>();

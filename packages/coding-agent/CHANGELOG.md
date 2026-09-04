@@ -10,6 +10,7 @@
 
 - Delayed collab auto-hosting until interactive startup reconciliation, setup, and the initial transcript are ready.
 - Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
+- Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
 
 ## [18.1.9] - 2026-09-04
 

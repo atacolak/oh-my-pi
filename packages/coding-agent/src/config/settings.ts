@@ -602,8 +602,8 @@ export class Settings {
 	#persist: boolean;
 
 	private constructor(options: SettingsOptions = {}) {
-		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
-		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
+		this.#cwd = path.resolve(options.cwd ?? getProjectDir());
+		this.#agentDir = path.resolve(options.agentDir ?? getAgentDir());
 		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
 		const configFiles = process.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? [];
 		if (options.configFiles) configFiles.push(...options.configFiles);
@@ -1067,13 +1067,13 @@ export class Settings {
 	 * already the current scope.
 	 */
 	async reloadForCwd(cwd: string): Promise<void> {
-		const normalized = path.normalize(cwd);
-		if (normalized === this.#cwd) return;
+		const resolved = path.resolve(cwd);
+		if (resolved === this.#cwd) return;
 		await this.flush();
 		this.#restoreRuntimeModelRoleOverrides();
 		const prevModelRoles = this.get("modelRoles");
 		const prevCodeModeValues = this.#codeModeSignalSnapshot();
-		this.#cwd = normalized;
+		this.#cwd = resolved;
 		if (this.#persist) {
 			this.#project = await this.#loadProjectSettings();
 		}
@@ -2000,7 +2000,7 @@ export class Settings {
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level !== "project") continue;
 				const data = dropSettingsGroupShadows(item.data as RawSettings, item.path);
-				if (path.normalize(item.path) !== path.normalize(projectConfigPath)) {
+				if (path.resolve(this.#cwd, item.path) !== path.resolve(this.#cwd, projectConfigPath)) {
 					withoutNative = this.#deepMerge(withoutNative, data);
 					if (Object.hasOwn(data, "shellPath")) withoutNativeShellPathSource = item.path;
 				}

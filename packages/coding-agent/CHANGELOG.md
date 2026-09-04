@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
+- Fixed project inherit treating the native `.omp/config.yml` as a non-native source when cwd is relative.
 - Fixed `/settings` copying an unchanged inherited credential into `.omp/config.yml`.
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
 - Fixed `/settings` rendering unsanitized repository names in the project-scope title.

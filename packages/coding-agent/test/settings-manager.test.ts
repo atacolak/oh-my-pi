@@ -236,6 +236,27 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({ ask: { enabled: false } });
 		});
 
+		it("does not treat the native project config as inherited when cwd is relative", async () => {
+			await writeSettings({ ask: { enabled: false } });
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: true } }, null, 2));
+			const previousCwd = process.cwd();
+			try {
+				process.chdir(projectDir);
+				const settings = await Settings.init({ cwd: ".", agentDir });
+				expect(settings.getCwd()).toBe(path.resolve(projectDir));
+				expect(settings.get("ask.enabled")).toBe(true);
+				expect(settings.getProjectInheritedValue("ask.enabled")).toBe(false);
+				expect(settings.clearProject("ask.enabled")).toBe(true);
+				expect(settings.get("ask.enabled")).toBe(false);
+				await settings.flush();
+			} finally {
+				process.chdir(previousCwd);
+			}
+			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
+			expect(await readSettings()).toEqual({ ask: { enabled: false } });
+		});
+
 		it("attributes an invalid native shellPath to .omp/config.yml when another project source also sets it", async () => {
 			await fs.promises.mkdir(path.join(projectDir, ".claude"), { recursive: true });
 			const missingShell = tempDir.join("missing-native-bash");

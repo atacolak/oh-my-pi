@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed conversation-flow setting signals reapplying queue modes onto unrelated Settings clones.
+- Fixed `SettingsManager.create()` missing a loaded instance when `cwd` or `agentDir` is relative.
 - Fixed persisted queue-mode changes restoring unrelated live-only conversation modes.
 - Fixed shadowed global queue-mode writes resetting the live session back to the project override.
 - Fixed `/settings` leaving a scoped theme preview after close when the effective theme name cannot load.
@@ -41,6 +43,7 @@
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
+
 ## [18.1.10] - 2026-09-04
 
 ### Changed

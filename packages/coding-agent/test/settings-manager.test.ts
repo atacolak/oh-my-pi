@@ -932,6 +932,31 @@ describe("Settings", () => {
 			}
 		});
 
+		it("does not attribute a clone's conversation-flow event to another Settings instance", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const otherDir = tempDir.join("other-project");
+			fs.mkdirSync(path.join(otherDir, ".omp"), { recursive: true });
+			await Bun.write(
+				path.join(otherDir, ".omp", "config.yml"),
+				YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2),
+			);
+			const cloned = await settings.cloneForCwd(otherDir);
+			const received: Settings[] = [];
+			const unsubscribe = onConversationFlowChanged((_path, source) => {
+				received.push(source);
+			});
+			try {
+				cloned.set("steeringMode", "all", "project");
+				expect(cloned.get("steeringMode")).toBe("all");
+				expect(settings.get("steeringMode")).toBe("one-at-a-time");
+				expect(received).toEqual([cloned]);
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires session-runtime hooks after skipping a stale project thinking write", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));

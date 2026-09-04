@@ -847,7 +847,7 @@ export class Settings {
 				this.#fireEffectiveSettingChanged(path, next, prev);
 				return;
 			}
-			hook(next, prev);
+			hook(next, prev, this);
 		}
 		this.#fireEffectiveSettingChanged(path, next, prev);
 	}
@@ -1072,7 +1072,7 @@ export class Settings {
 			for (const [key, previous] of previousHookValues) {
 				const next = this.get(key);
 				if (!Bun.deepEquals(next, previous)) {
-					SETTING_HOOKS[key]?.(next, previous);
+					SETTING_HOOKS[key]?.(next, previous, this);
 				}
 			}
 			return;
@@ -3275,7 +3275,7 @@ export class Settings {
 		for (const [key, previous] of previousHookValues) {
 			const next = this.get(key);
 			if (!Bun.deepEquals(next, previous)) {
-				SETTING_HOOKS[key]?.(next, previous);
+				SETTING_HOOKS[key]?.(next, previous, this);
 			}
 		}
 	}
@@ -3493,7 +3493,7 @@ export class Settings {
 		for (const [key, previous] of previousHookValues) {
 			const next = this.get(key);
 			if (!Bun.deepEquals(next, previous)) {
-				SETTING_HOOKS[key]?.(next, previous);
+				SETTING_HOOKS[key]?.(next, previous, this);
 			}
 		}
 		const changedSessionRuntimePaths = (
@@ -3584,7 +3584,7 @@ export class Settings {
 			const hook = SETTING_HOOKS[key];
 			if (hook) {
 				const value = this.get(key);
-				hook(value, value);
+				hook(value, value, this);
 			}
 		}
 	}
@@ -3618,7 +3618,7 @@ export class Settings {
 // Setting Hooks
 // ═══════════════════════════════════════════════════════════════════════════
 
-type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
+type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>, source: Settings) => void;
 
 /**
  * Minimal change-notification primitive backing the exported `on*Changed`
@@ -3794,9 +3794,9 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	// track it the same instant path/resource links do. Runtime `/settings` edits
 	// also go through the selector controller to invalidate and repaint live views.
 	"tui.hyperlinks": value => applyHyperlinkSetting(value),
-	steeringMode: () => conversationFlowSignal.fire("steeringMode"),
-	followUpMode: () => conversationFlowSignal.fire("followUpMode"),
-	interruptMode: () => conversationFlowSignal.fire("interruptMode"),
+	steeringMode: (_value, _prev, source) => conversationFlowSignal.fire("steeringMode", source),
+	followUpMode: (_value, _prev, source) => conversationFlowSignal.fire("followUpMode", source),
+	interruptMode: (_value, _prev, source) => conversationFlowSignal.fire("interruptMode", source),
 	"provider.appendOnlyContext": value => {
 		if (typeof value === "string") {
 			appendOnlyModeSignal.fire(value);
@@ -3835,15 +3835,17 @@ const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.append
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
 /** Fires when steering, follow-up, or interrupt mode changes at runtime. */
 export type ConversationFlowPath = "steeringMode" | "followUpMode" | "interruptMode";
-const conversationFlowSignal = new SettingSignal<[path: ConversationFlowPath]>("conversation flow");
+const conversationFlowSignal = new SettingSignal<[path: ConversationFlowPath, source: Settings]>("conversation flow");
 
 /**
  * Subscribe to conversation-flow setting changes (`steeringMode`,
  * `followUpMode`, `interruptMode`). Returns an unsubscribe function. Callers
- * should re-read only the supplied path and apply it to the live session
+ * should ignore events whose `source` is not the Settings instance they own,
+ * then re-read only the supplied path and apply it to the live session
  * without persisting.
  */
-export const onConversationFlowChanged = (cb: (path: ConversationFlowPath) => void) => conversationFlowSignal.on(cb);
+export const onConversationFlowChanged = (cb: (path: ConversationFlowPath, source: Settings) => void) =>
+	conversationFlowSignal.on(cb);
 /** Fires when adopted project session-runtime settings must reapply live session state. */
 const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], source: Settings]>("session runtime");
 
@@ -3986,8 +3988,8 @@ export function findScopedSettings(cwd?: string, agentDir?: string): Settings | 
 	const active = activeSettingsScope.getStore();
 	if (active) return active;
 
-	const wantCwd = cwd === undefined ? undefined : path.normalize(cwd);
-	const wantAgentDir = agentDir === undefined ? undefined : path.normalize(agentDir);
+	const wantCwd = cwd === undefined ? undefined : path.resolve(cwd);
+	const wantAgentDir = agentDir === undefined ? undefined : path.resolve(agentDir);
 	if (wantCwd === undefined && wantAgentDir === undefined) return globalInstance ?? undefined;
 
 	let found: Settings | undefined;

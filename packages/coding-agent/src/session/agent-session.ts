@@ -1850,7 +1850,8 @@ export class AgentSession {
 				logger.warn("Code Mode reconcile after setting change failed", { error: String(error) });
 			});
 		});
-		this.#unsubscribeConversationFlow = onConversationFlowChanged(path => {
+		this.#unsubscribeConversationFlow = onConversationFlowChanged((path, source) => {
+			if (source !== this.settings) return;
 			if (path === "steeringMode") {
 				this.setSteeringMode(this.settings.get("steeringMode"), false);
 			} else if (path === "followUpMode") {

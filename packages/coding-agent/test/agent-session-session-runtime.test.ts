@@ -420,6 +420,58 @@ describe("AgentSession adopted session-runtime changes", () => {
 		expect(otherSession.thinkingLevel).toBe(Effort.High);
 	});
 
+	it("ignores conversation-flow events from a different Settings clone", async () => {
+		const projectDir = tempDir.join("project");
+		const otherDir = tempDir.join("other-project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(otherDir), { recursive: true });
+		await Bun.write(
+			path.join(projectDir, ".omp", "config.yml"),
+			YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2),
+		);
+		await Bun.write(
+			path.join(otherDir, ".omp", "config.yml"),
+			YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2),
+		);
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const otherSettings = await settings.cloneForCwd(otherDir);
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const createSession = (sessionSettings: Settings, steeringMode: "all" | "one-at-a-time") =>
+			new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model,
+						systemPrompt: ["Test"],
+						tools: [],
+						messages: [],
+						thinkingLevel: Effort.Low,
+					},
+					steeringMode,
+				}),
+				sessionManager: SessionManager.inMemory(),
+				settings: sessionSettings,
+				modelRegistry: new ModelRegistry(authStorage!),
+			});
+		session = createSession(settings, "all");
+		otherSession = createSession(otherSettings, "one-at-a-time");
+
+		expect(session.steeringMode).toBe("all");
+		expect(otherSession.steeringMode).toBe("one-at-a-time");
+
+		otherSettings.set("steeringMode", "all", "project");
+
+		expect(otherSettings.get("steeringMode")).toBe("all");
+		expect(otherSession.steeringMode).toBe("all");
+		expect(settings.get("steeringMode")).toBe("one-at-a-time");
+		expect(session.steeringMode).toBe("all");
+	});
+
 	it("keeps an rpc queue-mode change when a project override shadows the global write", async () => {
 		const projectDir = tempDir.join("project");
 		const agentDir = tempDir.join("agent");

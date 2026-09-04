@@ -13,6 +13,7 @@
 - Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
 - Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
 - Sanitized collab write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
+- Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
 
 ## [18.1.9] - 2026-09-04
 

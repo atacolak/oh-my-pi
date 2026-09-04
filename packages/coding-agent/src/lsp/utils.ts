@@ -2,7 +2,8 @@ export { truncate } from "@oh-my-pi/pi-utils";
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
+import { isEnoent } from "@oh-my-pi/pi-utils";
+import { workspaceEntryPath } from "../session/session-workspace";
 import { type Theme, theme } from "../modes/theme/theme";
 import { formatGroupedFiles } from "../tools/grouped-file-output";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
@@ -38,12 +39,7 @@ export { detectLanguageId } from "../utils/lang-from-path";
  * document instead of jumping to the target's project.
  */
 export function fileToUri(filePath: string): string {
-	return Bun.pathToFileURL(documentIdentityPath(filePath)).href;
-}
-
-function documentIdentityPath(filePath: string): string {
-	const resolved = path.resolve(filePath);
-	return path.join(resolveEquivalentPath(path.dirname(resolved)), path.basename(resolved));
+	return Bun.pathToFileURL(workspaceEntryPath(filePath)).href;
 }
 
 /**
@@ -103,7 +99,7 @@ function laxUriToFile(uri: string): string {
 export class EquivalentUriMap<Value> extends Map<string, Value> {
 	#key(uri: string): string {
 		if (!uri.startsWith("file://")) return uri;
-		const filePath = documentIdentityPath(uriToFile(uri));
+		const filePath = workspaceEntryPath(uriToFile(uri));
 		return process.platform === "win32" ? filePath.toLowerCase() : filePath;
 	}
 

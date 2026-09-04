@@ -4797,6 +4797,63 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("failed mixed reload restores ownership only for surviving clients", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-mixed-teardown-owner-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const extraRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(nestedRoot);
+			fs.mkdirSync(extraRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const extraConfig: ServerConfig = {
+				command: "extra-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: extraRoot,
+			};
+			const nestedServer = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(nestedConfig, nestedRoot, 1_000, undefined, owner);
+			const extraServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			await lspClient.getOrCreateClient(extraConfig, extraRoot, 1_000, undefined, owner);
+
+			await expect(
+				lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner),
+			).rejects.toThrow("Failed to stop LSP server(s) with superseded configuration");
+
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain("nested-lsp");
+			expect(lspClient.getActiveClients().map(client => client.name)).not.toContain("nested-lsp");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).toContain("extra-lsp");
+			expect(nestedServer.received.map(message => message.method)).toContain("shutdown");
+
+			extraServer.exit(0);
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+
+			const rediscoveredServer = installHandshakeLsp();
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, nestedRoot, 1_000, undefined, owner),
+			).resolves.toMatchObject({ config: { command: "nested-lsp" } });
+			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("workspace reload waits for a stale pending client before starting its replacement", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-pending-");
 		try {

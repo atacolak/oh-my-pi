@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathIsWithin, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
+import { normalizePathForComparison, pathIsWithin, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 
 /**
  * Filesystem workspace of a session: one current/default directory plus a
@@ -54,19 +54,39 @@ export function additionalWorkspaceDirectories(workspace: SessionWorkspace): str
 }
 
 /**
+ * Canonicalize ancestor directories but keep the final path component.
+ * A leaf symlink inside the workspace (`src/foo.ts` → `/shared/foo.ts`)
+ * therefore stays a workspace entry instead of jumping to the target.
+ */
+export function workspaceEntryPath(filePath: string): string {
+	const resolved = path.resolve(filePath);
+	return path.join(resolveEquivalentPath(path.dirname(resolved)), path.basename(resolved));
+}
+
+/**
  * Longest matching workspace directory that contains `filePath`.
  * Additional roots are not a hierarchy; the most specific prefix wins.
  * Specificity is actual containment of equivalent paths, not raw string length,
  * so a long symlink cwd cannot outrank a nested additional workspace.
+ *
+ * Containment uses {@link workspaceEntryPath} so a leaf symlink inside the
+ * workspace is still routed here even when its target sits outside.
  */
 export function workspaceRootForPath(filePath: string, workspace: SessionWorkspace): string | null {
-	const resolved = path.resolve(filePath);
 	let best: string | null = null;
 	for (const directory of workspace.directories) {
-		if (!pathIsWithin(directory, resolved)) continue;
+		if (!workspaceContainsPath(directory, filePath)) continue;
 		if (best === null || isMoreSpecificWorkspaceRoot(directory, best)) best = directory;
 	}
 	return best;
+}
+
+function workspaceContainsPath(directory: string, filePath: string): boolean {
+	const normalizedRoot = normalizePathForComparison(directory);
+	const entry = workspaceEntryPath(filePath);
+	const normalizedEntry = process.platform === "win32" ? entry.toLowerCase() : entry;
+	const relative = path.relative(normalizedRoot, normalizedEntry);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function isMoreSpecificWorkspaceRoot(candidate: string, current: string): boolean {

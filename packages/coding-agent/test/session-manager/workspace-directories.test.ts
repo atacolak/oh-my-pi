@@ -107,6 +107,19 @@ describe("workspaceRootForPath", () => {
 			fs.rmSync(linkRoot, { force: true });
 		}
 	});
+
+	it("keeps a leaf symlink file inside the workspace", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-leaf-symlink-");
+		using shared = TempDir.createSync("@pi-session-workspace-leaf-shared-");
+		const sharedFile = path.join(shared.path(), "shared.ts");
+		fs.writeFileSync(sharedFile, "export const shared = 1;\n");
+		const alias = path.join(tempDir.path(), "src", "alias.ts");
+		fs.mkdirSync(path.dirname(alias), { recursive: true });
+		fs.symlinkSync(sharedFile, alias);
+		const workspace = normalizeSessionWorkspace({ cwd: tempDir.path() });
+		expect(workspaceRootForPath(alias, workspace)).toBe(path.resolve(tempDir.path()));
+		expect(workspaceRootForPath(sharedFile, workspace)).toBeNull();
+	});
 });
 
 describe("SessionManager workspace directories", () => {

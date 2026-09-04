@@ -438,6 +438,27 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("routes a leaf symlink file to the containing nested project", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-leaf-symlink-route-");
+		const shared = TempDir.createSync("@omp-lsp-leaf-symlink-route-shared-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const sharedFile = path.join(shared.path(), "shared.py");
+			fs.writeFileSync(sharedFile, "def shared():\n    return 1\n");
+			const alias = path.join(nested.projectRoot, "src", "alias.py");
+			fs.symlinkSync(sharedFile, alias);
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const config = loadConfig(tempDir.path());
+			const resolved = resolveServersForFile(config, alias, [tempDir.path()]);
+			expect(resolved.find(server => server.name === "basedpyright")?.root).toBe(nested.projectRoot);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("rename_file asks one nested server when symlink and canonical roots both match", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rename-key-");
 		const realRoot = tempDir.path();

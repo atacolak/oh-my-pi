@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed language-server routing following a leaf symlink out of the workspace, so hover and diagnostics on an in-workspace alias stay on that project's server.
+- Fixed `lsp reload *` restoring ownership of nested servers that already exited during a mixed teardown, so a later reload could not rediscover that project.
 - Fixed language-server document URIs following a leaf symlink out of the workspace, so hover and diagnostics stay on the alias's project instead of the target's.
 - Fixed `/move`, `/wt`, and interactive `!cd` leaving language-server ownership on the previous cwd, so a later session in that directory could not replace a superseded server.
 - Fixed `rename_file` using lexical overlay URIs when the workspace itself is a symlink, so an already-open canonical document was not closed and recreating the old path skipped `didOpen`.

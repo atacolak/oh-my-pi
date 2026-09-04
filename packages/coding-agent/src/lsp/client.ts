@@ -1104,10 +1104,13 @@ export function shutdownStaleClients(
 		const barrier = clientReloadBarriers.get(root);
 		if (barrier && !previousBarriers.includes(barrier)) previousBarriers.push(barrier);
 	}
+	const cleanupHolder: { promise?: Promise<string[]> } = {};
 	const cleanup = (async (): Promise<string[]> => {
 		const restoreReleasedOwners = (): void => {
 			if (!owner) return;
-			for (const key of unownedStaleKeys) registerClientOwner(key, owner);
+			for (const key of unownedStaleKeys) {
+				if (clients.has(key) || clientLocks.has(key)) registerClientOwner(key, owner);
+			}
 		};
 		const clearTemporaryNestedTombstones = (entries: Iterable<[string, { cwd: string }]>): void => {
 			const primaryCwd = path.resolve(cwd);
@@ -1149,6 +1152,24 @@ export function shutdownStaleClients(
 			const failed = stale.filter((_entry, index) => results[index] !== true);
 			if (failed.length > 0) {
 				restoreReleasedOwners();
+				// Confirmed-exited nested identities are gone from the registry.
+				// Clear their temporary tombstones and drop this cleanup's barriers
+				// on those roots so a later reload can rediscover them; survivors
+				// keep both until teardown actually succeeds.
+				const gone = stale.filter(([key]) => !clients.has(key) && !clientLocks.has(key));
+				clearTemporaryNestedTombstones(gone);
+				const survivingRoots = new Set(failed.map(([, client]) => path.resolve(client.cwd)));
+				for (const root of barrierRoots) {
+					if (clientReloadBarriers.get(root) !== cleanupHolder.promise) continue;
+					let keep = false;
+					for (const surviving of survivingRoots) {
+						if (isPathInsideWorkspace(surviving, root)) {
+							keep = true;
+							break;
+						}
+					}
+					if (!keep) clientReloadBarriers.delete(root);
+				}
 				throw new Error(
 					"Failed to stop LSP server(s) with superseded configuration: " +
 						failed.map(([, client]) => client.config.command).join(", "),
@@ -1170,6 +1191,7 @@ export function shutdownStaleClients(
 			throw error;
 		}
 	})();
+	cleanupHolder.promise = cleanup;
 	for (const root of barrierRoots) clientReloadBarriers.set(root, cleanup);
 	void cleanup.then(
 		() => {

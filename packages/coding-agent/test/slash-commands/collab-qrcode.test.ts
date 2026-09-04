@@ -54,6 +54,7 @@ function createRuntimeHarness(options?: { collabHost?: NonNullable<InteractiveMo
 		present,
 		settings: { get: settingsGet },
 		collabHost: options?.collabHost,
+		session: { isDisposed: false },
 	} as unknown as InteractiveModeContext;
 	return {
 		ctx,

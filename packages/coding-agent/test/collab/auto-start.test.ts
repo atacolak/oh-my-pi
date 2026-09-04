@@ -14,6 +14,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/collab/start";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import * as atomicFile from "@oh-my-pi/pi-coding-agent/utils/atomic-file";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 function context(
@@ -347,6 +348,67 @@ describe("collab auto-start", () => {
 		} finally {
 			await ctx.collabHost?.stop("test done");
 			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("fails the start if the host detaches while writing the link file", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const file = path.join(dir, "collab.link");
+		const status: string[] = [];
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": "ws://localhost:8787",
+			"collab.writeLinkPath": file,
+			showStatus: (text: string) => status.push(text),
+		});
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async function (this: CollabHost) {
+			Object.defineProperties(this, { link: { value: "dead-room-link", configurable: true } });
+		});
+		const originalPublish = atomicFile.replaceFileAtomically;
+		const publish = spyOn(atomicFile, "replaceFileAtomically").mockImplementation(async (tempPath, targetPath) => {
+			await originalPublish(tempPath, targetPath);
+			ctx.collabHost = undefined;
+		});
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(ctx.collabHost).toBeUndefined();
+			expect(status).toEqual([]);
+			expect(await Bun.file(file).exists()).toBe(false);
+		} finally {
+			start.mockRestore();
+			publish.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("sanitizes write-link failures before showing them", async () => {
+		const home = os.homedir();
+		const leaked = path.join(home, "secret", "collab-link");
+		const errors: string[] = [];
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": "ws://localhost:8787",
+			"collab.writeLinkPath": leaked,
+			showError: (text: string) => errors.push(text),
+		});
+		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async function (this: CollabHost) {
+			Object.defineProperties(this, { link: { value: "full-link", configurable: true } });
+		});
+		const mkdir = spyOn(fs, "mkdir").mockRejectedValue(
+			new Error(`ENOTDIR: not a directory, mkdir '${leaked}'\t\nbad`),
+		);
+		try {
+			await expect(autoStartCollab(ctx)).resolves.toBe(true);
+			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
+			expect(errors).toHaveLength(1);
+			expect(errors[0]).toContain("write collab link file");
+			expect(errors[0]).toContain("~/secret/collab-link");
+			expect(errors[0]).not.toContain(home);
+			expect(errors[0]).not.toMatch(/[\t\n]/);
+		} finally {
+			await ctx.collabHost?.stop("test done");
+			start.mockRestore();
+			mkdir.mockRestore();
 		}
 	});
 

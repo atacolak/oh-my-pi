@@ -211,15 +211,15 @@ export class CollabHost {
 
 	async start(relayUrl: string, webUrl = "", signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) throw new Error("Collab host start cancelled");
-		const cancelled = new Promise<never>((_, reject) => {
-			const onAbort = (): void => reject(new Error("Collab host start cancelled"));
-			if (!signal) return;
+		const { promise: cancelled, reject: rejectCancelled } = Promise.withResolvers<never>();
+		if (signal) {
+			const onAbort = (): void => rejectCancelled(new Error("Collab host start cancelled"));
 			if (signal.aborted) {
 				onAbort();
-				return;
+			} else {
+				signal.addEventListener("abort", onAbort, { once: true });
 			}
-			signal.addEventListener("abort", onAbort, { once: true });
-		});
+		}
 		const rawKey = generateRoomKey();
 		const writeToken = generateWriteToken();
 		const roomId = generateRoomId();

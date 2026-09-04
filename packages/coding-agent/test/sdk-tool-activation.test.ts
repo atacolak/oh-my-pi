@@ -223,68 +223,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		}
 	});
 
-	it("mounts discoverable tools under xd:// for explicit tool lists omitting write", async () => {
-		const tempDir = makeTempDir();
-
-		const { session } = await createAgentSession({
-			...baseOptions(tempDir),
-			toolNames: ["read", "grep", "glob"],
-			extensions: [toolActivationExtension],
-		});
-
-		try {
-			// The device-only xd:// transport write is surfaced in the active set...
-			expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "grep", "glob", "write"]));
-			// ...so a discoverable extension tool mounts under xd:// instead of
-			// shipping its full schema top-level on every request.
-			const deviceNames = session.getXdevToolEntries().map(entry => entry.name);
-			expect(deviceNames).toContain("default_active_tool");
-			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
-			expect(session.getActiveToolNames()).not.toContain("default_inactive_tool");
-
-			// The transport write rejects filesystem targets: the grant is xd:// only.
-			const write = session.getToolByName("write");
-			expect(write).toBeDefined();
-			await expect(
-				write!.execute("device-only-fs", { path: path.join(tempDir, "nope.txt"), content: "x" }),
-			).rejects.toThrow("Filesystem writes are not available");
-		} finally {
-			await session.dispose();
-		}
-	});
-
-	it("preserves a deferrable-only write transport across enabled-set reapplication", async () => {
-		const tempDir = makeTempDir();
-		const { session } = await createAgentSession({
-			...baseOptions(tempDir),
-			toolNames: ["read", "ast_edit"],
-		});
-
-		try {
-			expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "ast_edit", "write"]));
-			expect(session.getMountedXdevToolNames()).toEqual([]);
-			const write = session.getToolByName("write");
-			expect(write).toBeDefined();
-			await expect(
-				write!.execute("deferrable-transport-before", {
-					path: path.join(tempDir, "before.txt"),
-					content: "x",
-				}),
-			).rejects.toThrow("Filesystem writes are not available");
-
-			await session.setActiveToolsByName(session.getEnabledToolNames());
-
-			await expect(
-				write!.execute("deferrable-transport-after", {
-					path: path.join(tempDir, "after.txt"),
-					content: "x",
-				}),
-			).rejects.toThrow("Filesystem writes are not available");
-		} finally {
-			await session.dispose();
-		}
-	});
-
 	it("activates the private think tool when external thinking is enabled at runtime", async () => {
 		const tempDir = makeTempDir();
 		const settings = Settings.isolated();

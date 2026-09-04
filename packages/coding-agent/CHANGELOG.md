@@ -14,6 +14,7 @@
 - Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
 - Sanitized collab write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
 - Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
+- Ignored overlay-sourced collab relay and web URLs during auto-start so a config overlay cannot retarget a trusted host.
 
 ## [18.1.9] - 2026-09-04
 

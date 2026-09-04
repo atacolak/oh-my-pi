@@ -79,17 +79,14 @@ async function startCollabHostOnce(
 	const writeLinkPath = options.writeLinkPath?.trim()
 		? resolveCollabLinkPath(options.writeLinkPath, ctx.sessionManager.getCwd())
 		: undefined;
-	let publishedWriteLink = false;
-	if (writeLinkPath) {
+	if (writeLinkPath && ctx.collabHost === host && !signal.aborted && !ctx.session.isDisposed) {
 		try {
-			await writeCollabLink(writeLinkPath, host.link);
-			publishedWriteLink = true;
+			await writeCollabLink(writeLinkPath, host.link, signal);
 		} catch (error) {
 			ctx.showError(`Failed to write collab link file: ${sanitizeCollabError(error)}`);
 		}
 	}
-	if (ctx.collabHost !== host) {
-		if (publishedWriteLink && writeLinkPath) await removePublishedCollabLink(writeLinkPath, host.link);
+	if (ctx.collabHost !== host || signal.aborted || ctx.session.isDisposed) {
 		await host.stop("host start cancelled");
 		throw new Error(COLLAB_HOST_START_CANCELLED);
 	}
@@ -106,11 +103,10 @@ export async function stopCollabHost(ctx: InteractiveModeContext, reason = "host
 	);
 	abort?.abort();
 	ctx.collabHostAbort?.abort();
-	if (settled) await settled;
 	const host = ctx.collabHost;
-	if (!host) return pending !== undefined;
-	await host.stop(reason);
-	return true;
+	if (host) await host.stop(reason);
+	if (settled) await settled;
+	return host !== undefined || pending !== undefined;
 }
 
 function resolveCollabLinkPath(rawPath: string, ctxCwd: string): string {
@@ -123,12 +119,14 @@ async function withCollabLinkLock<T>(target: string, fn: () => Promise<T>): Prom
 	return await withFileLock(target, fn);
 }
 
-async function writeCollabLink(target: string, link: string): Promise<void> {
+async function writeCollabLink(target: string, link: string, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return;
 	const tempPath = path.join(
 		path.dirname(target),
 		`.${path.basename(target)}.${process.pid}.${crypto.randomUUID()}.tmp`,
 	);
 	await withCollabLinkLock(target, async () => {
+		if (signal?.aborted) return;
 		let removeTemp = false;
 		try {
 			const handle = await fs.open(tempPath, "wx", 0o600);
@@ -139,26 +137,13 @@ async function writeCollabLink(target: string, link: string): Promise<void> {
 			} finally {
 				await handle.close();
 			}
+			if (signal?.aborted) return;
 			await replaceFileAtomically(tempPath, target);
 			removeTemp = false;
 		} finally {
 			if (removeTemp) await fs.rm(tempPath, { force: true }).catch(() => {});
 		}
 	});
-}
-
-async function removePublishedCollabLink(target: string, link: string): Promise<void> {
-	try {
-		await withCollabLinkLock(target, async () => {
-			const current = await fs.readFile(target, "utf8");
-			if (current !== link) return;
-			const still = await fs.readFile(target, "utf8");
-			if (still !== link) return;
-			await fs.rm(target, { force: true });
-		});
-	} catch {
-		// Missing destination or a contended lock is not fatal for start teardown.
-	}
 }
 
 function sanitizeCollabError(error: unknown): string {

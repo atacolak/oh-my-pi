@@ -373,7 +373,7 @@ describe("collab auto-start", () => {
 			await expect(autoStartCollab(ctx)).resolves.toBe(false);
 			expect(ctx.collabHost).toBeUndefined();
 			expect(status).toEqual([]);
-			expect(await Bun.file(file).exists()).toBe(false);
+			expect(await fs.readFile(file, "utf8")).toBe("dead-room-link");
 		} finally {
 			start.mockRestore();
 			publish.mockRestore();
@@ -436,7 +436,7 @@ describe("collab auto-start", () => {
 		}
 	});
 
-	it("does not delete a write-link replaced after the ownership read", async () => {
+	it("stops an attached host before write-link publication finishes", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const file = path.join(dir, "collab.link");
 		const ctx = context({
@@ -445,32 +445,34 @@ describe("collab auto-start", () => {
 			"collab.writeLinkPath": file,
 		});
 		const start = spyOn(CollabHost.prototype, "start").mockImplementation(async function (this: CollabHost) {
-			Object.defineProperties(this, { link: { value: "dead-room-link", configurable: true } });
+			Object.defineProperties(this, { link: { value: "live-room-link", configurable: true } });
 		});
-		const originalPublish = atomicFile.replaceFileAtomically;
-		const publish = spyOn(atomicFile, "replaceFileAtomically").mockImplementation(async (tempPath, targetPath) => {
-			await originalPublish(tempPath, targetPath);
+		const stop = spyOn(CollabHost.prototype, "stop").mockImplementation(async function (this: CollabHost) {
 			ctx.collabHost = undefined;
 		});
-		const originalReadFile = fs.readFile;
-		let replacedAfterRead = false;
-		const read = spyOn(fs, "readFile").mockImplementation((async (target: Parameters<typeof fs.readFile>[0]) => {
-			const current = await originalReadFile(target, "utf8");
-			if (!replacedAfterRead && target === file && current === "dead-room-link") {
-				replacedAfterRead = true;
-				await fs.writeFile(file, "other-owner-link");
-			}
-			return current;
-		}) as unknown as typeof fs.readFile);
+		const writeStarted = Promise.withResolvers<void>();
+		const releaseWrite = Promise.withResolvers<void>();
+		const publish = spyOn(atomicFile, "replaceFileAtomically").mockImplementation(async () => {
+			writeStarted.resolve();
+			await releaseWrite.promise;
+		});
 		try {
-			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			const pending = autoStartCollab(ctx);
+			pending.catch(() => {});
+			await writeStarted.promise;
+			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
+			const stopping = stopCollabHost(ctx);
+			await Promise.resolve();
+			expect(stop).toHaveBeenCalledWith("host stopped");
 			expect(ctx.collabHost).toBeUndefined();
-			expect(replacedAfterRead).toBe(true);
-			expect(await originalReadFile(file, "utf8")).toBe("other-owner-link");
+			releaseWrite.resolve();
+			await expect(stopping).resolves.toBe(true);
+			await expect(pending).resolves.toBe(false);
+			expect(await Bun.file(file).exists()).toBe(false);
 		} finally {
 			start.mockRestore();
+			stop.mockRestore();
 			publish.mockRestore();
-			read.mockRestore();
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});

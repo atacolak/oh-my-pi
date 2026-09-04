@@ -43,6 +43,7 @@ interface PendingClient {
 const clientLocks = new Map<string, PendingClient>();
 const invalidatedClientKeys = new Set<string>();
 const clientReloadBarriers = new Map<string, Promise<unknown>>();
+const clientIdentityReloadBarriers = new Map<string, Promise<unknown>>();
 export type LspClientOwner = symbol;
 const clientOwners = new Map<string, Set<LspClientOwner>>();
 const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
@@ -1032,19 +1033,25 @@ const EXIT_TIMEOUT_MS = 1_000;
  * through a symlink workspace must not mint a second client beside the same
  * physical binary addressed by its real path. Bare PATH names stay as names.
  */
-function clientKey(config: ServerConfig, cwd: string): string {
+function canonicalSpawnCommand(config: ServerConfig): string {
 	const spawnCommand = config.resolvedCommand ?? config.command;
+	return spawnCommand.includes("/") || spawnCommand.includes("\\") || path.isAbsolute(spawnCommand)
+		? resolveEquivalentPath(spawnCommand)
+		: spawnCommand;
+}
+
+function clientKey(config: ServerConfig, cwd: string): string {
 	const identity = stableStringifyJson([
 		config.args ?? [],
 		config.initOptions ?? null,
 		config.settings ?? null,
 		config.languageId ?? null,
 	]);
-	const canonicalCommand =
-		spawnCommand.includes("/") || spawnCommand.includes("\\") || path.isAbsolute(spawnCommand)
-			? resolveEquivalentPath(spawnCommand)
-			: spawnCommand;
-	return `${canonicalCommand}:${resolveEquivalentPath(cwd)}:${identity}`;
+	return `${canonicalSpawnCommand(config)}:${resolveEquivalentPath(cwd)}:${identity}`;
+}
+
+function clientServerRootKey(config: ServerConfig, cwd: string): string {
+	return `${canonicalSpawnCommand(config)}:${resolveEquivalentPath(cwd)}`;
 }
 
 /**
@@ -1090,20 +1097,28 @@ export function shutdownStaleClients(
 		: new Set<string>();
 	const stalePending = relevantPending.filter(([key]) => unownedStaleKeys.has(key));
 	const staleClients = relevantClients.filter(([key]) => unownedStaleKeys.has(key));
-	// Barrier only the roots this cleanup actually covers. `/remove-dir` passes
-	// the retained session cwd as `cwd` while `workspaceRoots` is the removed
-	// directory; including `cwd` here would block unrelated clients under the
-	// remaining workspace, and a failed teardown would leave that barrier forever.
+	// Barrier the roots this cleanup actually covers while teardown is in
+	// flight. `/remove-dir` passes the retained session cwd as `cwd` while
+	// `workspaceRoots` is the removed directory; including `cwd` here would
+	// block unrelated clients under the remaining workspace. After a mixed
+	// failure, leftover barriers stay on command+cwd identities that did not
+	// exit so a sibling server at the same root is not stuck behind that
+	// teardown, while a replacement for the stuck command still waits.
 	const barrierRoots = new Set([
 		...roots,
 		...stalePending.map(([, pending]) => path.resolve(pending.cwd)),
 		...staleClients.map(([, client]) => path.resolve(client.cwd)),
 	]);
+	const leftoverKeys = new Set([
+		...stalePending.map(([, pending]) => clientServerRootKey(pending.config, pending.cwd)),
+		...staleClients.map(([, client]) => clientServerRootKey(client.config, client.cwd)),
+	]);
 	const previousBarriers: Promise<unknown>[] = [];
-	for (const root of barrierRoots) {
-		const barrier = clientReloadBarriers.get(root);
+	const rememberPreviousBarrier = (barrier?: Promise<unknown>): void => {
 		if (barrier && !previousBarriers.includes(barrier)) previousBarriers.push(barrier);
-	}
+	};
+	for (const root of barrierRoots) rememberPreviousBarrier(clientReloadBarriers.get(root));
+	for (const leftoverKey of leftoverKeys) rememberPreviousBarrier(clientIdentityReloadBarriers.get(leftoverKey));
 	const cleanupHolder: { promise?: Promise<string[]> } = {};
 	const cleanup = (async (): Promise<string[]> => {
 		const restoreReleasedOwners = (): void => {
@@ -1152,19 +1167,27 @@ export function shutdownStaleClients(
 			const failed = stale.filter((_entry, index) => results[index] !== true);
 			if (failed.length > 0) {
 				restoreReleasedOwners();
-				// Confirmed-exited nested identities are gone from the registry.
-				// Clear their temporary tombstones and drop this cleanup's barriers
-				// on those roots so a later reload can rediscover them; survivors
-				// keep both until teardown actually succeeds.
+				// Confirmed-exited identities are gone from the registry.
+				// Drop their tombstones even at the shared primary root, and drop
+				// this cleanup's root barriers, so a later start of that identity
+				// or another server in the same project is not stuck behind the
+				// survivor. Identities that did not exit keep a tombstone plus an
+				// identity-scoped leftover barrier until teardown succeeds.
 				const gone = [
 					...stale.filter(([key]) => !clients.has(key) && !clientLocks.has(key)),
 					...stalePending.filter(([key]) => !clients.has(key) && !clientLocks.has(key)),
 				];
-				clearTemporaryNestedTombstones(gone);
-				const survivingRoots = new Set(failed.map(([, client]) => path.resolve(client.cwd)));
+				for (const [key] of gone) invalidatedClientKeys.delete(key);
+				const cleanupPromise = cleanupHolder.promise;
 				for (const root of barrierRoots) {
-					if (clientReloadBarriers.get(root) !== cleanupHolder.promise) continue;
-					if (!survivingRoots.has(root)) clientReloadBarriers.delete(root);
+					if (clientReloadBarriers.get(root) === cleanupPromise) clientReloadBarriers.delete(root);
+				}
+				const failedLeftoverKeys = new Set(
+					failed.map(([, client]) => clientServerRootKey(client.config, client.cwd)),
+				);
+				for (const leftoverKey of leftoverKeys) {
+					if (clientIdentityReloadBarriers.get(leftoverKey) !== cleanupPromise) continue;
+					if (!failedLeftoverKeys.has(leftoverKey)) clientIdentityReloadBarriers.delete(leftoverKey);
 				}
 				throw new Error(
 					"Failed to stop LSP server(s) with superseded configuration: " +
@@ -1189,10 +1212,16 @@ export function shutdownStaleClients(
 	})();
 	cleanupHolder.promise = cleanup;
 	for (const root of barrierRoots) clientReloadBarriers.set(root, cleanup);
+	for (const leftoverKey of leftoverKeys) clientIdentityReloadBarriers.set(leftoverKey, cleanup);
 	void cleanup.then(
 		() => {
 			for (const root of barrierRoots) {
 				if (clientReloadBarriers.get(root) === cleanup) clientReloadBarriers.delete(root);
+			}
+			for (const leftoverKey of leftoverKeys) {
+				if (clientIdentityReloadBarriers.get(leftoverKey) === cleanup) {
+					clientIdentityReloadBarriers.delete(leftoverKey);
+				}
 			}
 		},
 		() => {},
@@ -1261,12 +1290,16 @@ export async function getOrCreateClient(
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 	}
 	// Do not start a fresh identity until superseded processes are confirmed stopped.
-	// Workspace reload barriers are keyed by known roots, so a nested client that
-	// was not in the snapshot must still wait on any ancestor workspace barrier.
-	// After that wait, the captured `config`/`key` may itself be stale — reject it
-	// so the caller re-resolves from the reloaded definition instead of spawning
-	// the pre-reload command/args/settings.
+	// In-flight workspace reload barriers are keyed by known roots, so a nested
+	// client that was not in the snapshot must still wait on any ancestor
+	// workspace barrier. After a mixed teardown failure, leftover barriers stay
+	// on the command+cwd identities that did not exit rather than their shared
+	// root. After that wait, the captured `config`/`key` may itself be stale —
+	// reject it so the caller re-resolves from the reloaded definition instead
+	// of spawning the pre-reload command/args/settings.
 	const reloadBarriers: Promise<unknown>[] = [];
+	const leftoverBarrier = clientIdentityReloadBarriers.get(clientServerRootKey(config, cwd));
+	if (leftoverBarrier) reloadBarriers.push(leftoverBarrier);
 	for (const [root, barrier] of clientReloadBarriers) {
 		if (!isPathInsideWorkspace(cwd, root) || reloadBarriers.includes(barrier)) continue;
 		reloadBarriers.push(barrier);
@@ -2025,6 +2058,7 @@ export async function shutdownAll(): Promise<void> {
 	stopIdleChecker();
 	invalidatedClientKeys.clear();
 	clientReloadBarriers.clear();
+	clientIdentityReloadBarriers.clear();
 	clientOwners.clear();
 	ownerClientKeys.clear();
 	initFailures.clear();

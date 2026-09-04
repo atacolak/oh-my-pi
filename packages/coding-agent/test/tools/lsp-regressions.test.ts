@@ -4888,6 +4888,78 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("failed mixed reload keeps leftover barriers on surviving identities only", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-mixed-identity-barrier-");
+		try {
+			const sharedRoot = tempDir.path();
+			const stoppedConfig: ServerConfig = {
+				command: "stopped-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sharedRoot,
+			};
+			const stuckConfig: ServerConfig = {
+				command: "stuck-lsp",
+				fileTypes: [".py"],
+				rootMarkers: [],
+				resolvedRoot: sharedRoot,
+			};
+			const otherConfig: ServerConfig = {
+				command: "other-lsp",
+				fileTypes: [".rs"],
+				rootMarkers: [],
+				resolvedRoot: sharedRoot,
+			};
+			installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(stoppedConfig, sharedRoot, 1_000, undefined, owner);
+			const stuckServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			await lspClient.getOrCreateClient(stuckConfig, sharedRoot, 1_000, undefined, owner);
+
+			await expect(lspClient.shutdownStaleClients(sharedRoot, [], undefined, [sharedRoot], owner)).rejects.toThrow(
+				"Failed to stop LSP server(s) with superseded configuration",
+			);
+
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain("stopped-lsp");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).toContain("stuck-lsp");
+
+			const rediscoveredServer = installHandshakeLsp();
+			await expect(
+				lspClient.getOrCreateClient(stoppedConfig, sharedRoot, 1_000, undefined, owner),
+			).resolves.toMatchObject({ config: { command: "stopped-lsp" } });
+			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
+
+			const otherServer = installHandshakeLsp();
+			await expect(
+				lspClient.getOrCreateClient(otherConfig, sharedRoot, 1_000, undefined, owner),
+			).resolves.toMatchObject({ config: { command: "other-lsp" } });
+			expect(otherServer.received.map(message => message.method)).toContain("initialize");
+			await expect(lspClient.getOrCreateClient(stuckConfig, sharedRoot, 1_000, undefined, owner)).rejects.toThrow(
+				/superseded|Failed to stop LSP server/,
+			);
+			expect(
+				lspClient
+					.getActiveClients(owner)
+					.map(client => client.name)
+					.toSorted(),
+			).toEqual(["other-lsp", "stopped-lsp", "stuck-lsp"]);
+
+			stuckServer.exit(0);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("failed mixed reload clears tombstones for nested pending starts that never published", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-mixed-pending-tombstone-");
 		try {

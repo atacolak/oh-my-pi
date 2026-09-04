@@ -158,20 +158,6 @@ async function enumerateRenamePairs(
 	return { pairs, directory: true, exceeded: false };
 }
 
-/**
- * Overlay identity for a filesystem rename. Leaf symlink entries stay lexical
- * so the unchanged target is not closed; workspace aliases canonicalize so
- * they match `fileToUri()` keys in `openFiles`.
- */
-async function overlayRenameUri(filePath: string): Promise<string> {
-	try {
-		if ((await fs.promises.lstat(filePath)).isSymbolicLink()) return fileToLexicalUri(filePath);
-	} catch {
-		// Destination paths often do not exist yet.
-	}
-	return fileToUri(filePath);
-}
-
 function formatRenameStatPath(filePath: string, cwd: string): string {
 	const relative = formatPathRelativeToCwd(filePath, cwd);
 	// formatPathRelativeToCwd normalizes Windows separators. Shorten the
@@ -867,8 +853,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}));
 			executed.push({
 				kind: "rename",
-				oldUri: await overlayRenameUri(source),
-				newUri: await overlayRenameUri(dest),
+				oldUri: fileToUri(source),
+				newUri: fileToUri(dest),
 			});
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
@@ -883,7 +869,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						this.#clientOwner,
 					);
 					for (const pair of pairs) {
-						const overlayOldUri = await overlayRenameUri(uriToFile(pair.oldUri));
+						const overlayOldUri = fileToUri(uriToFile(pair.oldUri));
 						if (client.openFiles.has(overlayOldUri)) {
 							await sendNotification(
 								client,

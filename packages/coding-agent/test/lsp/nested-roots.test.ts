@@ -409,6 +409,35 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("keeps a leaf symlink document URI inside the workspace", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-leaf-symlink-doc-uri-");
+		const shared = TempDir.createSync("@omp-lsp-leaf-symlink-shared-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const sharedFile = path.join(shared.path(), "shared.py");
+			fs.writeFileSync(sharedFile, "def shared():\n    return 1\n");
+			const alias = path.join(nested.projectRoot, "src", "alias.py");
+			fs.symlinkSync(sharedFile, alias);
+			expect(fileToUri(alias)).toBe(Bun.pathToFileURL(path.resolve(alias)).href);
+			expect(fileToUri(alias)).not.toBe(fileToUri(sharedFile));
+			expect(fileToUri(alias)).not.toBe(Bun.pathToFileURL(sharedFile).href);
+			const viaWorkspaceLinkParent = path.join(
+				path.dirname(tempDir.path()),
+				`${path.basename(tempDir.path())}-link`,
+			);
+			fs.symlinkSync(tempDir.path(), viaWorkspaceLinkParent);
+			try {
+				const viaLink = path.join(viaWorkspaceLinkParent, "python", "src", "alias.py");
+				expect(fileToUri(viaLink)).toBe(fileToUri(alias));
+			} finally {
+				fs.rmSync(viaWorkspaceLinkParent, { force: true });
+			}
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("rename_file asks one nested server when symlink and canonical roots both match", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rename-key-");
 		const realRoot = tempDir.path();

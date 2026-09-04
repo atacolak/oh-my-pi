@@ -921,6 +921,8 @@ describe("lsp regressions", () => {
 					});
 				} else if (message.id === 9002 && message.method === undefined) {
 					dynamicRegistrationAccepted = message.error === undefined;
+				} else if (message.method === "textDocument/hover" && dynamicRegistrationAccepted) {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { contents: "Atas.version()" } });
 				} else if (message.method === "shutdown") {
 					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
 				} else if (message.method === "exit") {

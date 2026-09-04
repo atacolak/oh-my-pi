@@ -3312,7 +3312,7 @@ export class Settings {
 		this.#modifiedProjectModelRoles.clear();
 		this.#modifiedProjectPathMutations.clear();
 		this.#modifiedProjectModelRoleMutations.clear();
-
+		let adoptedNativeLayer = false;
 		try {
 			await fs.promises.mkdir(path.dirname(projectConfigPath), { recursive: true });
 			await this.#withYamlWriteLock(projectConfigPath, async writePath => {
@@ -3401,6 +3401,8 @@ export class Settings {
 						deleteByPath(projectSettings, ["modelRoles", role]);
 					}
 				}
+				adoptedNativeLayer =
+					skippedProjectModelRoles.length > 0 || !Bun.deepEquals(projectSettings, this.#projectFileSettings);
 				this.#projectFileSettings = structuredClone(projectSettings);
 				this.#rebuildProjectLayer();
 				this.#syncProjectShellPathSource();
@@ -3468,7 +3470,9 @@ export class Settings {
 		if (changedSessionRuntimePaths.length > 0) {
 			sessionRuntimeSignal.fire(changedSessionRuntimePaths, this);
 		}
-		projectSettingsReconciledSignal.fire(this);
+		if (adoptedNativeLayer) {
+			projectSettingsReconciledSignal.fire(this);
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -3820,14 +3824,15 @@ const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], sou
 export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source: Settings) => void) =>
 	sessionRuntimeSignal.on(cb);
 
-/** Fires after a project save rebuilds the live native layer from disk. */
+/** Fires after a project save adopts disk values into the live native layer. */
 const projectSettingsReconciledSignal = new SettingSignal<[source: Settings]>("project settings reconciled");
 
 /**
- * Subscribe to project-layer reconciliation after `#saveProjectNow()`. Returns
- * an unsubscribe function. Callers that display live settings (the open
- * `/settings` selector) should ignore events from other Settings instances
- * and rebuild their item snapshots from the adopted values.
+ * Subscribe to project-layer adoption after `#saveProjectNow()`. Returns an
+ * unsubscribe function. Ordinary local writes do not fire. Callers that
+ * display live settings (the open `/settings` selector) should ignore events
+ * from other Settings instances and rebuild their item snapshots from the
+ * adopted values.
  */
 export const onProjectSettingsReconciled = (cb: (source: Settings) => void) => projectSettingsReconciledSignal.on(cb);
 

@@ -446,6 +446,50 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("rename_file reports the symlink alias, not its target, for willRenameFiles", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-entry-rename-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const alias = path.join(nested.projectRoot, "src", "alias.py");
+			const dest = path.join(nested.projectRoot, "src", "renamed-alias.py");
+			fs.symlinkSync(nested.filePath, alias);
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const willRenameRequests: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameRequests.push(params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("symlink-entry-rename", {
+				action: "rename_file",
+				file: alias,
+				new_name: dest,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameRequests).toEqual([
+				{
+					files: [
+						{
+							oldUri: Bun.pathToFileURL(path.resolve(alias)).href,
+							newUri: Bun.pathToFileURL(path.resolve(dest)).href,
+						},
+					],
+				},
+			]);
+			expect(Bun.pathToFileURL(path.resolve(alias)).href).not.toBe(fileToUri(nested.filePath));
+			expect(fs.lstatSync(dest).isSymbolicLink()).toBe(true);
+			expect(fs.existsSync(nested.filePath)).toBe(true);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not use the primary cwd executable for a nested additional workspace under a long symlink", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rank-exec-");
 		const realOuter = tempDir.path();

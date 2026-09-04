@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed persisted queue-mode changes restoring unrelated live-only conversation modes.
 - Fixed shadowed global queue-mode writes resetting the live session back to the project override.
 - Fixed `/settings` leaving a scoped theme preview after close when the effective theme name cannot load.
 - Fixed `/settings` trapping Tab and Alt+S after an adopted disk edit hid an open text editor.

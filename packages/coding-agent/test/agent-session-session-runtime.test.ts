@@ -459,4 +459,44 @@ describe("AgentSession adopted session-runtime changes", () => {
 		});
 		expect(session.steeringMode).toBe("all");
 	});
+
+	it("keeps a live-only follow-up mode when a persisted steering-mode change reapplies", async () => {
+		const projectDir = tempDir.join("project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(projectConfigPath, YAML.stringify({ ask: { enabled: true } }, null, 2));
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.Low,
+				},
+				steeringMode: "one-at-a-time",
+				followUpMode: "one-at-a-time",
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		session.setFollowUpMode("all", false);
+		expect(session.followUpMode).toBe("all");
+		expect(settings.get("followUpMode")).toBe("one-at-a-time");
+		session.setSteeringMode("all");
+		expect(session.steeringMode).toBe("all");
+		expect(settings.get("steeringMode")).toBe("all");
+		expect(session.followUpMode).toBe("all");
+		expect(settings.get("followUpMode")).toBe("one-at-a-time");
+	});
 });

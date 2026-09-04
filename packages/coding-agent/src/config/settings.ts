@@ -3794,9 +3794,9 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	// track it the same instant path/resource links do. Runtime `/settings` edits
 	// also go through the selector controller to invalidate and repaint live views.
 	"tui.hyperlinks": value => applyHyperlinkSetting(value),
-	steeringMode: () => conversationFlowSignal.fire(),
-	followUpMode: () => conversationFlowSignal.fire(),
-	interruptMode: () => conversationFlowSignal.fire(),
+	steeringMode: () => conversationFlowSignal.fire("steeringMode"),
+	followUpMode: () => conversationFlowSignal.fire("followUpMode"),
+	interruptMode: () => conversationFlowSignal.fire("interruptMode"),
 	"provider.appendOnlyContext": value => {
 		if (typeof value === "string") {
 			appendOnlyModeSignal.fire(value);
@@ -3834,15 +3834,16 @@ const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.append
  */
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
 /** Fires when steering, follow-up, or interrupt mode changes at runtime. */
-const conversationFlowSignal = new SettingSignal("conversation flow");
+export type ConversationFlowPath = "steeringMode" | "followUpMode" | "interruptMode";
+const conversationFlowSignal = new SettingSignal<[path: ConversationFlowPath]>("conversation flow");
 
 /**
  * Subscribe to conversation-flow setting changes (`steeringMode`,
  * `followUpMode`, `interruptMode`). Returns an unsubscribe function. Callers
- * should re-read those settings and apply them to the live session without
- * persisting.
+ * should re-read only the supplied path and apply it to the live session
+ * without persisting.
  */
-export const onConversationFlowChanged = (cb: () => void) => conversationFlowSignal.on(cb);
+export const onConversationFlowChanged = (cb: (path: ConversationFlowPath) => void) => conversationFlowSignal.on(cb);
 /** Fires when adopted project session-runtime settings must reapply live session state. */
 const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], source: Settings]>("session runtime");
 

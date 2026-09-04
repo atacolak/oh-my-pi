@@ -1850,10 +1850,14 @@ export class AgentSession {
 				logger.warn("Code Mode reconcile after setting change failed", { error: String(error) });
 			});
 		});
-		this.#unsubscribeConversationFlow = onConversationFlowChanged(() => {
-			this.setSteeringMode(this.settings.get("steeringMode"), false);
-			this.setFollowUpMode(this.settings.get("followUpMode"), false);
-			this.setInterruptMode(this.settings.get("interruptMode"), false);
+		this.#unsubscribeConversationFlow = onConversationFlowChanged(path => {
+			if (path === "steeringMode") {
+				this.setSteeringMode(this.settings.get("steeringMode"), false);
+			} else if (path === "followUpMode") {
+				this.setFollowUpMode(this.settings.get("followUpMode"), false);
+			} else if (path === "interruptMode") {
+				this.setInterruptMode(this.settings.get("interruptMode"), false);
+			}
 		});
 		this.#unsubscribeSessionRuntime = onSessionRuntimeChanged((paths, source) => {
 			if (source !== this.settings) return;

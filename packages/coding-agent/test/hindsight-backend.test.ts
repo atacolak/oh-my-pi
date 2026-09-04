@@ -1,14 +1,13 @@
 /**
  * Backend behavioural contract tests.
  *
- * These exercise hindsightBackend.start / preCompactionContext / clear without
- * a real AgentSession by passing a fake session that exposes a `subscribe`
- * method we can drive manually. The HindsightApi is spied via
- * `vi.spyOn(HindsightApi.prototype, ...)` per AGENTS.md.
+ * These exercise hindsightBackend.start / clear without a real AgentSession by
+ * passing a fake session that exposes a `subscribe` method we can drive
+ * manually. The HindsightApi is spied via `vi.spyOn(HindsightApi.prototype, ...)`
+ * per AGENTS.md.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { hindsightBackend, reloadMentalModelsForSession } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
@@ -237,64 +236,9 @@ describe("hindsightBackend.start", () => {
 	});
 });
 
-describe("hindsightBackend.preCompactionContext", () => {
-	beforeEach(() => {
-		resetSettingsForTest();
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
-	it("returns undefined when no apiUrl is configured", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight", "hindsight.apiUrl": "" });
-		const messages: AgentMessage[] = [{ role: "user", content: "hi", timestamp: 0 } as never];
-		const ctx = await hindsightBackend.preCompactionContext?.(messages, settings);
-		expect(ctx).toBeUndefined();
-	});
-
-	it("returns a <memories> block when recall yields results", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeFakeSession({ sessionId: "s5" });
-		await hindsightBackend.start({
-			session: session as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-
-		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
-			results: [{ id: "1", text: "remembered fact" }],
-		} as never);
-
-		const messages: AgentMessage[] = [{ role: "user", content: "What did we decide?", timestamp: 0 } as never];
-		const ctx = await hindsightBackend.preCompactionContext?.(messages, settings, session as never);
-		expect(ctx).toContain("<memories>");
-		expect(ctx).toContain("remembered fact");
-	});
-
-	it("returns undefined when recall finds nothing", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeFakeSession({ sessionId: "s6" });
-		await hindsightBackend.start({
-			session: session as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-
-		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
-		const messages: AgentMessage[] = [{ role: "user", content: "anything", timestamp: 0 } as never];
-		const ctx = await hindsightBackend.preCompactionContext?.(messages, settings, session as never);
-		expect(ctx).toBeUndefined();
+describe("hindsightBackend compaction boundary", () => {
+	it("does not provide automatic memory context to compaction", () => {
+		expect(hindsightBackend.preCompactionContext).toBeUndefined();
 	});
 });
 

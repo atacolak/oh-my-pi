@@ -846,16 +846,6 @@ export class HindsightSessionState {
 		return context;
 	}
 
-	async recallForCompaction(messages: HindsightMessage[]): Promise<string | undefined> {
-		const lastUser = messages.findLast(m => m.role === "user");
-		if (!lastUser) return undefined;
-
-		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
-		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		const { context } = await this.recallForContext(truncated);
-		return context ?? undefined;
-	}
-
 	async runMentalModelLoad(scope: BankScope): Promise<void> {
 		if (!this.config.mentalModelsEnabled) return;
 

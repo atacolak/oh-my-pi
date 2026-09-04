@@ -14,6 +14,7 @@ import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
 import { toggleSessionPin } from "../session/session-pins";
 import {
+	cleanSourceCheckoutIfConfigured,
 	createSessionWorktree,
 	defaultSessionWorktreeBranch,
 	formatSessionWorktreeSummary,
@@ -694,15 +695,22 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		handle: async (command, runtime) => {
 			if (runtime.session.isStreaming) return usage("Cannot create a worktree while streaming.", runtime);
 			const branch = command.args.trim() || defaultSessionWorktreeBranch();
+			const sourceCwd = runtime.sessionManager.getCwd();
 			let worktree: SessionWorktree;
 			try {
-				worktree = await createSessionWorktree(runtime.sessionManager.getCwd(), runtime.settings, branch);
+				worktree = await createSessionWorktree(sourceCwd, runtime.settings, branch);
 			} catch (err) {
 				return usage(`Worktree creation failed: ${errorMessage(err)}`, runtime);
 			}
 			const failure = await relocateHeadlessSession(runtime, worktree.path);
 			if (failure) return failure;
-			await runtime.output(formatSessionWorktreeSummary(worktree));
+			const cleanup = await cleanSourceCheckoutIfConfigured(sourceCwd, runtime.settings);
+			if (cleanup.errorMessage !== undefined) {
+				await runtime.output(
+					`Warning: Worktree created, but cleaning source checkout failed: ${cleanup.errorMessage}`,
+				);
+			}
+			await runtime.output(formatSessionWorktreeSummary(worktree, cleanup.cleaned));
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
@@ -767,13 +775,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				await runtime.output(`Not a workspace directory: ${resolved}`);
 				return commandConsumed();
 			}
-			await releaseRemovedWorkspaceRoots(
-				runtime.sessionManager.getCwd(),
-				removed,
-				runtime.session.getLspClientOwner(),
-				undefined,
-				[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
-			);
+			try {
+				await releaseRemovedWorkspaceRoots(
+					runtime.sessionManager.getCwd(),
+					removed,
+					runtime.session.getLspClientOwner(),
+					undefined,
+					[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
+				);
+			} catch (err) {
+				logger.warn("Failed to stop language servers for a removed workspace directory", {
+					removed,
+					error: errorMessage(err),
+				});
+			}
 			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));
 			return commandConsumed();

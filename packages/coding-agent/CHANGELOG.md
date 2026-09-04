@@ -19,6 +19,9 @@
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
 ### Fixed
 
+- Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
+- Fixed `/settings` resetting an open multi-select cursor after an ordinary project save.
+- Fixed project inherit treating the native `.omp/config.yml` as a non-native source when cwd is relative.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
 - Fixed `/settings` rendering unsanitized repository names in the project-scope title.
@@ -53,6 +56,9 @@
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
 ### Fixed
 
+- Fixed `lsp reload *` skipping a nested initialization failure when another session joined the same pending start, so the waiting session still hit the three-minute negative cache.
+- Fixed `/remove-dir` skipping the prompt refresh and confirmation when language-server teardown for the removed root failed, so the session stayed mutated while the command looked unfinished.
+- Fixed `/remove-dir` installing a language-server reload barrier over the retained session cwd, so a stuck extra-root teardown could block or supersede new clients under the remaining workspace.
 - Fixed write and edit language-server fallback owners remaining after a public ToolSession disposed, so an overlapping session could not replace those clients.
 - Fixed a failed language-server initialization leaving the session as a phantom owner, so a later successful session could not reload or replace that identity.
 - Fixed `rename_file` leaving sibling nested language servers with stale overlays when `workspace/willRenameFiles` also edited files outside the renamed project.
@@ -88,6 +94,47 @@
 
 - Delayed collab auto-hosting until interactive startup reconciliation, setup, and the initial transcript are ready.
 - Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
+- Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
+- Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
+- Sanitized collab write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
+
+## [18.1.9] - 2026-09-04
+
+### Breaking Changes
+
+- Browser and computer automation now use JavaScript/Python evaluation preludes with reusable tab and element handles, replacing the previous standalone tool schemas and object-shaped run APIs.
+- Replaced the `inspect_image` tool and `/vision` controls with `read <image>?q=<question>` for image questions; text-only models now receive image metadata and guidance for using this selector.
+- Renamed `inspect_image.timeoutMs` to `images.questionTimeoutMs`; existing settings are migrated automatically.
+
+### Added
+
+- Bash now extracts Kitty and Sixel terminal graphics as image results for foreground, failed, manual, and background executions.
+- Markdown links to existing local files and resources are now clickable while preserving their displayed URLs.
+- Added `/switch <model>` for session-only model changes, with the same model selectors and completions supported by `--model`; ACP `/model <model>` accepts these selectors as well.
+- Added the `worktree.cleanSource` setting to reset and clean the original checkout when creating a worktree with `/wt`.
+- Expanded the computer JavaScript/Python evaluation prelude with direct desktop, window, screenshot, accessibility, and element interaction helpers, while keeping `computer.run` available for multi-step scripts.
+
+### Changed
+
+- Agent delegation is now model-aware, allowing some models to favor focused inline work instead of spawning subagents.
+
+### Fixed
+
+- Fixed fallback authorization-code prompts remaining active after native OAuth callback completion.
+- Fixed reciprocal idle subagents repeatedly waking one another indefinitely.
+- Fixed `/wt` and `git worktree add` failing when the new worktree targeted the same commit as the clean source checkout.
+- Fixed omp-installed marketplace plugins and `--plugin-dir` plugins losing their skills when the Claude plugin source was not separately enabled ([#10743](https://github.com/can1357/oh-my-pi/issues/10743)).
+- Fixed session accent colors rendering as bright white in terminals without truecolor support, including Terminal.app ([#10759](https://github.com/can1357/oh-my-pi/issues/10759)).
+- Rules with `enabled: false` frontmatter are now omitted during discovery, matching disabled skills ([#10769](https://github.com/can1357/oh-my-pi/issues/10769)).
+- Fixed large MCP tool-result previews losing the relevant tail content when an oversized output line preceded it ([#10761](https://github.com/can1357/oh-my-pi/issues/10761)).
+- Fixed `Ctrl+V` replacing CJK characters with `?` when pasting from XWayland clipboard owners on Wayland ([#10762](https://github.com/can1357/oh-my-pi/issues/10762)).
+- Fixed byte-limited artifact reads reporting the displayed byte count instead of the actual read limit ([#10764](https://github.com/can1357/oh-my-pi/issues/10764)).
+- Fixed read-tool truncation notices incorrectly reporting zero delivered lines or bytes when previewing a partial oversized line ([#10768](https://github.com/can1357/oh-my-pi/issues/10768)).
+- Fixed Mnemopi removing explicitly retained or learned long-term memory after sessions longer than 24 hours by consolidating eligible working memory at session start ([#10770](https://github.com/can1357/oh-my-pi/issues/10770)).
+
+### Removed
+
+- Removed the librarian agent.
 
 ## [18.1.8] - 2026-09-03
 

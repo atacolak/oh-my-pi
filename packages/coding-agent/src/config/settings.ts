@@ -836,6 +836,17 @@ export class Settings {
 		const next = this.get(path);
 		const hook = SETTING_HOOKS[path];
 		if (hook) {
+			// Conversation-flow subscribers reread Settings.get() and overwrite the
+			// live agent. A shadowed global write (RPC persist) must not fire them
+			// when the effective value is unchanged. Other hooks still apply the
+			// written layer (request limits, theme mappings) even when shadowed.
+			if (
+				(path === "steeringMode" || path === "followUpMode" || path === "interruptMode") &&
+				Bun.deepEquals(next, prev)
+			) {
+				this.#fireEffectiveSettingChanged(path, next, prev);
+				return;
+			}
 			hook(next, prev);
 		}
 		this.#fireEffectiveSettingChanged(path, next, prev);

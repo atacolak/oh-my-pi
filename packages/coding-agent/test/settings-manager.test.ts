@@ -907,6 +907,31 @@ describe("Settings", () => {
 			}
 		});
 
+		it("does not fire conversation-flow hooks for a shadowed global queue-mode write", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2));
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: string[] = [];
+			const unsubscribe = onConversationFlowChanged(() => {
+				received.push(settings.get("steeringMode"));
+			});
+			try {
+				expect(settings.get("steeringMode")).toBe("one-at-a-time");
+				settings.set("steeringMode", "all");
+				expect(settings.get("steeringMode")).toBe("one-at-a-time");
+				expect(received).toEqual([]);
+				await settings.flush();
+				expect(YAML.parse(await Bun.file(getConfigPath()).text())).toEqual({
+					steeringMode: "all",
+				});
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					steeringMode: "one-at-a-time",
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires session-runtime hooks after skipping a stale project thinking write", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(projectConfigPath, YAML.stringify({ defaultThinkingLevel: "low" }, null, 2));

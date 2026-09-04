@@ -419,4 +419,44 @@ describe("AgentSession adopted session-runtime changes", () => {
 		expect(session.thinkingLevel).toBe(Effort.Minimal);
 		expect(otherSession.thinkingLevel).toBe(Effort.High);
 	});
+
+	it("keeps an rpc queue-mode change when a project override shadows the global write", async () => {
+		const projectDir = tempDir.join("project");
+		const agentDir = tempDir.join("agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.mkdirSync(getProjectAgentDir(projectDir), { recursive: true });
+		const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+		await Bun.write(projectConfigPath, YAML.stringify({ steeringMode: "one-at-a-time" }, null, 2));
+
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected anthropic claude-sonnet-4-5");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.Low,
+				},
+				steeringMode: "one-at-a-time",
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+
+		expect(session.steeringMode).toBe("one-at-a-time");
+		session.setSteeringMode("all");
+		expect(settings.get("steeringMode")).toBe("one-at-a-time");
+		expect(session.steeringMode).toBe("all");
+		await settings.flush();
+		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toEqual({
+			steeringMode: "all",
+		});
+		expect(session.steeringMode).toBe("all");
+	});
 });

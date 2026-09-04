@@ -1472,8 +1472,13 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Rebuild the visible list after a project save adopts disk values so a
 	 * skipped same-key edit cannot leave stale item snapshots on screen.
+	 * Open submenus are recreated from the reconciled factory: SettingsList
+	 * leaves them untouched across setItems, and MultiSelectSubmenu keeps
+	 * its own #value.
 	 */
 	#resyncItemsFromSettings(): void {
+		const list = this.#searchList ?? this.#currentList;
+		const hadOpenSubmenu = list?.hasOpenSubmenu() === true;
 		if (this.#searchList) {
 			this.#setSearchQuery(this.#searchQuery);
 		} else if (this.#currentTabId !== "plugins") {
@@ -1481,6 +1486,7 @@ export class SettingsSelectorComponent implements Component {
 			this.#refreshCurrentTabItems(getSettingsForTab(this.#currentTabId));
 			if (selectedId) this.#currentList?.selectItem(selectedId);
 		}
+		if (hadOpenSubmenu) list?.refreshOpenSubmenu();
 		if (this.#currentTabId === "appearance" && !this.#searchList) {
 			this.#previewAppearanceForScope();
 		}

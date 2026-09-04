@@ -602,8 +602,8 @@ export class Settings {
 	#persist: boolean;
 
 	private constructor(options: SettingsOptions = {}) {
-		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
-		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
+		this.#cwd = path.resolve(options.cwd ?? getProjectDir());
+		this.#agentDir = path.resolve(options.agentDir ?? getAgentDir());
 		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
 		const configFiles = process.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? [];
 		if (options.configFiles) configFiles.push(...options.configFiles);
@@ -1067,13 +1067,13 @@ export class Settings {
 	 * already the current scope.
 	 */
 	async reloadForCwd(cwd: string): Promise<void> {
-		const normalized = path.normalize(cwd);
-		if (normalized === this.#cwd) return;
+		const resolved = path.resolve(cwd);
+		if (resolved === this.#cwd) return;
 		await this.flush();
 		this.#restoreRuntimeModelRoleOverrides();
 		const prevModelRoles = this.get("modelRoles");
 		const prevCodeModeValues = this.#codeModeSignalSnapshot();
-		this.#cwd = normalized;
+		this.#cwd = resolved;
 		if (this.#persist) {
 			this.#project = await this.#loadProjectSettings();
 		}
@@ -2000,7 +2000,7 @@ export class Settings {
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level !== "project") continue;
 				const data = dropSettingsGroupShadows(item.data as RawSettings, item.path);
-				if (path.normalize(item.path) !== path.normalize(projectConfigPath)) {
+				if (path.resolve(this.#cwd, item.path) !== path.resolve(this.#cwd, projectConfigPath)) {
 					withoutNative = this.#deepMerge(withoutNative, data);
 					if (Object.hasOwn(data, "shellPath")) withoutNativeShellPathSource = item.path;
 				}
@@ -2145,9 +2145,13 @@ export class Settings {
 			delete target.collapseChangelog;
 			delete target["startup.changelogMode"];
 		}
-		if (path === "inspect_image.mode") {
+		if (path === "images.questionTimeoutMs") {
+			deleteByPath(target, ["inspect_image", "timeoutMs"]);
 			deleteByPath(target, ["inspect_image", "enabled"]);
+			deleteByPath(target, ["inspect_image", "mode"]);
+			delete target["inspect_image.timeoutMs"];
 			delete target["inspect_image.enabled"];
+			delete target["inspect_image.mode"];
 		}
 		if (path === "task.isolation.enabled" || path === "isolation.backend") {
 			deleteByPath(target, ["task", "isolation", "mode"]);
@@ -3308,7 +3312,7 @@ export class Settings {
 		this.#modifiedProjectModelRoles.clear();
 		this.#modifiedProjectPathMutations.clear();
 		this.#modifiedProjectModelRoleMutations.clear();
-
+		let adoptedNativeLayer = false;
 		try {
 			await fs.promises.mkdir(path.dirname(projectConfigPath), { recursive: true });
 			await this.#withYamlWriteLock(projectConfigPath, async writePath => {
@@ -3397,6 +3401,8 @@ export class Settings {
 						deleteByPath(projectSettings, ["modelRoles", role]);
 					}
 				}
+				adoptedNativeLayer =
+					skippedProjectModelRoles.length > 0 || !Bun.deepEquals(projectSettings, this.#projectFileSettings);
 				this.#projectFileSettings = structuredClone(projectSettings);
 				this.#rebuildProjectLayer();
 				this.#syncProjectShellPathSource();
@@ -3464,7 +3470,9 @@ export class Settings {
 		if (changedSessionRuntimePaths.length > 0) {
 			sessionRuntimeSignal.fire(changedSessionRuntimePaths, this);
 		}
-		projectSettingsReconciledSignal.fire(this);
+		if (adoptedNativeLayer) {
+			projectSettingsReconciledSignal.fire(this);
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -3635,7 +3643,6 @@ export type SessionRuntimePath =
 	| "followUpMode"
 	| "git.enabled"
 	| "hideThinkingBlock"
-	| "inspect_image.mode"
 	| "interruptMode"
 	| "mcp.notifications"
 	| "memory.backend"
@@ -3687,7 +3694,6 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	followUpMode: true,
 	"git.enabled": true,
 	hideThinkingBlock: true,
-	"inspect_image.mode": true,
 	interruptMode: true,
 	"mcp.notifications": true,
 	"memory.backend": true,
@@ -3818,14 +3824,15 @@ const sessionRuntimeSignal = new SettingSignal<[paths: SessionRuntimePath[], sou
 export const onSessionRuntimeChanged = (cb: (paths: SessionRuntimePath[], source: Settings) => void) =>
 	sessionRuntimeSignal.on(cb);
 
-/** Fires after a project save rebuilds the live native layer from disk. */
+/** Fires after a project save adopts disk values into the live native layer. */
 const projectSettingsReconciledSignal = new SettingSignal<[source: Settings]>("project settings reconciled");
 
 /**
- * Subscribe to project-layer reconciliation after `#saveProjectNow()`. Returns
- * an unsubscribe function. Callers that display live settings (the open
- * `/settings` selector) should ignore events from other Settings instances
- * and rebuild their item snapshots from the adopted values.
+ * Subscribe to project-layer adoption after `#saveProjectNow()`. Returns an
+ * unsubscribe function. Ordinary local writes do not fire. Callers that
+ * display live settings (the open `/settings` selector) should ignore events
+ * from other Settings instances and rebuild their item snapshots from the
+ * adopted values.
  */
 export const onProjectSettingsReconciled = (cb: (source: Settings) => void) => projectSettingsReconciledSignal.on(cb);
 

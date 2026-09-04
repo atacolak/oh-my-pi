@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
+- Fixed `/settings` resetting an open multi-select cursor after an ordinary project save.
+- Fixed project inherit treating the native `.omp/config.yml` as a non-native source when cwd is relative.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
 - Fixed `/settings` rendering unsanitized repository names in the project-scope title.
@@ -32,6 +35,7 @@
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
+
 ## [18.1.9] - 2026-09-04
 
 ### Breaking Changes

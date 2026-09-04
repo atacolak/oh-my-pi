@@ -645,4 +645,37 @@ describe("SettingsList", () => {
 		expect(list.routeSubmenuMouse({ leftClick: true } as never, 2, 7)).toBe(true);
 		expect(routed).toEqual([[2, 7, true]]);
 	});
+
+	it("recreates an open submenu from the current factory after setItems", () => {
+		let factoryCalls = 0;
+		const makeItem = (value: string) => ({
+			id: "picker",
+			label: "Picker",
+			currentValue: value,
+			submenu: () => {
+				factoryCalls += 1;
+				return { render: () => [`submenu ${value}`] };
+			},
+		});
+		const list = new SettingsList(
+			[makeItem("old")],
+			5,
+			testTheme,
+			() => {},
+			() => {},
+		);
+		list.handleInput("\n");
+		expect(list.hasOpenSubmenu()).toBe(true);
+		expect(list.render(60).join("\n")).toContain("submenu old");
+		expect(factoryCalls).toBe(1);
+
+		list.setItems([makeItem("adopted")]);
+		expect(list.hasOpenSubmenu()).toBe(true);
+		expect(list.render(60).join("\n")).toContain("submenu old");
+
+		expect(list.refreshOpenSubmenu()).toBe(true);
+		expect(list.hasOpenSubmenu()).toBe(true);
+		expect(list.render(60).join("\n")).toContain("submenu adopted");
+		expect(factoryCalls).toBe(2);
+	});
 });

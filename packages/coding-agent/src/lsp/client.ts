@@ -38,6 +38,7 @@ interface PendingClient {
 	cwd: string;
 	config: ServerConfig;
 	token: symbol;
+	owners: Set<LspClientOwner>;
 }
 const clientLocks = new Map<string, PendingClient>();
 const invalidatedClientKeys = new Set<string>();
@@ -197,6 +198,36 @@ export async function releaseUncoveredWorkspaceRoots(
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
+	}
+}
+
+/**
+ * Shut down language servers whose routed root was moved by `rename_file`.
+ * Remaining session workspace roots still contain the old path string, so
+ * `/remove-dir` retention would keep the vanished-root process alive.
+ */
+export async function releaseMovedWorkspaceRoots(
+	sessionCwd: string,
+	movedRoot: string,
+	owner: LspClientOwner | undefined,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	if (!owner) return [];
+	const roots = [path.resolve(movedRoot)];
+	try {
+		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner);
+		clearWorkspaceInitializationFailures(roots, owner);
+		return stopped;
+	} catch (error) {
+		for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
+			const live = clients.get(key);
+			const pending = clientLocks.get(key);
+			const cwd = live ? clientWorkspaceCwd(live) : pending ? clientWorkspaceCwd(pending) : undefined;
+			if (cwd && !roots.some(root => workspaceContainsPath(root, cwd))) continue;
+			releaseClientOwnerKey(key, owner);
+		}
+		clearWorkspaceInitializationFailures(roots, owner);
+		throw error;
 	}
 }
 
@@ -1335,6 +1366,7 @@ export async function getOrCreateClient(
 	const existingLock = clientLocks.get(key);
 	if (existingLock && canReuseClientDuringReload(key, owner, reloadBarriers)) {
 		registerClientOwner(key, owner);
+		if (owner) existingLock.owners.add(owner);
 		try {
 			return await existingLock.promise;
 		} catch (error) {
@@ -1373,6 +1405,7 @@ export async function getOrCreateClient(
 		const lockAfterReload = clientLocks.get(key);
 		if (lockAfterReload) {
 			registerClientOwner(key, owner);
+			if (owner) lockAfterReload.owners.add(owner);
 			try {
 				return await lockAfterReload.promise;
 			} catch (error) {
@@ -1399,6 +1432,8 @@ export async function getOrCreateClient(
 
 	// Create new client with lock
 	const lockToken = Symbol();
+	const pendingOwners = new Set<LspClientOwner>();
+	if (owner) pendingOwners.add(owner);
 	const clientPromise = (async () => {
 		const baseCommand = config.resolvedCommand ?? config.command;
 		const baseArgs = config.args ?? [];
@@ -1532,7 +1567,7 @@ export async function getOrCreateClient(
 		} catch (err) {
 			// Clean up on initialization failure
 			client.status = "error";
-			const waitingOwners = clientOwners.get(key);
+			const waitingOwners = pendingOwners.size > 0 ? pendingOwners : clientOwners.get(key);
 			unpublishClient(key, client);
 			proc.kill();
 			const message = err instanceof Error ? err.message : String(err);
@@ -1564,7 +1599,7 @@ export async function getOrCreateClient(
 		}
 	})();
 	registerClientOwner(key, owner);
-	clientLocks.set(key, { promise: clientPromise, cwd, config, token: lockToken });
+	clientLocks.set(key, { promise: clientPromise, cwd, config, token: lockToken, owners: pendingOwners });
 	return clientPromise;
 }
 
@@ -1588,6 +1623,7 @@ export async function getActiveOrPendingClient(
 
 	const pending = clientLocks.get(key);
 	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers)) return undefined;
+	if (owner) pending.owners.add(owner);
 	try {
 		const pendingClient = await untilAborted(signal, pending.promise);
 		registerClientOwner(key, owner);

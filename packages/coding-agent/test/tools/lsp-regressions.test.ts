@@ -5649,6 +5649,70 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file retires a nested client whose project root was the renamed directory", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-root-retire-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const destRoot = path.join(tempDir.path(), "moved");
+			fs.mkdirSync(nestedRoot);
+			const sourceFile = path.join(nestedRoot, "old.ts");
+			await Bun.write(sourceFile, "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const server = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "workspace/willRenameFiles") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner);
+			expect(client.cwd).toBe(nestedRoot);
+			client.resolveProjectLoaded();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			const result = await tool.execute("rename-root-retire", {
+				action: "rename_file",
+				file: nestedRoot,
+				new_name: destRoot,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(fs.existsSync(nestedRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			expect(lspClient.getActiveClients(owner).some(active => active.cwd === nestedRoot)).toBe(false);
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+
+			const replacementServer = installHandshakeLsp();
+			await expect(
+				lspClient.getOrCreateClient(
+					{ ...nestedConfig, resolvedRoot: destRoot },
+					tempDir.path(),
+					1_000,
+					undefined,
+					owner,
+				),
+			).resolves.toMatchObject({ cwd: destRoot });
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload retries a nested identity whose pending init was superseded", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-teardown-failure-");
 		try {
@@ -5738,6 +5802,61 @@ describe("lsp regressions", () => {
 			await expect(
 				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, waiter),
 			).resolves.toMatchObject({ config: { command: "nested-shared-init-lsp" } });
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace reload from a waiting owner retries a nested identity that exited during shared init", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-shared-init-exit-reload-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-shared-init-exit-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const waiterJoined = Promise.withResolvers<void>();
+			const failingServer = installFakeLsp(
+				async (message, server) => {
+					if (message.method === "initialize") {
+						await waiterJoined.promise;
+						server.exit(1);
+					}
+				},
+				{ stdoutClosesBeforeExit: true },
+			);
+			const starter = lspClient.createLspClientOwner();
+			const waiter = lspClient.createLspClientOwner();
+			const pending = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, starter);
+			pending.catch(() => {});
+			await failingServer.waitFor(message => message.method === "initialize");
+			const waiting = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, waiter);
+			waiting.catch(() => {});
+			waiterJoined.resolve();
+			await expect(waiting).rejects.toThrow(/LSP (server exited|connection closed|reader stopped)/);
+			await expect(pending).rejects.toThrow(/LSP (server exited|connection closed|reader stopped)/);
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, waiter),
+			).rejects.toThrow("failed to initialize recently");
+
+			vi.restoreAllMocks();
+			const retryServer = installHandshakeLsp();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), waiter);
+			const result = await tool.execute("shared-init-exit-reload", { action: "reload", file: "*" });
+
+			expect(textResult(result)).toContain("Reloaded nested");
+			expect(retryServer.received.map(message => message.method)).toContain("initialize");
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, waiter),
+			).resolves.toMatchObject({ config: { command: "nested-shared-init-exit-lsp" } });
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

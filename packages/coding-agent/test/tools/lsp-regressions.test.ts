@@ -4529,6 +4529,44 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("releasing uncovered previous cwd drops ownership so another session can replace it", async () => {
+		const sourceDir = TempDir.createSync("@omp-lsp-move-source-");
+		const destDir = TempDir.createSync("@omp-lsp-move-dest-");
+		try {
+			const config: ServerConfig = {
+				command: "old-cwd-lsp",
+				args: ["--mode", "old"],
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sourceDir.path(),
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(config, sourceDir.path(), 1_000, undefined, owner);
+
+			await lspClient.releaseUncoveredWorkspaceRoots([sourceDir.path()], [destDir.path()], owner);
+
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain("old-cwd-lsp");
+
+			const replacementServer = installHandshakeLsp();
+			const replacementOwner = lspClient.createLspClientOwner();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...config, args: ["--mode", "new"] },
+				sourceDir.path(),
+				1_000,
+				undefined,
+				replacementOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			sourceDir.removeSync();
+			destDir.removeSync();
+		}
+	});
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {

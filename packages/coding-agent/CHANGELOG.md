@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed `/move` and `/wt` leaving language-server ownership on the previous cwd, so a later session in that directory could not replace a superseded server.
+- Fixed `rename_file` using lexical overlay URIs when the workspace itself is a symlink, so an already-open canonical document was not closed and recreating the old path skipped `didOpen`.
 - Fixed `rename_file` telling language servers that a symlink target moved when only the alias was renamed, so import rewrites no longer miss the moved path.
 - Fixed `lsp reload *` skipping a nested initialization failure seen only through the three-minute fast-fail cache, so a later session still hit that cache after an explicit reload.
 - Fixed language-server ownership surviving process exit and idle shutdown, so another session that later started the same identity could not replace it.

@@ -168,6 +168,35 @@ function clientCoveredByRemainingWorkspace(
 	return workspaceRootForPath(clientCwd, remaining) !== null;
 }
 
+/**
+ * Release this session's ownership of language servers that the current
+ * workspace no longer covers. `/move` and `/wt` keep additional roots that
+ * still exist, but the previous cwd is otherwise a dropped workspace.
+ */
+export async function releaseUncoveredWorkspaceRoots(
+	previousWorkspaceRoots: readonly string[],
+	remainingWorkspaceRoots: readonly string[],
+	owner: LspClientOwner | undefined,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (!owner) return;
+	const remainingCwd = remainingWorkspaceRoots[0];
+	if (!remainingCwd) return;
+	const droppedRoots = previousWorkspaceRoots.filter(
+		root => !clientCoveredByRemainingWorkspace(root, remainingCwd, remainingWorkspaceRoots),
+	);
+	for (const removedRoot of droppedRoots) {
+		try {
+			await releaseRemovedWorkspaceRoots(remainingCwd, removedRoot, owner, signal, remainingWorkspaceRoots);
+		} catch (error) {
+			logger.warn("Failed to stop language servers for a dropped workspace root", {
+				removedRoot,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
 /** Release all client identities associated with a disposed tool session. */
 export function releaseLspClientOwner(owner: LspClientOwner): void {
 	for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) releaseClientOwnerKey(key, owner);

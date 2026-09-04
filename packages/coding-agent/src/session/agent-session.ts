@@ -156,7 +156,7 @@ import type { HindsightSessionState } from "../hindsight/state";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
-import type { LspClientOwner } from "../lsp/client";
+import { type LspClientOwner, releaseUncoveredWorkspaceRoots } from "../lsp/client";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
@@ -361,6 +361,7 @@ import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import { SessionTools, type SessionToolsHost } from "./session-tools";
+import { sessionWorkspaceDirectories } from "./session-workspace";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { skillPromptTitleInput } from "./skill-title-input";
 import { ToolChoiceQueue } from "./tool-choice-queue";
@@ -7774,7 +7775,16 @@ export class AgentSession {
 	/** Move the active session and artifacts after enforcing mode transition invariants. */
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
 		this.#assertVibeSessionTransitionAllowed("move the session");
+		const previousWorkspaceRoots = sessionWorkspaceDirectories(
+			this.sessionManager.getCwd(),
+			this.sessionManager.getAdditionalDirectories(),
+		);
 		await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		const remainingWorkspaceRoots = sessionWorkspaceDirectories(
+			this.sessionManager.getCwd(),
+			this.sessionManager.getAdditionalDirectories(),
+		);
+		await releaseUncoveredWorkspaceRoots(previousWorkspaceRoots, remainingWorkspaceRoots, this.#lspClientOwner);
 	}
 
 	// =========================================================================

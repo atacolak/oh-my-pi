@@ -13,6 +13,7 @@ import {
 	resolveServersForFile,
 } from "@oh-my-pi/pi-coding-agent/lsp/config";
 import { formatContent, getDiagnosticsForFile } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
+import type { ExecutedWorkspaceChange } from "@oh-my-pi/pi-coding-agent/lsp/edits";
 import { discoverStartupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers";
 import type { LinterClient, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
 import { fileToUri } from "@oh-my-pi/pi-coding-agent/lsp/utils";
@@ -486,6 +487,76 @@ describe("nested LSP project roots", () => {
 			expect(fs.lstatSync(dest).isSymbolicLink()).toBe(true);
 			expect(fs.existsSync(nested.filePath)).toBe(true);
 		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file reconciles canonical overlays when the workspace is a symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-workspace-rename-overlay-");
+		const realRoot = tempDir.path();
+		const linkRoot = path.join(path.dirname(realRoot), `${path.basename(realRoot)}-link`);
+		fs.symlinkSync(realRoot, linkRoot);
+		try {
+			const nested = writePythonProject(realRoot, "python", "example.py");
+			const sourceViaLink = path.join(linkRoot, "python", "src", "example.py");
+			const destViaLink = path.join(linkRoot, "python", "src", "renamed.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const client = mockLspClient(
+				{
+					command: "basedpyright-langserver",
+					fileTypes: [".py"],
+					rootMarkers: ["pyproject.toml"],
+					resolvedRoot: nested.projectRoot,
+				},
+				nested.projectRoot,
+			);
+			client.openFiles.set(fileToUri(sourceViaLink), { version: 1, languageId: "python" });
+			const willRenameRequests: unknown[] = [];
+			const closedUris: string[] = [];
+			const reconciled: ExecutedWorkspaceChange[][] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameRequests.push(params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockImplementation(async (_client, method, params) => {
+				if (method !== "textDocument/didClose" || !params || typeof params !== "object") return;
+				if (!("textDocument" in params)) return;
+				const textDocument = params.textDocument;
+				if (!textDocument || typeof textDocument !== "object" || !("uri" in textDocument)) return;
+				if (typeof textDocument.uri === "string") closedUris.push(textDocument.uri);
+			});
+			vi.spyOn(lspClient, "reconcileExecutedChanges").mockImplementation(async executed => {
+				reconciled.push(executed);
+			});
+
+			const result = await new LspTool(makeLspSession(linkRoot)).execute("symlink-workspace-rename-overlay", {
+				action: "rename_file",
+				file: sourceViaLink,
+				new_name: destViaLink,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameRequests).toEqual([
+				{
+					files: [
+						{
+							oldUri: Bun.pathToFileURL(path.resolve(sourceViaLink)).href,
+							newUri: Bun.pathToFileURL(path.resolve(destViaLink)).href,
+						},
+					],
+				},
+			]);
+			expect(reconciled).toEqual([
+				[{ kind: "rename", oldUri: fileToUri(sourceViaLink), newUri: fileToUri(destViaLink) }],
+			]);
+			expect(closedUris).toEqual([fileToUri(sourceViaLink)]);
+			expect(client.openFiles.has(fileToUri(sourceViaLink))).toBe(false);
+		} finally {
+			fs.rmSync(linkRoot, { force: true });
 			tempDir.removeSync();
 		}
 	});

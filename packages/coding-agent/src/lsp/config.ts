@@ -5,7 +5,7 @@ import { $which, isRecord, logger, pathIsWithin, type WhichOptions } from "@oh-m
 import { YAML } from "bun";
 import { getConfigDirPaths } from "../config";
 import { type ClaudePluginRoot, getPreloadedPluginRoots } from "../discovery/helpers";
-import { normalizeSessionWorkspace, workspaceRootForPath } from "../session/session-workspace";
+import { normalizeSessionWorkspace, workspaceContainsPath, workspaceRootForPath } from "../session/session-workspace";
 import { BiomeClient } from "./clients/biome-client";
 import { SwiftLintClient } from "./clients/swiftlint-client";
 import DEFAULTS from "./defaults.json" with { type: "json" };
@@ -247,7 +247,7 @@ export function findServerRoot(filePath: string, markers: string[], workspaceRoo
 
 	let dir = startDir;
 	while (true) {
-		if (boundary && !pathIsWithin(boundary, dir)) return null;
+		if (boundary && !workspaceContainsPath(boundary, dir)) return null;
 		if (hasRootMarkers(dir, markers)) return dir;
 		if (boundary && dir === boundary) return null;
 		const parent = path.dirname(dir);

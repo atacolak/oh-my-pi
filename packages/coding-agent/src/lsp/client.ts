@@ -637,7 +637,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
  * for `initialize` params and `workspace/workspaceFolders` server requests.
  */
 function currentWorkspaceFolders(client: LspClient): Array<{ uri: string; name: string }> {
-	return [{ uri: fileToUri(client.cwd), name: path.basename(client.cwd) || "workspace" }];
+	return [{ uri: fileToUri(client.cwd, client.cwd), name: path.basename(client.cwd) || "workspace" }];
 }
 
 /**
@@ -1388,7 +1388,7 @@ export async function getOrCreateClient(
 			proc,
 			config,
 			requestId: 0,
-			diagnostics: new EquivalentUriMap(),
+			diagnostics: new EquivalentUriMap(cwd),
 			diagnosticsVersion: 0,
 			dynamicCapabilityRegistrations: new Map(),
 			openFiles: new Map(),
@@ -1443,7 +1443,7 @@ export async function getOrCreateClient(
 				"initialize",
 				{
 					processId: process.pid,
-					rootUri: fileToUri(cwd),
+					rootUri: fileToUri(cwd, cwd),
 					rootPath: cwd,
 					capabilities: CLIENT_CAPABILITIES,
 					initializationOptions: config.initOptions ?? {},
@@ -1552,7 +1552,7 @@ export async function getActiveOrPendingClient(
  */
 export async function ensureFileOpen(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
 	throwIfAborted(signal);
-	const uri = fileToUri(filePath);
+	const uri = fileToUri(filePath, client.cwd);
 	const lockKey = `${client.name}:${uri}`;
 
 	// Check if file is already open
@@ -1640,7 +1640,7 @@ export async function syncContent(
 	content: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const uri = fileToUri(filePath);
+	const uri = fileToUri(filePath, client.cwd);
 	const lockKey = `${client.name}:${uri}`;
 	throwIfAborted(signal);
 
@@ -1704,7 +1704,7 @@ export async function syncContent(
  * Assumes content was already synced via syncContent - just sends didSave.
  */
 export async function notifySaved(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
-	const uri = fileToUri(filePath);
+	const uri = fileToUri(filePath, client.cwd);
 	const info = client.openFiles.get(uri);
 	if (!info) return; // File not open, nothing to notify
 
@@ -1761,7 +1761,7 @@ export async function notifyWorkspaceWatchedFiles(
 			const clientChanges = changes
 				.filter(change => workspaceContainsPath(clientRoot, change.filePath))
 				.map(change => {
-					const uri = fileToUri(change.filePath);
+					const uri = fileToUri(change.filePath, client.cwd);
 					client.diagnostics.delete(uri);
 					return { uri, type: change.type };
 				});
@@ -1786,7 +1786,7 @@ export async function notifyWorkspaceWatchedFiles(
  */
 export async function refreshFile(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
 	throwIfAborted(signal);
-	const uri = fileToUri(filePath);
+	const uri = fileToUri(filePath, client.cwd);
 	const lockKey = `${client.name}:${uri}`;
 
 	const existingLock = fileOperationLocks.get(lockKey);

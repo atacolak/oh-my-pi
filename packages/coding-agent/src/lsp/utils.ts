@@ -32,14 +32,14 @@ export { detectLanguageId } from "../utils/lang-from-path";
  * percent-encoded; plain concatenation produced URIs that broke round-trips.
  * Handles Windows drive letters correctly.
  *
- * Ancestor directories are canonicalized so a symlink workspace and its
- * physical target share one document URI, matching the canonical client root
- * used at initialize. The final path component is kept so a leaf symlink
- * inside the workspace (`src/foo.ts` → `/shared/foo.ts`) stays a workspace
- * document instead of jumping to the target's project.
+ * When `workspaceRoot` is provided, that alias is canonicalized and every
+ * component below it is kept, so an in-workspace directory symlink
+ * (`src` → `/shared/src`) stays inside the initialized project. Without a
+ * root, only the final path component is kept so a leaf file symlink still
+ * stays an in-workspace document.
  */
-export function fileToUri(filePath: string): string {
-	return Bun.pathToFileURL(workspaceEntryPath(filePath)).href;
+export function fileToUri(filePath: string, workspaceRoot?: string): string {
+	return Bun.pathToFileURL(workspaceEntryPath(filePath, workspaceRoot)).href;
 }
 
 /**
@@ -97,9 +97,16 @@ function laxUriToFile(uri: string): string {
 
 /** Map that treats equivalent file URI spellings as the same key. */
 export class EquivalentUriMap<Value> extends Map<string, Value> {
+	#workspaceRoot?: string;
+
+	constructor(workspaceRoot?: string) {
+		super();
+		this.#workspaceRoot = workspaceRoot;
+	}
+
 	#key(uri: string): string {
 		if (!uri.startsWith("file://")) return uri;
-		const filePath = workspaceEntryPath(uriToFile(uri));
+		const filePath = workspaceEntryPath(uriToFile(uri), this.#workspaceRoot);
 		return process.platform === "win32" ? filePath.toLowerCase() : filePath;
 	}
 

@@ -54,12 +54,40 @@ export function additionalWorkspaceDirectories(workspace: SessionWorkspace): str
 }
 
 /**
- * Canonicalize ancestor directories but keep the final path component.
- * A leaf symlink inside the workspace (`src/foo.ts` → `/shared/foo.ts`)
- * therefore stays a workspace entry instead of jumping to the target.
+ * Canonicalize a workspace-root alias, then keep every path component below it.
+ * A directory symlink inside the workspace (`src` → `/shared/src`) therefore
+ * stays a workspace entry instead of jumping to the target. Without a workspace
+ * root, only the final path component is kept so a leaf file symlink still
+ * stays an in-workspace document.
  */
-export function workspaceEntryPath(filePath: string): string {
+export function workspaceEntryPath(filePath: string, workspaceRoot?: string): string {
 	const resolved = path.resolve(filePath);
+	if (workspaceRoot) {
+		const resolvedRoot = path.resolve(workspaceRoot);
+		const canonicalRoot = resolveEquivalentPath(resolvedRoot);
+		const win32 = process.platform === "win32";
+		const resolvedRootCmp = win32 ? resolvedRoot.toLowerCase() : resolvedRoot;
+		const canonicalRootCmp = win32 ? canonicalRoot.toLowerCase() : canonicalRoot;
+		const suffix: string[] = [];
+		let current = resolved;
+		while (true) {
+			const currentCanonical = resolveEquivalentPath(current);
+			const currentCmp = win32 ? current.toLowerCase() : current;
+			const currentCanonicalCmp = win32 ? currentCanonical.toLowerCase() : currentCanonical;
+			if (
+				currentCmp === resolvedRootCmp ||
+				currentCmp === canonicalRootCmp ||
+				currentCanonicalCmp === resolvedRootCmp ||
+				currentCanonicalCmp === canonicalRootCmp
+			) {
+				return suffix.length === 0 ? canonicalRoot : path.join(canonicalRoot, ...suffix);
+			}
+			const parent = path.dirname(current);
+			if (parent === current) break;
+			suffix.unshift(path.basename(current));
+			current = parent;
+		}
+	}
 	return path.join(resolveEquivalentPath(path.dirname(resolved)), path.basename(resolved));
 }
 
@@ -68,9 +96,9 @@ export function workspaceEntryPath(filePath: string): string {
  * Additional roots are not a hierarchy; the most specific prefix wins.
  * Specificity is actual containment of equivalent paths, not raw string length,
  * so a long symlink cwd cannot outrank a nested additional workspace.
- *
- * Containment uses {@link workspaceEntryPath} so a leaf symlink inside the
- * workspace is still routed here even when its target sits outside.
+ * Containment uses {@link workspaceEntryPath} so a leaf symlink or an
+ * in-workspace directory symlink is still routed here even when its target
+ * sits outside.
  */
 export function workspaceRootForPath(filePath: string, workspace: SessionWorkspace): string | null {
 	let best: string | null = null;
@@ -82,12 +110,13 @@ export function workspaceRootForPath(filePath: string, workspace: SessionWorkspa
 }
 
 /**
- * Whether `filePath` is contained by `directory` without following a leaf symlink.
- * Workspace-root aliases still compare through equivalent paths.
+ * Whether `filePath` is contained by `directory` without following a leaf
+ * symlink or an in-workspace directory symlink. Workspace-root aliases still
+ * compare through equivalent paths.
  */
 export function workspaceContainsPath(directory: string, filePath: string): boolean {
 	const normalizedRoot = normalizePathForComparison(directory);
-	const entry = workspaceEntryPath(filePath);
+	const entry = workspaceEntryPath(filePath, directory);
 	const normalizedEntry = process.platform === "win32" ? entry.toLowerCase() : entry;
 	const relative = path.relative(normalizedRoot, normalizedEntry);
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));

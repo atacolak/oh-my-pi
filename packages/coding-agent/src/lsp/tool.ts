@@ -380,7 +380,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					continue;
 				}
 
-				const uri = fileToUri(resolved);
+				const uri = fileToUri(resolved, servers[0]?.[1].resolvedRoot ?? this.session.cwd);
 				const relPath = formatPathRelativeToCwd(resolved, this.session.cwd);
 				const allDiagnostics: Diagnostic[] = [];
 				const failedServers: string[] = [];
@@ -852,12 +852,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			await applyEditsThenRename(referenceEdits, source, dest);
 			const executed: ExecutedWorkspaceChange[] = referenceEdits.map(edit => ({
 				kind: "edit",
-				uri: fileToUri(edit.filePath),
+				uri: fileToUri(edit.filePath, workspaceRoots[0]),
 			}));
 			executed.push({
 				kind: "rename",
-				oldUri: fileToUri(source),
-				newUri: fileToUri(dest),
+				oldUri: fileToUri(source, workspaceRoots[0]),
+				newUri: fileToUri(dest, workspaceRoots[0]),
 			});
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
@@ -874,7 +874,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						this.#clientOwner,
 					);
 					for (const pair of serverPairs) {
-						const overlayOldUri = fileToUri(uriToFile(pair.oldUri));
+						const overlayOldUri = fileToUri(uriToFile(pair.oldUri), client.cwd);
 						if (client.openFiles.has(overlayOldUri)) {
 							await sendNotification(
 								client,
@@ -1019,7 +1019,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					};
 				}
 			} else if (resolvedTarget) {
-				const uri = fileToUri(resolvedTarget);
+				const uri = fileToUri(resolvedTarget, chosenConfig.resolvedRoot ?? this.session.cwd);
 				if (line !== undefined) {
 					const character = await resolveSymbolColumn(resolvedTarget, line, symbol);
 					requestParams = { textDocument: { uri }, position: { line: line - 1, character } };
@@ -1295,7 +1295,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					`symbol is required for project-aware ${action}; pass symbol=<name>, optionally symbol#N for repeated occurrences`,
 				);
 			}
-			const uri = targetFile ? fileToUri(targetFile) : "";
+			const uri = targetFile ? fileToUri(targetFile, client.cwd) : "";
 			const resolvedLine = line ?? 1;
 			const resolvedCharacter = targetFile ? await resolveSymbolColumn(targetFile, resolvedLine, symbol) : 0;
 			const position = { line: resolvedLine - 1, character: resolvedCharacter };

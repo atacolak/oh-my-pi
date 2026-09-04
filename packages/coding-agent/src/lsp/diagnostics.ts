@@ -394,7 +394,7 @@ export async function captureOpenFileVersions(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<ServerVersionMap> {
-	const uri = fileToUri(absolutePath);
+	const uri = fileToUri(absolutePath, servers[0]?.[1].resolvedRoot ?? cwd);
 	const versions = new Map<string, number>();
 	await Promise.allSettled(
 		servers.map(async ([serverName, serverConfig]) => {
@@ -430,7 +430,7 @@ export async function getDiagnosticsForFile(
 	const waitBudgetMs = timeoutMs ?? SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS;
 	const pipelineBudgetMs = options.pipelineBudgetMs ?? waitBudgetMs + DIAGNOSTICS_PIPELINE_GRACE_MS;
 
-	const uri = fileToUri(absolutePath);
+	const uri = fileToUri(absolutePath, servers[0]?.[1].resolvedRoot ?? cwd);
 	const relPath = formatPathRelativeToCwd(absolutePath, cwd);
 	const allDiagnostics: Diagnostic[] = [];
 	const serverNames: string[] = [];
@@ -568,7 +568,7 @@ export async function formatContent(
 		return { content, failed: false, unsupported: true };
 	}
 
-	const uri = fileToUri(absolutePath);
+	const uri = fileToUri(absolutePath, servers[0]?.[1].resolvedRoot ?? cwd);
 	let hadFailure = false;
 
 	for (const [serverName, serverConfig] of servers) {

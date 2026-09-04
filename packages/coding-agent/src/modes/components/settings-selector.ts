@@ -1472,10 +1472,11 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Rebuild the visible list after a project save adopts disk values so a
 	 * skipped same-key edit cannot leave stale item snapshots on screen.
-	 * Open submenus are recreated only when their backing setting (or a
-	 * setting they filter by) was adopted: SettingsList leaves them
-	 * untouched across setItems, and an unrelated sibling adoption must not
-	 * discard in-progress text or select cursor state.
+	 * Open submenus are recreated only in project scope when their backing
+	 * setting (or a setting they filter by) was adopted: SettingsList leaves
+	 * them untouched across setItems, an unrelated sibling adoption must not
+	 * discard in-progress text or select cursor state, and a global editor
+	 * is backed by the global layer so a project adoption cannot change it.
 	 */
 	#resyncItemsFromSettings(adoptedPaths: readonly SettingPath[]): void {
 		const list = this.#searchList ?? this.#currentList;
@@ -1488,6 +1489,7 @@ export class SettingsSelectorComponent implements Component {
 			if (selectedId) this.#currentList?.selectItem(selectedId);
 		}
 		if (
+			this.#scope === "project" &&
 			openSubmenuId &&
 			list &&
 			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths))

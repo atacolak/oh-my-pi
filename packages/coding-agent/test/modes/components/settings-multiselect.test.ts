@@ -407,6 +407,53 @@ describe("multiselect settings (array-of-enum)", () => {
 			await tempDir.remove();
 		}
 	});
+
+	it("keeps in-progress global text after adopting a project same-key edit", async () => {
+		resetSettingsForTest();
+		const tempDir = TempDir.createSync("@pi-settings-text-global-adopt-");
+		try {
+			const projectDir = tempDir.join("project");
+			const agentDir = tempDir.join("agent");
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(projectConfigPath, YAML.stringify({ images: { urls: { command: "/tmp/project" } } }, null, 2));
+			await Settings.init({ cwd: projectDir, agentDir });
+
+			const comp = new SettingsSelectorComponent(
+				{
+					availableThinkingLevels: [],
+					thinkingLevel: undefined,
+					availableThemes: ["dark"],
+					providers: [],
+					cwd: projectDir,
+				},
+				{
+					onChange: () => {},
+					onCancel: () => {},
+				},
+			);
+
+			settings.set("images.urls.command", "/tmp/queued", "project");
+			for (const ch of "image upload command") comp.handleInput(ch);
+			comp.handleInput("\x1bs");
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("Settings · global");
+			comp.handleInput("\n");
+			for (const ch of "/tmp/global-draft") comp.handleInput(ch);
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("/tmp/global-draft");
+
+			await Bun.write(projectConfigPath, YAML.stringify({ images: { urls: { command: "/tmp/disk" } } }, null, 2));
+			await settings.flush();
+
+			expect(settings.get("images.urls.command")).toBe("/tmp/disk");
+			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("/tmp/global-draft");
+
+			comp.handleInput("\n");
+			expect(settings.getGlobalValue("images.urls.command")).toBe("/tmp/global-draft");
+			expect(settings.get("images.urls.command")).toBe("/tmp/disk");
+		} finally {
+			resetSettingsForTest();
+			await tempDir.remove();
+		}
+	});
 });
 
 describe("settings section sidebar", () => {

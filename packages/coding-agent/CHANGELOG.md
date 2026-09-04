@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/settings` discarding an in-progress global editor after adopting a project disk edit.
 - Fixed `/settings` discarding in-progress editors after adopting an unrelated disk edit.
 - Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
 - Fixed `/settings` resetting an open multi-select cursor after an ordinary project save.

@@ -412,6 +412,26 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("sanitizes auto-start failures before showing them", async () => {
+		const home = os.homedir();
+		const poisoned = `wss://[\u001b[31mred\n\t${home}/secret`;
+		const errors: string[] = [];
+		const ctx = context({
+			"collab.autoStart": true,
+			"collab.relayUrl": poisoned,
+			showError: (text: string) => errors.push(text),
+		});
+		await expect(autoStartCollab(ctx)).resolves.toBe(false);
+		expect(ctx.collabHost).toBeUndefined();
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toContain("Failed to auto-start collab session");
+		expect(errors[0]).toContain("Invalid relay URL");
+		expect(errors[0]).toContain("~/secret");
+		expect(errors[0]).not.toContain(home);
+		expect(errors[0]).not.toContain("\u001b");
+		expect(errors[0]).not.toMatch(/[\t\n]/);
+	});
+
 	it("lets a guest join from the written link without /collab", async () => {
 		installInMemoryRelay();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));

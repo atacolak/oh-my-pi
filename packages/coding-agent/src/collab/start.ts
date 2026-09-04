@@ -82,7 +82,7 @@ async function startCollabHostOnce(
 		try {
 			await writeCollabLink(writeLinkPath, host.link);
 		} catch (error) {
-			ctx.showError(`Failed to write collab link file: ${sanitizeWriteLinkError(error)}`);
+			ctx.showError(`Failed to write collab link file: ${sanitizeCollabError(error)}`);
 		}
 	}
 	if (ctx.collabHost !== host) {
@@ -138,7 +138,7 @@ async function writeCollabLink(target: string, link: string): Promise<void> {
 	}
 }
 
-function sanitizeWriteLinkError(error: unknown): string {
+function sanitizeCollabError(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
 	const text = shortenEmbeddedPaths(
 		replaceTabs(sanitizeText(detail))
@@ -198,7 +198,7 @@ export async function autoStartCollab(ctx: InteractiveModeContext): Promise<bool
 		return true;
 	} catch (error) {
 		if (error instanceof Error && error.message === COLLAB_HOST_START_CANCELLED) return false;
-		ctx.showError(`Failed to auto-start collab session: ${error instanceof Error ? error.message : String(error)}`);
+		ctx.showError(`Failed to auto-start collab session: ${sanitizeCollabError(error)}`);
 		return false;
 	}
 }

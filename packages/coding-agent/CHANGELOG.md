@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fixed `rename_file` telling language servers that a symlink target moved when only the alias was renamed, so import rewrites no longer miss the moved path.
+- Fixed `lsp reload *` skipping a nested initialization failure seen only through the three-minute fast-fail cache, so a later session still hit that cache after an explicit reload.
+- Fixed language-server ownership surviving process exit and idle shutdown, so another session that later started the same identity could not replace it.
 - Fixed `/remove-dir` restoring language-server ownership after a failed extra-root teardown, so a later replacement client stayed owned by the session that no longer had that workspace.
 - Fixed `lsp reload *` skipping a nested initialization failure when another session joined the same pending start, so the waiting session still hit the three-minute negative cache.
 - Fixed `/remove-dir` skipping the prompt refresh and confirmation when language-server teardown for the removed root failed, so the session stayed mutated while the active prompt still listed that workspace.

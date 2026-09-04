@@ -1,6 +1,7 @@
 export { truncate } from "@oh-my-pi/pi-utils";
 
 import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { isEnoent, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import { formatGroupedFiles } from "../tools/grouped-file-output";
@@ -35,6 +36,16 @@ export { detectLanguageId } from "../utils/lang-from-path";
  */
 export function fileToUri(filePath: string): string {
 	return Bun.pathToFileURL(resolveEquivalentPath(filePath)).href;
+}
+
+/**
+ * Convert a filesystem rename path to a file:// URI without following a leaf
+ * symlink. `fileToUri` canonicalizes so workspace aliases share one document
+ * identity; `rename_file` of a symlink entry must name the alias that actually
+ * moves, not the unchanged target.
+ */
+export function fileToLexicalUri(filePath: string): string {
+	return Bun.pathToFileURL(path.resolve(filePath)).href;
 }
 
 /**

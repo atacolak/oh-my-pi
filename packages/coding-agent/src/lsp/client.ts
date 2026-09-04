@@ -90,6 +90,24 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	if (keys?.size === 0) ownerClientKeys.delete(owner);
 	return !clientOwners.has(key);
 }
+function dropClientOwnership(key: string): void {
+	const owners = clientOwners.get(key);
+	if (!owners) return;
+	for (const owner of owners) {
+		const keys = ownerClientKeys.get(owner);
+		keys?.delete(key);
+		if (keys?.size === 0) ownerClientKeys.delete(owner);
+	}
+	clientOwners.delete(key);
+}
+
+function unpublishClient(key: string, client: LspClient): boolean {
+	if (clients.get(key) !== client) return false;
+	clients.delete(key);
+	dropClientOwnership(key);
+	return true;
+}
+
 function releaseOwnerIfUnpublished(key: string, owner: LspClientOwner | undefined): void {
 	if (!owner || clients.has(key)) return;
 	releaseClientOwnerKey(key, owner);
@@ -419,7 +437,7 @@ async function writeMessage(
  * callers do not grab the corpse before `proc.exited` cleans up.
  */
 function teardownWedgedClient(client: LspClient): void {
-	if (clients.get(client.name) === client) clients.delete(client.name);
+	unpublishClient(client.name, client);
 	try {
 		client.proc.kill();
 	} catch {
@@ -571,9 +589,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 		// so tear the client down — the next call respawns instead of timing out.
 		if (client.proc.exitCode === null) {
 			client.status = "error";
-			if (clients.get(client.name) === client) {
-				clients.delete(client.name);
-			}
+			unpublishClient(client.name, client);
 			const teardownErr = new Error("LSP reader stopped; client torn down");
 			for (const pending of client.pendingRequests.values()) {
 				pending.reject(teardownErr);
@@ -1240,6 +1256,10 @@ export async function getOrCreateClient(
 	const recentFailure = initFailures.get(key);
 	if (recentFailure) {
 		if (Date.now() - recentFailure.at < INIT_FAILURE_BACKOFF_MS) {
+			if (owner) {
+				if (!recentFailure.owners) recentFailure.owners = new Set();
+				recentFailure.owners.add(owner);
+			}
 			throw new Error(`LSP server ${config.command} failed to initialize recently: ${recentFailure.message}`);
 		}
 		initFailures.delete(key);
@@ -1304,7 +1324,10 @@ export async function getOrCreateClient(
 
 		// Register crash recovery - remove client on process exit
 		proc.exited.then(() => {
-			if (clients.get(key) === client) clients.delete(key);
+			if (clients.get(key) === client) {
+				clients.delete(key);
+				dropClientOwnership(key);
+			}
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);
 			client.resolveProjectLoaded();
 
@@ -1377,7 +1400,8 @@ export async function getOrCreateClient(
 		} catch (err) {
 			// Clean up on initialization failure
 			client.status = "error";
-			if (clients.get(key) === client) clients.delete(key);
+			const waitingOwners = clientOwners.get(key);
+			unpublishClient(key, client);
 			proc.kill();
 			const message = err instanceof Error ? err.message : String(err);
 			// Negative-cache deterministic failures. Timeouts under a
@@ -1389,7 +1413,6 @@ export async function getOrCreateClient(
 				!message.includes("configuration was superseded") &&
 				!(initTimeoutMs !== undefined && message.includes("timed out"))
 			) {
-				const waitingOwners = clientOwners.get(key);
 				initFailures.set(key, {
 					at: Date.now(),
 					message,
@@ -1768,7 +1791,8 @@ async function waitForExit(client: LspClient, timeoutMs: number): Promise<boolea
  * failed teardown, not a completed restart.
  */
 export async function shutdownClientInstance(client: LspClient): Promise<boolean> {
-	if (clients.get(client.name) === client) clients.delete(client.name);
+	const unpublished = clients.get(client.name) === client;
+	if (unpublished) clients.delete(client.name);
 
 	const err = new Error("LSP client shutdown");
 	for (const pending of Array.from(client.pendingRequests.values())) {
@@ -1782,13 +1806,20 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 	);
 	if (shutdownCompleted) {
 		await sendNotification(client, "exit", undefined).catch(() => {});
-		if (await waitForExit(client, EXIT_TIMEOUT_MS)) return true;
+		if (await waitForExit(client, EXIT_TIMEOUT_MS)) {
+			if (unpublished) dropClientOwnership(client.name);
+			return true;
+		}
 	}
 
 	client.proc.kill();
 	const exited = await waitForExit(client, EXIT_TIMEOUT_MS);
-	if (!exited && !clients.has(client.name)) clients.set(client.name, client);
-	return exited;
+	if (!exited) {
+		if (!clients.has(client.name)) clients.set(client.name, client);
+		return false;
+	}
+	if (unpublished) dropClientOwnership(client.name);
+	return true;
 }
 
 /**

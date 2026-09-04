@@ -282,7 +282,6 @@ describe("createTools", () => {
 				"launch.enabled": false,
 				"web_search.enabled": false,
 				"browser.enabled": false,
-				"inspect_image.enabled": false,
 			}),
 		});
 		const tools = await createTools(session);
@@ -296,7 +295,6 @@ describe("createTools", () => {
 		expect(names).not.toContain("ast_edit");
 		expect(names).not.toContain("web_search");
 		expect(names).not.toContain("browser");
-		expect(names).not.toContain("inspect_image");
 
 		const requestedTools = await createTools(createTestSession({ settings: session.settings }), ["bash", "read"]);
 		// `write` joins as the device-only xd:// transport: read was granted,

@@ -504,6 +504,59 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("queries diagnostics with each client's document URI across a directory symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dir-symlink-diag-uri-");
+		const shared = TempDir.createSync("@omp-lsp-dir-symlink-diag-uri-shared-");
+		try {
+			const sharedProject = path.join(shared.path(), "project");
+			fs.mkdirSync(sharedProject, { recursive: true });
+			const sharedFile = path.join(sharedProject, "foo.ts");
+			fs.writeFileSync(sharedFile, "export const foo = 1;\n");
+			const aliasDir = path.join(tempDir.path(), "link");
+			fs.symlinkSync(sharedProject, aliasDir);
+			const alias = path.join(aliasDir, "foo.ts");
+			const outerUri = fileToUri(alias, tempDir.path());
+			const innerUri = fileToUri(alias, sharedProject);
+			expect(outerUri).not.toBe(innerUri);
+
+			const range = {
+				start: { line: 0, character: 0 },
+				end: { line: 0, character: 3 },
+			};
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => {
+				const client = mockLspClient(config, cwd);
+				const uri = fileToUri(alias, config.resolvedRoot ?? cwd);
+				client.diagnostics.set(uri, {
+					diagnostics: [{ message: `${config.command} finding`, range }],
+					version: 1,
+				});
+				client.diagnosticsVersion = 1;
+				return client;
+			});
+
+			const result = await getDiagnosticsForFile(
+				alias,
+				tempDir.path(),
+				[
+					[
+						"outer-lsp",
+						{ command: "outer-lsp", fileTypes: ["ts"], rootMarkers: [], resolvedRoot: tempDir.path() },
+					],
+					["inner-lsp", { command: "inner-lsp", fileTypes: ["ts"], rootMarkers: [], resolvedRoot: sharedProject }],
+				],
+				{ timeoutMs: 1_000, pipelineBudgetMs: 3_000 },
+			);
+
+			expect(result?.server).toContain("outer-lsp");
+			expect(result?.server).toContain("inner-lsp");
+			expect(result?.messages.some(message => message.includes("outer-lsp finding"))).toBe(true);
+			expect(result?.messages.some(message => message.includes("inner-lsp finding"))).toBe(true);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("rename_file asks one nested server when symlink and canonical roots both match", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rename-key-");
 		const realRoot = tempDir.path();

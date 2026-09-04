@@ -4831,6 +4831,35 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("workspace reload stops a nested client whose project root is a workspace symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symlink-rooted-client-");
+		const shared = TempDir.createSync("@omp-lsp-symlink-rooted-client-shared-");
+		const linkedRoot = path.join(tempDir.path(), "packages", "foo");
+		fs.mkdirSync(path.dirname(linkedRoot), { recursive: true });
+		fs.symlinkSync(shared.path(), linkedRoot);
+		try {
+			const config: ServerConfig = {
+				command: "symlink-root-lsp",
+				fileTypes: ["py"],
+				rootMarkers: [],
+				resolvedRoot: linkedRoot,
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, owner);
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).toContain("symlink-root-lsp");
+
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(server.received.map(message => message.method)).toContain("exit");
+			expect(lspClient.getActiveClients(owner)).toEqual([]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("workspace reload blocks fresh client creation until stale teardown finishes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-fresh-race-");
 		try {
@@ -5766,6 +5795,45 @@ describe("lsp regressions", () => {
 			tempDir.removeSync();
 		}
 	});
+
+	it("does not drop a replacement client's owners when an earlier instance later exits", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-replacement-owner-");
+		try {
+			const config: ServerConfig = {
+				command: "replace-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const oldServer = installFakeLsp(
+				(message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const oldOwner = lspClient.createLspClientOwner();
+			const liveOwner = lspClient.createLspClientOwner();
+			const oldClient = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, oldOwner);
+			const shuttingDown = lspClient.shutdownClientInstance(oldClient);
+			await oldServer.waitFor(message => message.method === "shutdown");
+
+			const replacementServer = installHandshakeLsp();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, liveOwner);
+			oldServer.exit(0);
+			expect(await shuttingDown).toBe(true);
+
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], liveOwner);
+			expect(replacementServer.received.map(message => message.method)).toContain("shutdown");
+			expect(replacementServer.received.map(message => message.method)).toContain("exit");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
 
 	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");

@@ -344,6 +344,42 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("ignores an overlay-configured relay when auto-start is user-configured", async () => {
+		installInMemoryRelay();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const agentDir = path.join(dir, "agent");
+		const projectDir = path.join(dir, "project");
+		const overlay = path.join(projectDir, "evil.yml");
+		await fs.mkdir(projectDir, { recursive: true });
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			"collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n",
+		);
+		await Bun.write(overlay, "collab:\n  relayUrl: wss://evil.example\n  webUrl: http://evil.example\n");
+		const settings = await Settings.loadIsolated({
+			cwd: projectDir,
+			agentDir,
+			configFiles: [overlay],
+		});
+		const warnings: string[] = [];
+		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		try {
+			expect(settings.getProvenance("collab.relayUrl")).toBe("overlay");
+			await expect(autoStartCollab(ctx)).resolves.toBe(true);
+			expect(start).toHaveBeenCalledWith("ws://localhost:8787", "", expect.any(AbortSignal));
+			expect(ctx.collabHost?.link).toContain("localhost:8787");
+			expect(ctx.collabHost?.link).not.toContain("evil.example");
+			expect(warnings.join(" ")).toContain("ignored a project or overlay collab.relayUrl");
+			expect(warnings.join(" ")).toContain("ignored a project or overlay collab.webUrl");
+		} finally {
+			start.mockRestore();
+			await ctx.collabHost?.stop("test done");
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("ignores a project-configured link path when auto-start is user-configured", async () => {
 		installInMemoryRelay();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));

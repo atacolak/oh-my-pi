@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
+import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
 import type { InteractiveModeContext } from "../modes/types";
 import { expandTilde } from "../tools/path-utils";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
@@ -174,35 +175,66 @@ export function resolveRelayUrl(input: string): string {
 	return trimmed.includes("://") ? trimmed : `wss://${trimmed}`;
 }
 
+type CollabSettingPath = Extract<SettingPath, `collab.${string}`>;
+
+function globalCollabValue(settings: Settings, path: CollabSettingPath): unknown {
+	let current: unknown = settings.getGlobalSettings();
+	for (const segment of path.split(".")) {
+		if (current === null || current === undefined || typeof current !== "object") return undefined;
+		current = (current as Record<string, unknown>)[segment];
+	}
+	return current;
+}
+
+function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, path: P): SettingValue<P> {
+	const provenance = settings.getProvenance(path);
+	if (provenance !== "project" && provenance !== "overlay") return settings.get(path);
+	const globalValue = globalCollabValue(settings, path);
+	return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
+}
+
+function isTrustedCollabConfigured(settings: Settings, path: CollabSettingPath): boolean {
+	const provenance = settings.getProvenance(path);
+	if (provenance === "runtime" || provenance === "global") return true;
+	if (provenance !== "project" && provenance !== "overlay") return false;
+	return globalCollabValue(settings, path) !== undefined;
+}
+
 /** Start the configured host once during interactive startup. */
 export async function autoStartCollab(ctx: InteractiveModeContext): Promise<boolean> {
-	if (ctx.collabGuest || ctx.collabHost || !ctx.settings.get("collab.autoStart")) return false;
-	const autoStartProvenance = ctx.settings.getProvenance("collab.autoStart");
-	if (autoStartProvenance === "project" || autoStartProvenance === "overlay") {
-		ctx.showWarning("Collab auto-start skipped: configure collab.autoStart outside project settings.");
+	if (ctx.collabGuest || ctx.collabHost) return false;
+	const autoStart = trustedCollabSetting(ctx.settings, "collab.autoStart");
+	if (!autoStart) {
+		if (ctx.settings.get("collab.autoStart")) {
+			ctx.showWarning("Collab auto-start skipped: configure collab.autoStart outside project settings.");
+		}
 		return false;
 	}
-	const relayInput = ctx.settings.get("collab.relayUrl")?.trim() ?? "";
+	const relayInput = trustedCollabSetting(ctx.settings, "collab.relayUrl")?.trim() ?? "";
 	if (!relayInput) {
 		ctx.showWarning("Collab auto-start skipped: set collab.relayUrl to a relay endpoint.");
 		return false;
 	}
 	const relayUrl = resolveRelayUrl(relayInput);
-	if (relayUrl === DEFAULT_RELAY_URL && !ctx.settings.isConfigured("collab.relayUrl")) {
+	if (relayUrl === DEFAULT_RELAY_URL && !isTrustedCollabConfigured(ctx.settings, "collab.relayUrl")) {
 		ctx.showWarning("Collab auto-start skipped: configure collab.relayUrl explicitly before using the public relay.");
 		return false;
 	}
-	const configuredLinkPath = ctx.settings.get("collab.writeLinkPath") ?? "";
-	const writeLinkProvenance = ctx.settings.getProvenance("collab.writeLinkPath");
-	const writeLinkPath =
-		writeLinkProvenance === "project" || writeLinkProvenance === "overlay" ? "" : configuredLinkPath;
-	if (configuredLinkPath.trim() && !writeLinkPath) {
+	if ((ctx.settings.get("collab.relayUrl") ?? "") !== relayInput) {
+		ctx.showWarning("Collab auto-start ignored a project or overlay collab.relayUrl.");
+	}
+	const writeLinkPath = trustedCollabSetting(ctx.settings, "collab.writeLinkPath") ?? "";
+	if ((ctx.settings.get("collab.writeLinkPath") ?? "") !== writeLinkPath) {
 		ctx.showWarning("Collab link file skipped: configure collab.writeLinkPath outside project settings.");
+	}
+	const webUrl = trustedCollabSetting(ctx.settings, "collab.webUrl") ?? "";
+	if ((ctx.settings.get("collab.webUrl") ?? "") !== webUrl) {
+		ctx.showWarning("Collab auto-start ignored a project or overlay collab.webUrl.");
 	}
 	try {
 		await startCollabHost(ctx, {
 			relayUrl,
-			webUrl: ctx.settings.get("collab.webUrl") ?? "",
+			webUrl,
 			writeLinkPath,
 		});
 		ctx.showStatus("Collab auto-started", { dim: true });

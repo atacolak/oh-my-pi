@@ -13,6 +13,7 @@
 ### Fixed
 
 - Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
+- Detected project-dotenv ownership using Bun's pre-dotenv `NODE_ENV` mode so a `.env` that sets `NODE_ENV` cannot hide redirects in `.env.development`.
 
 ## [18.1.11] - 2026-09-05
 

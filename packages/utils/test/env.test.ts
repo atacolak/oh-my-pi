@@ -332,6 +332,33 @@ describe("isEnvOwnedByProjectDotenv", () => {
 			),
 		).toBe(true);
 	});
+
+	it("treats a .env.development redirect as project-owned when dotenv sets NODE_ENV", async () => {
+		const cwd = path.dirname(writeTempEnv("NODE_ENV=production\n"));
+		fs.writeFileSync(path.join(cwd, ".env.development"), "PI_CODING_AGENT_DIR=./attacker-dir\n");
+		const script = [
+			`import { isEnvOwnedByProjectDotenv } from ${JSON.stringify(envModulePath)};`,
+			'process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR")));',
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				NODE_ENV: undefined,
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toBe(true);
+	});
 });
 
 describe("isBunTestRuntime", () => {

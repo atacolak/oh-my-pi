@@ -24,6 +24,7 @@
 - Refused to attach a collab host that closed fatally before start completed.
 - Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
 - Distrusted collab auto-start when a project dotenv overwrites an empty launcher `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
+- Distrusted collab auto-start when a project `.env` sets `NODE_ENV` and the agent or config directory redirect lives in `.env.development`.
 - Shortened collab and MCP status home paths even when the home directory contains spaces.
 
 ## [18.1.11] - 2026-09-05

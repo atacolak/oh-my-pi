@@ -119,6 +119,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
 import {
+	buildSkillPromptMessage,
 	loadSkills as loadSkillsInternal,
 	type Skill,
 	type SkillWarning,
@@ -167,6 +168,7 @@ import {
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	replaceLlmImagesWithText,
+	SKILL_PROMPT_MESSAGE_TYPE,
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
@@ -195,7 +197,8 @@ import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
 import { isScoutSpawnable } from "./task/spawn-policy";
-import type { StructuredSubagentSchemaMode } from "./task/types";
+import type { AutomationAuthorPolicy, StructuredSubagentSchemaMode } from "./task/types";
+
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -383,6 +386,8 @@ export interface CreateAgentSessionOptions {
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
 	spawns?: string;
+	/** Skill names to inject as hidden autoload prompts before the first turn. */
+	autoloadSkills?: string[];
 
 	/** Auth storage for credentials. Default: discoverAuthStorage(agentDir) */
 	authStorage?: AuthStorage;
@@ -578,6 +583,10 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Resolved root `--agent` name. Distinct from IRC display name. */
+	rootAgentName?: string;
+	/** Effective durable authoring grant from the resolved root AgentDefinition. */
+	automationAuthor?: AutomationAuthorPolicy;
 	/**
 	 * Agent definition name used to evaluate rule `agents` scoping. Defaults to
 	 * "main" for a top-level session / "sub" for a subagent.
@@ -964,6 +973,9 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 	return {
 		sessionManager: ctx.sessionManager,
 		modelRegistry: ctx.modelRegistry,
+		rootAgentName: ctx.rootAgentName,
+		automationAuthor: ctx.automationAuthor,
+
 		model: ctx.model,
 		isIdle: ctx.isIdle,
 		hasQueuedMessages: ctx.hasPendingMessages,
@@ -2809,6 +2821,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			localProtocolOptions,
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
+			options.rootAgentName,
+			options.automationAuthor,
 		);
 
 		credentialDisabledTarget = extensionRunner;
@@ -2828,6 +2842,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			settings,
 			localProtocolOptions,
+			rootAgentName: options.rootAgentName,
+			automationAuthor: options.automationAuthor,
+
 			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);
@@ -4302,6 +4319,26 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			await session.initializeCodeMode();
 		} catch (error) {
 			logger.warn("Code Mode initialization at session startup failed", { error: String(error) });
+		}
+
+		if (options.autoloadSkills?.length && skills.length > 0) {
+			for (const name of options.autoloadSkills) {
+				const skill = skills.find(entry => entry.name === name);
+				if (!skill) {
+					logger.warn("Autoload skill not found", { name });
+					continue;
+				}
+				const { message } = await buildSkillPromptMessage(skill, "", "autoload");
+				await session.sendCustomMessage(
+					{
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: message,
+						display: false,
+						details: { name: skill.name, path: skill.filePath },
+					},
+					{ triggerTurn: false },
+				);
+			}
 		}
 
 		return {

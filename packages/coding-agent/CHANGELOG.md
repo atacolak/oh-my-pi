@@ -29,6 +29,8 @@
 - Hindsight delayed startup now restores the loaded-message baseline when a `/resume` rolls back, so idle close does not re-retain the original transcript.
 - Hindsight `/clear` now reconstructs the post-reset document identity from the persisted reset boundary, and branch/fork after `/clear` no longer retain into the source document.
 - Hindsight delayed startup now drops construction baselines when the backend is torn down, so re-enabling does not duplicate already drained history.
+- Hindsight now resets retain cadence after `branch` and `/btw` so a shorter branch cannot inherit the source session's last retained turn.
+- Hindsight `/tree` now resyncs the post-clear document overlay so a pre-reset leaf cannot overwrite the drained post-clear document.
 
 ## [18.0.6] - 2026-08-26
 

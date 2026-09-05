@@ -469,6 +469,134 @@ describe("AgentSession Hindsight leave-path retain", () => {
 		}
 	});
 
+	it("resets retain cadence after branchFromBtw", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const ctx = await createTestSession({
+			settingsOverrides: {
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainEveryNTurns": 5,
+				"hindsight.retainOverlapTurns": 0,
+			},
+		});
+		try {
+			const { session, sessionManager } = ctx;
+			for (const n of [1, 2, 3, 4, 5]) {
+				sessionManager.appendMessage(userMsg(`cadence turn ${n} has enough text`));
+				sessionManager.appendMessage(assistantMsg(`cadence reply ${n} has enough text`));
+			}
+			session.hindsightCloseRetainBaselineTurns = 0;
+
+			await hindsightBackend.start({
+				session,
+				settings: session.settings,
+				modelRegistry: {} as never,
+				agentDir: ctx.tempDir,
+				taskDepth: 0,
+				hindsightCloseRetainBaselineTurns: 0,
+			});
+			const state = session.getHindsightSessionState()!;
+			await state.maybeRetainOnAgentEnd();
+			expect(retain).toHaveBeenCalledTimes(1);
+			expect(state.lastRetainedTurn).toBe(5);
+
+			const leafId = sessionManager.getLeafId();
+			if (!leafId) throw new Error("expected session leaf");
+			const result = await session.branchFromBtw(
+				"why did this fail with enough text",
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "the fix is to branch the side answer with enough text" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "test",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
+				leafId,
+				sessionManager.getSessionId(),
+			);
+			expect(result.cancelled).toBe(false);
+			expect(state.lastRetainedTurn).toBe(0);
+
+			await state.maybeRetainOnAgentEnd();
+			expect(retain).toHaveBeenCalledTimes(2);
+			expect(String(retain.mock.calls.at(-1)?.[1])).toContain("why did this fail with enough text");
+		} finally {
+			await ctx.cleanup();
+		}
+	});
+
+	it("resyncs the post-clear overlay after /tree to a pre-reset leaf", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const ctx = await createTestSession({
+			inMemory: true,
+			settingsOverrides: {
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainEveryNTurns": 1,
+				"hindsight.retainOverlapTurns": 0,
+			},
+		});
+		try {
+			const { session, sessionManager } = ctx;
+			sessionManager.appendMessage(userMsg("pre-clear turn has enough text"));
+			const firstAssistantId = sessionManager.appendMessage(assistantMsg("pre-clear reply has enough text"));
+			session.hindsightCloseRetainBaselineTurns = 0;
+
+			await hindsightBackend.start({
+				session,
+				settings: session.settings,
+				modelRegistry: {} as never,
+				agentDir: ctx.tempDir,
+				taskDepth: 0,
+				hindsightCloseRetainBaselineTurns: 0,
+			});
+			const state = session.getHindsightSessionState()!;
+			await session.resetSessionContext();
+			const overlayAfterClear = session.hindsightDocumentId;
+			expect(overlayAfterClear).toBeDefined();
+			expect(state.sessionId).toBe(overlayAfterClear);
+
+			sessionManager.appendMessage(userMsg("post-clear turn has enough text"));
+			sessionManager.appendMessage(assistantMsg("post-clear reply has enough text"));
+			await state.maybeRetainOnAgentEnd();
+			expect(retain).toHaveBeenCalledTimes(2);
+			expect(retain.mock.calls.at(-1)?.[2]).toEqual(
+				expect.objectContaining({ documentId: overlayAfterClear }),
+			);
+			expect(String(retain.mock.calls.at(-1)?.[1])).toContain("post-clear turn has enough text");
+
+			const result = await session.navigateTree(firstAssistantId, { summarize: false });
+			expect(result.cancelled).toBe(false);
+			expect(session.hindsightDocumentId).toBeUndefined();
+			expect(state.sessionId).toBe(sessionManager.getSessionId());
+			expect(state.sessionId).not.toBe(overlayAfterClear);
+
+			sessionManager.appendMessage(userMsg("pre-reset leaf turn has enough text"));
+			sessionManager.appendMessage(assistantMsg("pre-reset leaf reply has enough text"));
+			await state.drainOnClose();
+			expect(retain).toHaveBeenCalledTimes(3);
+			expect(retain.mock.calls.at(-1)?.[2]).toEqual(
+				expect.objectContaining({ documentId: sessionManager.getSessionId() }),
+			);
+			expect(String(retain.mock.calls.at(-1)?.[1])).toContain("pre-reset leaf turn has enough text");
+			expect(retain.mock.calls.filter(call => call[2]?.documentId === overlayAfterClear)).toHaveLength(1);
+		} finally {
+			await ctx.cleanup();
+		}
+	});
+
 	it("does not re-retain drained history after hindsight is re-enabled", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);

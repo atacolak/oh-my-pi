@@ -8575,6 +8575,7 @@ export class AgentSession {
 			this.#syncAgentSessionId();
 			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
+			await this.#memory.resetContextForNewTranscript();
 
 			// Reload messages from entries (works for both file and in-memory mode)
 			const sessionContext = this.buildDisplaySessionContext();
@@ -8710,6 +8711,7 @@ export class AgentSession {
 			this.#syncAgentSessionId();
 			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
+			await this.#memory.resetContextForNewTranscript({ closeRetainBaselineTurns });
 
 			const sessionContext = this.buildDisplaySessionContext();
 
@@ -9061,12 +9063,15 @@ export class AgentSession {
 			sessionContext = this.sessionManager.buildSessionContext();
 		}
 		// Delayed Hindsight install still reads these construction-time fields.
-		// `/tree` never creates live Hindsight state, so rebase the pending
-		// close baseline onto the active branch instead of skipping a
-		// below-cadence replacement turn. Ask re-answers keep this pre-continue
-		// message boundary: the new answer is a toolResult, so the later
-		// assistant reply must stay a pending tail rather than loaded history.
+		// Rebase the pending close baseline onto the active branch instead of
+		// skipping a below-cadence replacement turn. Ask re-answers keep this
+		// pre-continue message boundary: the new answer is a toolResult, so the
+		// later assistant reply must stay a pending tail rather than loaded
+		// history. Live state also resyncs the post-clear overlay so a pre-reset
+		// leaf cannot replace the drained post-clear document.
 		this.#rebaseHindsightCloseRetainBaseline();
+		this.#syncHindsightDocumentId();
+		this.#memory.rekeyForCurrentSessionId();
 		return {
 			editorText,
 			editorImages,

@@ -4125,6 +4125,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				modelRegistry,
 				agentDir,
 				taskDepth,
+				hindsightCloseRetainBaselineTurns: session.loadedUserTurnCount,
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 			});

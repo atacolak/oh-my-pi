@@ -43,6 +43,10 @@ describe("parseAgentFields", () => {
 		expect(fields).toBeDefined();
 		expect(fields?.blocking).toBeUndefined();
 	});
+	test("parses hide from boolean frontmatter", () => {
+		expect(parseAgentFields({ name: "runtime-integrator", description: "desc", hide: true })?.hide).toBe(true);
+		expect(parseAgentFields({ name: "runtime-integrator", description: "desc", hide: false })?.hide).toBe(false);
+	});
 	test("parses legacy thinking key", () => {
 		const fields = parseAgentFields({
 			name: "reviewer",
@@ -208,5 +212,46 @@ describe("parseAgentFields", () => {
 		);
 		expect(parseAgentFields({ name: "worker", description: "desc", advisor: "  " })?.advisor).toBeUndefined();
 		expect(parseAgentFields({ name: "worker", description: "desc" })?.advisor).toBeUndefined();
+	});
+	test("parses descendant and scope automationAuthor policies", () => {
+		expect(
+			parseAgentFields({
+				name: "runtime-maintainer",
+				description: "desc",
+				spawns: "scout",
+				automationAuthor: {
+					allowedAgents: ["pr-maintainer", "capability-maintainer"],
+					jurisdiction: "descendants",
+				},
+			})?.automationAuthor,
+		).toEqual({
+			allowedAgents: ["pr-maintainer", "capability-maintainer"],
+			jurisdiction: "descendants",
+		});
+		expect(
+			parseAgentFields({
+				name: "automation-builder",
+				description: "desc",
+				automationAuthor: { allowedAgents: "*", jurisdiction: "scope" },
+			})?.automationAuthor,
+		).toEqual({ allowedAgents: "*", jurisdiction: "scope" });
+	});
+
+	test("keeps automationAuthor independent from spawns and drops invalid grants", () => {
+		const fields = parseAgentFields({
+			name: "runtime-maintainer",
+			description: "desc",
+			spawns: ["scout"],
+			automationAuthor: { allowedAgents: [], jurisdiction: "descendants" },
+		});
+		expect(fields?.spawns).toEqual(["scout"]);
+		expect(fields?.automationAuthor).toBeUndefined();
+		expect(
+			parseAgentFields({
+				name: "runtime-maintainer",
+				description: "desc",
+				automationAuthor: { allowedAgents: "*", jurisdiction: "universe" },
+			})?.automationAuthor,
+		).toBeUndefined();
 	});
 });

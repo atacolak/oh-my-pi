@@ -2,14 +2,14 @@
  * Bank ID derivation, project-tag scoping, and first-use bank setup.
  *
  * Three scoping modes (`HindsightConfig.scoping`):
- *   - `global`              — single shared bank, no per-project filter.
+ *   - `global`              — one bank plus configured deterministic scope tags.
  *   - `per-project`         — one bank per cwd basename, hard isolation.
- *   - `per-project-tagged`  — single shared bank, retains carry a `project:<name>`
- *                              tag and recall filters on it but still surfaces
- *                              untagged ("global") memories alongside.
+ *   - `per-project-tagged`  — one bank plus configured scope tags and `project:<name>`.
  *
- * The base bank id is `bankIdPrefix-bankId` (default `omp`). Per-project mode
- * appends `-<project>`; tagged mode leaves the bank untouched and uses tags.
+ * Non-empty resolved tags are applied identically to retain, recall/reflect,
+ * and observation consolidation. Retrieval uses `all_strict`: every requested
+ * deterministic tag must match while memories may carry additional semantic or
+ * provenance tags.
  *
  * Bank existence is idempotent at module level — a banksSet keeps track of
  * banks we've already PUT so each session boundary doesn't fire a fresh
@@ -33,18 +33,18 @@ const MISSION_SET_CAP = 10_000;
 
 export type RecallTagsMatch = "any" | "all" | "any_strict" | "all_strict";
 
-/**
- * Resolved bank target for a session: which bank to talk to, plus optional
- * tags to attach to retains and to filter recalls by.
- */
+/** Resolved bank target and deterministic memory scope for a session. */
 export interface BankScope {
 	bankId: string;
-	/** Tags applied to every retain. Undefined when scoping does not use tags. */
+	/** Fully resolved deterministic tags in stable order. */
+	resolvedTags?: string[];
+	/** Tags applied to every retain. */
 	retainTags?: string[];
-	/** Tags filter for recall/reflect. Undefined when scoping does not use tags. */
+	/** Tag filter applied to recall and reflect. */
 	recallTags?: string[];
-	/** Match mode for `recallTags`. Defaults to `any` so untagged ("global") memories surface too. */
 	recallTagsMatch?: RecallTagsMatch;
+	/** Exact consolidation scopes derived only from deterministic tags. */
+	observationScopes?: string[][];
 }
 
 /** Compose the prefixed base bank id (no project segment). */
@@ -78,30 +78,33 @@ function projectLabel(directory: string): string {
 	return path.basename(primary ?? directory).toLowerCase() || UNKNOWN_PROJECT;
 }
 
-/**
- * Resolve the active bank target plus optional tag scoping.
- *
- * Always returns a non-empty `bankId`. Tag fields are populated only for
- * `per-project-tagged`.
- */
+function uniqueTags(tags: readonly string[]): string[] {
+	return [...new Set(tags.map(tag => tag.trim()).filter(Boolean))];
+}
+
+function scopedBank(base: string, tags: readonly string[]): BankScope {
+	const resolvedTags = uniqueTags(tags);
+	if (resolvedTags.length === 0) return { bankId: base };
+	return {
+		bankId: base,
+		resolvedTags,
+		retainTags: resolvedTags,
+		recallTags: resolvedTags,
+		recallTagsMatch: "all_strict",
+		observationScopes: [resolvedTags],
+	};
+}
+
+/** Resolve the active bank and deterministic memory scope. */
 export function computeBankScope(config: HindsightConfig, directory: string): BankScope {
 	const base = baseBankId(config);
 	switch (config.scoping) {
 		case "global":
-			return { bankId: base };
+			return scopedBank(base, config.scopeTags);
 		case "per-project":
 			return { bankId: `${base}-${projectLabel(directory)}` };
-		case "per-project-tagged": {
-			const tag = `${PROJECT_TAG_PREFIX}${projectLabel(directory)}`;
-			return {
-				bankId: base,
-				retainTags: [tag],
-				recallTags: [tag],
-				// `any` keeps untagged "global" memories visible alongside the
-				// project-tagged ones; flip to `*_strict` to harden isolation.
-				recallTagsMatch: "any",
-			};
-		}
+		case "per-project-tagged":
+			return scopedBank(base, [...config.scopeTags, `${PROJECT_TAG_PREFIX}${projectLabel(directory)}`]);
 	}
 }
 

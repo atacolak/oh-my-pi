@@ -1,7 +1,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, ensureBankExists } from "./bank";
-import type { HindsightApi, MemoryItemInput } from "./client";
+import type { HindsightApi, MemoryItemInput, UpdateMode } from "./client";
 import type { HindsightConfig } from "./config";
 import {
 	composeRecallQuery,
@@ -18,7 +18,7 @@ import {
 	MENTAL_MODEL_FIRST_TURN_DEADLINE_MS,
 	resolveSeedsForScope,
 } from "./mental-models";
-import { extractMessages } from "./transcript";
+import { countRetainableUserTurns, extractMessages } from "./transcript";
 
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
@@ -27,11 +27,30 @@ interface PendingRetainItem {
 	content: string;
 	context?: string;
 	timestamp: Date;
+	/** Bank routing captured at enqueue so a later primary rebuild cannot reroute this item. */
+	client: HindsightApi;
+	bankId: string;
+	retainTags?: string[];
+	observationScopes?: string[][];
+	banksSet: Set<string>;
+	config: HindsightConfig;
 }
 
 interface RecallOutcome {
 	context: string | null;
 	ok: boolean;
+}
+
+export interface HindsightConversationTrackingSnapshot {
+	lastRetainedTurn: number;
+	closeRetainBaselineTurns: number;
+	hasRecalledForFirstTurn: boolean;
+	lastRecallSnippet?: string;
+	lastRetainedMessageIndex: number;
+	cachedTranscript: string;
+	lastRetainedPrefixKey: string;
+	loadedMessageCount: number;
+	loadedPrefixKey: string;
 }
 
 export interface HindsightSessionStateOptions {
@@ -44,11 +63,15 @@ export interface HindsightSessionStateOptions {
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	recallTags?: string[];
 	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	/** Exact deterministic observation consolidation scopes applied to every retain. */
+	observationScopes?: string[][];
 	config: HindsightConfig;
 	session: AgentSession;
 	banksSet: Set<string>;
 	lastRetainedTurn?: number;
 	hasRecalledForFirstTurn?: boolean;
+	/** User turns loaded before this process added new activity. */
+	closeRetainBaselineTurns?: number;
 	/**
 	 * When set, this entry is a subagent alias that reuses the parent's bank,
 	 * scope, config, client, and banksSet. Aliases skip auto-recall and
@@ -85,8 +108,18 @@ export class HindsightRetainQueue {
 		if (this.#closed) {
 			throw new Error("Hindsight retain queue is closed.");
 		}
-		this.#items.push({ content, context, timestamp: new Date() });
-
+		const state = this.#state;
+		this.#items.push({
+			content,
+			context,
+			timestamp: new Date(),
+			client: state.client,
+			bankId: state.bankId,
+			retainTags: state.retainTags,
+			banksSet: state.banksSet,
+			config: state.config,
+			observationScopes: state.observationScopes,
+		});
 		if (this.#items.length >= RETAIN_FLUSH_BATCH_SIZE) {
 			void this.flush();
 			return;
@@ -148,20 +181,37 @@ export class HindsightRetainQueue {
 			return;
 		}
 
+		let index = 0;
+		while (index < items.length) {
+			let end = index + 1;
+			while (end < items.length && sameRetainRoute(items[index]!, items[end]!)) {
+				end += 1;
+			}
+			await this.#flushRoute(sessionId, items.slice(index, end));
+			index = end;
+		}
+	}
+
+	async #flushRoute(sessionId: string, items: PendingRetainItem[]): Promise<void> {
+		const route = items[0];
+		if (!route) return;
+
 		try {
-			await ensureBankExists(state.client, state.bankId, state.config, state.banksSet);
+			await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
 			const batch: MemoryItemInput[] = items.map(item => ({
 				content: item.content,
-				context: item.context ?? state.config.retainContext,
+				context: item.context ?? item.config.retainContext,
 				metadata: { session_id: sessionId },
-				tags: state.retainTags,
+				tags: item.retainTags,
 				timestamp: item.timestamp,
+				strategy: item.config.retainStrategy || undefined,
+				observationScopes: item.observationScopes,
 			}));
-			await state.client.retainBatch(state.bankId, batch, { async: true });
-			if (state.config.debug) {
+			await route.client.retainBatch(route.bankId, batch, { async: true });
+			if (route.config.debug) {
 				logger.debug("Hindsight retain queue: batch flushed", {
 					sessionId,
-					bankId: state.bankId,
+					bankId: route.bankId,
 					items: items.length,
 				});
 			}
@@ -169,7 +219,7 @@ export class HindsightRetainQueue {
 			const errorText = err instanceof Error ? err.message : String(err);
 			logger.warn("Hindsight retain queue: batch flush failed", {
 				sessionId,
-				bankId: state.bankId,
+				bankId: route.bankId,
 				items: items.length,
 				error: errorText,
 			});
@@ -187,6 +237,26 @@ export class HindsightRetainQueue {
 	}
 }
 
+function sameRetainRoute(a: PendingRetainItem, b: PendingRetainItem): boolean {
+	if (
+		a.client !== b.client ||
+		a.bankId !== b.bankId ||
+		a.banksSet !== b.banksSet ||
+		a.config !== b.config ||
+		a.observationScopes !== b.observationScopes
+	) {
+		return false;
+	}
+	const aTags = a.retainTags;
+	const bTags = b.retainTags;
+	if (aTags === bTags) return true;
+	if (!aTags || !bTags || aTags.length !== bTags.length) return false;
+	for (let i = 0; i < aTags.length; i++) {
+		if (aTags[i] !== bTags[i]) return false;
+	}
+	return true;
+}
+
 /** Rolling hash of messages[0, count) for retention-cache validation (see #lastRetainedPrefixKey). */
 function retentionPrefixKey(messages: HindsightMessage[], count: number): string {
 	let key = "";
@@ -202,16 +272,17 @@ function retentionPrefixKey(messages: HindsightMessage[], count: number): string
 export class HindsightSessionState {
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
-	client: HindsightApi;
-	bankId: string;
+	#client: HindsightApi;
+	#bankId: string;
 	/** Tags applied to every retain — non-empty in per-project-tagged mode. */
-	retainTags?: string[];
+	#retainTags?: string[];
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
-	recallTags?: string[];
-	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
-	config: HindsightConfig;
+	#recallTags?: string[];
+	#recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	#observationScopes?: string[][];
+	#config: HindsightConfig;
 	session: AgentSession;
-	banksSet: Set<string>;
+	#banksSet: Set<string>;
 	lastRetainedTurn: number;
 	#lastRetainedMessageIndex: number = 0;
 	#cachedTranscript: string = "";
@@ -224,6 +295,18 @@ export class HindsightSessionState {
 	// or silently retaining nothing forever. Hashing is orders of magnitude
 	// cheaper than the re-formatting this cache avoids.
 	#lastRetainedPrefixKey: string = "";
+	#retainInFlight: Promise<void> = Promise.resolve();
+	#sessionRetainInFlight: Promise<void> = Promise.resolve();
+	#retainGeneration = 0;
+	#closeRetainBaselineTurns = 0;
+	#loadedMessageCount = 0;
+	#loadedPrefixKey = "";
+	#forceNextRetainReplace = false;
+	#lastCompletedLastTurnRetainBySession = new Map<
+		string,
+		{ messageCount: number; prefixKey: string; userTurns: number }
+	>();
+	#lastTurnRollbackSessions = new Set<string>();
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	/** Cached `<mental_models>` block injected into developer instructions. */
@@ -243,43 +326,237 @@ export class HindsightSessionState {
 	 * Only set on primary states; aliases inherit the parent's subscription.
 	 */
 	unsubscribeScope?: () => void;
-	/** Alias states delegate persistence config to a primary parent state. */
-	aliasOf?: HindsightSessionState;
+	/**
+	 * When this primary is replaced by a live rebuild, aliases still holding
+	 * the disposed object follow `#successor` to the currently installed parent.
+	 */
+	#successor?: HindsightSessionState;
+	#aliasOf?: HindsightSessionState;
 	readonly retainQueue: HindsightRetainQueue;
 
 	constructor(options: HindsightSessionStateOptions) {
 		this.sessionId = options.sessionId;
-		this.client = options.client;
-		this.bankId = options.bankId;
-		this.retainTags = options.retainTags;
-		this.recallTags = options.recallTags;
-		this.recallTagsMatch = options.recallTagsMatch;
-		this.config = options.config;
+		this.#aliasOf = options.aliasOf;
+		this.#client = options.client;
+		this.#bankId = options.bankId;
+		this.#retainTags = options.retainTags;
+		this.#recallTags = options.recallTags;
+		this.#recallTagsMatch = options.recallTagsMatch;
+		this.#observationScopes = options.observationScopes;
+		this.#config = options.config;
 		this.session = options.session;
-		this.banksSet = options.banksSet;
+		this.#banksSet = options.banksSet;
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
 		this.#lastRetainedMessageIndex = 0;
 		this.#cachedTranscript = "";
 		this.#lastRetainedPrefixKey = "";
 		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
-		this.aliasOf = options.aliasOf;
 		this.retainQueue = new HindsightRetainQueue(this);
+		this.#closeRetainBaselineTurns =
+			options.closeRetainBaselineTurns ??
+			(this.session.sessionManager ? countRetainableUserTurns(this.session.sessionManager) : 0);
+		this.#captureLoadedBranchIdentity();
+	}
+
+	/** Alias states delegate persistence routing to the live primary parent. */
+	get aliasOf(): HindsightSessionState | undefined {
+		let primary = this.#aliasOf;
+		const seen = new Set<HindsightSessionState>();
+		while (primary && primary.#successor) {
+			if (seen.has(primary)) break;
+			seen.add(primary);
+			primary = primary.#successor;
+		}
+		return primary;
+	}
+
+	set aliasOf(value: HindsightSessionState | undefined) {
+		this.#aliasOf = value;
+	}
+
+	get client(): HindsightApi {
+		return this.aliasOf ? this.aliasOf.client : this.#client;
+	}
+
+	set client(value: HindsightApi) {
+		if (this.aliasOf) this.aliasOf.client = value;
+		else this.#client = value;
+	}
+
+	get bankId(): string {
+		return this.aliasOf ? this.aliasOf.bankId : this.#bankId;
+	}
+
+	set bankId(value: string) {
+		if (this.aliasOf) this.aliasOf.bankId = value;
+		else this.#bankId = value;
+	}
+
+	get retainTags(): string[] | undefined {
+		return this.aliasOf ? this.aliasOf.retainTags : this.#retainTags;
+	}
+
+	set retainTags(value: string[] | undefined) {
+		if (this.aliasOf) this.aliasOf.retainTags = value;
+		else this.#retainTags = value;
+	}
+
+	get recallTags(): string[] | undefined {
+		return this.aliasOf ? this.aliasOf.recallTags : this.#recallTags;
+	}
+
+	set recallTags(value: string[] | undefined) {
+		if (this.aliasOf) this.aliasOf.recallTags = value;
+		else this.#recallTags = value;
+	}
+
+	get recallTagsMatch(): "any" | "all" | "any_strict" | "all_strict" | undefined {
+		return this.aliasOf ? this.aliasOf.recallTagsMatch : this.#recallTagsMatch;
+	}
+
+	set recallTagsMatch(value: "any" | "all" | "any_strict" | "all_strict" | undefined) {
+		if (this.aliasOf) this.aliasOf.recallTagsMatch = value;
+		else this.#recallTagsMatch = value;
+	}
+
+	get observationScopes(): string[][] | undefined {
+		return this.aliasOf ? this.aliasOf.observationScopes : this.#observationScopes;
+	}
+
+	set observationScopes(value: string[][] | undefined) {
+		if (this.aliasOf) this.aliasOf.observationScopes = value;
+		else this.#observationScopes = value;
+	}
+
+	get banksSet(): Set<string> {
+		return this.aliasOf ? this.aliasOf.banksSet : this.#banksSet;
+	}
+
+	set banksSet(value: Set<string>) {
+		if (this.aliasOf) this.aliasOf.banksSet = value;
+		else this.#banksSet = value;
+	}
+
+	get config(): HindsightConfig {
+		return this.aliasOf ? this.aliasOf.config : this.#config;
+	}
+
+	set config(value: HindsightConfig) {
+		if (this.aliasOf) this.aliasOf.config = value;
+		else this.#config = value;
+	}
+
+	/** Point aliases still holding this object at the replacement primary. */
+	replaceWith(next: HindsightSessionState): void {
+		if (next === this) return;
+		this.#successor = next;
 	}
 
 	setSessionId(sessionId: string): void {
 		this.sessionId = sessionId;
+		this.#invalidateRetainCache();
+	}
+
+	/** Snapshot retain/recall counters so a failed `/resume` can roll them back. */
+	captureConversationTracking(): HindsightConversationTrackingSnapshot {
+		return {
+			lastRetainedTurn: this.lastRetainedTurn,
+			closeRetainBaselineTurns: this.#closeRetainBaselineTurns,
+			hasRecalledForFirstTurn: this.hasRecalledForFirstTurn,
+			lastRecallSnippet: this.lastRecallSnippet,
+			lastRetainedMessageIndex: this.#lastRetainedMessageIndex,
+			cachedTranscript: this.#cachedTranscript,
+			lastRetainedPrefixKey: this.#lastRetainedPrefixKey,
+			loadedMessageCount: this.#loadedMessageCount,
+			loadedPrefixKey: this.#loadedPrefixKey,
+		};
+	}
+
+	restoreConversationTracking(snapshot: HindsightConversationTrackingSnapshot): void {
+		this.lastRetainedTurn = snapshot.lastRetainedTurn;
+		this.#closeRetainBaselineTurns = snapshot.closeRetainBaselineTurns;
+		this.hasRecalledForFirstTurn = snapshot.hasRecalledForFirstTurn;
+		this.lastRecallSnippet = snapshot.lastRecallSnippet;
+		this.#loadedMessageCount = snapshot.loadedMessageCount;
+		this.#loadedPrefixKey = snapshot.loadedPrefixKey;
+		this.#lastTurnRollbackSessions.add(this.sessionId);
+		this.#reconcileCompletedLastTurnRetain();
+		// Rekeying fences any retain that was already in flight. It may still
+		// have reached Hindsight, so a pre-switch append cursor is no longer a
+		// trustworthy server boundary after rollback. Rebuild canonically next.
+		this.#forceNextRetainReplace = true;
+		this.#invalidateRetainCache();
+	}
+
+	resetConversationTracking(closeRetainBaselineTurns?: number): void {
+		this.lastRetainedTurn = 0;
+		this.hasRecalledForFirstTurn = false;
+		this.lastRecallSnippet = undefined;
+		this.#closeRetainBaselineTurns =
+			closeRetainBaselineTurns ??
+			(this.session.sessionManager ? countRetainableUserTurns(this.session.sessionManager) : 0);
+		this.#invalidateRetainCache();
+		this.#captureLoadedBranchIdentity();
+	}
+
+	#invalidateRetainCache(): void {
+		this.#retainGeneration++;
 		this.#lastRetainedMessageIndex = 0;
 		this.#cachedTranscript = "";
 		this.#lastRetainedPrefixKey = "";
 	}
 
-	resetConversationTracking(): void {
-		this.lastRetainedTurn = 0;
-		this.hasRecalledForFirstTurn = false;
-		this.lastRecallSnippet = undefined;
-		this.#lastRetainedMessageIndex = 0;
-		this.#cachedTranscript = "";
-		this.#lastRetainedPrefixKey = "";
+	#captureLoadedBranchIdentity(): void {
+		const loaded = this.session.sessionManager ? extractMessages(this.session.sessionManager) : [];
+		this.#loadedMessageCount = loaded.length;
+		this.#loadedPrefixKey = retentionPrefixKey(loaded, loaded.length);
+	}
+
+	#recordCompletedLastTurnRetain(sessionId: string, messages: HindsightMessage[]): void {
+		const completed = {
+			messageCount: messages.length,
+			prefixKey: retentionPrefixKey(messages, messages.length),
+			userTurns: messages.filter(message => message.role === "user").length,
+		};
+		this.#lastCompletedLastTurnRetainBySession.set(sessionId, completed);
+		if (this.#lastTurnRollbackSessions.has(sessionId)) this.#reconcileCompletedLastTurnRetain();
+	}
+
+	#reconcileCompletedLastTurnRetain(): void {
+		if (this.config.retainMode !== "last-turn") return;
+		if (!this.#lastTurnRollbackSessions.has(this.sessionId)) return;
+		const completed = this.#lastCompletedLastTurnRetainBySession.get(this.sessionId);
+		if (!completed || !this.session.sessionManager) return;
+		const active = extractMessages(this.session.sessionManager);
+		if (active.length < completed.messageCount) return;
+		if (retentionPrefixKey(active, completed.messageCount) !== completed.prefixKey) return;
+		this.lastRetainedTurn = Math.max(this.lastRetainedTurn, completed.userTurns);
+		this.#lastTurnRollbackSessions.delete(this.sessionId);
+	}
+
+	#scheduleSessionRetain(task: () => Promise<void>): Promise<void> {
+		const run = this.#sessionRetainInFlight.then(task, task);
+		this.#sessionRetainInFlight = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	#retainedPrefixDiverged(messages: HindsightMessage[]): boolean {
+		if (this.#lastRetainedMessageIndex === 0) return false;
+		if (this.#lastRetainedMessageIndex > messages.length) return true;
+		return retentionPrefixKey(messages, this.#lastRetainedMessageIndex) !== this.#lastRetainedPrefixKey;
+	}
+
+	#sessionHistoryDiverged(messages: HindsightMessage[]): boolean {
+		if (this.#retainedPrefixDiverged(messages)) return true;
+		// Resume starts with no retained-prefix identity. Detect `/tree` rewinds
+		// against the loaded branch so a shorter replacement is not treated as
+		// already-retained history.
+		if (this.#lastRetainedMessageIndex > 0 || this.#loadedMessageCount === 0) return false;
+		if (messages.length < this.#loadedMessageCount) return true;
+		return retentionPrefixKey(messages, this.#loadedMessageCount) !== this.#loadedPrefixKey;
 	}
 
 	enqueueRetain(content: string, context?: string): void {
@@ -288,6 +565,56 @@ export class HindsightSessionState {
 
 	async flushRetainQueue(): Promise<void> {
 		await this.retainQueue.flush();
+	}
+
+	async flushPendingSessionRetain(): Promise<void> {
+		if (this.aliasOf) return;
+		await this.#scheduleSessionRetain(() => this.#flushPendingSessionRetainLocked());
+	}
+
+	async #flushPendingSessionRetainLocked(): Promise<void> {
+		if (!this.config.autoRetain) return;
+		await this.#retainInFlight;
+		const messages = extractMessages(this.session.sessionManager);
+		if (messages.length === 0) return;
+		const userTurns = messages.filter(m => m.role === "user").length;
+		const retainedThrough = Math.max(this.lastRetainedTurn, this.#closeRetainBaselineTurns);
+		// Resume starts lastRetainedTurn at 0 even when the transcript already
+		// contains history. Treat loaded history as already retained on the close
+		// path so idle open/close does not reconsolidate the full document; only
+		// a below-cadence tail of new turns is flushed. Last-turn retains still
+		// record the retained branch identity so `/tree` rewinds can diverge.
+		const prefixDiverged = this.#sessionHistoryDiverged(messages);
+		const retainedMessageCount =
+			this.#lastRetainedMessageIndex > 0 ? this.#lastRetainedMessageIndex : this.#loadedMessageCount;
+		const messageTailPending = messages.length > retainedMessageCount;
+		if (userTurns <= retainedThrough && !prefixDiverged && !messageTailPending) return;
+		try {
+			const generation = this.#retainGeneration;
+			const lastTurnWindow =
+				this.config.retainMode === "last-turn"
+					? Math.max(prefixDiverged ? userTurns : userTurns - retainedThrough, 1) + this.config.retainOverlapTurns
+					: undefined;
+			await this.retainSession(messages, lastTurnWindow === undefined ? undefined : { lastTurnWindow });
+			if (generation === this.#retainGeneration) this.lastRetainedTurn = userTurns;
+		} catch (err) {
+			logger.warn("Hindsight: session-end retain flush failed", {
+				sessionId: this.sessionId,
+				bankId: this.bankId,
+				error: String(err),
+			});
+		}
+	}
+
+	async drainOnClose(): Promise<void> {
+		if (this.aliasOf) return;
+		await this.#scheduleSessionRetain(async () => {
+			// Reserve the same session-retain barrier as `/memory enqueue`
+			// before flushing tool items. Otherwise both callers can finish the
+			// shared flush and race while installing their transcript retains.
+			await this.flushRetainQueue();
+			await this.#flushPendingSessionRetainLocked();
+		});
 	}
 
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
@@ -323,34 +650,73 @@ export class HindsightSessionState {
 		return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 	}
 
-	async retainSession(messages: HindsightMessage[]): Promise<void> {
+	async retainSession(
+		messages: HindsightMessage[],
+		opts?: { forceReplace?: boolean; lastTurnWindow?: number },
+	): Promise<void> {
+		const identity = { sessionId: this.sessionId, generation: this.#retainGeneration };
+		const run = this.#retainInFlight.then(
+			() => this.#retainSessionLocked(messages, opts, identity),
+			() => this.#retainSessionLocked(messages, opts, identity),
+		);
+		this.#retainInFlight = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		await run;
+	}
+
+	async #retainSessionLocked(
+		messages: HindsightMessage[],
+		opts: { forceReplace?: boolean; lastTurnWindow?: number } | undefined,
+		identity: { sessionId: string; generation: number },
+	): Promise<void> {
+		const forceReplace = opts?.forceReplace || this.#forceNextRetainReplace;
+		if (forceReplace) {
+			this.#lastRetainedMessageIndex = 0;
+			this.#cachedTranscript = "";
+			this.#lastRetainedPrefixKey = "";
+		}
+		const { sessionId, generation } = identity;
 		const retainedAt = new Date();
 		const sourceTimestamp = this.#sessionSourceTimestamp() ?? retainedAt;
 		const retainFullWindow = this.config.retainMode === "full-session";
 		let documentId: string;
 		let transcript: string;
 		let nextCachedTranscript: string | undefined;
+		let updateMode: UpdateMode | undefined;
 
 		if (retainFullWindow) {
-			documentId = this.sessionId;
-			const boundary = this.#lastRetainedMessageIndex;
-			if (boundary > messages.length || retentionPrefixKey(messages, boundary) !== this.#lastRetainedPrefixKey) {
+			documentId = sessionId;
+			const previousBoundary = this.#lastRetainedMessageIndex;
+			let rebuiltDivergentPrefix = false;
+			if (
+				previousBoundary > messages.length ||
+				retentionPrefixKey(messages, previousBoundary) !== this.#lastRetainedPrefixKey
+			) {
+				rebuiltDivergentPrefix = previousBoundary > 0;
 				this.#lastRetainedMessageIndex = 0;
 				this.#cachedTranscript = "";
 				this.#lastRetainedPrefixKey = "";
 			}
-			const newMessages = messages.slice(this.#lastRetainedMessageIndex);
+			const start = this.#lastRetainedMessageIndex;
+			const newMessages = messages.slice(start);
 			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true, { includeTimestamps: true });
 			if (!newPart) return;
 			nextCachedTranscript = this.#cachedTranscript ? `${this.#cachedTranscript}\n\n${newPart}` : newPart;
-			transcript = nextCachedTranscript;
+			const appendDelta = this.config.retainUpdateMode === "append" && start > 0 && !forceReplace;
+			if (appendDelta) {
+				transcript = newPart;
+				updateMode = "append";
+			} else {
+				transcript = nextCachedTranscript;
+				if (forceReplace || rebuiltDivergentPrefix) updateMode = "replace";
+			}
 		} else {
-			const windowTurns = this.config.retainEveryNTurns + this.config.retainOverlapTurns;
+			const windowTurns = opts?.lastTurnWindow ?? this.config.retainEveryNTurns + this.config.retainOverlapTurns;
 			const target = sliceLastTurnsByUserBoundary(messages, windowTurns);
-			documentId = `${this.sessionId}-${retainedAt.getTime()}`;
-			this.#lastRetainedMessageIndex = 0;
+			documentId = `${sessionId}-${retainedAt.getTime()}`;
 			this.#cachedTranscript = "";
-			this.#lastRetainedPrefixKey = "";
 			const { transcript: windowTranscript } = prepareRetentionTranscript(target, true, { includeTimestamps: true });
 			if (!windowTranscript) return;
 			transcript = windowTranscript;
@@ -360,28 +726,48 @@ export class HindsightSessionState {
 		await this.client.retain(this.bankId, transcript, {
 			documentId,
 			context: this.config.retainContext,
-			metadata: { session_id: this.sessionId },
+			metadata: { session_id: sessionId },
 			tags: this.retainTags,
+			observationScopes: this.observationScopes,
 			timestamp: sourceTimestamp,
 			async: true,
+			updateMode,
+			strategy: this.config.retainStrategy || undefined,
 		});
-		if (nextCachedTranscript !== undefined) {
-			this.#cachedTranscript = nextCachedTranscript;
+		if (!retainFullWindow) this.#recordCompletedLastTurnRetain(sessionId, messages);
+		if (generation === this.#retainGeneration) {
+			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;
 			this.#lastRetainedMessageIndex = messages.length;
 			this.#lastRetainedPrefixKey = retentionPrefixKey(messages, messages.length);
+			this.#forceNextRetainReplace = false;
 		}
 	}
 
 	async maybeRetainOnAgentEnd(): Promise<void> {
+		const generation = this.#retainGeneration;
+		await this.#scheduleSessionRetain(() => this.#maybeRetainOnAgentEndLocked(generation));
+	}
+
+	async #maybeRetainOnAgentEndLocked(generation: number): Promise<void> {
 		if (!this.config.autoRetain) return;
+		// A queued cadence retain can outlive /resume, /new, or a fork. The
+		// generation fence after client.retain only skips the cursor write; this
+		// check drops the call before it extracts and sends the replacement
+		// session's transcript under the new document id.
+		if (generation !== this.#retainGeneration) return;
 		const messages = extractMessages(this.session.sessionManager);
 		if (messages.length === 0) return;
 		const userTurns = messages.filter(m => m.role === "user").length;
-		if (userTurns - this.lastRetainedTurn < this.config.retainEveryNTurns) return;
+		if (
+			userTurns - this.lastRetainedTurn < this.config.retainEveryNTurns &&
+			!this.#sessionHistoryDiverged(messages)
+		) {
+			return;
+		}
 
 		try {
 			await this.retainSession(messages);
-			this.lastRetainedTurn = userTurns;
+			if (generation === this.#retainGeneration) this.lastRetainedTurn = userTurns;
 			if (this.config.debug) {
 				logger.debug("Hindsight: auto-retain succeeded", {
 					sessionId: this.sessionId,
@@ -400,19 +786,33 @@ export class HindsightSessionState {
 	}
 
 	async forceRetainCurrentSession(): Promise<void> {
+		const generation = this.#retainGeneration;
+		await this.#scheduleSessionRetain(async () => {
+			// The command belongs to the session active when it was invoked. If it
+			// queued behind another retain and the session changed, do not flush or
+			// force-retain the replacement transcript.
+			if (generation !== this.#retainGeneration) return;
+			// Reserve the session-retain barrier before flushing tool items so a
+			// concurrent close cannot schedule a duplicate last-turn document.
+			await this.flushRetainQueue();
+			if (generation !== this.#retainGeneration) return;
+			await this.#forceRetainCurrentSessionLocked(generation);
+		});
+	}
+
+	async #forceRetainCurrentSessionLocked(generation: number): Promise<void> {
+		if (generation !== this.#retainGeneration) return;
 		const messages = extractMessages(this.session.sessionManager);
 		if (messages.length === 0) return;
-		// Forced retains are user-initiated rebuilds (`/memory enqueue`): drop the
-		// incremental cache so the full transcript is reformatted and resent even
-		// when no new messages arrived since the last auto-retain — otherwise a
-		// rebuild could never recover an upstream document that was deleted or a
-		// previous async retain that never materialized.
-		this.#lastRetainedMessageIndex = 0;
-		this.#cachedTranscript = "";
-		this.#lastRetainedPrefixKey = "";
+		// Forced retains are user-initiated rebuilds (`/memory enqueue`). The
+		// incremental cache is dropped inside the serialized retain so an
+		// in-flight cadence retain cannot repopulate the cursor and suppress
+		// the canonical replace.
 		try {
-			await this.retainSession(messages);
-			this.lastRetainedTurn = messages.filter(m => m.role === "user").length;
+			await this.retainSession(messages, { forceReplace: true });
+			if (generation === this.#retainGeneration) {
+				this.lastRetainedTurn = messages.filter(m => m.role === "user").length;
+			}
 		} catch (err) {
 			logger.warn("Hindsight: forced retain failed", {
 				sessionId: this.sessionId,
@@ -444,16 +844,6 @@ export class HindsightSessionState {
 
 		this.lastRecallSnippet = context;
 		return context;
-	}
-
-	async recallForCompaction(messages: HindsightMessage[]): Promise<string | undefined> {
-		const lastUser = messages.findLast(m => m.role === "user");
-		if (!lastUser) return undefined;
-
-		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
-		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		const { context } = await this.recallForContext(truncated);
-		return context ?? undefined;
 	}
 
 	async runMentalModelLoad(scope: BankScope): Promise<void> {

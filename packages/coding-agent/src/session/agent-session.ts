@@ -4254,11 +4254,20 @@ export class AgentSession {
 
 		// Drain Hindsight after persistence handlers have had a chance to append
 		// the terminal assistant message. Doing this in the earlier parallel
-		// teardown can snapshot a user-only tail.
+		// teardown can snapshot a user-only tail. Wait through the retain
+		// request deadline (`hindsight.retainTimeoutMs`, default 60s) rather
+		// than the 5s event-drain budget: RPC shutdown exits as soon as
+		// dispose() returns, which would otherwise kill an in-flight
+		// synchronous retain and drop the below-cadence tail.
+		const retainTimeoutMs = hindsightState?.config?.retainTimeoutMs;
+		const hindsightDrainTimeoutMs =
+			typeof retainTimeoutMs === "number" && Number.isFinite(retainTimeoutMs)
+				? retainTimeoutMs
+				: (options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS);
 		try {
 			await withTimeout(
 				hindsightState?.drainOnClose() ?? Promise.resolve(),
-				options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
+				hindsightDrainTimeoutMs,
 				"Timed out draining Hindsight retain on dispose",
 			);
 		} catch (error) {
@@ -4266,7 +4275,7 @@ export class AgentSession {
 			try {
 				await withTimeout(
 					hindsightState?.flushRetainQueue() ?? Promise.resolve(),
-					options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
+					hindsightDrainTimeoutMs,
 					"Timed out flushing Hindsight retain queue on dispose",
 				);
 			} catch (queueError) {

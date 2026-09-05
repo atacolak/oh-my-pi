@@ -3323,6 +3323,8 @@ export class Settings {
 		const previousSignaledValues = {
 			modelRoles: this.get("modelRoles"),
 			sessionAccent: this.get("statusLine.sessionAccent"),
+			browserEnabled: this.get("browser.enabled"),
+			computerEnabled: this.get("computer.enabled"),
 		};
 		const previousCodeModeValues = this.#codeModeSignalSnapshot();
 		const previousHookValues = new Map<SettingPath, unknown>();
@@ -3487,6 +3489,22 @@ export class Settings {
 				"statusLine.sessionAccent",
 				nextSessionAccent,
 				previousSignaledValues.sessionAccent,
+			);
+		}
+		const nextBrowserEnabled = this.get("browser.enabled");
+		if (!Bun.deepEquals(nextBrowserEnabled, previousSignaledValues.browserEnabled)) {
+			this.#fireEffectiveSettingChanged(
+				"browser.enabled",
+				nextBrowserEnabled,
+				previousSignaledValues.browserEnabled,
+			);
+		}
+		const nextComputerEnabled = this.get("computer.enabled");
+		if (!Bun.deepEquals(nextComputerEnabled, previousSignaledValues.computerEnabled)) {
+			this.#fireEffectiveSettingChanged(
+				"computer.enabled",
+				nextComputerEnabled,
+				previousSignaledValues.computerEnabled,
 			);
 		}
 		this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);

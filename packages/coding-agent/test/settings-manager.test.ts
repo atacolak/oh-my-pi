@@ -1675,6 +1675,51 @@ describe("Settings", () => {
 			}
 		});
 
+		it("fires effective-change listeners after adopting sibling browser.enabled and computer.enabled disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{ browser: { enabled: false }, computer: { enabled: false }, ask: { enabled: true } },
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ path: string; value: unknown }> = [];
+			const unsubscribe = settings.onEffectiveChange((path, value) => {
+				if (path === "browser.enabled" || path === "computer.enabled") {
+					received.push({ path, value });
+				}
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{ browser: { enabled: true }, computer: { enabled: true }, ask: { enabled: true } },
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("browser.enabled")).toBe(true);
+				expect(settings.get("computer.enabled")).toBe(true);
+				expect(received).toEqual([
+					{ path: "browser.enabled", value: true },
+					{ path: "computer.enabled", value: true },
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					browser: { enabled: true },
+					computer: { enabled: true },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
 		it("fires runtime hooks for an adopted sibling project edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(

@@ -6,6 +6,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import {
 	additionalWorkspaceDirectories,
 	normalizeSessionWorkspace,
+	workspaceContainsPath,
 	workspaceRootForPath,
 } from "@oh-my-pi/pi-coding-agent/session/session-workspace";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -106,6 +107,46 @@ describe("workspaceRootForPath", () => {
 		} finally {
 			fs.rmSync(linkRoot, { force: true });
 		}
+	});
+
+	it("keeps a leaf symlink file inside the workspace", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-leaf-symlink-");
+		using shared = TempDir.createSync("@pi-session-workspace-leaf-shared-");
+		const sharedFile = path.join(shared.path(), "shared.ts");
+		fs.writeFileSync(sharedFile, "export const shared = 1;\n");
+		const alias = path.join(tempDir.path(), "src", "alias.ts");
+		fs.mkdirSync(path.dirname(alias), { recursive: true });
+		fs.symlinkSync(sharedFile, alias);
+		const workspace = normalizeSessionWorkspace({ cwd: tempDir.path() });
+		expect(workspaceRootForPath(alias, workspace)).toBe(path.resolve(tempDir.path()));
+		expect(workspaceRootForPath(sharedFile, workspace)).toBeNull();
+	});
+
+	it("workspaceContainsPath keeps a leaf symlink inside the directory", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-contains-leaf-");
+		using shared = TempDir.createSync("@pi-session-workspace-contains-leaf-shared-");
+		const sharedFile = path.join(shared.path(), "shared.ts");
+		fs.writeFileSync(sharedFile, "export const shared = 1;\n");
+		const alias = path.join(tempDir.path(), "src", "alias.ts");
+		fs.mkdirSync(path.dirname(alias), { recursive: true });
+		fs.symlinkSync(sharedFile, alias);
+		expect(workspaceContainsPath(tempDir.path(), alias)).toBe(true);
+		expect(workspaceContainsPath(tempDir.path(), sharedFile)).toBe(false);
+	});
+
+	it("keeps a directory symlink inside the workspace", () => {
+		using tempDir = TempDir.createSync("@pi-session-workspace-dir-symlink-");
+		using shared = TempDir.createSync("@pi-session-workspace-dir-symlink-shared-");
+		const sharedFile = path.join(shared.path(), "foo.ts");
+		fs.writeFileSync(sharedFile, "export const foo = 1;\n");
+		const aliasDir = path.join(tempDir.path(), "src");
+		fs.symlinkSync(shared.path(), aliasDir);
+		const alias = path.join(aliasDir, "foo.ts");
+		const workspace = normalizeSessionWorkspace({ cwd: tempDir.path() });
+		expect(workspaceContainsPath(tempDir.path(), alias)).toBe(true);
+		expect(workspaceRootForPath(alias, workspace)).toBe(path.resolve(tempDir.path()));
+		expect(workspaceContainsPath(tempDir.path(), sharedFile)).toBe(false);
+		expect(workspaceRootForPath(sharedFile, workspace)).toBeNull();
 	});
 });
 

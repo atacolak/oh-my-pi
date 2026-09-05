@@ -600,10 +600,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		this.#deferredDiagnostics =
 			enableDiagnostics && session.queueDeferredDiagnostics ? new DeferredDiagnostics(session, dedup) : undefined;
 		this.#writethrough = enableLsp
-			? createLspWritethrough(session.cwd, {
+			? createLspWritethrough(() => session.cwd, {
 					enableFormat,
 					enableDiagnostics,
 					additionalDirectories: () => session.additionalDirectories,
+					cwd: () => session.cwd,
 					owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 					transformDiagnostics: dedup
 						? (path, result) => getDiagnosticsLedger(session).reduce(path, result)

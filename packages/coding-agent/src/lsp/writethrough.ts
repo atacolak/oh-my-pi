@@ -34,6 +34,8 @@ export interface WritethroughOptions {
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
 	/** Additional session workspace directories used to bound nested project-root walks. */
 	additionalDirectories?: readonly string[] | (() => readonly string[] | undefined);
+	/** Session cwd resolved at write time so `/move`, `/wt`, and `!cd` refresh workspace bounds. */
+	cwd?: string | (() => string);
 	/** Session identity used to isolate shared-process client lifecycle. */
 	owner?: LspClientOwner;
 }
@@ -44,6 +46,7 @@ type ResolvedWritethroughOptions = {
 	enableDiagnostics: boolean;
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
 	additionalDirectories?: readonly string[] | (() => readonly string[] | undefined);
+	cwd?: string | (() => string);
 	owner?: LspClientOwner;
 };
 
@@ -565,14 +568,24 @@ async function flushWritethroughBatch(
 	return mergeDiagnostics(results, options);
 }
 
+function resolveWritethroughCwd(cwd: string | (() => string), options?: ResolvedWritethroughOptions): string {
+	if (typeof options?.cwd === "function") return options.cwd();
+	if (typeof options?.cwd === "string") return options.cwd;
+	return typeof cwd === "function" ? cwd() : cwd;
+}
+
 /** Create a writethrough callback for LSP aware write operations */
-export function createLspWritethrough(cwd: string, options?: WritethroughOptions): WritethroughCallback {
+export function createLspWritethrough(
+	cwd: string | (() => string),
+	options?: WritethroughOptions,
+): WritethroughCallback {
 	const resolvedOptions: ResolvedWritethroughOptions = {
 		enableFormat: options?.enableFormat ?? false,
 		enableDiagnostics: options?.enableDiagnostics ?? false,
 		transformDiagnostics: options?.transformDiagnostics,
 		owner: options?.owner,
 		additionalDirectories: options?.additionalDirectories,
+		cwd: options?.cwd ?? cwd,
 	};
 	return async (
 		dst: string,
@@ -582,6 +595,7 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 		batch?: LspWritethroughBatchRequest,
 		getDeferred?: (dst: string) => WritethroughDeferredHandle | undefined,
 	) => {
+		const resolvedCwd = resolveWritethroughCwd(cwd, resolvedOptions);
 		const changeType = (await Bun.file(dst).exists()) ? FileChangeType.Changed : FileChangeType.Created;
 		if (!batch) {
 			const bundle = getDeferred?.(dst);
@@ -594,7 +608,7 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 			const diagnostics = await runLspWritethrough(
 				dst,
 				content,
-				cwd,
+				resolvedCwd,
 				resolvedOptions,
 				changeType,
 				signal,
@@ -617,7 +631,7 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 					try {
 						await flushWritethroughBatch(
 							Array.from(pending.entries.values()),
-							cwd,
+							resolvedCwd,
 							pending.options,
 							signal,
 							getDeferred,
@@ -638,6 +652,12 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 		if (!batch.flush) return undefined;
 
 		writethroughBatches.delete(batch.id);
-		return flushWritethroughBatch(Array.from(state.entries.values()), cwd, state.options, signal, getDeferred);
+		return flushWritethroughBatch(
+			Array.from(state.entries.values()),
+			resolvedCwd,
+			state.options,
+			signal,
+			getDeferred,
+		);
 	};
 }

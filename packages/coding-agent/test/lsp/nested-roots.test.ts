@@ -438,6 +438,125 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("routes a leaf symlink file to the containing nested project", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-leaf-symlink-route-");
+		const shared = TempDir.createSync("@omp-lsp-leaf-symlink-route-shared-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const sharedFile = path.join(shared.path(), "shared.py");
+			fs.writeFileSync(sharedFile, "def shared():\n    return 1\n");
+			const alias = path.join(nested.projectRoot, "src", "alias.py");
+			fs.symlinkSync(sharedFile, alias);
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const config = loadConfig(tempDir.path());
+			const resolved = resolveServersForFile(config, alias, [tempDir.path()]);
+			expect(resolved.find(server => server.name === "basedpyright")?.root).toBe(nested.projectRoot);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
+	it("routes a file through an in-workspace directory symlink", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dir-symlink-route-");
+		const shared = TempDir.createSync("@omp-lsp-dir-symlink-route-shared-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const sharedSrc = path.join(shared.path(), "src");
+			fs.mkdirSync(sharedSrc, { recursive: true });
+			const sharedFile = path.join(sharedSrc, "linked.py");
+			fs.writeFileSync(sharedFile, "def linked():\n    return 1\n");
+			const aliasDir = path.join(nested.projectRoot, "linked-src");
+			fs.symlinkSync(sharedSrc, aliasDir);
+			const alias = path.join(aliasDir, "linked.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const config = loadConfig(tempDir.path());
+			const resolved = resolveServersForFile(config, alias, [tempDir.path()]);
+			expect(resolved.find(server => server.name === "basedpyright")?.root).toBe(nested.projectRoot);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
+	it("keeps a directory-symlink document URI inside the workspace", () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dir-symlink-doc-uri-");
+		const shared = TempDir.createSync("@omp-lsp-dir-symlink-doc-uri-shared-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const sharedSrc = path.join(shared.path(), "src");
+			fs.mkdirSync(sharedSrc, { recursive: true });
+			const sharedFile = path.join(sharedSrc, "linked.py");
+			fs.writeFileSync(sharedFile, "def linked():\n    return 1\n");
+			const aliasDir = path.join(nested.projectRoot, "linked-src");
+			fs.symlinkSync(sharedSrc, aliasDir);
+			const alias = path.join(aliasDir, "linked.py");
+			expect(fileToUri(alias, nested.projectRoot)).toBe(Bun.pathToFileURL(path.resolve(alias)).href);
+			expect(fileToUri(alias, nested.projectRoot)).not.toBe(fileToUri(sharedFile, nested.projectRoot));
+			expect(fileToUri(alias, nested.projectRoot)).not.toBe(Bun.pathToFileURL(sharedFile).href);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
+	it("queries diagnostics with each client's document URI across a directory symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dir-symlink-diag-uri-");
+		const shared = TempDir.createSync("@omp-lsp-dir-symlink-diag-uri-shared-");
+		try {
+			const sharedProject = path.join(shared.path(), "project");
+			fs.mkdirSync(sharedProject, { recursive: true });
+			const sharedFile = path.join(sharedProject, "foo.ts");
+			fs.writeFileSync(sharedFile, "export const foo = 1;\n");
+			const aliasDir = path.join(tempDir.path(), "link");
+			fs.symlinkSync(sharedProject, aliasDir);
+			const alias = path.join(aliasDir, "foo.ts");
+			const outerUri = fileToUri(alias, tempDir.path());
+			const innerUri = fileToUri(alias, sharedProject);
+			expect(outerUri).not.toBe(innerUri);
+
+			const range = {
+				start: { line: 0, character: 0 },
+				end: { line: 0, character: 3 },
+			};
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => {
+				const client = mockLspClient(config, cwd);
+				const uri = fileToUri(alias, config.resolvedRoot ?? cwd);
+				client.diagnostics.set(uri, {
+					diagnostics: [{ message: `${config.command} finding`, range }],
+					version: 1,
+				});
+				client.diagnosticsVersion = 1;
+				return client;
+			});
+
+			const result = await getDiagnosticsForFile(
+				alias,
+				tempDir.path(),
+				[
+					[
+						"outer-lsp",
+						{ command: "outer-lsp", fileTypes: ["ts"], rootMarkers: [], resolvedRoot: tempDir.path() },
+					],
+					["inner-lsp", { command: "inner-lsp", fileTypes: ["ts"], rootMarkers: [], resolvedRoot: sharedProject }],
+				],
+				{ timeoutMs: 1_000, pipelineBudgetMs: 3_000 },
+			);
+
+			expect(result?.server).toContain("outer-lsp");
+			expect(result?.server).toContain("inner-lsp");
+			expect(result?.messages.some(message => message.includes("outer-lsp finding"))).toBe(true);
+			expect(result?.messages.some(message => message.includes("inner-lsp finding"))).toBe(true);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("rename_file asks one nested server when symlink and canonical roots both match", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rename-key-");
 		const realRoot = tempDir.path();
@@ -590,6 +709,174 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("rename_file keeps extra-root directory-symlink edit URIs", async () => {
+		const cwdDir = TempDir.createSync("@omp-lsp-extra-root-rename-cwd-");
+		const extraDir = TempDir.createSync("@omp-lsp-extra-root-rename-extra-");
+		const shared = TempDir.createSync("@omp-lsp-extra-root-rename-shared-");
+		try {
+			const extraRoot = extraDir.path();
+			const extraProject = writePythonProject(extraRoot, "python", "example.py");
+			const extraSource = extraProject.filePath;
+			const extraDest = path.join(extraProject.projectRoot, "src", "renamed.py");
+			fs.symlinkSync(shared.path(), path.join(extraRoot, "link"));
+			fs.mkdirSync(path.join(extraRoot, "link", "src"), { recursive: true });
+			const extraAliasFile = path.join(extraRoot, "link", "src", "alias.py");
+			fs.writeFileSync(extraAliasFile, "def alias():\n    return 1\n");
+			const extraAliasUri = fileToUri(extraAliasFile, extraRoot);
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const client = mockLspClient(
+				{
+					command: "basedpyright-langserver",
+					fileTypes: [".py"],
+					rootMarkers: ["pyproject.toml"],
+					resolvedRoot: extraRoot,
+				},
+				extraRoot,
+			);
+			const reconciled: ExecutedWorkspaceChange[][] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method) => {
+				if (method === "workspace/willRenameFiles") {
+					return {
+						changes: {
+							[extraAliasUri]: [
+								{
+									range: {
+										start: { line: 0, character: 0 },
+										end: { line: 0, character: 9 },
+									},
+									newText: "def renamed",
+								},
+							],
+						},
+					};
+				}
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+			vi.spyOn(lspClient, "reconcileExecutedChanges").mockImplementation(async executed => {
+				reconciled.push(executed);
+			});
+
+			const result = await new LspTool(makeLspSession(cwdDir.path(), [extraRoot])).execute(
+				"extra-root-dir-symlink-rename-uri",
+				{
+					action: "rename_file",
+					file: extraSource,
+					new_name: extraDest,
+					timeout: 5,
+				},
+			);
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(fileToUri(extraAliasFile, cwdDir.path())).not.toBe(extraAliasUri);
+			expect(reconciled).toEqual([
+				[
+					{ kind: "edit", uri: extraAliasUri },
+					{
+						kind: "rename",
+						oldUri: fileToUri(extraSource, extraRoot),
+						newUri: fileToUri(extraDest, extraRoot),
+					},
+				],
+			]);
+			expect(fs.readFileSync(extraAliasFile, "utf8")).toBe("def renamed():\n    return 1\n");
+			expect(fs.existsSync(extraSource)).toBe(false);
+			expect(fs.existsSync(extraDest)).toBe(true);
+		} finally {
+			cwdDir.removeSync();
+			extraDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
+	it("rename_file sends each nested server only the pairs under its root", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dir-rename-sibling-");
+		try {
+			const pkgs = path.join(tempDir.path(), "pkgs");
+			const a = writePythonProject(pkgs, "a", "a.py");
+			const b = writePythonProject(pkgs, "b", "b.py");
+			const dest = path.join(tempDir.path(), "moved");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const willRenameByRoot = new Map<string, unknown>();
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameByRoot.set(client.cwd, params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("sibling-dir-rename", {
+				action: "rename_file",
+				file: pkgs,
+				new_name: dest,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameByRoot.size).toBeGreaterThanOrEqual(2);
+			const aParams = willRenameByRoot.get(a.projectRoot) as { files: Array<{ oldUri: string }> } | undefined;
+			const bParams = willRenameByRoot.get(b.projectRoot) as { files: Array<{ oldUri: string }> } | undefined;
+			expect(aParams?.files.every(pair => pair.oldUri.includes("/a/"))).toBe(true);
+			expect(bParams?.files.every(pair => pair.oldUri.includes("/b/"))).toBe(true);
+			expect(aParams?.files.some(pair => pair.oldUri.includes("/b/"))).toBe(false);
+			expect(bParams?.files.some(pair => pair.oldUri.includes("/a/"))).toBe(false);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file keeps a leaf symlink pair on the containing nested server", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-leaf-symlink-rename-pairs-");
+		const shared = TempDir.createSync("@omp-lsp-leaf-symlink-rename-pairs-shared-");
+		try {
+			const nested = writePythonProject(tempDir.path(), "python", "example.py");
+			const sharedFile = path.join(shared.path(), "shared.py");
+			fs.writeFileSync(sharedFile, "def shared():\n    return 1\n");
+			const alias = path.join(nested.projectRoot, "src", "alias.py");
+			const dest = path.join(nested.projectRoot, "src", "renamed-alias.py");
+			fs.symlinkSync(sharedFile, alias);
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const willRenameRequests: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method, params) => {
+				if (method === "workspace/willRenameFiles") willRenameRequests.push(params);
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("leaf-symlink-rename-pairs", {
+				action: "rename_file",
+				file: alias,
+				new_name: dest,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(willRenameRequests).toEqual([
+				{
+					files: [
+						{
+							oldUri: Bun.pathToFileURL(path.resolve(alias)).href,
+							newUri: Bun.pathToFileURL(path.resolve(dest)).href,
+						},
+					],
+				},
+			]);
+			expect(fs.lstatSync(dest).isSymbolicLink()).toBe(true);
+			expect(fs.existsSync(sharedFile)).toBe(true);
+		} finally {
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("does not use the primary cwd executable for a nested additional workspace under a long symlink", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-symlink-rank-exec-");
 		const realOuter = tempDir.path();
@@ -739,6 +1026,48 @@ describe("nested LSP project roots", () => {
 		} finally {
 			primary.removeSync();
 			additional.removeSync();
+		}
+	});
+
+	it("routes writes through a cwd changed after write-tool construction", async () => {
+		const original = TempDir.createSync("@omp-lsp-move-cwd-original-");
+		const moved = TempDir.createSync("@omp-lsp-move-cwd-moved-");
+		try {
+			const nested = writePythonProject(moved.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: original.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnWrite": true,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+			const tool = new WriteTool(session);
+			session.cwd = moved.path();
+			const getServers = vi.spyOn(lspConfig, "getServersForFile");
+
+			await tool.execute("move-cwd-write", {
+				path: nested.filePath,
+				content: "def example():\n    return 2\n",
+			});
+
+			expect(getServers.mock.calls.some(call => call[2]?.includes(moved.path()))).toBe(true);
+			expect(
+				getServers.mock.calls.every(call => !call[2]?.includes(original.path()) || call[2]?.includes(moved.path())),
+			).toBe(true);
+		} finally {
+			original.removeSync();
+			moved.removeSync();
 		}
 	});
 

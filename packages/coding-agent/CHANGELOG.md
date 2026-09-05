@@ -23,6 +23,7 @@
 - Hindsight close retain now waits through the configured retain timeout during dispose instead of the 5s event-drain deadline.
 - Hindsight close retain now gets a full retain-timeout budget after any in-flight cadence retain settles, instead of sharing one deadline with queued work.
 - Hindsight close drain now budgets bank creation plus retain so a first-use `createBank` cannot starve the close retain.
+- Hindsight close drain now budgets a tool-retain batch plus the session retain so a slow `retainBatch` cannot starve the close tail.
 - Hindsight delayed startup now keeps a `/tree` ask re-answer as a pending tail instead of treating the later assistant reply as loaded history.
 - Hindsight `/clear` now retains post-reset turns under a new document instead of replacing the drained conversation.
 - Hindsight delayed startup now derives loaded history when enabling mid-session instead of treating an off-backend zero as already retained activity.

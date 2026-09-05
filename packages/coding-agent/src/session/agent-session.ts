@@ -4305,12 +4305,13 @@ export class AgentSession {
 		// Drain Hindsight after persistence handlers have had a chance to append
 		// the terminal assistant message. Doing this in the earlier parallel
 		// teardown can snapshot a user-only tail. Wait for any in-flight cadence
-		// retain to settle first, then give the close retain its own
-		// `hindsight.retainTimeoutMs` budget. First-use close retain may still
+		// retain to settle first, then give close drain its own budget.
+		// `drainOnClose()` may flush a tool `retainBatch` and then a session
+		// retain; each can consume `retainTimeoutMs`. First-use close may also
 		// PUT the bank (`requestTimeoutMs`) before consolidating, so the drain
-		// deadline covers both. RPC shutdown exits as soon as dispose() returns,
-		// which would otherwise kill an in-flight synchronous retain and drop
-		// the below-cadence tail.
+		// deadline covers both retains plus bank setup. RPC shutdown exits as
+		// soon as dispose() returns, which would otherwise kill an in-flight
+		// synchronous retain and drop the below-cadence tail.
 		const retainTimeoutMs = hindsightState?.config?.retainTimeoutMs;
 		const requestTimeoutMs = hindsightState?.config?.requestTimeoutMs;
 		const hindsightRetainTimeoutMs =
@@ -4319,7 +4320,7 @@ export class AgentSession {
 				: (options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS);
 		const hindsightRequestTimeoutMs =
 			typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs) ? requestTimeoutMs : 0;
-		const hindsightDrainTimeoutMs = hindsightRetainTimeoutMs + hindsightRequestTimeoutMs;
+		const hindsightDrainTimeoutMs = hindsightRetainTimeoutMs * 2 + hindsightRequestTimeoutMs;
 		if (hindsightState) {
 			try {
 				await withTimeout(

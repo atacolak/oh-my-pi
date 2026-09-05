@@ -334,6 +334,49 @@ describe("AgentSession concurrent disposal", () => {
 		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
 	});
 
+	it("gives close drain a second retain budget after the tool-retain batch", async () => {
+		vi.useFakeTimers();
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const current = createSession();
+		const started = Promise.withResolvers<void>();
+		const retainDone = Promise.withResolvers<void>();
+		const hindsight: HindsightSessionState = Object.create(HindsightSessionState.prototype);
+		hindsight.config = {
+			retainTimeoutMs: 8_000,
+			requestTimeoutMs: 3_000,
+		} as HindsightSessionState["config"];
+		let drained = false;
+		vi.spyOn(hindsight, "waitForSessionRetainIdle").mockResolvedValue(undefined);
+		vi.spyOn(hindsight, "drainOnClose").mockImplementation(async () => {
+			started.resolve();
+			await retainDone.promise;
+			drained = true;
+		});
+		vi.spyOn(hindsight, "flushRetainQueue").mockResolvedValue(undefined);
+		vi.spyOn(hindsight, "dispose").mockImplementation(() => {});
+		current.setHindsightSessionState(hindsight);
+
+		const dispose = current.dispose();
+		await started.promise;
+		vi.advanceTimersByTime(11_000);
+		await flushMicrotasks();
+		expect(drained).toBe(false);
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+
+		vi.advanceTimersByTime(7_999);
+		await flushMicrotasks();
+		expect(drained).toBe(false);
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+
+		retainDone.resolve();
+		await flushMicrotasks();
+		await dispose;
+		session = undefined;
+
+		expect(drained).toBe(true);
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+	});
+
 	it("does not materialize retainable turns when Hindsight is off", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("expected bundled model");

@@ -704,8 +704,8 @@ export class AgentSession {
 	readonly loadedUserTurnCount: number;
 	/**
 	 * Close-retain baseline for delayed Hindsight startup. Starts as the
-	 * construction snapshot and rebases on `/new`, `/clear`, `/resume`, and
-	 * fork because those switches have no live Hindsight state yet.
+	 * construction snapshot and rebases on `/new`, `/clear`, `/resume`, fork,
+	 * and `/tree` because those switches have no live Hindsight state yet.
 	 */
 	hindsightCloseRetainBaselineTurns: number;
 	readonly #memory: SessionMemory;
@@ -8958,6 +8958,7 @@ export class AgentSession {
 		// Emit session_tree event; only handlers can mutate session entries, so skip
 		// the emit and the context rebuild when no handlers are registered (mirrors
 		// the session_before_tree guard above).
+		let sessionContext = stateContext;
 		if (this.#extensionRunner?.hasHandlers("session_tree")) {
 			await this.#extensionRunner.emit({
 				type: "session_tree",
@@ -8966,22 +8967,19 @@ export class AgentSession {
 				summaryEntry,
 				fromExtension: summaryText ? fromExtension : undefined,
 			});
-			const rawContext = this.sessionManager.buildSessionContext();
-			return {
-				editorText,
-				editorImages,
-				cancelled: false,
-				summaryEntry,
-				sessionContext: rawContext,
-				askReanswerCommitted: isAskReanswerCompletion,
-			};
+			sessionContext = this.sessionManager.buildSessionContext();
 		}
+		// Delayed Hindsight install still reads this construction-time field.
+		// `/tree` never creates live Hindsight state, so rebase the pending
+		// close baseline onto the active branch instead of skipping a
+		// below-cadence replacement turn.
+		this.hindsightCloseRetainBaselineTurns = countRetainableUserTurns(this.sessionManager);
 		return {
 			editorText,
 			editorImages,
 			cancelled: false,
 			summaryEntry,
-			sessionContext: stateContext,
+			sessionContext,
 			askReanswerCommitted: isAskReanswerCompletion,
 		};
 	}

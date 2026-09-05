@@ -7,6 +7,7 @@
  * parent with the expanded skill body dumped into the editor.
  */
 import { describe, expect, it } from "bun:test";
+import { countRetainableUserTurns } from "@oh-my-pi/pi-coding-agent/hindsight/transcript";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { assistantMsg, createTestSession, userMsg } from "./utilities";
 
@@ -37,6 +38,30 @@ describe("AgentSession tree navigation onto skill injection", () => {
 			expect(sessionManager.getBranch().some(e => e.id === skillId)).toBe(true);
 			// The expanded skill body must NOT be dumped into the editor.
 			expect(result.editorText).toBeUndefined();
+		} finally {
+			await ctx.cleanup();
+		}
+	});
+});
+
+describe("AgentSession delayed Hindsight baseline after tree navigation", () => {
+	it("rebases delayed startup after /tree before installation", async () => {
+		const ctx = await createTestSession({ inMemory: true });
+		try {
+			const { session, sessionManager } = ctx;
+			sessionManager.appendMessage(userMsg("turn one has enough text"));
+			const firstAssistantId = sessionManager.appendMessage(assistantMsg("reply one has enough text"));
+			sessionManager.appendMessage(userMsg("turn two has enough text"));
+			sessionManager.appendMessage(assistantMsg("reply two has enough text"));
+			sessionManager.appendMessage(userMsg("turn three has enough text"));
+			sessionManager.appendMessage(assistantMsg("reply three has enough text"));
+			session.hindsightCloseRetainBaselineTurns = 3;
+
+			const result = await session.navigateTree(firstAssistantId, { summarize: false });
+
+			expect(result.cancelled).toBe(false);
+			expect(session.hindsightCloseRetainBaselineTurns).toBe(1);
+			expect(session.hindsightCloseRetainBaselineTurns).toBe(countRetainableUserTurns(sessionManager));
 		} finally {
 			await ctx.cleanup();
 		}

@@ -690,6 +690,43 @@ describe("hindsightBackend live bank routing", () => {
 		expect(String(retain.mock.calls[0]?.[1])).toContain("post-switch turn has enough text");
 	});
 
+	it("rebases delayed startup after /tree before installation", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainEveryNTurns": 5,
+			"hindsight.retainOverlapTurns": 0,
+		});
+		const entries = [
+			{ role: "user" as const, text: "shared turn has enough text" },
+			{ role: "assistant" as const, text: "shared reply has enough text" },
+			{ role: "user" as const, text: "post-tree turn has enough text" },
+			{ role: "assistant" as const, text: "post-tree reply has enough text" },
+		];
+		const session = makeFakeSession({
+			sessionId: "s-delayed-tree",
+			entries,
+			loadedUserTurnCount: 5,
+			hindsightCloseRetainBaselineTurns: 1,
+			settings,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+			hindsightCloseRetainBaselineTurns: session.loadedUserTurnCount,
+		});
+		await session.getHindsightSessionState()!.drainOnClose();
+
+		expect(retain).toHaveBeenCalledTimes(1);
+		expect(String(retain.mock.calls[0]?.[1])).toContain("post-tree turn has enough text");
+	});
+
 	// Same regression, exercising the `hindsight.scoping` axis: switching
 	// scope mode also reshapes the bank id / tag filters and must rebuild.
 	it("rebuilds the primary state when hindsight.scoping changes mid-session", async () => {

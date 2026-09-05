@@ -1564,6 +1564,66 @@ describe("Hindsight append-mode session retention", () => {
 		state.dispose();
 	});
 
+	it("flushes queued alias retain/learn items on drainOnClose without auto-retaining the subagent transcript", async () => {
+		const bodies = captureBodies();
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const parent = new HindsightSessionState({
+			sessionId: "sess-parent",
+			client,
+			bankId: "personal",
+			config: makeConfig(),
+			session: {
+				sessionId: "sess-parent",
+				loadedUserTurnCount: 0,
+				sessionManager: {
+					getHeader: () => ({
+						type: "session",
+						id: "sess-parent",
+						timestamp: SESSION_START,
+						cwd: "/tmp",
+					}),
+					getEntries: () => [],
+				},
+				getHindsightSessionState: () => parent,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+		const entries = [
+			userEntry("u1", null, "subagent exploration has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "internal reply has enough text", "2026-08-17T10:00:01.000Z"),
+		];
+		const alias = new HindsightSessionState({
+			sessionId: "sess-alias",
+			client,
+			bankId: "personal",
+			config: makeConfig(),
+			session: {
+				sessionId: "sess-alias",
+				loadedUserTurnCount: 0,
+				sessionManager: {
+					getHeader: () => ({
+						type: "session",
+						id: "sess-alias",
+						timestamp: SESSION_START,
+						cwd: "/tmp",
+					}),
+					getEntries: () => entries,
+				},
+				getHindsightSessionState: () => alias,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+			aliasOf: parent,
+		});
+
+		alias.enqueueRetain("subagent asked me to remember the deploy token rotation");
+		await alias.drainOnClose();
+		expect(bodies).toHaveLength(1);
+		expect(String(firstItem(bodies[0]).content)).toContain("deploy token rotation");
+		expect(String(firstItem(bodies[0]).content)).not.toContain("subagent exploration");
+		alias.dispose();
+		parent.dispose();
+	});
+
 	it("flushes queued tool retains before a slow session retain on close", async () => {
 		const bodies = captureBodies();
 		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });

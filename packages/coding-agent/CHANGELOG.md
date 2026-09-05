@@ -15,6 +15,7 @@
 - Hindsight full-session retain now waits for server-side processing before advancing the append cursor, so a failed consolidation is retried instead of omitted.
 - Hindsight session retain now starts from the latest `/clear` boundary instead of re-sending the cleared conversation.
 - A failed Hindsight append retain now rebuilds the canonical session document on retry instead of duplicating the unconfirmed delta.
+- Hindsight now flushes subagent retain/learn queues on close instead of dropping them with the alias state.
 
 ## [18.0.6] - 2026-08-26
 

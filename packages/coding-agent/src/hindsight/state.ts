@@ -452,7 +452,13 @@ export class HindsightSessionState {
 	}
 
 	async drainOnClose(): Promise<void> {
-		if (this.aliasOf) return;
+		if (this.aliasOf) {
+			// Aliases skip auto-retain, but retain/learn tools still enqueue on
+			// the alias queue. Flush those items before dispose; skipping here
+			// drops them because aliases never attach agent_end.
+			await this.flushRetainQueue();
+			return;
+		}
 		await this.#scheduleSessionRetain(async () => {
 			// Reserve the same session-retain barrier as `/memory enqueue`
 			// before flushing tool items. Otherwise both callers can finish the

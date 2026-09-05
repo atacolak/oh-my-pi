@@ -110,6 +110,17 @@ export class SessionMemory {
 		this.#host.getMnemopiSessionState()?.setSessionId(sid);
 	}
 
+	/** Flush a below-cadence Hindsight tail while the current transcript is still loaded. */
+	async drainHindsightPendingRetain(): Promise<void> {
+		const hindsight = this.#host.getHindsightSessionState();
+		if (!hindsight) return;
+		try {
+			await hindsight.drainOnClose();
+		} catch (error) {
+			logger.warn("Memory lifecycle: Hindsight leave-path flush failed", { error: String(error) });
+		}
+	}
+
 	/** New session file: reset auto-recall / retain-threshold counters for the new transcript. */
 	#resetHindsightConversationTrackingIfHindsight(closeRetainBaselineTurns?: number): boolean {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;

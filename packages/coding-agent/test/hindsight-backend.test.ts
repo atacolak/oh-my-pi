@@ -636,6 +636,51 @@ describe("hindsightBackend live bank routing", () => {
 		expect(String(retain.mock.calls[0]?.[1])).toContain("post-switch turn has enough text");
 	});
 
+	it("retains a below-cadence turn on the old bank before a scope rebuild", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainEveryNTurns": 5,
+			"hindsight.retainOverlapTurns": 0,
+		});
+		settings.set("hindsight.scoping", "global");
+		settings.set("hindsight.bankId", "omp");
+		const entries = [
+			{ role: "user" as const, text: "pre-rebuild turn has enough text" },
+			{ role: "assistant" as const, text: "pre-rebuild reply has enough text" },
+		];
+		const session = makeFakeSession({
+			sessionId: "s-rebuild-drain",
+			entries,
+			hindsightCloseRetainBaselineTurns: 0,
+			settings,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+			hindsightCloseRetainBaselineTurns: 0,
+		});
+
+		settings.set("hindsight.bankId", "Minigames");
+		// Hook is sync but the rebuild is async; yield once so the handler runs.
+		await Bun.sleep(0);
+
+		const next = session.getHindsightSessionState();
+		expect(next?.bankId).toBe("Minigames");
+		expect(retain).toHaveBeenCalledTimes(1);
+		expect(retain.mock.calls[0]?.[0]).toBe("omp");
+		expect(String(retain.mock.calls[0]?.[1])).toContain("pre-rebuild turn has enough text");
+
+		await next!.drainOnClose();
+		expect(retain).toHaveBeenCalledTimes(1);
+	});
+
 	// Same regression, exercising the `hindsight.scoping` axis: switching
 	// scope mode also reshapes the bank id / tag filters and must rebuild.
 	it("rebuilds the primary state when hindsight.scoping changes mid-session", async () => {

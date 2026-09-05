@@ -176,9 +176,9 @@ function schedulePrimaryStateRebuild(session: AgentSession): void {
 
 /**
  * Build (or rebuild) the primary `HindsightSessionState` for `session` from
- * the current settings and install it. Disposes any previous primary state
- * after flushing its retain queue so in-flight tool-initiated retains land in
- * the bank that was selected when they were enqueued, not in the new bank.
+ * the current settings and install it. Drains any previous primary state's
+ * pending session tail and tool-retain queue so a below-cadence turn is not
+ * discarded when bank routing changes.
  *
  * The created state takes ownership of the `onHindsightScopeChanged`
  * subscription so subsequent `hindsight.bankId` / `bankIdPrefix` / `scoping`
@@ -199,21 +199,22 @@ async function installPrimaryState(
 	const client = createHindsightClient(config);
 	const scope = computeBankScope(config, session.sessionManager.getCwd());
 
-	// Cleanup any stale state for this session (defensive — prevents leaks
-	// when a session is reused without going through dispose). Flush the
-	// previous state's retain queue BEFORE clearing it, otherwise
-	// `HindsightRetainQueue.#doFlush` sees `session.getHindsightSessionState()
-	// !== state` and drops the batch. Re-read after the await so a concurrent
-	// owner cannot leave the actual current state undisposed.
+	// Drain the previous state's pending transcript and retain queue BEFORE
+	// replacing it. A below-cadence turn would otherwise be marked loaded
+	// history on the replacement and never retained to either bank.
+	// `HindsightRetainQueue.#doFlush` also drops the batch if the session
+	// owner changes mid-flush, so finish that work first. Re-read after the
+	// await so a concurrent owner cannot leave the actual current state
+	// undisposed.
 	let previous = session.getHindsightSessionState();
 	if (previous) {
-		await previous.flushRetainQueue();
+		await previous.drainOnClose();
 	}
 	const latest = session.getHindsightSessionState();
 	if (latest && latest !== previous) {
 		previous?.dispose();
 		previous = latest;
-		await previous.flushRetainQueue();
+		await previous.drainOnClose();
 	}
 
 	const state = new HindsightSessionState({
@@ -275,9 +276,10 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 	const settings = session.settings;
 	const config = loadHindsightConfig(settings);
 	if (!isHindsightConfigured(config)) {
-		// Hindsight effectively unwired mid-session. Flush before clearing so
-		// queued retains don't get dropped by `HindsightRetainQueue.#doFlush`.
-		await current.flushRetainQueue();
+		// Hindsight effectively unwired mid-session. Drain the pending
+		// transcript and queue before clearing so a below-cadence tail is
+		// not dropped by dispose.
+		await current.drainOnClose();
 		const previous = session.setHindsightSessionState(undefined);
 		previous?.dispose();
 		return;

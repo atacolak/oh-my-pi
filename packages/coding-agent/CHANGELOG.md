@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed `/settings` leaving a stale live theme or status preview after adopting a search-mode appearance submenu edit.
+
 - Fixed project saves leaving live browser and computer tools on the rejected local value after adopting a newer disk edit.
 - Fixed project-cleared provider request limits leaking `null` tombstones through `Settings.get()` and `omp config get --json`.
 - Fixed project saves leaving the live advisor status-line indicator stale after adopting an `advisor.enabled` disk edit.

@@ -1500,18 +1500,21 @@ export class SettingsSelectorComponent implements Component {
 			this.#refreshCurrentTabItems(getSettingsForTab(this.#currentTabId));
 			if (selectedId) this.#currentList?.selectItem(selectedId);
 		}
-		if (
+		const shouldRefreshOpenSubmenu =
 			this.#scope === "project" &&
-			openSubmenuId &&
-			list &&
-			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths))
-		) {
+			openSubmenuId !== null &&
+			list !== null &&
+			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths));
+		if (shouldRefreshOpenSubmenu && list) {
 			const refreshed = list.refreshOpenSubmenu();
 			if (!refreshed && this.#textInputActive && !list.hasOpenSubmenu()) {
 				this.#textInputActive = false;
 			}
 		}
+		const openDef = openSubmenuId ? getSettingDef(openSubmenuId as SettingPath) : undefined;
 		if (this.#currentTabId === "appearance" && !this.#searchList) {
+			this.#previewAppearanceForScope();
+		} else if (this.#searchList && shouldRefreshOpenSubmenu && openDef?.tab === "appearance") {
 			this.#previewAppearanceForScope();
 		}
 		this.context.requestRender?.();

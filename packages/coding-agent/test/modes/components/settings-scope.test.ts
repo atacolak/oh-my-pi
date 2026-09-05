@@ -798,6 +798,45 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			hindsight: { apiToken: "global-secret-token" },
 		});
 	});
+	it("reapplies appearance after adopting a search-mode theme submenu", async () => {
+		settings.set("theme.dark", "dark-one", "project");
+		await settings.flush();
+		const previews: string[] = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium", "alabaster"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: themeName => {
+					previews.push(themeName);
+				},
+				onCancel: () => {},
+			},
+		);
+		expect(previews.at(-1)).toBe("dark-one");
+
+		settings.set("ask.enabled", false, "project");
+		for (const ch of "dark theme") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		expect(previews.at(-1)).toBe("titanium");
+
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ ask: { enabled: true }, custom: { keep: true }, theme: { dark: "alabaster" } }, null, 2),
+		);
+		await settings.flush();
+
+		expect(settings.get("theme.dark")).toBe("alabaster");
+		expect(previews.at(-1)).toBe("alabaster");
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).toContain("alabaster");
+	});
+
 	it("rebuilds open rows after a skipped same-key project save", async () => {
 		settings.set("defaultThinkingLevel", Effort.Low, "project");
 		await settings.flush();

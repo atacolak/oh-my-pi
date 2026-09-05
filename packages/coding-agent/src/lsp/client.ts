@@ -170,6 +170,7 @@ export async function releaseRemovedWorkspaceRoots(
 		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots);
 	try {
 		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
+		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots);
 		clearWorkspaceInitializationFailures(roots, owner, retainClient);
 		return stopped;
 	} catch (error) {
@@ -190,6 +191,7 @@ export async function releaseRemovedWorkspaceRoots(
 			}
 			releaseClientOwnerKey(key, owner);
 		}
+		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots);
 		clearWorkspaceInitializationFailures(roots, owner, retainClient);
 		throw error;
 	}
@@ -206,6 +208,25 @@ function clientCoveredByRemainingWorkspace(
 		directories: remainingWorkspaceRoots.filter(root => path.resolve(root) !== path.resolve(sessionCwd)),
 	});
 	return workspaceRootForPath(clientCwd, remaining) !== null;
+}
+
+/** Drop owner aliases that remaining workspace roots no longer cover. */
+function pruneUncoveredOwnerRoots(
+	owner: LspClientOwner,
+	sessionCwd: string,
+	remainingWorkspaceRoots: readonly string[],
+): void {
+	const byKey = ownerClientRoots.get(owner);
+	if (!byKey) return;
+	for (const [key, roots] of byKey) {
+		for (const root of Array.from(roots)) {
+			if (!clientCoveredByRemainingWorkspace(root, sessionCwd, remainingWorkspaceRoots)) {
+				roots.delete(root);
+			}
+		}
+		if (roots.size === 0) byKey.delete(key);
+	}
+	if (byKey.size === 0) ownerClientRoots.delete(owner);
 }
 
 /**

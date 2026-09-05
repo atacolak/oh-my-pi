@@ -122,6 +122,9 @@
 - Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
 - Refused to attach a collab host that closed fatally before start completed.
 - Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
+### Fixed
+
+- Fixed fullscreen `/copy` outlining only a lazily created grouped Read card, so Enter copies the assistant yield instead of tool output.
 
 ## [18.1.10] - 2026-09-04
 

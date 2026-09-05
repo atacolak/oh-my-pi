@@ -12,6 +12,7 @@
 >   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
 >   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — lazy nested LSP project roots
 >   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting (project `.omp/config.yml` allowed)
+>   - [`cap/copy-outline-lazy-read`](https://github.com/atacolak/oh-my-pi/tree/cap/copy-outline-lazy-read) — `/copy` folds lazy grouped reads
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 

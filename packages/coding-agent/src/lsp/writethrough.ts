@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import { isEnoent, logger, once, untilAborted } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
+import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import { isPermissionDeniedError, writeFileWithFallback } from "../tools/file-write-fallback";
-import { FileChangeType, notifyWorkspaceWatchedFiles } from "./client";
+import { FileChangeType, type LspClientOwner, notifyWorkspaceWatchedFiles } from "./client";
 import { getServersForFile } from "./config";
 import {
 	captureDiagnosticVersions,
@@ -20,7 +21,6 @@ import { getConfig, notifyFileSaved, splitServers, syncFileContent } from "./ser
 import type { ServerConfig } from "./types";
 import { summarizeDiagnosticMessages } from "./utils";
 
-/** Options for creating the LSP writethrough callback */
 export interface WritethroughOptions {
 	/** Whether to format the file using LSP after writing */
 	enableFormat?: boolean;
@@ -32,6 +32,12 @@ export interface WritethroughOptions {
 	deferredSignal?: AbortSignal;
 	/** Transform diagnostics before surfacing them after a successful fetch. */
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
+	/** Additional session workspace directories used to bound nested project-root walks. */
+	additionalDirectories?: readonly string[] | (() => readonly string[] | undefined);
+	/** Session cwd resolved at write time so `/move`, `/wt`, and `!cd` refresh workspace bounds. */
+	cwd?: string | (() => string);
+	/** Session identity used to isolate shared-process client lifecycle. */
+	owner?: LspClientOwner;
 }
 
 /** Internal resolved form of {@link WritethroughOptions} that the writethrough machinery operates on. */
@@ -39,6 +45,9 @@ type ResolvedWritethroughOptions = {
 	enableFormat: boolean;
 	enableDiagnostics: boolean;
 	transformDiagnostics?: (absPath: string, result: FileDiagnosticsResult) => FileDiagnosticsResult;
+	additionalDirectories?: readonly string[] | (() => readonly string[] | undefined);
+	cwd?: string | (() => string);
+	owner?: LspClientOwner;
 };
 
 /** Per-file deferred LSP diagnostics wiring for {@link WritethroughCallback}. */
@@ -207,6 +216,7 @@ async function scheduleDeferredDiagnosticsFetch(args: {
 	expectedDocumentVersions: ServerVersionMap | undefined;
 	signal: AbortSignal;
 	callback: (diagnostics: FileDiagnosticsResult) => void;
+	owner?: LspClientOwner;
 }): Promise<void> {
 	try {
 		const deferredTimeout = AbortSignal.timeout(25_000);
@@ -216,6 +226,7 @@ async function scheduleDeferredDiagnosticsFetch(args: {
 			minVersions: args.minVersions,
 			expectedDocumentVersions: args.expectedDocumentVersions,
 			timeoutMs: DEFERRED_DIAGNOSTICS_WAIT_TIMEOUT_MS,
+			owner: args.owner,
 		});
 		if (args.signal.aborted || diagnostics === undefined) return;
 		args.callback(diagnostics);
@@ -246,9 +257,11 @@ async function fetchDiagnosticsWithDeferral(args: {
 	expectedDocumentVersions: ServerVersionMap | undefined;
 	transformDiagnostics?: ResolvedWritethroughOptions["transformDiagnostics"];
 	deferred?: { onDeferredDiagnostics: (diagnostics: FileDiagnosticsResult) => void; signal: AbortSignal };
+	owner?: LspClientOwner;
 	signal?: AbortSignal;
 }): Promise<FileDiagnosticsResult | undefined> {
-	const { dst, cwd, servers, minVersions, expectedDocumentVersions, transformDiagnostics, deferred, signal } = args;
+	const { dst, cwd, servers, minVersions, expectedDocumentVersions, transformDiagnostics, deferred, signal, owner } =
+		args;
 	const apply = (d: FileDiagnosticsResult | undefined) =>
 		d && transformDiagnostics ? transformDiagnostics(dst, d) : d;
 
@@ -259,6 +272,7 @@ async function fetchDiagnosticsWithDeferral(args: {
 				signal,
 				minVersions,
 				expectedDocumentVersions,
+				owner,
 			}),
 		);
 	}
@@ -269,6 +283,7 @@ async function fetchDiagnosticsWithDeferral(args: {
 		minVersions,
 		expectedDocumentVersions,
 		timeoutMs: DEFERRED_DIAGNOSTICS_WAIT_TIMEOUT_MS,
+		owner,
 	});
 	const INLINE_TIMEOUT = Symbol("inline-diagnostics-timeout");
 	const raced = await Promise.race([
@@ -305,6 +320,11 @@ async function runLspWritethrough(
 	const { enableFormat, enableDiagnostics } = options;
 	const contentAlreadyWritten = runOptions?.contentAlreadyWritten ?? false;
 
+	const additionalDirectories =
+		typeof options.additionalDirectories === "function"
+			? options.additionalDirectories()
+			: options.additionalDirectories;
+	const workspaceRoots = sessionWorkspaceDirectories(cwd, additionalDirectories);
 	let finalContent = content;
 	const writeContent = async (value: string) => writeFileWithFallback(dst, value, file);
 	const getWritePromise = once(() =>
@@ -315,7 +335,7 @@ async function runLspWritethrough(
 		if (writeNotified) return;
 		writeNotified = true;
 		try {
-			await notifyWorkspaceWatchedFiles(cwd, [{ filePath: dst, type: changeType }], notifySignal);
+			await notifyWorkspaceWatchedFiles(workspaceRoots, [{ filePath: dst, type: changeType }], notifySignal);
 		} catch (error) {
 			if (notifySignal?.aborted && !signal?.aborted) {
 				// The operation budget died mid-notify while the caller is still
@@ -334,7 +354,7 @@ async function runLspWritethrough(
 	}
 
 	const config = getConfig(cwd);
-	const servers = getServersForFile(config, dst);
+	const servers = getServersForFile(config, dst, workspaceRoots);
 
 	if (servers.length === 0) {
 		await getWritePromise();
@@ -347,7 +367,9 @@ async function runLspWritethrough(
 	// Capture diagnostic versions BEFORE syncing to detect stale diagnostics
 	// Bound client creation by the writethrough budget: a hung/broken server
 	// must not add its full init wait (30s default) to every edit.
-	const minVersionsPromise = enableDiagnostics ? captureDiagnosticVersions(cwd, servers, 5_000, signal) : undefined;
+	const minVersionsPromise = enableDiagnostics
+		? captureDiagnosticVersions(cwd, servers, 5_000, signal, options.owner)
+		: undefined;
 	let minVersions = useCustomFormatter ? undefined : await minVersionsPromise;
 	let expectedDocumentVersions: ServerVersionMap | undefined;
 
@@ -372,7 +394,7 @@ async function runLspWritethrough(
 				// supports implementations that inspect the file before formatting.
 				if (!contentAlreadyWritten) await writeContent(content);
 				const [formattedContent, capturedVersions] = await Promise.all([
-					formatContent(dst, content, cwd, customLinterServers, operationSignal),
+					formatContent(dst, content, cwd, customLinterServers, operationSignal, options.owner),
 					minVersionsPromise,
 				]);
 				finalContent = formattedContent.content;
@@ -386,14 +408,22 @@ async function runLspWritethrough(
 				}
 				if (!contentAlreadyWritten || finalContent !== content) await writeContent(finalContent);
 				await notifyWriteCommitted(operationSignal);
-				await syncFileContent(dst, finalContent, cwd, lspServers, operationSignal, enableDiagnostics);
+				await syncFileContent(
+					dst,
+					finalContent,
+					cwd,
+					lspServers,
+					operationSignal,
+					enableDiagnostics,
+					options.owner,
+				);
 			} else {
 				// 1. Sync original content to LSP servers
-				await syncFileContent(dst, content, cwd, lspServers, operationSignal);
+				await syncFileContent(dst, content, cwd, lspServers, operationSignal, true, options.owner);
 
 				// 2. Format in-memory via LSP
 				if (enableFormat) {
-					const formatted = await formatContent(dst, content, cwd, lspServers, operationSignal);
+					const formatted = await formatContent(dst, content, cwd, lspServers, operationSignal, options.owner);
 					finalContent = formatted.content;
 					if (formatted.failed) {
 						formatter = FileFormatResult.FAILED;
@@ -406,7 +436,7 @@ async function runLspWritethrough(
 
 				// 3. If formatted, sync formatted content to LSP servers
 				if (finalContent !== content) {
-					await syncFileContent(dst, finalContent, cwd, lspServers, operationSignal);
+					await syncFileContent(dst, finalContent, cwd, lspServers, operationSignal, true, options.owner);
 				}
 
 				// 4. Write to disk
@@ -415,11 +445,24 @@ async function runLspWritethrough(
 			}
 
 			if (enableDiagnostics) {
-				expectedDocumentVersions = await captureOpenFileVersions(dst, cwd, lspServers, operationSignal);
+				expectedDocumentVersions = await captureOpenFileVersions(
+					dst,
+					cwd,
+					lspServers,
+					operationSignal,
+					options.owner,
+				);
 			}
 
 			// 5. Notify saved to LSP servers
-			await notifyFileSaved(dst, cwd, lspServers, operationSignal, !useCustomFormatter || enableDiagnostics);
+			await notifyFileSaved(
+				dst,
+				cwd,
+				lspServers,
+				operationSignal,
+				!useCustomFormatter || enableDiagnostics,
+				options.owner,
+			);
 		});
 		synced = true;
 	} catch {
@@ -436,6 +479,7 @@ async function runLspWritethrough(
 					expectedDocumentVersions,
 					signal: deferred.signal,
 					callback: deferred.onDeferredDiagnostics,
+					owner: options.owner,
 				});
 			}
 		}
@@ -454,6 +498,7 @@ async function runLspWritethrough(
 			minVersions,
 			expectedDocumentVersions,
 			transformDiagnostics: options.transformDiagnostics,
+			owner: options.owner,
 			deferred,
 			signal,
 		});
@@ -523,12 +568,24 @@ async function flushWritethroughBatch(
 	return mergeDiagnostics(results, options);
 }
 
+function resolveWritethroughCwd(cwd: string | (() => string), options?: ResolvedWritethroughOptions): string {
+	if (typeof options?.cwd === "function") return options.cwd();
+	if (typeof options?.cwd === "string") return options.cwd;
+	return typeof cwd === "function" ? cwd() : cwd;
+}
+
 /** Create a writethrough callback for LSP aware write operations */
-export function createLspWritethrough(cwd: string, options?: WritethroughOptions): WritethroughCallback {
+export function createLspWritethrough(
+	cwd: string | (() => string),
+	options?: WritethroughOptions,
+): WritethroughCallback {
 	const resolvedOptions: ResolvedWritethroughOptions = {
 		enableFormat: options?.enableFormat ?? false,
 		enableDiagnostics: options?.enableDiagnostics ?? false,
 		transformDiagnostics: options?.transformDiagnostics,
+		owner: options?.owner,
+		additionalDirectories: options?.additionalDirectories,
+		cwd: options?.cwd ?? cwd,
 	};
 	return async (
 		dst: string,
@@ -538,6 +595,7 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 		batch?: LspWritethroughBatchRequest,
 		getDeferred?: (dst: string) => WritethroughDeferredHandle | undefined,
 	) => {
+		const resolvedCwd = resolveWritethroughCwd(cwd, resolvedOptions);
 		const changeType = (await Bun.file(dst).exists()) ? FileChangeType.Changed : FileChangeType.Created;
 		if (!batch) {
 			const bundle = getDeferred?.(dst);
@@ -550,7 +608,7 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 			const diagnostics = await runLspWritethrough(
 				dst,
 				content,
-				cwd,
+				resolvedCwd,
 				resolvedOptions,
 				changeType,
 				signal,
@@ -573,7 +631,7 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 					try {
 						await flushWritethroughBatch(
 							Array.from(pending.entries.values()),
-							cwd,
+							resolvedCwd,
 							pending.options,
 							signal,
 							getDeferred,
@@ -594,6 +652,12 @@ export function createLspWritethrough(cwd: string, options?: WritethroughOptions
 		if (!batch.flush) return undefined;
 
 		writethroughBatches.delete(batch.id);
-		return flushWritethroughBatch(Array.from(state.entries.values()), cwd, state.options, signal, getDeferred);
+		return flushWritethroughBatch(
+			Array.from(state.entries.values()),
+			resolvedCwd,
+			state.options,
+			signal,
+			getDeferred,
+		);
 	};
 }

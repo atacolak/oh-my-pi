@@ -6,6 +6,7 @@ import { reset as resetCapabilities } from "../capability";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import { loadSlashCommands } from "../extensibility/slash-commands";
+import { releaseRemovedWorkspaceRoots } from "../lsp";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
@@ -773,6 +774,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			if (removed === null) {
 				await runtime.output(`Not a workspace directory: ${resolved}`);
 				return commandConsumed();
+			}
+			try {
+				await releaseRemovedWorkspaceRoots(
+					runtime.sessionManager.getCwd(),
+					removed,
+					runtime.session.getLspClientOwner(),
+					undefined,
+					[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
+				);
+			} catch (err) {
+				logger.warn("Failed to stop language servers for a removed workspace directory", {
+					removed,
+					error: errorMessage(err),
+				});
 			}
 			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));

@@ -5050,6 +5050,62 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("workspace reload does not reattach a late old-config request after barriers drop", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-late-overlapping-reload-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-late-reload-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const nestedServer = installHandshakeLsp();
+			const reloadingOwner = lspClient.createLspClientOwner();
+			const overlappingOwner = lspClient.createLspClientOwner();
+			const nestedClient = await lspClient.getOrCreateClient(
+				nestedConfig,
+				tempDir.path(),
+				1_000,
+				undefined,
+				reloadingOwner,
+			);
+			await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, overlappingOwner);
+
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], reloadingOwner);
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, reloadingOwner),
+			).rejects.toThrow("superseded during reload");
+			expect(lspClient.getActiveClients(reloadingOwner).map(client => client.name)).not.toContain(
+				"nested-late-reload-lsp",
+			);
+			expect(lspClient.getActiveClients(overlappingOwner).map(client => client.name)).toContain(
+				"nested-late-reload-lsp",
+			);
+			expect(
+				await lspClient.getActiveOrPendingClient(nestedConfig, tempDir.path(), undefined, overlappingOwner),
+			).toBe(nestedClient);
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...nestedConfig, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				reloadingOwner,
+			);
+			expect(replacement).not.toBe(nestedClient);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(nestedServer.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("shutdownAll drops routed owner aliases before a later restart", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-shutdown-all-owner-roots-");
 		try {

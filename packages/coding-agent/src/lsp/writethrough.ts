@@ -3,7 +3,7 @@ import { isEnoent, logger, once, untilAborted } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
 import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import { isPermissionDeniedError, writeFileWithFallback } from "../tools/file-write-fallback";
-import { FileChangeType, type LspClientOwner, notifyWorkspaceWatchedFiles } from "./client";
+import { FileChangeType, type LspClientOwner, notifyWorkspaceWatchedFiles, stampOwnerConfigGeneration } from "./client";
 import { getServersForFile } from "./config";
 import {
 	captureDiagnosticVersions,
@@ -361,6 +361,7 @@ async function runLspWritethrough(
 
 	const config = getConfig(cwd);
 	const servers = getServersForFile(config, dst, workspaceRoots);
+	for (const [, serverConfig] of servers) stampOwnerConfigGeneration(serverConfig, options.owner);
 
 	if (servers.length === 0) {
 		await getWritePromise();

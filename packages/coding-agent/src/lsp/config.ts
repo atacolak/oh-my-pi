@@ -588,7 +588,7 @@ export function getServersForFile(
 			{ ...serverConfig, resolvedRoot: serverConfig.resolvedRoot ?? workspaceRoots[0] },
 		]);
 	}
-	return matchServersForFile(config.servers, filePath);
+	return matchServersForFile(config.servers, filePath).map(([name, serverConfig]) => [name, { ...serverConfig }]);
 }
 
 /**

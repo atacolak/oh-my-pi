@@ -5106,6 +5106,45 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("workspace reload rejects a captured unused nested identity after barriers drop", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-unused-identity-reload-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "nested-unused-reload-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const reloadingOwner = lspClient.createLspClientOwner();
+			lspClient.stampOwnerConfigGeneration(nestedConfig, reloadingOwner);
+
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], reloadingOwner);
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, reloadingOwner),
+			).rejects.toThrow("superseded during reload");
+			expect(lspClient.getActiveClients(reloadingOwner).map(client => client.name)).not.toContain(
+				"nested-unused-reload-lsp",
+			);
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...nestedConfig, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				reloadingOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("shutdownAll drops routed owner aliases before a later restart", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-shutdown-all-owner-roots-");
 		try {
@@ -5384,7 +5423,7 @@ describe("lsp regressions", () => {
 
 			const rediscoveredServer = installHandshakeLsp();
 			await expect(
-				lspClient.getOrCreateClient(nestedConfig, nestedRoot, 1_000, undefined, owner),
+				lspClient.getOrCreateClient({ ...nestedConfig }, nestedRoot, 1_000, undefined, owner),
 			).resolves.toMatchObject({ config: { command: "nested-lsp" } });
 			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
 		} finally {
@@ -5439,7 +5478,7 @@ describe("lsp regressions", () => {
 
 			const rediscoveredServer = installHandshakeLsp();
 			await expect(
-				lspClient.getOrCreateClient(stoppedConfig, sharedRoot, 1_000, undefined, owner),
+				lspClient.getOrCreateClient({ ...stoppedConfig }, sharedRoot, 1_000, undefined, owner),
 			).resolves.toMatchObject({ config: { command: "stopped-lsp" } });
 			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
 
@@ -5524,7 +5563,7 @@ describe("lsp regressions", () => {
 
 			const rediscoveredServer = installHandshakeLsp();
 			await expect(
-				lspClient.getOrCreateClient(nestedConfig, nestedRoot, 1_000, undefined, owner),
+				lspClient.getOrCreateClient({ ...nestedConfig }, nestedRoot, 1_000, undefined, owner),
 			).resolves.toMatchObject({ config: { command: "nested-pending-lsp" } });
 			expect(rediscoveredServer.received.map(message => message.method)).toContain("initialize");
 		} finally {
@@ -6124,7 +6163,7 @@ describe("lsp regressions", () => {
 			expect(nestedServer.spawnCount).toBe(1);
 
 			await expect(
-				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner),
+				lspClient.getOrCreateClient({ ...nestedConfig }, tempDir.path(), 1_000, undefined, owner),
 			).rejects.not.toThrow("failed to initialize recently");
 			expect(nestedServer.spawnCount).toBe(2);
 		} finally {

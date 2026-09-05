@@ -51,6 +51,7 @@ const ownerClientRoots = new Map<LspClientOwner, Map<string, Set<string>>>();
 const ownerReloadGeneration = new Map<LspClientOwner, number>();
 const configReloadGenerations = new WeakMap<ServerConfig, number>();
 const ownerReleasedKeyGenerations = new Map<LspClientOwner, Map<string, number>>();
+const ownerReloadRootGenerations = new Map<LspClientOwner, Map<string, number>>();
 
 export function createLspClientOwner(): LspClientOwner {
 	return Symbol("lsp-client-owner");
@@ -278,6 +279,7 @@ export function releaseLspClientOwner(owner: LspClientOwner): void {
 	for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) releaseClientOwnerKey(key, owner);
 	ownerReloadGeneration.delete(owner);
 	ownerReleasedKeyGenerations.delete(owner);
+	ownerReloadRootGenerations.delete(owner);
 }
 const fileOperationLocks = new Map<string, Promise<void>>();
 
@@ -1228,19 +1230,48 @@ export function shutdownStaleClients(
 		...relevantClients.filter(([key]) => !fresh.has(key)).map(([key]) => key),
 	]);
 	const releasedOwnerRoots = new Map<string, string[]>();
+	const previousReleasedGenerations = new Map<string, number | undefined>();
+	const previousCoveredRootGenerations = new Map<string, number | undefined>();
+	const previousConfigStamps = new Map<ServerConfig, number | undefined>();
+	let previousOwnerGeneration: number | undefined;
 	if (owner) {
 		for (const key of staleOwnedKeys) {
 			releasedOwnerRoots.set(key, Array.from(ownerClientRoots.get(owner)?.get(key) ?? []));
 		}
-		if (staleOwnedKeys.size > 0) {
-			const generation = (ownerReloadGeneration.get(owner) ?? 0) + 1;
+		// `/remove-dir` passes `retainClient` for leftover workspace coverage.
+		// Advancing unused-identity generations there would reject captured
+		// configs still inside a remaining root. `reload *` and moved-root
+		// teardown omit that callback, so unused nested identities captured
+		// before reload cannot start after barriers drop.
+		const invalidateUnusedIdentities = retainClient === undefined;
+		if (invalidateUnusedIdentities || staleOwnedKeys.size > 0) {
+			previousOwnerGeneration = ownerReloadGeneration.get(owner);
+			const generation = (previousOwnerGeneration ?? 0) + 1;
 			ownerReloadGeneration.set(owner, generation);
 			let released = ownerReleasedKeyGenerations.get(owner);
 			if (!released) {
 				released = new Map();
 				ownerReleasedKeyGenerations.set(owner, released);
 			}
-			for (const key of staleOwnedKeys) released.set(key, generation);
+			for (const key of staleOwnedKeys) {
+				previousReleasedGenerations.set(key, released.get(key));
+				released.set(key, generation);
+			}
+			for (const config of configs) {
+				previousConfigStamps.set(config, configReloadGenerations.get(config));
+				configReloadGenerations.set(config, generation);
+			}
+			if (invalidateUnusedIdentities) {
+				let coveredRoots = ownerReloadRootGenerations.get(owner);
+				if (!coveredRoots) {
+					coveredRoots = new Map();
+					ownerReloadRootGenerations.set(owner, coveredRoots);
+				}
+				for (const root of roots) {
+					previousCoveredRootGenerations.set(root, coveredRoots.get(root));
+					coveredRoots.set(root, generation);
+				}
+			}
 		}
 	}
 	const unownedStaleKeys = owner
@@ -1363,6 +1394,30 @@ export function shutdownStaleClients(
 				restoreReleasedOwners();
 				clearTemporaryNestedTombstones(stalePending);
 				clearTemporaryNestedTombstones(staleClients);
+				if (owner) {
+					if (previousOwnerGeneration === undefined) ownerReloadGeneration.delete(owner);
+					else ownerReloadGeneration.set(owner, previousOwnerGeneration);
+					const released = ownerReleasedKeyGenerations.get(owner);
+					if (released) {
+						for (const [key, previous] of previousReleasedGenerations) {
+							if (previous === undefined) released.delete(key);
+							else released.set(key, previous);
+						}
+						if (released.size === 0) ownerReleasedKeyGenerations.delete(owner);
+					}
+					for (const [config, previous] of previousConfigStamps) {
+						if (previous === undefined) configReloadGenerations.delete(config);
+						else configReloadGenerations.set(config, previous);
+					}
+					const coveredRoots = ownerReloadRootGenerations.get(owner);
+					if (coveredRoots) {
+						for (const [root, previous] of previousCoveredRootGenerations) {
+							if (previous === undefined) coveredRoots.delete(root);
+							else coveredRoots.set(root, previous);
+						}
+						if (coveredRoots.size === 0) ownerReloadRootGenerations.delete(owner);
+					}
+				}
 			}
 			throw error;
 		}
@@ -1425,11 +1480,17 @@ export function stampOwnerConfigGeneration(config: ServerConfig, owner?: LspClie
 	return generation;
 }
 
-function capturedBeforeOwnerReload(config: ServerConfig, key: string, owner?: LspClientOwner): boolean {
+function capturedBeforeOwnerReload(config: ServerConfig, key: string, cwd: string, owner?: LspClientOwner): boolean {
 	if (!owner) return false;
+	const stamp = stampOwnerConfigGeneration(config, owner);
 	const releasedAt = ownerReleasedKeyGenerations.get(owner)?.get(key);
-	if (releasedAt === undefined) return false;
-	return stampOwnerConfigGeneration(config, owner) < releasedAt;
+	if (releasedAt !== undefined && stamp < releasedAt) return true;
+	const coveredRoots = ownerReloadRootGenerations.get(owner);
+	if (!coveredRoots) return false;
+	for (const [root, generation] of coveredRoots) {
+		if (stamp < generation && workspaceContainsPath(root, cwd)) return true;
+	}
+	return false;
 }
 
 function canReuseClientDuringReload(
@@ -1437,10 +1498,11 @@ function canReuseClientDuringReload(
 	owner: LspClientOwner | undefined,
 	reloadBarriers: readonly Promise<unknown>[],
 	config: ServerConfig,
+	cwd: string,
 ): boolean {
 	if (!owner) return true;
 	if (clientOwners.get(key)?.has(owner) === true) return true;
-	if (capturedBeforeOwnerReload(config, key, owner)) return false;
+	if (capturedBeforeOwnerReload(config, key, cwd, owner)) return false;
 	return reloadBarriers.length === 0;
 }
 
@@ -1471,7 +1533,7 @@ export async function getOrCreateClient(
 	if (
 		existingClient &&
 		!invalidatedClientKeys.has(key) &&
-		canReuseClientDuringReload(key, owner, reloadBarriers, config)
+		canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)
 	) {
 		registerClientOwner(key, owner, routedRoot);
 		existingClient.lastActivity = Date.now();
@@ -1480,7 +1542,7 @@ export async function getOrCreateClient(
 
 	// Check if another coroutine is already creating this client
 	const existingLock = clientLocks.get(key);
-	if (existingLock && canReuseClientDuringReload(key, owner, reloadBarriers, config)) {
+	if (existingLock && canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)) {
 		registerClientOwner(key, owner, routedRoot);
 		if (owner) existingLock.owners.add(owner);
 		try {
@@ -1493,7 +1555,7 @@ export async function getOrCreateClient(
 	if (invalidatedClientKeys.has(key)) {
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 	}
-	if (capturedBeforeOwnerReload(config, key, owner)) {
+	if (capturedBeforeOwnerReload(config, key, cwd, owner)) {
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 	}
 	// Do not start a fresh identity until superseded processes are confirmed stopped.
@@ -1503,8 +1565,11 @@ export async function getOrCreateClient(
 	// on the command+cwd identities that did not exit rather than their shared
 	// root. After that wait, the captured `config`/`key` may itself be stale —
 	// reject it so the caller re-resolves from the reloaded definition instead
-	// of spawning the pre-reload command/args/settings. Cached reuse above is
-	// also barrier-aware: a reloading owner cannot reattach to a client kept
+	// of spawning the pre-reload command/args/settings. Owner-scoped reload
+	// advances this owner's generation even when no client was owned yet, so a
+	// sequential `rename_file` server list captured before `reload *` cannot
+	// start an unused nested identity after barriers drop. Cached reuse above
+	// is also barrier-aware: a reloading owner cannot reattach to a client kept
 	// alive by another session until this wait finishes, and both the post-wait
 	// lookup and a request that arrives after barrier removal still require that
 	// owner to hold the published identity. Otherwise a concurrent old-config
@@ -1523,14 +1588,14 @@ export async function getOrCreateClient(
 		if (
 			clientAfterReload &&
 			!invalidatedClientKeys.has(key) &&
-			canReuseClientDuringReload(key, owner, reloadBarriers, config)
+			canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)
 		) {
 			registerClientOwner(key, owner, routedRoot);
 			clientAfterReload.lastActivity = Date.now();
 			return clientAfterReload;
 		}
 		const lockAfterReload = clientLocks.get(key);
-		if (lockAfterReload && canReuseClientDuringReload(key, owner, reloadBarriers, config)) {
+		if (lockAfterReload && canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)) {
 			registerClientOwner(key, owner, routedRoot);
 			if (owner) lockAfterReload.owners.add(owner);
 			try {
@@ -1744,14 +1809,14 @@ export async function getActiveOrPendingClient(
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	const client = clients.get(key);
-	if (client && canReuseClientDuringReload(key, owner, reloadBarriers, config)) {
+	if (client && canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)) {
 		registerClientOwner(key, owner, routedRoot);
 		client.lastActivity = Date.now();
 		return client;
 	}
 
 	const pending = clientLocks.get(key);
-	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers, config)) return undefined;
+	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)) return undefined;
 	registerClientOwner(key, owner, routedRoot);
 	if (owner) pending.owners.add(owner);
 	try {
@@ -2306,6 +2371,7 @@ export async function shutdownAll(): Promise<void> {
 	ownerClientRoots.clear();
 	ownerReloadGeneration.clear();
 	ownerReleasedKeyGenerations.clear();
+	ownerReloadRootGenerations.clear();
 	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
 	clients.clear();

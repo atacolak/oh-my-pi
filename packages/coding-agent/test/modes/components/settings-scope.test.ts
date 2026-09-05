@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Effort } from "@oh-my-pi/pi-ai";
 import {
@@ -8,6 +8,7 @@ import {
 	settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import {
 	getCurrentThemeName,
 	initTheme,
@@ -49,6 +50,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		stopThemeWatcher();
 		await initTheme();
 		resetSettingsForTest();
@@ -124,6 +126,16 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(selector.render(120).join("\n")).toContain(`Settings · ${path.basename(projectDir)}`);
 		selector.handleInput("\x1bs");
 		expect(selector.render(120).join("\n")).toContain("Settings · global");
+	});
+
+	it("computes the project label once instead of rediscovering the repo on each render", () => {
+		const repoSpy = vi.spyOn(vcs, "repo");
+		const selector = createSelector();
+		const discoveries = repoSpy.mock.calls.length;
+		expect(discoveries).toBeGreaterThan(0);
+		selector.render(120);
+		selector.render(80);
+		expect(repoSpy).toHaveBeenCalledTimes(discoveries);
 	});
 
 	it("sanitizes the project label before rendering the settings border", async () => {

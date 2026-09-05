@@ -4987,7 +4987,11 @@ describe("lsp regressions", () => {
 			await extraServer.waitFor(message => message.method === "shutdown");
 			const concurrent = lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, reloadingOwner);
 			let concurrentSettled = false;
-			void concurrent.finally(() => {
+			const concurrentOutcome = concurrent.then(
+				value => ({ status: "fulfilled" as const, value }),
+				reason => ({ status: "rejected" as const, reason }),
+			);
+			void concurrentOutcome.finally(() => {
 				concurrentSettled = true;
 			});
 			await Promise.resolve();
@@ -5004,12 +5008,42 @@ describe("lsp regressions", () => {
 			expect(nestedServer.received.some(message => message.method === "shutdown")).toBe(false);
 
 			extraServer.exit(0);
-			await expect(teardown).resolves.toEqual(["extra-lsp"]);
-			await expect(concurrent).resolves.toBe(nestedClient);
-			expect(lspClient.getActiveClients(reloadingOwner).map(client => client.name)).toContain("nested-session-lsp");
+			const [stopped, concurrentResult] = await Promise.all([teardown, concurrentOutcome]);
+			expect(stopped).toEqual(["extra-lsp"]);
+			if (concurrentResult.status !== "rejected") {
+				throw new Error("expected captured nested config to be superseded after reload");
+			}
+			expect(String(concurrentResult.reason)).toContain("superseded during reload");
+			expect(lspClient.getActiveClients(reloadingOwner).map(client => client.name)).not.toContain(
+				"nested-session-lsp",
+			);
 			expect(lspClient.getActiveClients(overlappingOwner).map(client => client.name)).toContain(
 				"nested-session-lsp",
 			);
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...nestedConfig, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				reloadingOwner,
+			);
+			expect(replacement).not.toBe(nestedClient);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(
+				await lspClient.getActiveOrPendingClient(nestedConfig, tempDir.path(), undefined, overlappingOwner),
+			).toBe(nestedClient);
+			expect(
+				await lspClient.getActiveOrPendingClient(
+					{ ...nestedConfig, args: ["--mode", "new"] },
+					tempDir.path(),
+					undefined,
+					reloadingOwner,
+				),
+			).toBe(replacement);
+			expect(nestedServer.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

@@ -4282,19 +4282,25 @@ export class AgentSession {
 		// the terminal assistant message. Doing this in the earlier parallel
 		// teardown can snapshot a user-only tail. Wait for any in-flight cadence
 		// retain to settle first, then give the close retain its own
-		// `hindsight.retainTimeoutMs` budget. RPC shutdown exits as soon as
-		// dispose() returns, which would otherwise kill an in-flight
-		// synchronous retain and drop the below-cadence tail.
+		// `hindsight.retainTimeoutMs` budget. First-use close retain may still
+		// PUT the bank (`requestTimeoutMs`) before consolidating, so the drain
+		// deadline covers both. RPC shutdown exits as soon as dispose() returns,
+		// which would otherwise kill an in-flight synchronous retain and drop
+		// the below-cadence tail.
 		const retainTimeoutMs = hindsightState?.config?.retainTimeoutMs;
-		const hindsightDrainTimeoutMs =
+		const requestTimeoutMs = hindsightState?.config?.requestTimeoutMs;
+		const hindsightRetainTimeoutMs =
 			typeof retainTimeoutMs === "number" && Number.isFinite(retainTimeoutMs)
 				? retainTimeoutMs
 				: (options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS);
+		const hindsightRequestTimeoutMs =
+			typeof requestTimeoutMs === "number" && Number.isFinite(requestTimeoutMs) ? requestTimeoutMs : 0;
+		const hindsightDrainTimeoutMs = hindsightRetainTimeoutMs + hindsightRequestTimeoutMs;
 		if (hindsightState) {
 			try {
 				await withTimeout(
 					hindsightState.waitForSessionRetainIdle(),
-					hindsightDrainTimeoutMs,
+					hindsightRetainTimeoutMs,
 					"Timed out waiting for in-flight Hindsight retain on dispose",
 				);
 			} catch (error) {

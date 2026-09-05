@@ -20,6 +20,7 @@
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
 - Fixed Hindsight delayed startup skipping a below-cadence post-switch turn after `/new`, `/clear`, `/resume`, or `/tree`.
 - Hindsight no longer duplicates a retained tail after `/fresh` or a same-file reload.
+- Hindsight close retain now waits through the configured retain timeout during dispose instead of the 5s event-drain deadline.
 
 ## [18.1.11] - 2026-09-05
 

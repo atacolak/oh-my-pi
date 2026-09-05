@@ -4893,6 +4893,47 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("status and reload see a shared nested client through a second session's workspace alias", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-shared-alias-roots-");
+		try {
+			const physical = path.join(tempDir.path(), "physical");
+			const workspaceA = path.join(tempDir.path(), "a");
+			const workspaceB = path.join(tempDir.path(), "b");
+			const aliasA = path.join(workspaceA, "nested");
+			const aliasB = path.join(workspaceB, "nested");
+			fs.mkdirSync(physical);
+			fs.mkdirSync(workspaceA);
+			fs.mkdirSync(workspaceB);
+			fs.symlinkSync(physical, aliasA);
+			fs.symlinkSync(physical, aliasB);
+			const configA: ServerConfig = {
+				command: "alias-shared-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: aliasA,
+			};
+			const configB: ServerConfig = { ...configA, resolvedRoot: aliasB };
+			const server = installHandshakeLsp();
+			const ownerA = lspClient.createLspClientOwner();
+			const ownerB = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(configA, workspaceA, 1_000, undefined, ownerA);
+			await lspClient.getOrCreateClient(configB, workspaceB, 1_000, undefined, ownerB);
+			expect(client.cwd).toBe(physical);
+			expect(lspClient.getActiveClients(ownerB).map(active => active.resolvedRoot)).toContain(aliasB);
+
+			await lspClient.shutdownStaleClients(workspaceB, [], undefined, [workspaceB], ownerB);
+			expect(lspClient.getActiveClients(ownerB).map(active => active.name)).not.toContain("alias-shared-lsp");
+			expect(lspClient.getActiveClients(ownerA).map(active => active.name)).toContain("alias-shared-lsp");
+			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
+
+			await lspClient.shutdownStaleClients(workspaceA, [], undefined, [workspaceA], ownerA);
+			expect(server.received.some(message => message.method === "shutdown")).toBe(true);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload does not reattach a reloading owner to a cached overlapping client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-overlapping-reload-reattach-");
 		try {

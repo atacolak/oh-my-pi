@@ -803,6 +803,12 @@ export class AgentSession {
 	 * history.
 	 */
 	readonly loadedUserTurnCount: number;
+	/**
+	 * Close-retain baseline for delayed Hindsight startup. Starts as the
+	 * construction snapshot and rebases on `/new`, `/clear`, `/resume`, fork,
+	 * and `/tree` because those switches have no live Hindsight state yet.
+	 */
+	hindsightCloseRetainBaselineTurns: number;
 	readonly #memory: SessionMemory;
 	readonly rawSseDebugBuffer: RawSseDebugBuffer;
 
@@ -1160,6 +1166,7 @@ export class AgentSession {
 		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
 		this.loadedUserTurnCount = countRetainableUserTurns(this.sessionManager);
+		this.hindsightCloseRetainBaselineTurns = this.loadedUserTurnCount;
 		this.settings = config.settings;
 		this.#modelRegistry = config.modelRegistry;
 		this.#extensionRoots =
@@ -1370,6 +1377,10 @@ export class AgentSession {
 			},
 			refreshBaseSystemPrompt: () => this.#tools.refreshBaseSystemPrompt(),
 			replaceMemoryTools: tools => this.#tools.replaceMemoryTools(tools),
+			rebaseHindsightCloseRetainBaseline: closeRetainBaselineTurns => {
+				this.hindsightCloseRetainBaselineTurns =
+					closeRetainBaselineTurns ?? countRetainableUserTurns(this.sessionManager);
+			},
 		};
 		this.#memory = new SessionMemory(memoryHost, {
 			memoryAgentDir: config.memoryAgentDir,
@@ -8801,6 +8812,7 @@ export class AgentSession {
 		const previousFreshProviderSessionId = this.#freshProviderSessionId;
 		const previousInheritedProviderPromptCacheKey = this.#inheritedProviderPromptCacheKey;
 		const previousHindsightConversationTracking = this.#memory.captureHindsightConversationTracking();
+		const previousHindsightCloseRetainBaselineTurns = this.hindsightCloseRetainBaselineTurns;
 
 		// Snapshot the full checkpoint runtime state: the success path calls
 		// #rehydrateCheckpointRewindState(), which clears and rebuilds all four
@@ -9013,6 +9025,7 @@ export class AgentSession {
 			this.#syncAgentSessionId(previousSessionState.sessionId, false);
 			this.#memory.rekeyForCurrentSessionId();
 			this.#memory.restoreHindsightConversationTracking(previousHindsightConversationTracking);
+			this.hindsightCloseRetainBaselineTurns = previousHindsightCloseRetainBaselineTurns;
 			this.agent.setTools(previousTools);
 			this.#tools.setBaseSystemPrompt(previousBaseSystemPrompt);
 			this.#memory.restorePromotionSnapshot(previousBaseSystemPromptBeforeMemoryPromotion);
@@ -9652,6 +9665,7 @@ export class AgentSession {
 		// Emit session_tree event; only handlers can mutate session entries, so skip
 		// the emit and the context rebuild when no handlers are registered (mirrors
 		// the session_before_tree guard above).
+		let sessionContext = stateContext;
 		if (this.#extensionRunner?.hasHandlers("session_tree")) {
 			await this.#extensionRunner.emit({
 				type: "session_tree",
@@ -9660,22 +9674,19 @@ export class AgentSession {
 				summaryEntry,
 				fromExtension: summaryText ? fromExtension : undefined,
 			});
-			const rawContext = this.sessionManager.buildSessionContext();
-			return {
-				editorText,
-				editorImages,
-				cancelled: false,
-				summaryEntry,
-				sessionContext: rawContext,
-				askReanswerCommitted: isAskReanswerCompletion,
-			};
+			sessionContext = this.sessionManager.buildSessionContext();
 		}
+		// Delayed Hindsight install still reads this construction-time field.
+		// `/tree` never creates live Hindsight state, so rebase the pending
+		// close baseline onto the active branch instead of skipping a
+		// below-cadence replacement turn.
+		this.hindsightCloseRetainBaselineTurns = countRetainableUserTurns(this.sessionManager);
 		return {
 			editorText,
 			editorImages,
 			cancelled: false,
 			summaryEntry,
-			sessionContext: stateContext,
+			sessionContext,
 			askReanswerCommitted: isAskReanswerCompletion,
 		};
 	}

@@ -24,6 +24,7 @@ export interface SessionMemoryHost {
 	setBaseSystemPrompt(prompt: string[]): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	replaceMemoryTools(tools: AgentTool[]): Promise<void>;
+	rebaseHindsightCloseRetainBaseline(closeRetainBaselineTurns?: number): void;
 }
 
 /** Owns memory backend transitions and transcript-scoped memory state. */
@@ -129,6 +130,7 @@ export class SessionMemory {
 	/** Resets transcript-scoped memory counters and removes a promoted prompt. */
 	async resetContextForNewTranscript(options?: { closeRetainBaselineTurns?: number }): Promise<void> {
 		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
+		this.#host.rebaseHindsightCloseRetainBaseline(options?.closeRetainBaselineTurns);
 		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight(options?.closeRetainBaselineTurns);
 		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
 		if (hadPromotedMemoryPrompt) {

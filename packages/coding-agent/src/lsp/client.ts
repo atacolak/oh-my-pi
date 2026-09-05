@@ -48,6 +48,9 @@ export type LspClientOwner = symbol;
 const clientOwners = new Map<string, Set<LspClientOwner>>();
 const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
 const ownerClientRoots = new Map<LspClientOwner, Map<string, Set<string>>>();
+const ownerReloadGeneration = new Map<LspClientOwner, number>();
+const configReloadGenerations = new WeakMap<ServerConfig, number>();
+const ownerReleasedKeyGenerations = new Map<LspClientOwner, Map<string, number>>();
 
 export function createLspClientOwner(): LspClientOwner {
 	return Symbol("lsp-client-owner");
@@ -273,6 +276,8 @@ export async function releaseMovedWorkspaceRoots(
 /** Release all client identities associated with a disposed tool session. */
 export function releaseLspClientOwner(owner: LspClientOwner): void {
 	for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) releaseClientOwnerKey(key, owner);
+	ownerReloadGeneration.delete(owner);
+	ownerReleasedKeyGenerations.delete(owner);
 }
 const fileOperationLocks = new Map<string, Promise<void>>();
 
@@ -1227,6 +1232,16 @@ export function shutdownStaleClients(
 		for (const key of staleOwnedKeys) {
 			releasedOwnerRoots.set(key, Array.from(ownerClientRoots.get(owner)?.get(key) ?? []));
 		}
+		if (staleOwnedKeys.size > 0) {
+			const generation = (ownerReloadGeneration.get(owner) ?? 0) + 1;
+			ownerReloadGeneration.set(owner, generation);
+			let released = ownerReleasedKeyGenerations.get(owner);
+			if (!released) {
+				released = new Map();
+				ownerReleasedKeyGenerations.set(owner, released);
+			}
+			for (const key of staleOwnedKeys) released.set(key, generation);
+		}
 	}
 	const unownedStaleKeys = owner
 		? new Set(Array.from(staleOwnedKeys).filter(key => releaseClientOwnerKey(key, owner)))
@@ -1402,15 +1417,31 @@ function collectReloadBarriers(config: ServerConfig, cwd: string): Promise<unkno
 	return reloadBarriers;
 }
 
+export function stampOwnerConfigGeneration(config: ServerConfig, owner?: LspClientOwner): number {
+	const stamped = configReloadGenerations.get(config);
+	if (stamped !== undefined) return stamped;
+	const generation = owner ? (ownerReloadGeneration.get(owner) ?? 0) : 0;
+	configReloadGenerations.set(config, generation);
+	return generation;
+}
+
+function capturedBeforeOwnerReload(config: ServerConfig, key: string, owner?: LspClientOwner): boolean {
+	if (!owner) return false;
+	const releasedAt = ownerReleasedKeyGenerations.get(owner)?.get(key);
+	if (releasedAt === undefined) return false;
+	return stampOwnerConfigGeneration(config, owner) < releasedAt;
+}
+
 function canReuseClientDuringReload(
 	key: string,
 	owner: LspClientOwner | undefined,
 	reloadBarriers: readonly Promise<unknown>[],
+	config: ServerConfig,
 ): boolean {
-	if (reloadBarriers.length === 0 || !owner) return true;
-	// A reloading owner is released before teardown; reattaching here would
-	// revive that owner on a client kept alive for an overlapping session.
-	return clientOwners.get(key)?.has(owner) === true;
+	if (!owner) return true;
+	if (clientOwners.get(key)?.has(owner) === true) return true;
+	if (capturedBeforeOwnerReload(config, key, owner)) return false;
+	return reloadBarriers.length === 0;
 }
 
 /**
@@ -1430,13 +1461,18 @@ export async function getOrCreateClient(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<LspClient> {
+	stampOwnerConfigGeneration(config, owner);
 	const routedRoot = config.resolvedRoot ?? cwd;
 	cwd = resolveEquivalentPath(routedRoot);
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	// Check if client already exists
 	const existingClient = clients.get(key);
-	if (existingClient && !invalidatedClientKeys.has(key) && canReuseClientDuringReload(key, owner, reloadBarriers)) {
+	if (
+		existingClient &&
+		!invalidatedClientKeys.has(key) &&
+		canReuseClientDuringReload(key, owner, reloadBarriers, config)
+	) {
 		registerClientOwner(key, owner, routedRoot);
 		existingClient.lastActivity = Date.now();
 		return existingClient;
@@ -1444,7 +1480,7 @@ export async function getOrCreateClient(
 
 	// Check if another coroutine is already creating this client
 	const existingLock = clientLocks.get(key);
-	if (existingLock && canReuseClientDuringReload(key, owner, reloadBarriers)) {
+	if (existingLock && canReuseClientDuringReload(key, owner, reloadBarriers, config)) {
 		registerClientOwner(key, owner, routedRoot);
 		if (owner) existingLock.owners.add(owner);
 		try {
@@ -1457,6 +1493,9 @@ export async function getOrCreateClient(
 	if (invalidatedClientKeys.has(key)) {
 		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
 	}
+	if (capturedBeforeOwnerReload(config, key, owner)) {
+		throw new Error(`LSP configuration was superseded during reload: ${config.command}`);
+	}
 	// Do not start a fresh identity until superseded processes are confirmed stopped.
 	// In-flight workspace reload barriers are keyed by known roots, so a nested
 	// client that was not in the snapshot must still wait on any ancestor
@@ -1466,11 +1505,11 @@ export async function getOrCreateClient(
 	// reject it so the caller re-resolves from the reloaded definition instead
 	// of spawning the pre-reload command/args/settings. Cached reuse above is
 	// also barrier-aware: a reloading owner cannot reattach to a client kept
-	// alive by another session until this wait finishes, and the post-wait
-	// lookup still requires that owner to hold the published identity. Otherwise
-	// a concurrent old-config request would rejoin the overlapping process and
-	// leave this session attached to both the superseded client and its
-	// replacement.
+	// alive by another session until this wait finishes, and both the post-wait
+	// lookup and a request that arrives after barrier removal still require that
+	// owner to hold the published identity. Otherwise a concurrent old-config
+	// request would rejoin the overlapping process and leave this session
+	// attached to both the superseded client and its replacement.
 	if (reloadBarriers.length > 0) {
 		try {
 			for (const reloadBarrier of reloadBarriers) {
@@ -1484,14 +1523,14 @@ export async function getOrCreateClient(
 		if (
 			clientAfterReload &&
 			!invalidatedClientKeys.has(key) &&
-			canReuseClientDuringReload(key, owner, reloadBarriers)
+			canReuseClientDuringReload(key, owner, reloadBarriers, config)
 		) {
 			registerClientOwner(key, owner, routedRoot);
 			clientAfterReload.lastActivity = Date.now();
 			return clientAfterReload;
 		}
 		const lockAfterReload = clientLocks.get(key);
-		if (lockAfterReload && canReuseClientDuringReload(key, owner, reloadBarriers)) {
+		if (lockAfterReload && canReuseClientDuringReload(key, owner, reloadBarriers, config)) {
 			registerClientOwner(key, owner, routedRoot);
 			if (owner) lockAfterReload.owners.add(owner);
 			try {
@@ -1699,19 +1738,20 @@ export async function getActiveOrPendingClient(
 	owner?: LspClientOwner,
 ): Promise<LspClient | undefined> {
 	const routedRoot = config.resolvedRoot ?? cwd;
+	stampOwnerConfigGeneration(config, owner);
 	cwd = resolveEquivalentPath(routedRoot);
 	throwIfAborted(signal);
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	const client = clients.get(key);
-	if (client && canReuseClientDuringReload(key, owner, reloadBarriers)) {
+	if (client && canReuseClientDuringReload(key, owner, reloadBarriers, config)) {
 		registerClientOwner(key, owner, routedRoot);
 		client.lastActivity = Date.now();
 		return client;
 	}
 
 	const pending = clientLocks.get(key);
-	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers)) return undefined;
+	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers, config)) return undefined;
 	registerClientOwner(key, owner, routedRoot);
 	if (owner) pending.owners.add(owner);
 	try {
@@ -2264,6 +2304,8 @@ export async function shutdownAll(): Promise<void> {
 	clientOwners.clear();
 	ownerClientKeys.clear();
 	ownerClientRoots.clear();
+	ownerReloadGeneration.clear();
+	ownerReleasedKeyGenerations.clear();
 	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
 	clients.clear();

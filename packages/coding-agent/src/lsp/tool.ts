@@ -37,6 +37,7 @@ import {
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
+	stampOwnerConfigGeneration,
 	waitForProjectLoaded,
 } from "./client";
 import { getLinterClient } from "./clients";
@@ -636,6 +637,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					const key = `${name}:${resolveEquivalentPath(serverConfig.resolvedRoot ?? this.session.cwd)}`;
 					if (seenServers.has(key)) continue;
 					seenServers.add(key);
+					stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 					servers.push([name, serverConfig]);
 				}
 			};
@@ -962,6 +964,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			if (file && file !== "*") {
 				const resolved = resolveToCwd(file, this.session.cwd);
 				serverList = getLspServersForFile(config, resolved, workspaceRoots);
+				for (const [, serverConfig] of serverList) stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 				if (serverList.length === 0) {
 					return {
 						content: [{ type: "text", text: "No language server found for this file" }],
@@ -970,6 +973,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 			} else {
 				serverList = getLspServers(config);
+				for (const [, serverConfig] of serverList) stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 			}
 
 			if (serverList.length === 0) {
@@ -1142,6 +1146,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				};
 			}
 			const servers = getLspServers(config);
+			for (const [, serverConfig] of servers) stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 			if (servers.length === 0) {
 				return {
 					content: [{ type: "text", text: "No language server found for this action" }],

@@ -10,6 +10,7 @@ import {
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import {
+	getColorBlindMode,
 	getCurrentThemeName,
 	initTheme,
 	onTerminalAppearanceChange,
@@ -371,6 +372,54 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: false } });
 		selector.handleInput("\x1b");
 		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: true } });
+	});
+
+	it("previews the selected scope's symbol and color-blind options", async () => {
+		settings.set("symbolPreset", "nerd", "project");
+		settings.set("symbolPreset", "ascii", "global");
+		settings.set("colorBlindMode", true, "project");
+		settings.set("colorBlindMode", false, "global");
+		const previews: Array<{ theme?: string; symbolPreset?: string; colorBlindMode?: boolean }> = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: (themeName, options) => {
+					previews.push({ theme: themeName, ...options });
+					const preview = previewTheme(themeName, {
+						ephemeral: true,
+						symbolPreset: options?.symbolPreset,
+						colorBlindMode: options?.colorBlindMode,
+					});
+					pendingPreviews.push(preview);
+					void preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toMatchObject({ symbolPreset: "nerd", colorBlindMode: true });
+		expect(theme.getSymbolPreset()).toBe("nerd");
+		expect(getColorBlindMode()).toBe(true);
+		selector.handleInput("\x1bs");
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toMatchObject({ symbolPreset: "ascii", colorBlindMode: false });
+		expect(theme.getSymbolPreset()).toBe("ascii");
+		expect(getColorBlindMode()).toBe(false);
+		expect(settings.get("symbolPreset")).toBe("nerd");
+		expect(settings.get("colorBlindMode")).toBe(true);
+		selector.handleInput("\x1b");
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toMatchObject({ symbolPreset: "nerd", colorBlindMode: true });
+		expect(theme.getSymbolPreset()).toBe("nerd");
+		expect(getColorBlindMode()).toBe(true);
 	});
 
 	it("restores the scoped theme when canceling a theme submenu", () => {

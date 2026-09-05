@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/settings` previewing project glyphs and color-blind colors while browsing a different scope.
 - Fixed `/settings` dropping custom status-line segment options when closing the overlay.
 - Fixed `/settings` leaving a stale live theme or status preview after adopting a search-mode appearance submenu edit.
 - Fixed project saves leaving live browser and computer tools on the rejected local value after adopting a newer disk edit.

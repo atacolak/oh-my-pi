@@ -180,8 +180,8 @@ const PROJECT_DOTENV_GLOBAL_DIR_KEYS = [
 	"OMP_CONFIG_DIR",
 ] as const;
 
-function globalCollabValue(settings: Settings, path: CollabSettingPath): unknown {
-	let current: unknown = settings.getGlobalSettings();
+function layerCollabValue(layer: unknown, path: CollabSettingPath): unknown {
+	let current: unknown = layer;
 	for (const segment of path.split(".")) {
 		if (current === null || current === undefined || typeof current !== "object") return undefined;
 		current = (current as Record<string, unknown>)[segment];
@@ -193,10 +193,13 @@ function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, p
 	const provenance = settings.getProvenance(path);
 	if (provenance === "runtime" || provenance === "default") return settings.get(path);
 	const effective = settings.get(path);
-	if (path === "collab.autoStart" && effective === false) return false as SettingValue<P>;
+	if (path === "collab.autoStart") {
+		if (effective === false) return false as SettingValue<P>;
+		if (layerCollabValue(settings.getProjectSettings(), path) === false) return false as SettingValue<P>;
+	}
 	if (PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name))) return getDefault(path);
 	if (provenance === "project" || provenance === "overlay") {
-		const globalValue = globalCollabValue(settings, path);
+		const globalValue = layerCollabValue(settings.getGlobalSettings(), path);
 		return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
 	}
 	return effective;
@@ -208,7 +211,7 @@ function isTrustedCollabConfigured(settings: Settings, path: CollabSettingPath):
 	if (PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name))) return false;
 	if (provenance === "global") return true;
 	if (provenance !== "project" && provenance !== "overlay") return false;
-	return globalCollabValue(settings, path) !== undefined;
+	return layerCollabValue(settings.getGlobalSettings(), path) !== undefined;
 }
 
 /** Start the configured host once during interactive startup. */

@@ -298,10 +298,7 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
 			settings.set("providers.maxInFlightRequests", { openai: 5, anthropic: null } as never, "project");
-			expect(settings.get("providers.maxInFlightRequests") as Record<string, number | null>).toEqual({
-				openai: 5,
-				anthropic: null,
-			});
+			expect(settings.get("providers.maxInFlightRequests")).toEqual({ openai: 5 });
 			expect(settings.getGlobalValue("providers.maxInFlightRequests")).toEqual({
 				anthropic: 3,
 				openai: 5,

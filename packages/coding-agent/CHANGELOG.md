@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed project-cleared provider request limits leaking `null` tombstones through `Settings.get()` and `omp config get --json`.
 - Fixed project saves leaving the live advisor status-line indicator stale after adopting an `advisor.enabled` disk edit.
 - Fixed conversation-flow setting signals reapplying queue modes onto unrelated Settings clones.
 - Fixed `SettingsManager.create()` missing a loaded instance when `cwd` or `agentDir` is relative.

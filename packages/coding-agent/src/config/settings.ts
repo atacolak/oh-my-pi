@@ -364,7 +364,7 @@ function omitRecordNulls(value: unknown): unknown {
 
 function resolveLayerValue<P extends SettingPath>(path: P, value: unknown, cwd: string): SettingValue<P> {
 	const resolved = value !== undefined ? (resolvePathScopedStringArray(path, value, cwd) ?? value) : getDefault(path);
-	if (SETTINGS_SCHEMA[path].type === "record" && path !== "providers.maxInFlightRequests") {
+	if (SETTINGS_SCHEMA[path].type === "record") {
 		return omitRecordNulls(resolved) as SettingValue<P>;
 	}
 	return resolved as SettingValue<P>;

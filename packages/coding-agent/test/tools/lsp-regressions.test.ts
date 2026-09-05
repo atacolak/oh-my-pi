@@ -5191,6 +5191,46 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("shutdownAll restores owners when a client survives force-kill", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-shutdown-all-failed-owner-");
+		try {
+			const config: ServerConfig = {
+				command: "shutdown-all-survivor-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const server = installFakeLsp(
+				(message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const liveOwner = lspClient.createLspClientOwner();
+			const overlappingOwner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, liveOwner);
+
+			await lspClient.shutdownAll();
+			expect(lspClient.getActiveClients(liveOwner).map(entry => entry.name)).toContain("shutdown-all-survivor-lsp");
+
+			await expect(
+				lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], overlappingOwner),
+			).resolves.toEqual([]);
+			expect(server.received.filter(message => message.method === "shutdown")).toHaveLength(1);
+			expect(lspClient.getActiveClients(liveOwner).map(entry => entry.name)).toContain("shutdown-all-survivor-lsp");
+			expect(lspClient.getActiveClients(overlappingOwner).map(entry => entry.name)).not.toContain(
+				"shutdown-all-survivor-lsp",
+			);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
 	it("workspace reload does not reattach a pending observer to a superseded overlapping client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-pending-observer-reload-");
 		const initialize = Promise.withResolvers<void>();

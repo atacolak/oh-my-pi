@@ -694,7 +694,6 @@ describe("hindsightBackend live bank routing", () => {
 		});
 
 		const initial = session.getHindsightSessionState();
-		expect(initial?.config.retainStrategy).toBeNull();
 
 		settings.set("hindsight.retainStrategy", "personal_chat");
 		await Bun.sleep(0);

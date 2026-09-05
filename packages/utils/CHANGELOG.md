@@ -5,6 +5,15 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+### Added
+
+- Added `isEnvOwnedByProjectDotenv` to identify environment variables that came from the launch project's dotenv files rather than the parent shell.
+
+### Changed
+
+- `withFileLock` now honors an optional `AbortSignal` and cancels lock-acquisition retries immediately.
+
+
 ## [18.1.7] - 2026-09-03
 
 ### Added

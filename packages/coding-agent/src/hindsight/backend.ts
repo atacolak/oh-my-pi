@@ -81,7 +81,12 @@ export const hindsightBackend: MemoryBackend = {
 			return;
 		}
 
-		await installPrimaryState(session, settings, new Set(), options.hindsightCloseRetainBaselineTurns);
+		await installPrimaryState(
+			session,
+			settings,
+			new Set(),
+			session.hindsightCloseRetainBaselineTurns ?? options.hindsightCloseRetainBaselineTurns,
+		);
 	},
 
 	async buildDeveloperInstructions(_agentDir, settings, session): Promise<string | undefined> {

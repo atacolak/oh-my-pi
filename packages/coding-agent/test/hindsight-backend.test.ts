@@ -20,6 +20,7 @@ interface FakeSessionDeps {
 	cwd?: string;
 	entries?: Array<{ role: "user" | "assistant"; text: string }>;
 	loadedUserTurnCount?: number;
+	hindsightCloseRetainBaselineTurns?: number;
 	settings?: Settings;
 }
 
@@ -30,6 +31,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 	const session = {
 		sessionId: deps.sessionId,
 		loadedUserTurnCount: deps.loadedUserTurnCount,
+		hindsightCloseRetainBaselineTurns: deps.hindsightCloseRetainBaselineTurns,
 		settings: deps.settings ?? Settings.isolated(),
 		sessionManager: {
 			getEntries: () =>
@@ -651,6 +653,41 @@ describe("hindsightBackend live bank routing", () => {
 
 		expect(retain).toHaveBeenCalledTimes(1);
 		expect(String(retain.mock.calls[0]?.[1])).toContain("new active turn has enough text");
+	});
+
+	it("rebases delayed startup after a transcript switch before installation", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainEveryNTurns": 5,
+			"hindsight.retainOverlapTurns": 0,
+		});
+		const entries = [
+			{ role: "user" as const, text: "post-switch turn has enough text" },
+			{ role: "assistant" as const, text: "post-switch reply has enough text" },
+		];
+		const session = makeFakeSession({
+			sessionId: "s-delayed-switch",
+			entries,
+			loadedUserTurnCount: 5,
+			hindsightCloseRetainBaselineTurns: 0,
+			settings,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+			hindsightCloseRetainBaselineTurns: session.loadedUserTurnCount,
+		});
+		await session.getHindsightSessionState()!.drainOnClose();
+
+		expect(retain).toHaveBeenCalledTimes(1);
+		expect(String(retain.mock.calls[0]?.[1])).toContain("post-switch turn has enough text");
 	});
 
 	// Same regression, exercising the `hindsight.scoping` axis: switching

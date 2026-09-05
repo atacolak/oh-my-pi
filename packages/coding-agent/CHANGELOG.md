@@ -17,6 +17,7 @@
 - A failed Hindsight append retain now rebuilds the canonical session document on retry instead of duplicating the unconfirmed delta.
 - Hindsight now flushes subagent retain/learn queues on close instead of dropping them with the alias state.
 - Hindsight last-turn close no longer duplicates a retained window after a failed `/resume` with no retain in flight.
+- Hindsight delayed startup now rebases the close-retain baseline after `/new`, `/clear`, or `/resume` instead of skipping the post-switch turn.
 
 ## [18.0.6] - 2026-08-26
 

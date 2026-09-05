@@ -13,12 +13,26 @@
 
 - `withFileLock` now honors an optional `AbortSignal` and cancels lock-acquisition retries immediately.
 
+### Fixed
+
+- Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
+- Reused child-shell dotenv reconstruction so Bun's pre-dotenv `NODE_ENV` mode files are treated as project-owned.
+
+## [18.1.11] - 2026-09-05
+
+### Fixed
+
+- Fixed `extractRetryHint` dropping the longer timing signal when an error body carries both an account reset and an appended retry hint: competing signals now merge by longest window instead of first match, so retries honor the provider's full backoff.
 
 ## [18.1.7] - 2026-09-03
 
 ### Added
 
 - Added the public `getTinyWorkerRuntimeDir()` utility, which returns the standard `~/.omp/run/tiny` directory for tiny-worker runtime data.
+
+### Fixed
+
+- Fixed retry classification for Bun's bare `Socket is closed` transport error.
 
 ## [18.1.6] - 2026-09-03
 

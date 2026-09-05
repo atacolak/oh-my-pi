@@ -17,8 +17,12 @@
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
 - Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
+
 ### Fixed
 
+- Fixed project saves leaving live browser and computer tools on the rejected local value after adopting a newer disk edit.
+- Fixed project-cleared provider request limits leaking `null` tombstones through `Settings.get()` and `omp config get --json`.
+- Fixed project saves leaving the live advisor status-line indicator stale after adopting an `advisor.enabled` disk edit.
 - Fixed conversation-flow setting signals reapplying queue modes onto unrelated Settings clones.
 - Fixed `SettingsManager.create()` missing a loaded instance when `cwd` or `agentDir` is relative.
 - Fixed persisted queue-mode changes restoring unrelated live-only conversation modes.
@@ -65,6 +69,28 @@
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
 ### Fixed
 
+- Fixed nested workspace routing attaching a file to the session cwd when an additional root is a nested symlink to a shorter disjoint path, so that extra workspace no longer inherits the cwd's language-server executable.
+- Fixed `rename_file` rebuilding extra-workspace `willRenameFiles` edit URIs against the session cwd, so an unopened file under an additional-root directory symlink still notifies that workspace's language server.
+- Fixed `lsp status` omitting a nested language server whose project root is a workspace symlink after the client canonicalized to the target path.
+- Fixed workspace-edit overlay refresh updating only the first equivalent symlink alias on one language-server client, so a later request on the other alias no longer used stale content.
+- Fixed a session that joined an in-flight language-server initialization through a format-on-write probe remaining invisible to `lsp reload *`, so that session could keep the superseded client beside its replacement.
+- Fixed idle language-server shutdown dropping live session owners when the process survived force-kill, so owner-filtered status went blank and an overlapping session could tear the still-running client down.
+- Fixed a shared language-server initialization that exited before initialize recorded only the creating session, so a waiting session's later `lsp reload *` still hit the three-minute negative cache.
+- Fixed `rename_file` leaving a nested language-server process initialized at a directory that was itself moved, so a later operation under the destination no longer kept the vanished-root server running.
+- Fixed workspace-edit overlay refresh and watched-file notifications using one language server's document URI for every client when a file sits on both sides of an in-workspace directory symlink.
+- Fixed language-server reload and removed-root cleanup missing a nested client whose project root is a workspace symlink, so that process no longer survives beside its replacement.
+- Fixed diagnostics and format-on-write querying every language server with the first server's document URI when a file sits on both sides of an in-workspace directory symlink.
+- Fixed idle language-server shutdown dropping ownership of a replacement client published under the same identity before the old process exited.
+- Fixed `lsp reload *` reattaching a reloading session to a cached language-server client kept alive by an overlapping session, so that owner no longer uses both the old and replacement configurations.
+- Fixed language-server routing following an in-workspace directory symlink out of the project, so hover and diagnostics on files under that alias stay on the containing server.
+- Fixed `lsp reload *` keeping a leftover teardown barrier for every language server at a shared project root when only one identity failed to exit, so a successfully stopped server in that project could start again.
+- Fixed `rename_file` and watched-file notifications following a leaf symlink out of a nested project, so the alias's language server still receives will/didRenameFiles and filesystem change events.
+- Fixed write and edit language-server routing after `/move`, `/wt`, or interactive `!cd`, so format-on-write and diagnostics use the new cwd instead of the construction-time workspace.
+- Fixed `rename_file` sending every nested language server the full directory rename pair list, so a sibling project no longer rejects or duplicates another project's file operations.
+- Fixed `lsp reload *` leaving a nested pending start permanently tombstoned when another server survived mixed teardown, so later operations for that project no longer fail as “configuration was superseded.”
+- Fixed `lsp reload *` keeping a workspace-wide reload barrier after mixed teardown when only one nested server survived, so sibling projects could still start.
+- Fixed language-server routing following a leaf symlink out of the workspace, so hover and diagnostics on an in-workspace alias stay on that project's server.
+- Fixed `lsp reload *` restoring ownership of nested servers that already exited during a mixed teardown, so a later reload could not rediscover that project.
 - Fixed language-server document URIs following a leaf symlink out of the workspace, so hover and diagnostics stay on the alias's project instead of the target's.
 - Fixed `/move`, `/wt`, and interactive `!cd` leaving language-server ownership on the previous cwd, so a later session in that directory could not replace a superseded server.
 - Fixed `rename_file` using lexical overlay URIs when the workspace itself is a symlink, so an already-open canonical document was not closed and recreating the old path skipped `didOpen`.
@@ -73,7 +99,7 @@
 - Fixed language-server ownership surviving process exit and idle shutdown, so another session that later started the same identity could not replace it.
 - Fixed `/remove-dir` restoring language-server ownership after a failed extra-root teardown, so a later replacement client stayed owned by the session that no longer had that workspace.
 - Fixed `lsp reload *` skipping a nested initialization failure when another session joined the same pending start, so the waiting session still hit the three-minute negative cache.
-- Fixed `/remove-dir` skipping the prompt refresh and confirmation when language-server teardown for the removed root failed, so the session stayed mutated while the command looked unfinished.
+- Fixed `/remove-dir` skipping the prompt refresh and confirmation when language-server teardown for the removed root failed, so the session stayed mutated while the active prompt still listed that workspace.
 - Fixed `/remove-dir` installing a language-server reload barrier over the retained session cwd, so a stuck extra-root teardown could block or supersede new clients under the remaining workspace.
 - Fixed write and edit language-server fallback owners remaining after a public ToolSession disposed, so an overlapping session could not replace those clients.
 - Fixed a failed language-server initialization leaving the session as a phantom owner, so a later successful session could not reload or replace that identity.
@@ -120,11 +146,29 @@
 - Ignored overlay-sourced collab relay and web URLs during auto-start so a config overlay cannot retarget a trusted host.
 - Rejected collab auto-start from a global config.yml whose agent or config directory was redirected by a project dotenv.
 - Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
+- Honored a project `collab.autoStart: false` even when a higher overlay tried to re-enable hosting.
+- Honored a lower-precedence overlay `collab.autoStart: false` even when a later overlay tried to re-enable hosting.
 - Refused to attach a collab host that closed fatally before start completed.
 - Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
+- Distrusted collab auto-start when a project dotenv overwrites an empty launcher `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
+- Shortened collab and MCP status home paths even when the home directory contains spaces.
+- Detected Bun pre-dotenv `NODE_ENV` when judging project dotenv ownership of collab auto-start directories.
 ### Fixed
 
 - Fixed fullscreen `/copy` outlining only a lazily created grouped Read card, so Enter copies the assistant yield instead of tool output.
+
+## [18.1.11] - 2026-09-05
+
+### Added
+
+- Added the `retry.waitForUsageReset` setting: when a provider reports usage-limit exhaustion with a reset time (5-hour or weekly quota windows on any provider), the session sleeps until the reset instead of failing fast past `retry.maxDelayMs`.
+- Added opt-in `bash.allowCompoundCommands` approval for conservative literal `&&` chains, with ordered per-segment rules and normal bash policy fallback for unmatched segments. The opt-in requires a positively classified POSIX-quoting shell; incompatible and unknown shells retain legacy approval. Whole-chain denies take precedence over earlier prompts.
+
+### Fixed
+
+- Report oversized selected lines that cannot fit after read context, with a working raw recovery selector instead of a looping continuation hint ([#10775](https://github.com/can1357/oh-my-pi/issues/10775)).
+- Fixed WorkPool child sessions crashing during startup while constructing their incremental `yield` tool schema.
+- Commit summaries written in Vietnamese, Korean, and other accented scripts are no longer rejected for exceeding the length limit, and keep their accents as typed.
 
 ## [18.1.10] - 2026-09-04
 

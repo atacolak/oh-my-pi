@@ -298,10 +298,7 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
 			settings.set("providers.maxInFlightRequests", { openai: 5, anthropic: null } as never, "project");
-			expect(settings.get("providers.maxInFlightRequests") as Record<string, number | null>).toEqual({
-				openai: 5,
-				anthropic: null,
-			});
+			expect(settings.get("providers.maxInFlightRequests")).toEqual({ openai: 5 });
 			expect(settings.getGlobalValue("providers.maxInFlightRequests")).toEqual({
 				anthropic: 3,
 				openai: 5,
@@ -1641,6 +1638,80 @@ describe("Settings", () => {
 				expect(received).toEqual([{ value: true, paths: ["git.enabled"] }]);
 				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
 					git: { enabled: true },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+		it("fires session-runtime hooks after adopting a sibling advisor.enabled disk edit", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify({ advisor: { enabled: false }, ask: { enabled: true } }, null, 2),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ value: boolean; paths: string[] }> = [];
+			const unsubscribe = onSessionRuntimeChanged(paths => {
+				received.push({ value: settings.get("advisor.enabled"), paths: [...paths] });
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify({ advisor: { enabled: true }, ask: { enabled: true } }, null, 2),
+				);
+				await settings.flush();
+				expect(settings.get("advisor.enabled")).toBe(true);
+				expect(received).toEqual([{ value: true, paths: ["advisor.enabled"] }]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					advisor: { enabled: true },
+					ask: { enabled: false },
+				});
+			} finally {
+				unsubscribe();
+			}
+		});
+
+		it("fires effective-change listeners after adopting sibling browser.enabled and computer.enabled disk edits", async () => {
+			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
+			await Bun.write(
+				projectConfigPath,
+				YAML.stringify(
+					{ browser: { enabled: false }, computer: { enabled: false }, ask: { enabled: true } },
+					null,
+					2,
+				),
+			);
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+			const received: Array<{ path: string; value: unknown }> = [];
+			const unsubscribe = settings.onEffectiveChange((path, value) => {
+				if (path === "browser.enabled" || path === "computer.enabled") {
+					received.push({ path, value });
+				}
+			});
+			try {
+				settings.set("ask.enabled", false, "project");
+				expect(received).toEqual([]);
+				await Bun.write(
+					projectConfigPath,
+					YAML.stringify(
+						{ browser: { enabled: true }, computer: { enabled: true }, ask: { enabled: true } },
+						null,
+						2,
+					),
+				);
+				await settings.flush();
+				expect(settings.get("browser.enabled")).toBe(true);
+				expect(settings.get("computer.enabled")).toBe(true);
+				expect(received).toEqual([
+					{ path: "browser.enabled", value: true },
+					{ path: "computer.enabled", value: true },
+				]);
+				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+					browser: { enabled: true },
+					computer: { enabled: true },
 					ask: { enabled: false },
 				});
 			} finally {

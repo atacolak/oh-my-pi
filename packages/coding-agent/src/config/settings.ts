@@ -143,6 +143,7 @@ type ProjectSettingsReadResult = {
 
 type ConfigOverlayReadResult = {
 	settings: RawSettings;
+	layers: RawSettings[];
 	shellPathSource: string | undefined;
 };
 
@@ -364,7 +365,7 @@ function omitRecordNulls(value: unknown): unknown {
 
 function resolveLayerValue<P extends SettingPath>(path: P, value: unknown, cwd: string): SettingValue<P> {
 	const resolved = value !== undefined ? (resolvePathScopedStringArray(path, value, cwd) ?? value) : getDefault(path);
-	if (SETTINGS_SCHEMA[path].type === "record" && path !== "providers.maxInFlightRequests") {
+	if (SETTINGS_SCHEMA[path].type === "record") {
 		return omitRecordNulls(resolved) as SettingValue<P>;
 	}
 	return resolved as SettingValue<P>;
@@ -561,6 +562,8 @@ export class Settings {
 	#quarantinedYamlTargets = new Map<string, string>();
 	/** Extra config.yml-style overlays passed by CLI */
 	#configOverlay: RawSettings = {};
+	/** Individual `--config`/`PI_CONFIG_FILES` overlays before they are merged. */
+	#configOverlayLayers: RawSettings[] = [];
 	/** Project settings file that most recently supplied shellPath. */
 	#projectShellPathSource: string | undefined;
 	/** Non-native project file that most recently supplied shellPath, if any. */
@@ -1000,6 +1003,7 @@ export class Settings {
 		}
 		cloned.#configFiles = [...this.#configFiles];
 		cloned.#configOverlay = structuredClone(this.#configOverlay);
+		cloned.#configOverlayLayers = this.#configOverlayLayers.map(layer => structuredClone(layer));
 		cloned.#overlayShellPathSource = this.#overlayShellPathSource;
 		cloned.#overrides = this.#buildOriginalOverrides();
 		cloned.#rebuildMerged();
@@ -1063,6 +1067,7 @@ export class Settings {
 			this.#projectShellPathSource = projectResult.value.shellPathSource;
 			this.#projectWithoutNativeShellPathSource = projectResult.value.withoutNativeShellPathSource;
 			this.#configOverlay = overlayResult.value.settings;
+			this.#configOverlayLayers = overlayResult.value.layers;
 			this.#overlayShellPathSource = overlayResult.value.shellPathSource;
 			this.#rebuildMerged();
 
@@ -1158,6 +1163,16 @@ export class Settings {
 	 */
 	getProjectSettings(): RawSettings {
 		return structuredClone(this.#project);
+	}
+
+	/**
+	 * Individual `--config`/`PI_CONFIG_FILES` overlay layers, deep-cloned and
+	 * ordered from lowest to highest precedence. Companion to
+	 * {@link getProjectSettings} so callers can inspect a value that later
+	 * overlays collapsed out of the merged overlay view.
+	 */
+	getConfigOverlayLayers(): RawSettings[] {
+		return this.#configOverlayLayers.map(layer => structuredClone(layer));
 	}
 
 	getPlansDirectory(): string {
@@ -2088,17 +2103,20 @@ export class Settings {
 	async #readConfigOverlays(captureLegacyChangelogVersion = true): Promise<ConfigOverlayReadResult> {
 		let shellPathSource: string | undefined;
 		let settings: RawSettings = {};
+		const layers: RawSettings[] = [];
 		for (const filePath of this.#configFiles) {
 			const overlay = await this.#loadOverlayYaml(filePath, captureLegacyChangelogVersion);
+			layers.push(overlay);
 			settings = this.#deepMerge(settings, overlay);
 			if (Object.hasOwn(overlay, "shellPath")) shellPathSource = filePath;
 		}
-		return { settings, shellPathSource };
+		return { settings, layers, shellPathSource };
 	}
 
 	async #loadConfigOverlays(): Promise<RawSettings> {
 		const result = await this.#readConfigOverlays();
 		this.#overlayShellPathSource = result.shellPathSource;
+		this.#configOverlayLayers = result.layers;
 		return result.settings;
 	}
 
@@ -3333,6 +3351,8 @@ export class Settings {
 		const previousSignaledValues = {
 			modelRoles: this.get("modelRoles"),
 			sessionAccent: this.get("statusLine.sessionAccent"),
+			browserEnabled: this.get("browser.enabled"),
+			computerEnabled: this.get("computer.enabled"),
 		};
 		const previousCodeModeValues = this.#codeModeSignalSnapshot();
 		const previousHookValues = new Map<SettingPath, unknown>();
@@ -3497,6 +3517,22 @@ export class Settings {
 				"statusLine.sessionAccent",
 				nextSessionAccent,
 				previousSignaledValues.sessionAccent,
+			);
+		}
+		const nextBrowserEnabled = this.get("browser.enabled");
+		if (!Bun.deepEquals(nextBrowserEnabled, previousSignaledValues.browserEnabled)) {
+			this.#fireEffectiveSettingChanged(
+				"browser.enabled",
+				nextBrowserEnabled,
+				previousSignaledValues.browserEnabled,
+			);
+		}
+		const nextComputerEnabled = this.get("computer.enabled");
+		if (!Bun.deepEquals(nextComputerEnabled, previousSignaledValues.computerEnabled)) {
+			this.#fireEffectiveSettingChanged(
+				"computer.enabled",
+				nextComputerEnabled,
+				previousSignaledValues.computerEnabled,
 			);
 		}
 		this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);

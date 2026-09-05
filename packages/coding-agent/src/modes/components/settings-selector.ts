@@ -627,6 +627,8 @@ export class SettingsSelectorComponent implements Component {
 	#unsubscribeProjectSettings?: () => void;
 	/** Live theme before the first scoped preview; close restores this if the effective name cannot load. */
 	#themeBeforePreview: string | undefined;
+	/** Cached overlay title for project scope; VCS discovery is not render-safe. */
+	#projectLabel: string;
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
 	#tabRowStart = 0;
@@ -639,6 +641,7 @@ export class SettingsSelectorComponent implements Component {
 		private readonly callbacks: SettingsCallbacks,
 	) {
 		this.#themeBeforePreview = getCurrentThemeName();
+		this.#projectLabel = settingsProjectLabel(this.context.cwd);
 		this.#scope = settings.hasProjectConfig() ? "project" : "global";
 		// No label prefix (the frame title already says Settings) and no
 		// "(tab to cycle)" hint (folded into the footer hint line).
@@ -1560,7 +1563,7 @@ export class SettingsSelectorComponent implements Component {
 	#title(): string {
 		if (this.#currentTabId === "plugins") return "Settings";
 		if (this.#scope === "global") return "Settings · global";
-		return `Settings · ${settingsProjectLabel(this.context.cwd)}`;
+		return `Settings · ${this.#projectLabel}`;
 	}
 
 	#switchScope(): void {

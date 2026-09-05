@@ -729,7 +729,18 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	return filePath;
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function shortenEmbeddedPaths(text: string): string {
+	const home = os.homedir();
+	if (home) {
+		const windowsStyle = /^[A-Za-z]:[\\/]/.test(home) || home.startsWith("\\\\");
+		const homePattern = escapeRegExp(home).replaceAll(/\\\\|\//g, String.raw`[\\/]`);
+		text = text.replace(new RegExp(`${homePattern}(?=$|[\\\\/])`, windowsStyle ? "gi" : "g"), "~");
+		text = text.replaceAll("~\\", "~/");
+	}
 	return text
 		.split(" ")
 		.map(segment => {

@@ -200,6 +200,9 @@ function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, p
 	if (path === "collab.autoStart") {
 		if (effective === false) return false as SettingValue<P>;
 		if (collabLayerValue(settings.getProjectSettings(), path) === false) return false as SettingValue<P>;
+		if (settings.getConfigOverlayLayers().some(layer => collabLayerValue(layer, path) === false)) {
+			return false as SettingValue<P>;
+		}
 	}
 	if (redirectedGlobalConfig() && provenance !== "project") return getDefault(path);
 	if (provenance === "overlay") {

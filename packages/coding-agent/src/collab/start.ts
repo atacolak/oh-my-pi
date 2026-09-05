@@ -196,6 +196,9 @@ function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, p
 	if (path === "collab.autoStart") {
 		if (effective === false) return false as SettingValue<P>;
 		if (layerCollabValue(settings.getProjectSettings(), path) === false) return false as SettingValue<P>;
+		if (settings.getConfigOverlayLayers().some(layer => layerCollabValue(layer, path) === false)) {
+			return false as SettingValue<P>;
+		}
 	}
 	if (PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name))) return getDefault(path);
 	if (provenance === "project" || provenance === "overlay") {

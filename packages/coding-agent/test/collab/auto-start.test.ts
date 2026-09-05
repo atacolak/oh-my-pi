@@ -466,6 +466,41 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("honors a lower overlay auto-start opt-out under a later overlay re-enablement", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const agentDir = path.join(dir, "agent");
+		const projectDir = path.join(dir, "project");
+		const optOut = path.join(projectDir, "opt-out.yml");
+		const reenable = path.join(projectDir, "reenable.yml");
+		await fs.mkdir(projectDir, { recursive: true });
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			"collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n",
+		);
+		await Bun.write(optOut, "collab:\n  autoStart: false\n");
+		await Bun.write(reenable, "collab:\n  autoStart: true\n");
+		const settings = await Settings.loadIsolated({
+			cwd: projectDir,
+			agentDir,
+			inMemory: true,
+			configFiles: [optOut, reenable],
+		});
+		const ctx = context({}, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		try {
+			expect(settings.get("collab.autoStart")).toBe(true);
+			expect(settings.getProvenance("collab.autoStart")).toBe("overlay");
+			expect(settings.getConfigOverlayLayers()).toHaveLength(2);
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(start).not.toHaveBeenCalled();
+			expect(ctx.collabHost).toBeUndefined();
+		} finally {
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not attach a host that closed fatally before start returned", async () => {
 		installInMemoryRelay();
 		class FatalAfterOpenWebSocket extends FakeWebSocket {

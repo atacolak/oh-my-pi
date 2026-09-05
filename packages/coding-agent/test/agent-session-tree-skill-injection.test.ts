@@ -142,4 +142,50 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			await ctx.cleanup();
 		}
 	});
+
+	it("does not duplicate a retained tail after /fresh", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const ctx = await createTestSession({
+			inMemory: true,
+			settingsOverrides: {
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainEveryNTurns": 1,
+				"hindsight.retainOverlapTurns": 0,
+			},
+		});
+		try {
+			const { session, sessionManager } = ctx;
+			sessionManager.appendMessage(userMsg("fresh-path turn has enough text"));
+			sessionManager.appendMessage(assistantMsg("fresh-path reply has enough text"));
+			session.hindsightCloseRetainBaselineTurns = 0;
+
+			await hindsightBackend.start({
+				session,
+				settings: session.settings,
+				modelRegistry: {} as never,
+				agentDir: ctx.tempDir,
+				taskDepth: 0,
+				hindsightCloseRetainBaselineTurns: 0,
+			});
+
+			const state = session.getHindsightSessionState()!;
+			await state.maybeRetainOnAgentEnd();
+			expect(retain).toHaveBeenCalledTimes(1);
+			const persistedId = sessionManager.getSessionId();
+			expect(state.sessionId).toBe(persistedId);
+
+			const fresh = session.freshSession();
+			expect(fresh).toBeDefined();
+			expect(session.sessionId).not.toBe(persistedId);
+			expect(state.sessionId).toBe(persistedId);
+
+			await state.drainOnClose();
+			expect(retain).toHaveBeenCalledTimes(1);
+			expect(String(retain.mock.calls[0]?.[1])).toContain("fresh-path turn has enough text");
+		} finally {
+			await ctx.cleanup();
+		}
+	});
 });

@@ -153,6 +153,9 @@
 - Distrusted collab auto-start when a project dotenv overwrites an empty launcher `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
 - Shortened collab and MCP status home paths even when the home directory contains spaces.
 - Detected Bun pre-dotenv `NODE_ENV` when judging project dotenv ownership of collab auto-start directories.
+### Fixed
+
+- Fixed fullscreen `/copy` outlining only a lazily created grouped Read card, so Enter copies the assistant yield instead of tool output.
 
 ## [18.1.11] - 2026-09-05
 

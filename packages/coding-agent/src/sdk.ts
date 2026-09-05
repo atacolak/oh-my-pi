@@ -4153,6 +4153,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				agentDir,
 				taskDepth,
 				hindsightCloseRetainBaselineTurns: session.hindsightCloseRetainBaselineTurns,
+				hindsightLoadedMessageCount: session.hindsightLoadedMessageCount,
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 			});

@@ -97,6 +97,89 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 			await ctx.cleanup();
 		}
 	});
+
+	it("retains a delayed ask re-answer that completes before installation", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const ctx = await createTestSession({
+			inMemory: true,
+			settingsOverrides: {
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainEveryNTurns": 5,
+				"hindsight.retainOverlapTurns": 0,
+			},
+		});
+		try {
+			const { session, sessionManager } = ctx;
+			sessionManager.appendMessage(userMsg("please deploy to a target"));
+			const askCallId = "ask-call-delayed";
+			sessionManager.appendMessage({
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: askCallId,
+						name: "ask",
+						arguments: { questions: [{ id: "deploy_target", question: "Which deploy target?" }] },
+					},
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "test",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+			});
+			const tr1Id = sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: askCallId,
+				toolName: "ask",
+				content: [{ type: "text", text: "User selected: staging" }],
+				details: { selectedOptions: ["staging"] },
+				isError: false,
+				timestamp: Date.now(),
+			});
+			session.hindsightCloseRetainBaselineTurns = 1;
+			session.hindsightLoadedMessageCount = 1;
+
+			const result = await session.navigateTree(tr1Id, {
+				allowAskReopen: true,
+				reanswerAskResult: {
+					content: [{ type: "text", text: "User selected: production" }],
+					details: { selectedOptions: ["production"] },
+				},
+			});
+			expect(result.cancelled).toBe(false);
+			expect(result.askReanswerCommitted).toBe(true);
+
+			sessionManager.appendMessage(assistantMsg("deploying to production after the re-answer"));
+
+			await hindsightBackend.start({
+				session,
+				settings: session.settings,
+				modelRegistry: {} as never,
+				agentDir: ctx.tempDir,
+				taskDepth: 0,
+				hindsightCloseRetainBaselineTurns: 1,
+				hindsightLoadedMessageCount: 1,
+			});
+			await session.getHindsightSessionState()!.drainOnClose();
+
+			expect(retain).toHaveBeenCalledTimes(1);
+			const retained = String(retain.mock.calls[0]?.[1]);
+			expect(retained).toContain("deploying to production after the re-answer");
+		} finally {
+			await ctx.cleanup();
+		}
+	});
 });
 
 describe("AgentSession Hindsight leave-path retain", () => {

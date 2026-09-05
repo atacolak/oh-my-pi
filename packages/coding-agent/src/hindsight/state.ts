@@ -72,6 +72,8 @@ export interface HindsightSessionStateOptions {
 	hasRecalledForFirstTurn?: boolean;
 	/** User turns loaded before this process added new activity. */
 	closeRetainBaselineTurns?: number;
+	/** Retainable messages present at delayed-startup baseline capture. */
+	loadedMessageCount?: number;
 	/**
 	 * When set, this entry is a subagent alias that reuses the parent's bank,
 	 * scope, config, client, and banksSet. Aliases skip auto-recall and
@@ -355,7 +357,7 @@ export class HindsightSessionState {
 		this.#closeRetainBaselineTurns =
 			options.closeRetainBaselineTurns ??
 			(this.session.sessionManager ? countRetainableUserTurns(this.session.sessionManager) : 0);
-		this.#captureLoadedBranchIdentity();
+		this.#captureLoadedBranchIdentity(options.loadedMessageCount);
 	}
 
 	/** Alias states delegate persistence routing to the live primary parent. */
@@ -507,10 +509,10 @@ export class HindsightSessionState {
 		this.#lastRetainedPrefixKey = "";
 	}
 
-	#captureLoadedBranchIdentity(): void {
+	#captureLoadedBranchIdentity(loadedMessageCount?: number): void {
 		const loaded = this.session.sessionManager ? extractMessages(this.session.sessionManager) : [];
-		this.#loadedMessageCount = loaded.length;
-		this.#loadedPrefixKey = retentionPrefixKey(loaded, loaded.length);
+		this.#loadedMessageCount = loadedMessageCount ?? loaded.length;
+		this.#loadedPrefixKey = retentionPrefixKey(loaded, this.#loadedMessageCount);
 	}
 
 	#recordCompletedLastTurnRetain(sessionId: string, messages: HindsightMessage[]): void {
@@ -542,6 +544,10 @@ export class HindsightSessionState {
 			() => undefined,
 		);
 		return run;
+	}
+
+	async waitForSessionRetainIdle(): Promise<void> {
+		await this.#sessionRetainInFlight;
 	}
 
 	#retainedPrefixDiverged(messages: HindsightMessage[]): boolean {

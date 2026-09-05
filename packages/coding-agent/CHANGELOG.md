@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/settings` keeping the previous scope's theme after Alt+S onto an unloadable Dark/Light mapping.
 - Fixed `/settings` leaving a hovered theme after canceling an unloadable Dark/Light Theme submenu.
 - Fixed `/settings` previewing project glyphs and color-blind colors while browsing a different scope.
 - Fixed `/settings` dropping custom status-line segment options when closing the overlay.

@@ -1140,7 +1140,7 @@ export class SettingsSelectorComponent implements Component {
 			};
 			onPreviewCancel = () => {
 				this.#triggerThemePreview(
-					this.#loadableThemeName(this.#scopedThemeName()),
+					this.#loadableScopedThemeName(),
 					this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
 				);
 			};
@@ -1594,7 +1594,7 @@ export class SettingsSelectorComponent implements Component {
 
 	#previewAppearanceForScope(): void {
 		this.#triggerThemePreview(
-			this.#scopedThemeName(),
+			this.#loadableScopedThemeName(),
 			this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
 		);
 		this.#triggerStatusLinePreview();
@@ -1602,6 +1602,14 @@ export class SettingsSelectorComponent implements Component {
 
 	#scopedThemeName(): string | undefined {
 		return this.#themeName(this.#scopedValue("theme.dark"), this.#scopedValue("theme.light"));
+	}
+
+	#loadableScopedThemeName(): string | undefined {
+		const name = this.#scopedThemeName();
+		if (name && this.context.availableThemes.includes(name)) return name;
+		// Deleted or overlay-only names must not keep the previous scope's
+		// preview. Startup falls back to dark when this mapping is effective.
+		return name ? "dark" : undefined;
 	}
 
 	#effectiveThemeName(): string | undefined {

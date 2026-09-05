@@ -217,6 +217,48 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		selector.handleInput("\x1bs");
 		expect(previews.at(-1)).toBe("dark-one");
 	});
+	it("falls back when switching to a scope whose theme cannot load", async () => {
+		settings.set("theme.dark", "titanium", "project");
+		settings.set("theme.light", "titanium", "project");
+		settings.set("theme.dark", "missing-custom", "global");
+		settings.set("theme.light", "missing-custom", "global");
+		await setTheme("titanium");
+		expect(getCurrentThemeName()).toBe("titanium");
+		const titaniumAccent = theme.fg("accent", "*");
+
+		const previewed: string[] = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: async themeName => {
+					previewed.push(themeName);
+					const preview = previewTheme(themeName);
+					pendingPreviews.push(preview);
+					await preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("titanium");
+		expect(theme.fg("accent", "*")).toBe(titaniumAccent);
+
+		selector.handleInput("\x1bs");
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("dark");
+		expect(previewed).not.toContain("missing-custom");
+		expect(theme.fg("accent", "*")).not.toBe(titaniumAccent);
+		expect(settings.get("theme.dark")).toBe("titanium");
+	});
+
 	it("restores the live fallback when the effective theme cannot load", async () => {
 		resetSettingsForTest();
 		AgentStorage.close();

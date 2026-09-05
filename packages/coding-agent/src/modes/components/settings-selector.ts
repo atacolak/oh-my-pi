@@ -1521,10 +1521,12 @@ export class SettingsSelectorComponent implements Component {
 				this.#textInputActive = false;
 			}
 		}
-		const openDef = openSubmenuId ? getSettingDef(openSubmenuId as SettingPath) : undefined;
-		if (this.#currentTabId === "appearance" && !this.#searchList) {
-			this.#previewAppearanceForScope();
-		} else if (this.#searchList && shouldRefreshOpenSubmenu && openDef?.tab === "appearance") {
+		// Adopted theme/status/symbol/color-blind values first apply the
+		// project-effective appearance through setting hooks. Reassert the
+		// selected scope even when the current tab or search result is not an
+		// appearance editor; otherwise global-scope rows keep rendering the
+		// project-effective preview until the next scope/tab action.
+		if (adoptedPaths.some(path => getSettingDef(path)?.tab === "appearance")) {
 			this.#previewAppearanceForScope();
 		}
 		this.context.requestRender?.();

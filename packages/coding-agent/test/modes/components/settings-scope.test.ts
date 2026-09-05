@@ -979,6 +979,57 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(Bun.stripANSI(selector.render(120).join("\n"))).toContain("alabaster");
 	});
 
+	it("reapplies scoped appearance after adopting a theme on a non-appearance tab", async () => {
+		settings.set("theme.dark", "dark-one", "project");
+		settings.set("theme.dark", "titanium", "global");
+		await settings.flush();
+		const previews: string[] = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium", "alabaster"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: async themeName => {
+					previews.push(themeName);
+					const preview = previewTheme(themeName);
+					pendingPreviews.push(preview);
+					await preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		selector.handleInput("\x1bs");
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toBe("titanium");
+		const titaniumAccent = theme.fg("accent", "*");
+		const previewCountBeforeAdopt = previews.length;
+		selector.handleInput("\x1b[C");
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).toContain("Settings · global");
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).not.toContain("Preview:");
+
+		settings.set("ask.enabled", false, "project");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ ask: { enabled: true }, custom: { keep: true }, theme: { dark: "alabaster" } }, null, 2),
+		);
+		await settings.flush();
+		await Promise.all(pendingPreviews);
+
+		expect(settings.get("theme.dark")).toBe("alabaster");
+		expect(settings.getGlobalValue("theme.dark")).toBe("titanium");
+		expect(previews.length).toBeGreaterThan(previewCountBeforeAdopt);
+		expect(previews.at(-1)).toBe("titanium");
+		expect(theme.fg("accent", "*")).toBe(titaniumAccent);
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).toContain("Settings · global");
+	});
+
 	it("rebuilds open rows after a skipped same-key project save", async () => {
 		settings.set("defaultThinkingLevel", Effort.Low, "project");
 		await settings.flush();

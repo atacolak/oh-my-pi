@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/settings` leaving the project-effective appearance after adopting a theme or status-line edit while previewing another scope.
 - Fixed `/settings` keeping the previous scope's theme after Alt+S onto an unloadable Dark/Light mapping.
 - Fixed `/settings` leaving a hovered theme after canceling an unloadable Dark/Light Theme submenu.
 - Fixed `/settings` previewing project glyphs and color-blind colors while browsing a different scope.

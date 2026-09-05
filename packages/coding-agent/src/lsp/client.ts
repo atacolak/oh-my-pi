@@ -47,6 +47,7 @@ const clientIdentityReloadBarriers = new Map<string, Promise<unknown>>();
 export type LspClientOwner = symbol;
 const clientOwners = new Map<string, Set<LspClientOwner>>();
 const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
+const ownerClientRoots = new Map<LspClientOwner, Map<string, Set<string>>>();
 
 export function createLspClientOwner(): LspClientOwner {
 	return Symbol("lsp-client-owner");
@@ -66,7 +67,26 @@ export function fallbackLspClientOwner(session: object): LspClientOwner {
 	return owner;
 }
 
-function registerClientOwner(key: string, owner: LspClientOwner | undefined): void {
+function addOwnerRoutedRoot(key: string, owner: LspClientOwner, routedRoot: string): void {
+	const root = path.resolve(routedRoot);
+	let byKey = ownerClientRoots.get(owner);
+	if (!byKey) {
+		byKey = new Map();
+		ownerClientRoots.set(owner, byKey);
+	}
+	let roots = byKey.get(key);
+	if (!roots) {
+		roots = new Set();
+		byKey.set(key, roots);
+	}
+	roots.add(root);
+}
+
+function registerClientOwner(
+	key: string,
+	owner: LspClientOwner | undefined,
+	routedRoot?: string | readonly string[],
+): void {
 	if (!owner) return;
 	let owners = clientOwners.get(key);
 	if (!owners) {
@@ -80,6 +100,9 @@ function registerClientOwner(key: string, owner: LspClientOwner | undefined): vo
 		ownerClientKeys.set(owner, keys);
 	}
 	keys.add(key);
+	if (!routedRoot) return;
+	const roots = typeof routedRoot === "string" ? [routedRoot] : routedRoot;
+	for (const root of roots) addOwnerRoutedRoot(key, owner, root);
 }
 
 function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
@@ -89,6 +112,9 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	const keys = ownerClientKeys.get(owner);
 	keys?.delete(key);
 	if (keys?.size === 0) ownerClientKeys.delete(owner);
+	const byKey = ownerClientRoots.get(owner);
+	byKey?.delete(key);
+	if (byKey?.size === 0) ownerClientRoots.delete(owner);
 	return !clientOwners.has(key);
 }
 function dropClientOwnership(key: string): void {
@@ -98,6 +124,9 @@ function dropClientOwnership(key: string): void {
 		const keys = ownerClientKeys.get(owner);
 		keys?.delete(key);
 		if (keys?.size === 0) ownerClientKeys.delete(owner);
+		const byKey = ownerClientRoots.get(owner);
+		byKey?.delete(key);
+		if (byKey?.size === 0) ownerClientRoots.delete(owner);
 	}
 	clientOwners.delete(key);
 }
@@ -146,10 +175,14 @@ export async function releaseRemovedWorkspaceRoots(
 		for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
 			const live = clients.get(key);
 			const pending = clientLocks.get(key);
-			const cwd = live ? clientWorkspaceCwd(live) : pending ? clientWorkspaceCwd(pending) : undefined;
-			if (cwd) {
-				if (retainClient(cwd)) continue;
-				if (!roots.some(root => workspaceContainsPath(root, cwd))) continue;
+			const cwds = live
+				? clientWorkspaceCwds(key, live, owner)
+				: pending
+					? clientWorkspaceCwds(key, pending, owner)
+					: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
+			if (cwds.length > 0) {
+				if (cwds.some(cwd => retainClient(cwd))) continue;
+				if (!roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) continue;
 			}
 			releaseClientOwnerKey(key, owner);
 		}
@@ -222,8 +255,14 @@ export async function releaseMovedWorkspaceRoots(
 		for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
 			const live = clients.get(key);
 			const pending = clientLocks.get(key);
-			const cwd = live ? clientWorkspaceCwd(live) : pending ? clientWorkspaceCwd(pending) : undefined;
-			if (cwd && !roots.some(root => workspaceContainsPath(root, cwd))) continue;
+			const cwds = live
+				? clientWorkspaceCwds(key, live, owner)
+				: pending
+					? clientWorkspaceCwds(key, pending, owner)
+					: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
+			if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) {
+				continue;
+			}
 			releaseClientOwnerKey(key, owner);
 		}
 		clearWorkspaceInitializationFailures(roots, owner);
@@ -790,8 +829,14 @@ export async function reconcileExecutedChanges(
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
 	const activeClients = Array.from(clients.values()).filter(client => {
 		if (client.status !== "ready") return false;
-		if (workspaceRoots.some(root => clientIsInsideWorkspace(client, root))) return true;
-		if (watchedFiles.some(change => workspaceContainsPath(clientWorkspaceCwd(client), change.filePath))) return true;
+		if (workspaceRoots.some(root => clientIsInsideWorkspace(client.name, client, root))) return true;
+		if (
+			watchedFiles.some(change =>
+				clientWorkspaceCwds(client.name, client).some(cwd => workspaceContainsPath(cwd, change.filePath)),
+			)
+		) {
+			return true;
+		}
 		if (Array.from(finalUris).some(uri => openDocumentUrisForChange(client, uri).length > 0)) return true;
 		for (const uri of client.openFiles.keys()) {
 			for (const root of deletedRoots) {
@@ -822,7 +867,7 @@ export async function reconcileExecutedChanges(
 		}
 	}
 	const notifyRoots = Array.from(
-		new Set([...workspaceRoots, ...activeClients.map(client => path.resolve(clientWorkspaceCwd(client)))]),
+		new Set([...workspaceRoots, ...activeClients.flatMap(client => clientWorkspaceCwds(client.name, client))]),
 	);
 	await notifyWorkspaceWatchedFiles(notifyRoots, watchedFiles, signal);
 }
@@ -1100,13 +1145,27 @@ function canonicalSpawnCommand(config: ServerConfig): string {
 		: spawnCommand;
 }
 
-/** Workspace membership for a live or pending client. */
-function clientWorkspaceCwd(entry: { cwd: string; config: ServerConfig }): string {
-	return entry.config.resolvedRoot ?? entry.cwd;
+/** Workspace membership paths for a live or pending client, including per-owner aliases. */
+function clientWorkspaceCwds(
+	key: string,
+	entry: { cwd: string; config: ServerConfig },
+	owner?: LspClientOwner,
+): string[] {
+	const roots = new Set<string>([path.resolve(entry.config.resolvedRoot ?? entry.cwd)]);
+	const owners = owner ? [owner] : Array.from(clientOwners.get(key) ?? []);
+	for (const item of owners) {
+		for (const root of ownerClientRoots.get(item)?.get(key) ?? []) roots.add(root);
+	}
+	return Array.from(roots);
 }
 
-function clientIsInsideWorkspace(entry: { cwd: string; config: ServerConfig }, workspace: string): boolean {
-	return workspaceContainsPath(workspace, clientWorkspaceCwd(entry));
+function clientIsInsideWorkspace(
+	key: string,
+	entry: { cwd: string; config: ServerConfig },
+	workspace: string,
+	owner?: LspClientOwner,
+): boolean {
+	return clientWorkspaceCwds(key, entry, owner).some(cwd => workspaceContainsPath(workspace, cwd));
 }
 
 function clientKey(config: ServerConfig, cwd: string): string {
@@ -1144,20 +1203,31 @@ export function shutdownStaleClients(
 ): Promise<string[]> {
 	const fresh = new Set(configs.map(config => clientKey(config, config.resolvedRoot ?? cwd)));
 	const roots = workspaceRoots.map(root => path.resolve(root));
-	const isRelevant = (entry: { cwd: string; config: ServerConfig }) =>
-		roots.some(root => clientIsInsideWorkspace(entry, root)) && !retainClient?.(clientWorkspaceCwd(entry));
+	const isRelevant = (key: string, entry: { cwd: string; config: ServerConfig }) => {
+		const cwds = clientWorkspaceCwds(key, entry, owner);
+		return (
+			roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd))) &&
+			!cwds.some(cwd => retainClient?.(cwd))
+		);
+	};
 	const relevantPending = Array.from(clientLocks.entries()).filter(([key, pending]) => {
 		const owners = clientOwners.get(key);
-		return (!owner || !owners || owners.has(owner)) && isRelevant(pending);
+		return (!owner || !owners || owners.has(owner)) && isRelevant(key, pending);
 	});
 	const relevantClients = Array.from(clients.entries()).filter(([key, client]) => {
 		const owners = clientOwners.get(key);
-		return (!owner || !owners || owners.has(owner)) && isRelevant(client);
+		return (!owner || !owners || owners.has(owner)) && isRelevant(key, client);
 	});
 	const staleOwnedKeys = new Set([
 		...relevantPending.filter(([key]) => !fresh.has(key)).map(([key]) => key),
 		...relevantClients.filter(([key]) => !fresh.has(key)).map(([key]) => key),
 	]);
+	const releasedOwnerRoots = new Map<string, string[]>();
+	if (owner) {
+		for (const key of staleOwnedKeys) {
+			releasedOwnerRoots.set(key, Array.from(ownerClientRoots.get(owner)?.get(key) ?? []));
+		}
+	}
 	const unownedStaleKeys = owner
 		? new Set(Array.from(staleOwnedKeys).filter(key => releaseClientOwnerKey(key, owner)))
 		: staleOwnedKeys;
@@ -1175,8 +1245,8 @@ export function shutdownStaleClients(
 	// teardown, while a replacement for the stuck command still waits.
 	const barrierRoots = new Set([
 		...roots,
-		...stalePending.map(([, pending]) => path.resolve(clientWorkspaceCwd(pending))),
-		...staleClients.map(([, client]) => path.resolve(clientWorkspaceCwd(client))),
+		...stalePending.flatMap(([key, pending]) => clientWorkspaceCwds(key, pending, owner)),
+		...staleClients.flatMap(([key, client]) => clientWorkspaceCwds(key, client, owner)),
 	]);
 	const leftoverKeys = new Set([
 		...stalePending.map(([, pending]) => clientServerRootKey(pending.config, pending.cwd)),
@@ -1193,7 +1263,9 @@ export function shutdownStaleClients(
 		const restoreReleasedOwners = (): void => {
 			if (!owner) return;
 			for (const key of unownedStaleKeys) {
-				if (clients.has(key) || clientLocks.has(key)) registerClientOwner(key, owner);
+				if (clients.has(key) || clientLocks.has(key)) {
+					registerClientOwner(key, owner, releasedOwnerRoots.get(key));
+				}
 			}
 		};
 		const clearTemporaryNestedTombstones = (entries: Iterable<[string, { cwd: string }]>): void => {
@@ -1230,7 +1302,8 @@ export function shutdownStaleClients(
 			for (const key of unownedStaleKeys) initFailures.delete(key);
 
 			const stale = Array.from(clients.entries()).filter(
-				([key, client]) => unownedStaleKeys.has(key) && roots.some(root => clientIsInsideWorkspace(client, root)),
+				([key, client]) =>
+					unownedStaleKeys.has(key) && roots.some(root => clientIsInsideWorkspace(key, client, root, owner)),
 			);
 			const results = await Promise.all(stale.map(([, client]) => shutdownClientInstance(client)));
 			const failed = stale.filter((_entry, index) => results[index] !== true);
@@ -1357,13 +1430,14 @@ export async function getOrCreateClient(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<LspClient> {
-	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
+	const routedRoot = config.resolvedRoot ?? cwd;
+	cwd = resolveEquivalentPath(routedRoot);
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	// Check if client already exists
 	const existingClient = clients.get(key);
 	if (existingClient && !invalidatedClientKeys.has(key) && canReuseClientDuringReload(key, owner, reloadBarriers)) {
-		registerClientOwner(key, owner);
+		registerClientOwner(key, owner, routedRoot);
 		existingClient.lastActivity = Date.now();
 		return existingClient;
 	}
@@ -1371,7 +1445,7 @@ export async function getOrCreateClient(
 	// Check if another coroutine is already creating this client
 	const existingLock = clientLocks.get(key);
 	if (existingLock && canReuseClientDuringReload(key, owner, reloadBarriers)) {
-		registerClientOwner(key, owner);
+		registerClientOwner(key, owner, routedRoot);
 		if (owner) existingLock.owners.add(owner);
 		try {
 			return await existingLock.promise;
@@ -1404,13 +1478,13 @@ export async function getOrCreateClient(
 		}
 		const clientAfterReload = clients.get(key);
 		if (clientAfterReload && !invalidatedClientKeys.has(key)) {
-			registerClientOwner(key, owner);
+			registerClientOwner(key, owner, routedRoot);
 			clientAfterReload.lastActivity = Date.now();
 			return clientAfterReload;
 		}
 		const lockAfterReload = clientLocks.get(key);
 		if (lockAfterReload) {
-			registerClientOwner(key, owner);
+			registerClientOwner(key, owner, routedRoot);
 			if (owner) lockAfterReload.owners.add(owner);
 			try {
 				return await lockAfterReload.promise;
@@ -1604,7 +1678,7 @@ export async function getOrCreateClient(
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);
 		}
 	})();
-	registerClientOwner(key, owner);
+	registerClientOwner(key, owner, routedRoot);
 	clientLocks.set(key, { promise: clientPromise, cwd, config, token: lockToken, owners: pendingOwners });
 	return clientPromise;
 }
@@ -1616,20 +1690,21 @@ export async function getActiveOrPendingClient(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<LspClient | undefined> {
-	cwd = resolveEquivalentPath(config.resolvedRoot ?? cwd);
+	const routedRoot = config.resolvedRoot ?? cwd;
+	cwd = resolveEquivalentPath(routedRoot);
 	throwIfAborted(signal);
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	const client = clients.get(key);
 	if (client && canReuseClientDuringReload(key, owner, reloadBarriers)) {
-		registerClientOwner(key, owner);
+		registerClientOwner(key, owner, routedRoot);
 		client.lastActivity = Date.now();
 		return client;
 	}
 
 	const pending = clientLocks.get(key);
 	if (!pending || !canReuseClientDuringReload(key, owner, reloadBarriers)) return undefined;
-	registerClientOwner(key, owner);
+	registerClientOwner(key, owner, routedRoot);
 	if (owner) pending.owners.add(owner);
 	try {
 		return await untilAborted(signal, pending.promise);
@@ -1839,7 +1914,8 @@ export async function notifyWorkspaceWatchedFiles(
 
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
 	const activeClients = Array.from(clients.values()).filter(
-		client => client.status === "ready" && workspaceRoots.some(root => clientIsInsideWorkspace(client, root)),
+		client =>
+			client.status === "ready" && workspaceRoots.some(root => clientIsInsideWorkspace(client.name, client, root)),
 	);
 	if (activeClients.length === 0) return;
 
@@ -1847,11 +1923,13 @@ export async function notifyWorkspaceWatchedFiles(
 	const sendSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const results = await Promise.allSettled(
 		activeClients.map(async client => {
-			const clientRoot = path.resolve(clientWorkspaceCwd(client));
+			const clientRoots = clientWorkspaceCwds(client.name, client);
 			const clientChanges = changes.flatMap(change => {
 				const documentUri = fileToUri(change.filePath, client.cwd);
 				const openUris = openDocumentUrisForChange(client, documentUri);
-				if (!workspaceContainsPath(clientRoot, change.filePath) && openUris.length === 0) return [];
+				if (!clientRoots.some(root => workspaceContainsPath(root, change.filePath)) && openUris.length === 0) {
+					return [];
+				}
 				const uris = openUris.length > 0 ? openUris : [documentUri];
 				return uris.map(uri => {
 					client.diagnostics.delete(uri);
@@ -1975,6 +2053,9 @@ async function waitForExit(client: LspClient, timeoutMs: number): Promise<boolea
 export async function shutdownClientInstance(client: LspClient): Promise<boolean> {
 	const unpublished = clients.get(client.name) === client;
 	const previousOwners = unpublished ? Array.from(clientOwners.get(client.name) ?? []) : [];
+	const previousOwnerRoots = new Map(
+		previousOwners.map(owner => [owner, Array.from(ownerClientRoots.get(owner)?.get(client.name) ?? [])]),
+	);
 	if (unpublished) {
 		clients.delete(client.name);
 		dropClientOwnership(client.name);
@@ -2008,7 +2089,7 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 	if (!exited) {
 		if (!clients.has(client.name)) {
 			clients.set(client.name, client);
-			for (const owner of previousOwners) registerClientOwner(client.name, owner);
+			for (const owner of previousOwners) registerClientOwner(client.name, owner, previousOwnerRoots.get(owner));
 		}
 		return false;
 	}
@@ -2212,12 +2293,14 @@ export interface LspServerStatus {
 export function getActiveClients(owner?: LspClientOwner): LspServerStatus[] {
 	return Array.from(clients.entries())
 		.filter(([key]) => !owner || clientOwners.get(key)?.has(owner) === true)
-		.map(([, client]) => ({
+		.map(([key, client]) => ({
 			name: client.config.command,
 			status: client.status,
 			fileTypes: client.config.fileTypes,
 			cwd: client.cwd,
-			resolvedRoot: client.config.resolvedRoot,
+			resolvedRoot:
+				(owner ? ownerClientRoots.get(owner)?.get(key)?.values().next().value : undefined) ??
+				client.config.resolvedRoot,
 		}));
 }
 

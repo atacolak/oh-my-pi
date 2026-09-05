@@ -257,6 +257,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 		const config = getConfig(this.session.cwd);
 		const workspaceRoots = sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories);
+		const sessionWorkspace = { cwd: workspaceRoots[0], directories: workspaceRoots };
 
 		// Status action doesn't need a file
 		if (action === "status") {
@@ -270,7 +271,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			// `Object.keys(config.servers)` reflects cwd-rooted auto-detect. Nested
 			// servers only appear here after a concrete-file operation started them.
-			const sessionWorkspace = { cwd: workspaceRoots[0], directories: workspaceRoots };
 			const startedClients = getActiveClients(this.#clientOwner).filter(client => {
 				const root = statusClientRoot(client);
 				return !root || Boolean(workspaceRootForPath(root, sessionWorkspace));
@@ -836,9 +836,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			const referenceEdits: RenameReferenceEdit[] = [];
+			const executed: ExecutedWorkspaceChange[] = [];
 			for (const [uri, bucket] of acceptedByUri) {
 				const filePath = uriToFile(uri);
 				referenceEdits.push({ filePath, edits: bucket.edits });
+				executed.push({ kind: "edit", uri });
 				const rel = formatPathRelativeToCwd(filePath, this.session.cwd);
 				summary.push(`  ${bucket.primaryServer}: applied ${bucket.edits.length} edit(s) to ${rel}`);
 				if (bucket.discarded > 0) {
@@ -856,14 +858,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// the reference edits back so the source, destination, and every
 			// reference file are left unchanged.
 			await applyEditsThenRename(referenceEdits, source, dest);
-			const executed: ExecutedWorkspaceChange[] = referenceEdits.map(edit => ({
-				kind: "edit",
-				uri: fileToUri(edit.filePath, workspaceRoots[0]),
-			}));
 			executed.push({
 				kind: "rename",
-				oldUri: fileToUri(source, workspaceRoots[0]),
-				newUri: fileToUri(dest, workspaceRoots[0]),
+				oldUri: fileToUri(source, workspaceRootForPath(source, sessionWorkspace) ?? workspaceRoots[0]),
+				newUri: fileToUri(dest, workspaceRootForPath(dest, sessionWorkspace) ?? workspaceRoots[0]),
 			});
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			if (sourceStat.isDirectory()) {

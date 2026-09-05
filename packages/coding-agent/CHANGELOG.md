@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `rename_file` rebuilding extra-workspace `willRenameFiles` edit URIs against the session cwd, so an unopened file under an additional-root directory symlink still notifies that workspace's language server.
 - Fixed `lsp status` omitting a nested language server whose project root is a workspace symlink after the client canonicalized to the target path.
 - Fixed workspace-edit overlay refresh updating only the first equivalent symlink alias on one language-server client, so a later request on the other alias no longer used stale content.
 - Fixed a session that joined an in-flight language-server initialization through a format-on-write probe remaining invisible to `lsp reload *`, so that session could keep the superseded client beside its replacement.

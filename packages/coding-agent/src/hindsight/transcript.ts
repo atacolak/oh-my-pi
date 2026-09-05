@@ -20,6 +20,31 @@ export interface ReadonlySessionManagerLike {
 	getBranch?: (fromId?: string) => SessionEntry[];
 }
 
+/** Latest `/clear` marker on the active branch, if any. */
+export function latestResetBoundaryId(sessionManager: ReadonlySessionManagerLike): string | undefined {
+	const branch = sessionManager.getBranch?.() ?? sessionManager.getEntries();
+	let id: string | undefined;
+	for (const entry of branch) {
+		if (entry?.type === "reset_boundary") id = entry.id;
+	}
+	return id;
+}
+
+/**
+ * Retention document overlay for a live conversation. `/clear` keeps the
+ * persisted session id, so post-reset retains use `sessionId:resetId` until
+ * a later identity change. Resume reconstructs the same overlay from the
+ * persisted reset boundary.
+ */
+export function hindsightDocumentIdForSession(
+	persistedSessionId: string | undefined,
+	sessionManager: ReadonlySessionManagerLike,
+): string | undefined {
+	if (!persistedSessionId) return undefined;
+	const resetId = latestResetBoundaryId(sessionManager);
+	return resetId ? `${persistedSessionId}:${resetId}` : undefined;
+}
+
 /**
  * Walk the active branch (root→leaf) top-to-bottom. `getEntries()` includes
  * abandoned `/tree` suffixes; using `getBranch()` keeps retain transcripts and

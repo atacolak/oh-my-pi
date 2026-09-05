@@ -82,9 +82,9 @@ export class SessionMemory {
 
 	#rekeyHindsightMemoryForCurrentSessionId(): void {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return;
-		// `/fresh` keeps the persisted conversation document. `/clear` may
-		// overlay a new retention identity on that same persisted id so the
-		// next retain cannot replace the drained pre-clear history.
+		// `/fresh` keeps the persisted conversation document. `/clear` overlays
+		// `sessionId:resetBoundaryId` so resume reconstructs the same identity
+		// and a later retain cannot replace the drained pre-clear history.
 		const session = this.#host.memoryBackendSession();
 		const sid = session.hindsightDocumentId ?? session.sessionManager.getSessionId();
 		if (!sid) return;

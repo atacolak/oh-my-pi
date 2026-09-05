@@ -150,7 +150,7 @@ import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility
 import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
-import { countRetainableUserTurns, extractMessages } from "../hindsight/transcript";
+import { countRetainableUserTurns, extractMessages, hindsightDocumentIdForSession } from "../hindsight/transcript";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
@@ -718,8 +718,9 @@ export class AgentSession {
 	hindsightLoadedMessageCount: number | undefined;
 	/**
 	 * Retention document overlay for in-place context resets. `/clear` keeps the
-	 * persisted session-manager id, so a new identity is required to avoid
-	 * replacing the drained pre-clear document.
+	 * persisted session-manager id, so the overlay is `sessionId:resetBoundaryId`
+	 * reconstructed from the latest persisted reset boundary. Identity-changing
+	 * switches resync it so a branch or resume cannot reuse the source document.
 	 */
 	hindsightDocumentId: string | undefined;
 	readonly #memory: SessionMemory;
@@ -1035,7 +1036,7 @@ export class AgentSession {
 			this.hindsightCloseRetainBaselineTurns = undefined;
 			this.hindsightLoadedMessageCount = undefined;
 		}
-		this.hindsightDocumentId = undefined;
+		this.#syncHindsightDocumentId();
 		this.#modelRegistry = config.modelRegistry;
 		this.#codexResetCoordinator = config.codexResetCoordinator ?? defaultCodexAutoRedeemCoordinator;
 		const bashHost: BashRunnerHost = {
@@ -1711,14 +1712,25 @@ export class AgentSession {
 
 	#rebaseHindsightCloseRetainBaseline(closeRetainBaselineTurns?: number): void {
 		if (this.settings.get("memory.backend") !== "hindsight") {
-			this.hindsightCloseRetainBaselineTurns = undefined;
-			this.hindsightLoadedMessageCount = undefined;
+			this.#clearHindsightDelayedBaselines();
 			return;
 		}
 		const loaded = extractMessages(this.sessionManager);
 		this.hindsightCloseRetainBaselineTurns =
 			closeRetainBaselineTurns ?? loaded.filter(message => message.role === "user").length;
 		this.hindsightLoadedMessageCount = loaded.length;
+	}
+
+	#syncHindsightDocumentId(): void {
+		this.hindsightDocumentId = hindsightDocumentIdForSession(
+			this.sessionManager.getSessionId(),
+			this.sessionManager,
+		);
+	}
+
+	#clearHindsightDelayedBaselines(): void {
+		this.hindsightCloseRetainBaselineTurns = undefined;
+		this.hindsightLoadedMessageCount = undefined;
 	}
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
@@ -1855,6 +1867,10 @@ export class AgentSession {
 	setHindsightSessionState(state: HindsightSessionState | undefined): HindsightSessionState | undefined {
 		const previous = this.#hindsightSessionState;
 		this.#hindsightSessionState = state;
+		// Drop delayed-startup snapshots when the live backend goes away so a
+		// later re-enable derives the current transcript instead of replaying
+		// already-drained construction-time history.
+		if (!state) this.#clearHindsightDelayedBaselines();
 		return previous;
 	}
 
@@ -4485,8 +4501,6 @@ export class AgentSession {
 		this.#closeAllProviderSessions("reset context");
 		this.#freshProviderSessionId = Bun.randomUUIDv7();
 		this.#syncAgentSessionId();
-		this.hindsightDocumentId = Bun.randomUUIDv7();
-		this.#memory.rekeyForCurrentSessionId();
 		this.agent.appendOnlyContext?.invalidateForModelChange();
 
 		// Re-arm the approved-plan reference: the reset dropped the plan-approved
@@ -4504,8 +4518,11 @@ export class AgentSession {
 		// Record a durable boundary on the persisted branch before snapshotting
 		// Hindsight close-tracking. extractMessages starts after this marker, so
 		// the live conversation is empty at reset and only post-clear turns are
-		// treated as a below-cadence tail.
+		// treated as a below-cadence tail. The boundary id is the durable overlay
+		// epoch so resume can reconstruct the post-clear document identity.
 		this.sessionManager.appendResetBoundary();
+		this.#syncHindsightDocumentId();
+		this.#memory.rekeyForCurrentSessionId();
 		await this.#memory.resetContextForNewTranscript();
 		resetCapabilities();
 		await this.refreshBaseSystemPrompt();
@@ -7156,7 +7173,7 @@ export class AgentSession {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
-			this.hindsightDocumentId = undefined;
+			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 			this.#pendingNextTurnMessages = [];
@@ -7268,7 +7285,7 @@ export class AgentSession {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
-			this.hindsightDocumentId = undefined;
+			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -8239,7 +8256,6 @@ export class AgentSession {
 		const previousHindsightConversationTracking = this.#memory.captureHindsightConversationTracking();
 		const previousHindsightCloseRetainBaselineTurns = this.hindsightCloseRetainBaselineTurns;
 		const previousHindsightLoadedMessageCount = this.hindsightLoadedMessageCount;
-		const previousHindsightDocumentId = this.hindsightDocumentId;
 		// Snapshot the full checkpoint runtime state: the success path calls
 		// #rehydrateCheckpointRewindState(), which clears and rebuilds all four
 		// fields from the target branch. On rollback every one must be restored,
@@ -8270,7 +8286,7 @@ export class AgentSession {
 				this.#adoptInheritedProviderPromptCacheKey();
 			}
 			this.#syncAgentSessionId(undefined, false);
-			if (switchingToDifferentSession) this.hindsightDocumentId = undefined;
+			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
 
 			let sessionContext = this.buildDisplaySessionContext();
@@ -8415,7 +8431,7 @@ export class AgentSession {
 			this.sessionManager.restoreState(previousSessionState);
 			this.#freshProviderSessionId = previousFreshProviderSessionId;
 			this.#syncAgentSessionId(previousSessionState.sessionId, false);
-			this.hindsightDocumentId = previousHindsightDocumentId;
+			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
 			this.#memory.restoreHindsightConversationTracking(previousHindsightConversationTracking);
 			this.hindsightCloseRetainBaselineTurns = previousHindsightCloseRetainBaselineTurns;
@@ -8557,8 +8573,8 @@ export class AgentSession {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
-			await this.#memory.resetContextForNewTranscript();
 
 			// Reload messages from entries (works for both file and in-memory mode)
 			const sessionContext = this.buildDisplaySessionContext();
@@ -8692,8 +8708,8 @@ export class AgentSession {
 			this.#todo.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
+			this.#syncHindsightDocumentId();
 			this.#memory.rekeyForCurrentSessionId();
-			await this.#memory.resetContextForNewTranscript({ closeRetainBaselineTurns });
 
 			const sessionContext = this.buildDisplaySessionContext();
 

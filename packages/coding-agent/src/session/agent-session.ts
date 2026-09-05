@@ -4653,25 +4653,34 @@ export class AgentSession {
 		// the terminal assistant message. Doing this in the earlier parallel
 		// teardown can snapshot a user-only tail. Wait for any in-flight cadence
 		// retain to settle first, then give the close retain its own
-		// `hindsight.retainTimeoutMs` budget. RPC shutdown exits as soon as
-		// dispose() returns, which would otherwise kill an in-flight
-		// synchronous retain and drop the below-cadence tail.
+		// `hindsight.retainTimeoutMs` budget. First-use close retain may still
+		// PUT the bank (`requestTimeoutMs`) before consolidating, so the drain
+		// deadline covers both. RPC shutdown exits as soon as dispose() returns,
+		// which would otherwise kill an in-flight synchronous retain and drop
+		// the below-cadence tail.
 		let retainTimeoutMs: number | undefined;
+		let requestTimeoutMs: number | undefined;
 		try {
-			const configured = hindsightState?.config?.retainTimeoutMs;
-			if (typeof configured === "number" && Number.isFinite(configured)) {
-				retainTimeoutMs = configured;
+			const configuredRetain = hindsightState?.config?.retainTimeoutMs;
+			if (typeof configuredRetain === "number" && Number.isFinite(configuredRetain)) {
+				retainTimeoutMs = configuredRetain;
+			}
+			const configuredRequest = hindsightState?.config?.requestTimeoutMs;
+			if (typeof configuredRequest === "number" && Number.isFinite(configuredRequest)) {
+				requestTimeoutMs = configuredRequest;
 			}
 		} catch {
 			// Prototype-only test doubles (and a broken alias chain) still drain
 			// under the event-drain budget instead of aborting dispose.
 		}
-		const hindsightDrainTimeoutMs = retainTimeoutMs ?? options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS;
+		const hindsightRetainTimeoutMs = retainTimeoutMs ?? options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS;
+		const hindsightRequestTimeoutMs = requestTimeoutMs ?? 0;
+		const hindsightDrainTimeoutMs = hindsightRetainTimeoutMs + hindsightRequestTimeoutMs;
 		if (hindsightState) {
 			try {
 				await withTimeout(
 					hindsightState.waitForSessionRetainIdle(),
-					hindsightDrainTimeoutMs,
+					hindsightRetainTimeoutMs,
 					"Timed out waiting for in-flight Hindsight retain on dispose",
 				);
 			} catch (error) {

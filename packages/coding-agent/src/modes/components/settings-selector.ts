@@ -1131,7 +1131,6 @@ export class SettingsSelectorComponent implements Component {
 		let onPreviewCancel: (() => void) | undefined;
 		let footer: Component | undefined;
 
-		const activeThemeBeforePreview = this.#scopedThemeName() ?? currentValue;
 		if (def.path === "theme.dark" || def.path === "theme.light") {
 			onPreview = value => {
 				return this.callbacks.onThemePreview?.(
@@ -1141,7 +1140,7 @@ export class SettingsSelectorComponent implements Component {
 			};
 			onPreviewCancel = () => {
 				this.#triggerThemePreview(
-					activeThemeBeforePreview,
+					this.#loadableThemeName(this.#scopedThemeName()),
 					this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
 				);
 			};
@@ -1632,6 +1631,16 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	/**
+	 * Prefer a theme the selector can load. Deleted custom names and overlay
+	 * paths that never made `availableThemes` restore the live fallback captured
+	 * before the first scoped preview, then `dark`.
+	 */
+	#loadableThemeName(name: string | undefined): string | undefined {
+		if (name && this.context.availableThemes.includes(name)) return name;
+		return this.#themeBeforePreview ?? (name ? "dark" : undefined);
+	}
+
+	/**
 	 * Close the selector. Alt+S previews the selected layer's theme and
 	 * status line; reload the effective appearance so closing does not keep
 	 * rendering a scope that was never persisted. If the effective name
@@ -1641,13 +1650,8 @@ export class SettingsSelectorComponent implements Component {
 	#close(): void {
 		this.#unsubscribeProjectSettings?.();
 		this.#unsubscribeProjectSettings = undefined;
-		const effective = this.#effectiveThemeName();
-		const themeName =
-			effective && this.context.availableThemes.includes(effective)
-				? effective
-				: (this.#themeBeforePreview ?? (effective ? "dark" : undefined));
 		this.#triggerThemePreview(
-			themeName,
+			this.#loadableThemeName(this.#effectiveThemeName()),
 			this.#themePreviewOptions(settings.get("symbolPreset"), settings.get("colorBlindMode")),
 		);
 		this.#triggerEffectiveStatusLinePreview();

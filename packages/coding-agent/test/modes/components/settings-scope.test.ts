@@ -454,6 +454,57 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(settings.get("theme.dark")).toBe("dark-one");
 	});
 
+	it("restores the live fallback when canceling an unloadable theme submenu", async () => {
+		resetSettingsForTest();
+		AgentStorage.close();
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ theme: { dark: "missing-custom", light: "missing-custom" } }, null, 2),
+		);
+		await Settings.init({ cwd: projectDir, agentDir });
+		await setTheme("dark");
+		expect(getCurrentThemeName()).toBe("dark");
+		expect(settings.get("theme.dark")).toBe("missing-custom");
+		const fallbackAccent = theme.fg("accent", "*");
+
+		const previewed: string[] = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: async themeName => {
+					previewed.push(themeName);
+					const preview = previewTheme(themeName);
+					pendingPreviews.push(preview);
+					await preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		expect(theme.fg("accent", "*")).toBe(fallbackAccent);
+
+		for (const ch of "dark theme") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("titanium");
+		expect(theme.fg("accent", "*")).not.toBe(fallbackAccent);
+
+		selector.handleInput("\x1b");
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("dark");
+		expect(theme.fg("accent", "*")).toBe(fallbackAccent);
+		expect(settings.get("theme.dark")).toBe("missing-custom");
+	});
+
 	it("reapplies the scoped theme after a shadowed global theme submenu commit", () => {
 		const previews: string[] = [];
 		const selector = new SettingsSelectorComponent(

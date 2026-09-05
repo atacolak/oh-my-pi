@@ -21,6 +21,7 @@ interface FakeSessionDeps {
 	entries?: Array<{ role: "user" | "assistant"; text: string }>;
 	loadedUserTurnCount?: number;
 	hindsightCloseRetainBaselineTurns?: number;
+	hindsightLoadedMessageCount?: number;
 	settings?: Settings;
 }
 
@@ -32,6 +33,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 		sessionId: deps.sessionId,
 		loadedUserTurnCount: deps.loadedUserTurnCount,
 		hindsightCloseRetainBaselineTurns: deps.hindsightCloseRetainBaselineTurns,
+		hindsightLoadedMessageCount: deps.hindsightLoadedMessageCount,
 		settings: deps.settings ?? Settings.isolated(),
 		sessionManager: {
 			getEntries: () =>
@@ -697,6 +699,40 @@ describe("hindsightBackend live bank routing", () => {
 
 		expect(retain).toHaveBeenCalledTimes(1);
 		expect(String(retain.mock.calls[0]?.[1])).toContain("new active turn has enough text");
+	});
+
+	it("does not retain idle history when delayed baselines are undefined after a non-hindsight start", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainEveryNTurns": 5,
+			"hindsight.retainOverlapTurns": 0,
+		});
+		const entries = [
+			{ role: "user" as const, text: "prior turn one has enough text" },
+			{ role: "assistant" as const, text: "prior reply one has enough text" },
+			{ role: "user" as const, text: "prior turn two has enough text" },
+			{ role: "assistant" as const, text: "prior reply two has enough text" },
+		];
+		const session = makeFakeSession({
+			sessionId: "s-enable-idle",
+			entries,
+			loadedUserTurnCount: 0,
+			settings,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		await session.getHindsightSessionState()!.drainOnClose();
+
+		expect(retain).not.toHaveBeenCalled();
 	});
 
 	it("rebases delayed startup after a transcript switch before installation", async () => {

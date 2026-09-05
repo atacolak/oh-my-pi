@@ -1,24 +1,26 @@
 /**
  * Backend behavioural contract tests.
  *
- * These exercise hindsightBackend.start / preCompactionContext / clear without
- * a real AgentSession by passing a fake session that exposes a `subscribe`
- * method we can drive manually. The HindsightApi is spied via
- * `vi.spyOn(HindsightApi.prototype, ...)` per AGENTS.md.
+ * These exercise hindsightBackend.start / clear without a real AgentSession by
+ * passing a fake session that exposes a `subscribe` method we can drive
+ * manually. The HindsightApi is spied via `vi.spyOn(HindsightApi.prototype, ...)`
+ * per AGENTS.md.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { hindsightBackend, reloadMentalModelsForSession } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
 
 interface FakeSessionDeps {
 	sessionId: string | null;
 	cwd?: string;
 	entries?: Array<{ role: "user" | "assistant"; text: string }>;
+	loadedUserTurnCount?: number;
+	hindsightCloseRetainBaselineTurns?: number;
 	settings?: Settings;
 }
 
@@ -28,6 +30,8 @@ function makeFakeSession(deps: FakeSessionDeps) {
 	let hindsightState: HindsightSessionState | undefined;
 	const session = {
 		sessionId: deps.sessionId,
+		loadedUserTurnCount: deps.loadedUserTurnCount,
+		hindsightCloseRetainBaselineTurns: deps.hindsightCloseRetainBaselineTurns,
 		settings: deps.settings ?? Settings.isolated(),
 		sessionManager: {
 			getEntries: () =>
@@ -234,64 +238,9 @@ describe("hindsightBackend.start", () => {
 	});
 });
 
-describe("hindsightBackend.preCompactionContext", () => {
-	beforeEach(() => {
-		resetSettingsForTest();
-	});
-
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
-	it("returns undefined when no apiUrl is configured", async () => {
-		const settings = Settings.isolated({ "memory.backend": "hindsight", "hindsight.apiUrl": "" });
-		const messages: AgentMessage[] = [{ role: "user", content: "hi", timestamp: 0 } as never];
-		const ctx = await hindsightBackend.preCompactionContext?.(messages, settings);
-		expect(ctx).toBeUndefined();
-	});
-
-	it("returns a <memories> block when recall yields results", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeFakeSession({ sessionId: "s5" });
-		await hindsightBackend.start({
-			session: session as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-
-		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
-			results: [{ id: "1", text: "remembered fact" }],
-		} as never);
-
-		const messages: AgentMessage[] = [{ role: "user", content: "What did we decide?", timestamp: 0 } as never];
-		const ctx = await hindsightBackend.preCompactionContext?.(messages, settings, session as never);
-		expect(ctx).toContain("<memories>");
-		expect(ctx).toContain("remembered fact");
-	});
-
-	it("returns undefined when recall finds nothing", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeFakeSession({ sessionId: "s6" });
-		await hindsightBackend.start({
-			session: session as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-
-		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
-		const messages: AgentMessage[] = [{ role: "user", content: "anything", timestamp: 0 } as never];
-		const ctx = await hindsightBackend.preCompactionContext?.(messages, settings, session as never);
-		expect(ctx).toBeUndefined();
+describe("hindsightBackend compaction boundary", () => {
+	it("does not provide automatic memory context to compaction", () => {
+		expect(hindsightBackend.preCompactionContext).toBeUndefined();
 	});
 });
 
@@ -613,6 +562,125 @@ describe("hindsightBackend live bank routing", () => {
 		expect(next).not.toBe(initial);
 	});
 
+	it("bases a newly enabled state on the active transcript instead of construction history", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainEveryNTurns": 5,
+			"hindsight.retainOverlapTurns": 0,
+		});
+		const entries = [
+			{ role: "user" as const, text: "active turn one has enough text" },
+			{ role: "assistant" as const, text: "active reply one has enough text" },
+			{ role: "user" as const, text: "active turn two has enough text" },
+			{ role: "assistant" as const, text: "active reply two has enough text" },
+		];
+		const session = makeFakeSession({
+			sessionId: "s-active-baseline",
+			entries,
+			loadedUserTurnCount: 10,
+			settings,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		entries.push(
+			{ role: "user", text: "new active turn has enough text" },
+			{ role: "assistant", text: "new active reply has enough text" },
+		);
+		await session.getHindsightSessionState()!.drainOnClose();
+
+		expect(retain).toHaveBeenCalledTimes(1);
+		expect(String(retain.mock.calls[0]?.[1])).toContain("new active turn has enough text");
+	});
+
+	it("rebases delayed startup after a transcript switch before installation", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainEveryNTurns": 5,
+			"hindsight.retainOverlapTurns": 0,
+		});
+		const entries = [
+			{ role: "user" as const, text: "post-switch turn has enough text" },
+			{ role: "assistant" as const, text: "post-switch reply has enough text" },
+		];
+		const session = makeFakeSession({
+			sessionId: "s-delayed-switch",
+			entries,
+			loadedUserTurnCount: 5,
+			hindsightCloseRetainBaselineTurns: 0,
+			settings,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+			hindsightCloseRetainBaselineTurns: session.loadedUserTurnCount,
+		});
+		await session.getHindsightSessionState()!.drainOnClose();
+
+		expect(retain).toHaveBeenCalledTimes(1);
+		expect(String(retain.mock.calls[0]?.[1])).toContain("post-switch turn has enough text");
+	});
+
+	it("retains a below-cadence turn on the old bank before a scope rebuild", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainEveryNTurns": 5,
+			"hindsight.retainOverlapTurns": 0,
+		});
+		settings.set("hindsight.scoping", "global");
+		settings.set("hindsight.bankId", "omp");
+		const entries = [
+			{ role: "user" as const, text: "pre-rebuild turn has enough text" },
+			{ role: "assistant" as const, text: "pre-rebuild reply has enough text" },
+		];
+		const session = makeFakeSession({
+			sessionId: "s-rebuild-drain",
+			entries,
+			hindsightCloseRetainBaselineTurns: 0,
+			settings,
+		});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+			hindsightCloseRetainBaselineTurns: 0,
+		});
+
+		settings.set("hindsight.bankId", "Minigames");
+		// Hook is sync but the rebuild is async; yield once so the handler runs.
+		await Bun.sleep(0);
+
+		const next = session.getHindsightSessionState();
+		expect(next?.bankId).toBe("Minigames");
+		expect(retain).toHaveBeenCalledTimes(1);
+		expect(retain.mock.calls[0]?.[0]).toBe("omp");
+		expect(String(retain.mock.calls[0]?.[1])).toContain("pre-rebuild turn has enough text");
+
+		await next!.drainOnClose();
+		expect(retain).toHaveBeenCalledTimes(1);
+	});
+
 	// Same regression, exercising the `hindsight.scoping` axis: switching
 	// scope mode also reshapes the bank id / tag filters and must rebuild.
 	it("rebuilds the primary state when hindsight.scoping changes mid-session", async () => {
@@ -647,6 +715,309 @@ describe("hindsightBackend live bank routing", () => {
 	// Same setting written with the same value MUST NOT rebuild — a rebuild
 	// would reset `lastRetainedTurn` / `hasRecalledForFirstTurn` and force a
 	// fresh mental-model bootstrap for no observable reason.
+	it("applies hindsight.retainUpdateMode to the live state without rebuilding", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "global");
+		const session = makeFakeSession({ sessionId: "s-update-mode", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		const first = [
+			{ role: "user" as const, content: "turn one has enough text" },
+			{ role: "assistant" as const, content: "reply one has enough text" },
+		];
+		const second = [
+			...first,
+			{ role: "user" as const, content: "turn two has enough text" },
+			{ role: "assistant" as const, content: "reply two has enough text" },
+		];
+		const initial = session.getHindsightSessionState();
+		expect(initial?.config.retainUpdateMode).toBe("replace");
+		await initial!.retainSession(first);
+		expect(retain.mock.calls[0]?.[2]?.updateMode).toBeUndefined();
+
+		settings.set("hindsight.retainUpdateMode", "append");
+		await Bun.sleep(0);
+
+		const next = session.getHindsightSessionState();
+		expect(next).toBe(initial);
+		expect(next?.config.retainUpdateMode).toBe("append");
+		await next!.retainSession(second);
+		expect(retain.mock.calls[1]?.[2]?.updateMode).toBe("append");
+	});
+
+	it("applies hindsight.retainStrategy to the live state without rebuilding", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "global");
+		const session = makeFakeSession({ sessionId: "s-strategy", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		const initial = session.getHindsightSessionState();
+
+		settings.set("hindsight.retainStrategy", "personal_chat");
+		await Bun.sleep(0);
+
+		const next = session.getHindsightSessionState();
+		expect(next).toBe(initial);
+		expect(next?.config.retainStrategy).toBe("personal_chat");
+		next?.enqueueRetain("primary live strategy");
+		await next?.flushRetainQueue();
+		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.strategy).toBe("personal_chat");
+	});
+
+	it("propagates retainStrategy to live subagent aliases without rebuilding", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "global");
+		const parentSession = makeFakeSession({ sessionId: "s-parent", settings });
+		const aliasSession = makeFakeSession({ sessionId: "s-alias", settings });
+
+		await hindsightBackend.start({
+			session: parentSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const parent = parentSession.getHindsightSessionState();
+		expect(parent).toBeDefined();
+
+		await hindsightBackend.start({
+			session: aliasSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 1,
+			parentHindsightSessionState: parent,
+		});
+
+		settings.set("hindsight.retainStrategy", "personal_chat");
+		await Bun.sleep(0);
+
+		expect(parentSession.getHindsightSessionState()).toBe(parent);
+		expect(parent?.config.retainStrategy).toBe("personal_chat");
+		expect(aliasSession.getHindsightSessionState()?.aliasOf).toBe(parent);
+		expect(aliasSession.getHindsightSessionState()?.config.retainStrategy).toBe("personal_chat");
+		const alias = aliasSession.getHindsightSessionState();
+		alias?.enqueueRetain("alias live strategy");
+		await alias?.flushRetainQueue();
+		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.strategy).toBe("personal_chat");
+	});
+
+	it("rebinding aliases after a primary bank rebuild still sends the live retainStrategy", async () => {
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "global");
+		const parentSession = makeFakeSession({ sessionId: "s-rebind-parent", cwd: "/work/proj", settings });
+		const aliasSession = makeFakeSession({ sessionId: "s-rebind-alias", cwd: "/work/proj", settings });
+
+		await hindsightBackend.start({
+			session: parentSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const parent = parentSession.getHindsightSessionState();
+		expect(parent).toBeDefined();
+
+		await hindsightBackend.start({
+			session: aliasSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 1,
+			parentHindsightSessionState: parent,
+		});
+
+		settings.set("hindsight.scoping", "per-project");
+		await Bun.sleep(0);
+
+		const replacement = parentSession.getHindsightSessionState();
+		expect(replacement).toBeDefined();
+		expect(replacement).not.toBe(parent);
+		expect(aliasSession.getHindsightSessionState()?.aliasOf).toBe(replacement);
+		expect(aliasSession.getHindsightSessionState()?.bankId).toBe(replacement?.bankId);
+
+		settings.set("hindsight.retainStrategy", "personal_chat");
+		await Bun.sleep(0);
+
+		const alias = aliasSession.getHindsightSessionState();
+		expect(alias).toBeDefined();
+		expect(alias?.config.retainStrategy).toBe("personal_chat");
+		alias?.enqueueRetain("alias after rebuild");
+		await alias?.flushRetainQueue();
+		expect(retainBatchSpy.mock.calls[0]?.[0]).toBe(replacement!.bankId);
+		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.strategy).toBe("personal_chat");
+	});
+
+	it("keeps queued alias retains on their original bank across a parent rebuild", async () => {
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		const createBankGate = Promise.withResolvers<void>();
+		const createBankStarted = Promise.withResolvers<void>();
+		vi.spyOn(HindsightApi.prototype, "createBank").mockImplementation(async () => {
+			createBankStarted.resolve();
+			await createBankGate.promise;
+			return {} as never;
+		});
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.mentalModelsEnabled": false,
+		});
+		settings.set("hindsight.scoping", "global");
+		const parentSession = makeFakeSession({ sessionId: "s-queued-parent", cwd: "/work/proj", settings });
+		const aliasSession = makeFakeSession({ sessionId: "s-queued-alias", cwd: "/work/proj", settings });
+
+		await hindsightBackend.start({
+			session: parentSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const parent = parentSession.getHindsightSessionState();
+		expect(parent).toBeDefined();
+		const originalBankId = parent!.bankId;
+
+		await hindsightBackend.start({
+			session: aliasSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 1,
+			parentHindsightSessionState: parent,
+		});
+
+		const alias = aliasSession.getHindsightSessionState();
+		alias?.enqueueRetain("queued before rebuild");
+		const flush = alias!.flushRetainQueue();
+		await createBankStarted.promise;
+
+		settings.set("hindsight.scoping", "per-project");
+		while (parentSession.getHindsightSessionState() === parent) {
+			await Promise.resolve();
+		}
+		const replacement = parentSession.getHindsightSessionState();
+		expect(replacement).toBeDefined();
+		expect(replacement).not.toBe(parent);
+		expect(replacement?.bankId).not.toBe(originalBankId);
+		expect(aliasSession.getHindsightSessionState()?.aliasOf).toBe(replacement);
+		expect(aliasSession.getHindsightSessionState()?.bankId).toBe(replacement?.bankId);
+
+		createBankGate.resolve();
+		await flush;
+
+		expect(retainBatchSpy).toHaveBeenCalledTimes(1);
+		expect(retainBatchSpy.mock.calls[0]?.[0]).toBe(originalBankId);
+		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.content).toBe("queued before rebuild");
+
+		alias?.enqueueRetain("queued after rebuild");
+		await alias?.flushRetainQueue();
+		expect(retainBatchSpy).toHaveBeenCalledTimes(2);
+		expect(retainBatchSpy.mock.calls[1]?.[0]).toBe(replacement!.bankId);
+	});
+
+	it("keeps in-flight alias reflect on the original bank across a parent rebuild", async () => {
+		const reflectSpy = vi
+			.spyOn(HindsightApi.prototype, "reflect")
+			.mockResolvedValue({ text: "from original bank" } as never);
+		const createBankGate = Promise.withResolvers<void>();
+		const createBankStarted = Promise.withResolvers<void>();
+		vi.spyOn(HindsightApi.prototype, "createBank").mockImplementation(async () => {
+			createBankStarted.resolve();
+			await createBankGate.promise;
+			return {} as never;
+		});
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.mentalModelsEnabled": false,
+		});
+		settings.set("hindsight.scoping", "global");
+		const parentSession = makeFakeSession({ sessionId: "s-reflect-parent", cwd: "/work/proj", settings });
+		const aliasSession = makeFakeSession({ sessionId: "s-reflect-alias", cwd: "/work/proj", settings });
+
+		await hindsightBackend.start({
+			session: parentSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const parent = parentSession.getHindsightSessionState();
+		expect(parent).toBeDefined();
+		const originalBankId = parent!.bankId;
+
+		await hindsightBackend.start({
+			session: aliasSession as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 1,
+			parentHindsightSessionState: parent,
+		});
+
+		const tool = MemoryReflectTool.createIf(aliasSession as never)!;
+		const reflectPromise = tool.execute("call-reflect-race", { query: "what stayed?" });
+		await createBankStarted.promise;
+
+		settings.set("hindsight.scoping", "per-project");
+		while (parentSession.getHindsightSessionState() === parent) {
+			await Promise.resolve();
+		}
+		const replacement = parentSession.getHindsightSessionState();
+		expect(replacement).toBeDefined();
+		expect(replacement).not.toBe(parent);
+		expect(replacement?.bankId).not.toBe(originalBankId);
+		expect(aliasSession.getHindsightSessionState()?.aliasOf).toBe(replacement);
+		expect(aliasSession.getHindsightSessionState()?.bankId).toBe(replacement?.bankId);
+
+		createBankGate.resolve();
+		const result = await reflectPromise;
+
+		expect(reflectSpy).toHaveBeenCalledTimes(1);
+		expect(reflectSpy.mock.calls[0]?.[0]).toBe(originalBankId);
+		expect(reflectSpy.mock.calls[0]?.[1]).toBe("what stayed?");
+		expect(result.content[0]).toEqual({ type: "text", text: "from original bank" });
+
+		const later = await tool.execute("call-reflect-after", { query: "what moved?" });
+		expect(reflectSpy).toHaveBeenCalledTimes(2);
+		expect(reflectSpy.mock.calls[1]?.[0]).toBe(replacement!.bankId);
+		expect(later.content[0]).toEqual({ type: "text", text: "from original bank" });
+	});
+
 	it("does not rebuild when the bank-routing setting is rewritten with the same value", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const settings = Settings.isolated({

@@ -24,6 +24,7 @@ import {
 	ensureFileOpen,
 	fallbackLspClientOwner,
 	getActiveClients,
+	getActiveOrPendingClient,
 	getOrCreateClient,
 	isRustAnalyzerClient,
 	type LspClientOwner,
@@ -877,10 +878,34 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			for (const [serverName, serverConfig] of servers) {
-				if (
-					sourceStat.isDirectory() &&
-					workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd)
-				) {
+				const movedRootClient =
+					sourceStat.isDirectory() && workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd);
+				if (movedRootClient) {
+					const live = await getActiveOrPendingClient(serverConfig, this.session.cwd, signal);
+					if (!live) continue;
+					const serverPairs = pairsForServer(serverConfig);
+					if (serverPairs.length === 0) continue;
+					try {
+						for (const pair of serverPairs) {
+							const overlayOldUri = fileToUri(uriToFile(pair.oldUri), live.cwd);
+							if (live.openFiles.has(overlayOldUri)) {
+								await sendNotification(
+									live,
+									"textDocument/didClose",
+									{ textDocument: { uri: overlayOldUri } },
+									signal,
+								);
+								live.openFiles.delete(overlayOldUri);
+							}
+						}
+						await sendNotification(live, "workspace/didRenameFiles", { files: serverPairs }, signal);
+					} catch (err) {
+						if (err instanceof ToolAbortError || signal?.aborted) {
+							throw err;
+						}
+						const msg = err instanceof Error ? err.message : String(err);
+						serverNotes.push(`  ${serverName}: ${msg}`);
+					}
 					continue;
 				}
 				const serverPairs = pairsForServer(serverConfig);

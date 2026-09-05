@@ -7,7 +7,6 @@
  * owner instead of a parallel session-id registry.
  */
 
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { onHindsightScopeChanged, type Settings } from "../config/settings";
 import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
@@ -15,8 +14,8 @@ import type { AgentSession } from "../session/agent-session";
 import { type BankScope, computeBankScope } from "./bank";
 import { createHindsightClient } from "./client";
 import { isHindsightConfigured, loadHindsightConfig } from "./config";
-import { type HindsightMessage, hasSubstantiveContent } from "./content";
 import { HindsightSessionState } from "./state";
+import { countRetainableUserTurns } from "./transcript";
 
 const STATIC_INSTRUCTIONS = [
 	"# Memory",
@@ -58,6 +57,7 @@ export const hindsightBackend: MemoryBackend = {
 					retainTags: parent.retainTags,
 					recallTags: parent.recallTags,
 					recallTagsMatch: parent.recallTagsMatch,
+					observationScopes: parent.observationScopes,
 					config: parent.config,
 					session,
 					banksSet: parent.banksSet,
@@ -80,7 +80,12 @@ export const hindsightBackend: MemoryBackend = {
 			return;
 		}
 
-		await installPrimaryState(session, settings, new Set());
+		await installPrimaryState(
+			session,
+			settings,
+			new Set(),
+			session.hindsightCloseRetainBaselineTurns ?? options.hindsightCloseRetainBaselineTurns,
+		);
 	},
 
 	async buildDeveloperInstructions(_agentDir, settings, session): Promise<string | undefined> {
@@ -127,23 +132,7 @@ export const hindsightBackend: MemoryBackend = {
 		const state = session?.getHindsightSessionState();
 		const primary = state?.aliasOf ? undefined : state;
 		if (!primary) return;
-		await primary.flushRetainQueue();
 		await primary.forceRetainCurrentSession();
-	},
-
-	async preCompactionContext(
-		messages: AgentMessage[],
-		settings: Settings,
-		session?: AgentSession,
-	): Promise<string | undefined> {
-		const config = loadHindsightConfig(settings);
-		if (!isHindsightConfigured(config)) return undefined;
-
-		const state = session?.getHindsightSessionState();
-		if (!state) return undefined;
-
-		const flat = flattenMessagesForRecall(messages);
-		return await state.recallForCompaction(flat);
 	},
 };
 interface PrimaryRebuildTask {
@@ -187,9 +176,9 @@ function schedulePrimaryStateRebuild(session: AgentSession): void {
 
 /**
  * Build (or rebuild) the primary `HindsightSessionState` for `session` from
- * the current settings and install it. Disposes any previous primary state
- * after flushing its retain queue so in-flight tool-initiated retains land in
- * the bank that was selected when they were enqueued, not in the new bank.
+ * the current settings and install it. Drains any previous primary state's
+ * pending session tail and tool-retain queue so a below-cadence turn is not
+ * discarded when bank routing changes.
  *
  * The created state takes ownership of the `onHindsightScopeChanged`
  * subscription so subsequent `hindsight.bankId` / `bankIdPrefix` / `scoping`
@@ -199,8 +188,9 @@ async function installPrimaryState(
 	session: AgentSession,
 	settings: Settings,
 	banksSet: Set<string>,
+	closeRetainBaselineTurns?: number,
 ): Promise<HindsightSessionState | undefined> {
-	const sessionId = session.sessionId;
+	const sessionId = session.sessionManager.getSessionId() || session.sessionId;
 	if (!sessionId) return undefined;
 
 	const config = loadHindsightConfig(settings);
@@ -209,21 +199,22 @@ async function installPrimaryState(
 	const client = createHindsightClient(config);
 	const scope = computeBankScope(config, session.sessionManager.getCwd());
 
-	// Cleanup any stale state for this session (defensive — prevents leaks
-	// when a session is reused without going through dispose). Flush the
-	// previous state's retain queue BEFORE clearing it, otherwise
-	// `HindsightRetainQueue.#doFlush` sees `session.getHindsightSessionState()
-	// !== state` and drops the batch. Re-read after the await so a concurrent
-	// owner cannot leave the actual current state undisposed.
+	// Drain the previous state's pending transcript and retain queue BEFORE
+	// replacing it. A below-cadence turn would otherwise be marked loaded
+	// history on the replacement and never retained to either bank.
+	// `HindsightRetainQueue.#doFlush` also drops the batch if the session
+	// owner changes mid-flush, so finish that work first. Re-read after the
+	// await so a concurrent owner cannot leave the actual current state
+	// undisposed.
 	let previous = session.getHindsightSessionState();
 	if (previous) {
-		await previous.flushRetainQueue();
+		await previous.drainOnClose();
 	}
 	const latest = session.getHindsightSessionState();
 	if (latest && latest !== previous) {
 		previous?.dispose();
 		previous = latest;
-		await previous.flushRetainQueue();
+		await previous.drainOnClose();
 	}
 
 	const state = new HindsightSessionState({
@@ -233,9 +224,11 @@ async function installPrimaryState(
 		retainTags: scope.retainTags,
 		recallTags: scope.recallTags,
 		recallTagsMatch: scope.recallTagsMatch,
+		observationScopes: scope.observationScopes,
 		config,
 		session,
 		banksSet,
+		closeRetainBaselineTurns: closeRetainBaselineTurns ?? countRetainableUserTurns(session.sessionManager),
 		lastRetainedTurn: 0,
 		hasRecalledForFirstTurn: false,
 	});
@@ -249,9 +242,12 @@ async function installPrimaryState(
 	const displaced = session.setHindsightSessionState(state);
 	if (displaced && displaced !== previous) {
 		await displaced.flushRetainQueue();
+		displaced.replaceWith(state);
 		displaced.dispose();
 	}
+	previous?.replaceWith(state);
 	previous?.dispose();
+
 	state.attachSessionListeners();
 
 	// Kick off mental-model bootstrap. Resolves asynchronously; the first
@@ -269,9 +265,9 @@ async function installPrimaryState(
 
 /**
  * `onHindsightScopeChanged` handler: re-evaluate the bank scope from current
- * settings and rebuild the primary state when it has actually drifted. No-op
- * when the scope is unchanged or the session is no longer hosting a primary
- * state (e.g. it was wiped to `undefined`, or this is a subagent alias).
+ * settings and rebuild the primary state when it has actually drifted. When
+ * only non-routing config changed (e.g. retainStrategy/retainUpdateMode), refresh the live
+ * state's config snapshot without resetting retain/recall tracking.
  */
 async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<void> {
 	const current = session.getHindsightSessionState();
@@ -280,16 +276,22 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 	const settings = session.settings;
 	const config = loadHindsightConfig(settings);
 	if (!isHindsightConfigured(config)) {
-		// Hindsight effectively unwired mid-session. Flush before clearing so
-		// queued retains don't get dropped by `HindsightRetainQueue.#doFlush`.
-		await current.flushRetainQueue();
+		// Hindsight effectively unwired mid-session. Drain the pending
+		// transcript and queue before clearing so a below-cadence tail is
+		// not dropped by dispose.
+		await current.drainOnClose();
 		const previous = session.setHindsightSessionState(undefined);
 		previous?.dispose();
 		return;
 	}
 
 	const next = computeBankScope(config, session.sessionManager.getCwd());
-	if (bankScopesEqual(next, current)) return;
+	if (bankScopesEqual(next, current)) {
+		// Bank routing is unchanged, but other live settings such as
+		// retainStrategy / retainUpdateMode still need to replace the config snapshot.
+		current.config = config;
+		return;
+	}
 
 	// Preserve the banksSet so we don't re-PUT banks we've already confirmed.
 	await installPrimaryState(session, settings, current.banksSet);
@@ -313,42 +315,13 @@ function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): bo
  */
 function bankScopesEqual(
 	scope: BankScope,
-	state: Pick<HindsightSessionState, "bankId" | "retainTags" | "recallTags" | "recallTagsMatch">,
+	state: Pick<HindsightSessionState, "bankId" | "retainTags" | "recallTags" | "recallTagsMatch" | "observationScopes">,
 ): boolean {
 	return (
 		scope.bankId === state.bankId &&
 		stringArraysEqual(scope.retainTags, state.retainTags) &&
 		stringArraysEqual(scope.recallTags, state.recallTags) &&
-		scope.recallTagsMatch === state.recallTagsMatch
+		scope.recallTagsMatch === state.recallTagsMatch &&
+		stringArraysEqual(scope.observationScopes?.[0], state.observationScopes?.[0])
 	);
-}
-
-/** Reduce arbitrary AgentMessages into the Hindsight flat-text shape. */
-function flattenMessagesForRecall(messages: AgentMessage[]): HindsightMessage[] {
-	const out: HindsightMessage[] = [];
-	for (const msg of messages) {
-		if (msg.role === "user") {
-			const content = msg.content;
-			if (typeof content === "string") {
-				if (hasSubstantiveContent(content)) out.push({ role: "user", content });
-				continue;
-			}
-			if (Array.isArray(content)) {
-				const text = content
-					.filter((b): b is { type: "text"; text: string } => !!b && (b as { type?: unknown }).type === "text")
-					.map(b => b.text)
-					.join("\n");
-				if (hasSubstantiveContent(text)) out.push({ role: "user", content: text });
-			}
-			continue;
-		}
-		if (msg.role === "assistant") {
-			const text = msg.content
-				.filter((b): b is { type: "text"; text: string } => b.type === "text")
-				.map(b => b.text)
-				.join("\n");
-			if (hasSubstantiveContent(text)) out.push({ role: "assistant", content: text });
-		}
-	}
-	return out;
 }

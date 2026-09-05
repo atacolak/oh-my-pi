@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
+- Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
+- Added `hindsight.retainUpdateMode` (`replace` | `append`, default `replace`) so full-session retain can append only newly accumulated turns to the same session document.
+
+### Changed
+
+- Hindsight now retains any remaining below-cadence session tail on clean close (`AgentSession.dispose` / session-memory teardown), independent of `retainUpdateMode`.
+- Hindsight now retains a below-cadence tail when leaving a conversation through `/new`, `/clear`, `/resume`, fork, or branch, and when bank routing rebuilds mid-session.
+
+### Fixed
+
+- Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
+- Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
+- Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
+- Fixed Hindsight delayed startup skipping a below-cadence post-switch turn after `/new`, `/clear`, `/resume`, or `/tree`.
+- Hindsight no longer duplicates a retained tail after `/fresh` or a same-file reload.
+- Hindsight close retain now waits through the configured retain timeout during dispose instead of the 5s event-drain deadline.
+
 ## [18.1.11] - 2026-09-05
 
 ### Added

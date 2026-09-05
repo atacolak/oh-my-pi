@@ -10,6 +10,10 @@
 
 - `withFileLock` now honors an optional `AbortSignal` and cancels lock-acquisition retries immediately.
 
+### Fixed
+
+- Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
+
 ## [18.1.11] - 2026-09-05
 
 ### Fixed

@@ -310,6 +310,28 @@ describe("isEnvOwnedByProjectDotenv", () => {
 			),
 		).toBe(false);
 	});
+
+	it("treats a bun-overwritten empty launcher PI_CODING_AGENT_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-overwritten empty launcher PI_CONFIG_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				"PI_CONFIG_DIR=./attacker-config\n",
+				{
+					PI_CONFIG_DIR: "",
+					OMP_CONFIG_DIR: undefined,
+				},
+				"PI_CONFIG_DIR",
+			),
+		).toBe(true);
+	});
 });
 
 describe("isBunTestRuntime", () => {

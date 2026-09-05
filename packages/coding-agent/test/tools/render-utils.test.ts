@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import { KeybindingsManager, setKeyHintPlatform } from "@oh-my-pi/pi-coding-agent/config/keybindings";
@@ -131,6 +131,28 @@ describe("formatScreenshot", () => {
 		expect(message).not.toContain("\t");
 		expect(message).toContain("~/.omp/mcp.log");
 		expect(message.endsWith("…")).toBe(true);
+	});
+
+	it("shortens embedded home paths that contain spaces", () => {
+		const posixHome = spyOn(os, "homedir").mockReturnValue("/home/Alice Smith");
+		try {
+			const leaked = "/home/Alice Smith/.omp/mcp.log";
+			const message = sanitizeStatusText(`failed at ${leaked}`, 80);
+			expect(message).not.toContain("/home/Alice Smith");
+			expect(message).toContain("~/.omp/mcp.log");
+		} finally {
+			posixHome.mockRestore();
+		}
+
+		const windowsHome = spyOn(os, "homedir").mockReturnValue(String.raw`C:\Users\Alice Smith`);
+		try {
+			const leaked = String.raw`C:\Users\Alice Smith\secret`;
+			const message = sanitizeStatusText(`failed at ${leaked}`, 80);
+			expect(message).not.toContain("Alice Smith");
+			expect(message).toContain("~/secret");
+		} finally {
+			windowsHome.mockRestore();
+		}
 	});
 
 	it("formats non-home path without tilde", () => {

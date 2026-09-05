@@ -287,12 +287,16 @@ const launchProjectDotenv = (() => {
  * True when `name` entered the process from the launch project's dotenv files
  * rather than the parent shell. Used to distrust redirected global agent and
  * config directories.
+ *
+ * Bun replaces an empty launcher value with the dotenv one, so an empty
+ * parent `PI_CODING_AGENT_DIR`/`PI_CONFIG_DIR` that now holds a dotenv value
+ * is still project-owned.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if (projectEnvNamesLoadedByOmp.has(name)) return true;
 	if (!launchProjectDotenv.names.has(name)) return false;
-	if (launchEnvValues?.has(name)) return false;
-	if (launchEnvValues) return true;
+	if (launchEnvValues?.has(name) && launchEnvValues.get(name) !== "") return false;
+	if (launchEnvValues && !launchEnvValues.has(name)) return true;
 	const current = process.env[name];
 	if (current === undefined) return false;
 	return current === launchProjectDotenv.raw[name] || current === launchProjectDotenv.expanded[name];

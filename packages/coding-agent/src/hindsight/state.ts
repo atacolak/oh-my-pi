@@ -78,7 +78,8 @@ export interface HindsightSessionStateOptions {
  *
  * Auto-retain (`HindsightSessionState.retainSession`) is intentionally not
  * routed through this queue — it submits a full transcript as one large item
- * and already runs `async: true` server-side.
+ * and waits for server-side processing (`async: false`) so the local cursor
+ * only advances after that retain is durable.
  */
 export class HindsightRetainQueue {
 	readonly #state: HindsightSessionState;
@@ -573,7 +574,7 @@ export class HindsightSessionState {
 			metadata: { session_id: sessionId },
 			tags: this.retainTags,
 			timestamp: sourceTimestamp,
-			async: true,
+			async: false,
 			updateMode,
 		});
 		if (!retainFullWindow) this.#recordCompletedLastTurnRetain(sessionId, messages);

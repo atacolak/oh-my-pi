@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Hindsight full-session retain now waits for server-side processing before advancing the append cursor, so a failed consolidation is retried instead of omitted.
+
 ## [18.0.6] - 2026-08-26
 
 ### Added

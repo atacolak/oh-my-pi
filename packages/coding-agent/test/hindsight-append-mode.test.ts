@@ -64,6 +64,12 @@ function firstItem(body: unknown): Record<string, unknown> {
 	return item as Record<string, unknown>;
 }
 
+function retainBodyAsync(body: unknown): unknown {
+	if (typeof body !== "object" || body === null) throw new Error("missing retain body");
+	if (!("async" in body)) throw new Error("missing retain async flag");
+	return body.async;
+}
+
 const SESSION_START = "2026-08-17T09:00:00.000Z";
 
 function turn(role: "user" | "assistant", content: string): HindsightMessage {
@@ -125,6 +131,8 @@ describe("Hindsight append-mode session retention", () => {
 		expect(firstItem(bodies[1]).document_id).toBe("sess-replace");
 		expect(String(firstItem(bodies[1]).content)).toContain("hello first turn here");
 		expect(String(firstItem(bodies[1]).content)).toContain("hello second turn here");
+		expect(retainBodyAsync(bodies[0])).toBe(false);
+		expect(retainBodyAsync(bodies[1])).toBe(false);
 	});
 
 	it("appends only the new delta to the same document_id without resending history", async () => {
@@ -158,6 +166,50 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[1]).content)).toContain("hello second turn here");
 		expect(String(firstItem(bodies[1]).content)).not.toContain("hello first turn here");
 		expect(String(firstItem(bodies[1]).content)).not.toContain("first reply is long enough");
+		expect(retainBodyAsync(bodies[0])).toBe(false);
+		expect(retainBodyAsync(bodies[1])).toBe(false);
+	});
+
+	it("retries the uncommitted delta after a failed append retain", async () => {
+		const bodies: unknown[] = [];
+		let remainingFailures = 1;
+		const fetchMock: typeof globalThis.fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit | BunFetchRequestInit): Promise<Response> => {
+				bodies.push(JSON.parse(String(init?.body ?? "{}")));
+				if (remainingFailures > 0) {
+					remainingFailures -= 1;
+					return new Response("retain failed", { status: 500 });
+				}
+				return new Response("{}", { status: 200 });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const first = [turn("user", "hello first turn here"), turn("assistant", "first reply is long enough")];
+		const second = [...first, turn("user", "hello second turn here")];
+		const state = new HindsightSessionState({
+			sessionId: "sess-append-retry",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainUpdateMode: "append" }),
+			session: {
+				sessionId: "sess-append-retry",
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		await expect(state.retainSession(first)).rejects.toThrow(/retain failed/);
+		await state.retainSession(second);
+
+		expect(bodies).toHaveLength(2);
+		expect(retainBodyAsync(bodies[0])).toBe(false);
+		expect(retainBodyAsync(bodies[1])).toBe(false);
+		expect(firstItem(bodies[1])).not.toHaveProperty("update_mode");
+		expect(String(firstItem(bodies[1]).content)).toContain("hello first turn here");
+		expect(String(firstItem(bodies[1]).content)).toContain("first reply is long enough");
+		expect(String(firstItem(bodies[1]).content)).toContain("hello second turn here");
 	});
 
 	it("rebuilds with replace when the retained prefix diverges", async () => {

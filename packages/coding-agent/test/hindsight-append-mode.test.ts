@@ -100,6 +100,15 @@ function assistantEntry(id: string, parentId: string, content: string, timestamp
 	} as SessionEntry;
 }
 
+function resetBoundaryEntry(id: string, parentId: string, timestamp: string): SessionEntry {
+	return {
+		type: "reset_boundary",
+		id,
+		parentId,
+		timestamp,
+	};
+}
+
 describe("Hindsight append-mode session retention", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -210,6 +219,96 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[1]).content)).toContain("hello first turn here");
 		expect(String(firstItem(bodies[1]).content)).toContain("first reply is long enough");
 		expect(String(firstItem(bodies[1]).content)).toContain("hello second turn here");
+	});
+
+	it("rebuilds with replace after an ambiguous append retain failure", async () => {
+		const bodies: unknown[] = [];
+		let remainingFailures = 1;
+		const fetchMock: typeof globalThis.fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit | BunFetchRequestInit): Promise<Response> => {
+				bodies.push(JSON.parse(String(init?.body ?? "{}")));
+				if (bodies.length > 1 && remainingFailures > 0) {
+					remainingFailures -= 1;
+					return new Response("retain failed", { status: 500 });
+				}
+				return new Response("{}", { status: 200 });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const first = [turn("user", "hello first turn here"), turn("assistant", "first reply is long enough")];
+		const second = [...first, turn("user", "hello second turn here")];
+		const state = new HindsightSessionState({
+			sessionId: "sess-append-ambiguous",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainUpdateMode: "append" }),
+			session: {
+				sessionId: "sess-append-ambiguous",
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		await state.retainSession(first);
+		await expect(state.retainSession(second)).rejects.toThrow(/retain failed/);
+		await state.retainSession(second);
+
+		expect(bodies).toHaveLength(3);
+		expect(firstItem(bodies[1]).update_mode).toBe("append");
+		expect(String(firstItem(bodies[1]).content)).toContain("hello second turn here");
+		expect(String(firstItem(bodies[1]).content)).not.toContain("hello first turn here");
+		expect(firstItem(bodies[2]).update_mode).toBe("replace");
+		expect(String(firstItem(bodies[2]).content)).toContain("hello first turn here");
+		expect(String(firstItem(bodies[2]).content)).toContain("first reply is long enough");
+		expect(String(firstItem(bodies[2]).content)).toContain("hello second turn here");
+	});
+
+	it("omits pre-clear history from a below-cadence close retain after /clear", async () => {
+		const bodies = captureBodies();
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const beforeClear = [
+			userEntry("u1", null, "cleared turn one has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "cleared reply one has enough text", "2026-08-17T10:00:01.000Z"),
+			userEntry("u2", "a1", "cleared turn two has enough text", "2026-08-17T10:01:00.000Z"),
+			assistantEntry("a2", "u2", "cleared reply two has enough text", "2026-08-17T10:01:01.000Z"),
+		];
+		let entries: SessionEntry[] = beforeClear;
+		const state = new HindsightSessionState({
+			sessionId: "sess-clear-close",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainEveryNTurns: 5, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-clear-close",
+				sessionManager: {
+					getHeader: () => ({ type: "session", id: "sess-clear-close", timestamp: SESSION_START, cwd: "/tmp" }),
+					getEntries: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		await state.maybeRetainOnAgentEnd();
+		expect(bodies).toHaveLength(0);
+
+		entries = [...beforeClear, resetBoundaryEntry("rb1", "a2", "2026-08-17T10:02:00.000Z")];
+		state.resetConversationTracking();
+		entries = [
+			...entries,
+			userEntry("u3", "rb1", "fresh turn after clear has enough text", "2026-08-17T10:03:00.000Z"),
+			assistantEntry("a3", "u3", "fresh reply after clear has enough text", "2026-08-17T10:03:01.000Z"),
+			userEntry("u4", "a3", "second fresh turn after clear has enough text", "2026-08-17T10:04:00.000Z"),
+		];
+
+		await state.drainOnClose();
+		expect(bodies).toHaveLength(1);
+		expect(String(firstItem(bodies[0]).content)).toContain("fresh turn after clear has enough text");
+		expect(String(firstItem(bodies[0]).content)).toContain("second fresh turn after clear has enough text");
+		expect(String(firstItem(bodies[0]).content)).not.toContain("cleared turn one has enough text");
+		expect(String(firstItem(bodies[0]).content)).not.toContain("cleared turn two has enough text");
 	});
 
 	it("rebuilds with replace when the retained prefix diverges", async () => {

@@ -530,6 +530,7 @@ export class HindsightSessionState {
 		let transcript: string;
 		let nextCachedTranscript: string | undefined;
 		let updateMode: UpdateMode | undefined;
+		let appendDelta = false;
 
 		if (retainFullWindow) {
 			documentId = sessionId;
@@ -549,7 +550,7 @@ export class HindsightSessionState {
 			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true, { includeTimestamps: true });
 			if (!newPart) return;
 			nextCachedTranscript = this.#cachedTranscript ? `${this.#cachedTranscript}\n\n${newPart}` : newPart;
-			const appendDelta = this.config.retainUpdateMode === "append" && start > 0 && !forceReplace;
+			appendDelta = this.config.retainUpdateMode === "append" && start > 0 && !forceReplace;
 			if (appendDelta) {
 				transcript = newPart;
 				updateMode = "append";
@@ -567,16 +568,23 @@ export class HindsightSessionState {
 			transcript = windowTranscript;
 		}
 
-		await ensureBankExists(this.client, this.bankId, this.config, this.banksSet);
-		await this.client.retain(this.bankId, transcript, {
-			documentId,
-			context: this.config.retainContext,
-			metadata: { session_id: sessionId },
-			tags: this.retainTags,
-			timestamp: sourceTimestamp,
-			async: false,
-			updateMode,
-		});
+		try {
+			await ensureBankExists(this.client, this.bankId, this.config, this.banksSet);
+			await this.client.retain(this.bankId, transcript, {
+				documentId,
+				context: this.config.retainContext,
+				metadata: { session_id: sessionId },
+				tags: this.retainTags,
+				timestamp: sourceTimestamp,
+				async: false,
+				updateMode,
+			});
+		} catch (err) {
+			// A timed-out or dropped append may already be durable server-side.
+			// Retrying the same delta as another append would duplicate it.
+			if (appendDelta) this.#forceNextRetainReplace = true;
+			throw err;
+		}
 		if (!retainFullWindow) this.#recordCompletedLastTurnRetain(sessionId, messages);
 		if (generation === this.#retainGeneration) {
 			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;

@@ -4427,15 +4427,13 @@ export class AgentSession {
 		// Re-prime the advisors across the conversation boundary and undo any
 		// memory promotion so the next turn rebuilds from the base system prompt.
 		this.#advisors.resetSessionState();
-		await this.#memory.resetContextForNewTranscript();
 
-		// Record a durable boundary on the persisted branch. The collapsed live
-		// transcript and the model-context rebuild start emission after the latest
-		// boundary, so a rebuild across a `/clear` (theme change, focus attach,
-		// on-disk record and the plain `transcript:true` export path keep the full
-		// pre-reset history.
+		// Record a durable boundary on the persisted branch before snapshotting
+		// Hindsight close-tracking. extractMessages starts after this marker, so
+		// the live conversation is empty at reset and only post-clear turns are
+		// treated as a below-cadence tail.
 		this.sessionManager.appendResetBoundary();
-
+		await this.#memory.resetContextForNewTranscript();
 		resetCapabilities();
 		await this.refreshBaseSystemPrompt();
 

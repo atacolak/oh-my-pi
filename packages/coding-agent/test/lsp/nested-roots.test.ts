@@ -908,6 +908,36 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("does not use the primary cwd executable for a lexically nested symlink additional workspace", () => {
+		const cwdDir = TempDir.createSync("@omp-lsp-lexical-cwd-");
+		const targetDir = TempDir.createSync("@omp-lsp-lexical-target-");
+		const cwd = path.join(cwdDir.path(), "very-long-session-cwd-alias");
+		fs.mkdirSync(cwd);
+		fs.writeFileSync(path.join(cwd, "package.json"), "{}\n");
+		const binDir = path.join(cwd, "node_modules", ".bin");
+		fs.mkdirSync(binDir, { recursive: true });
+		const primaryBin = path.join(binDir, "typescript-language-server");
+		fs.writeFileSync(primaryBin, "");
+		fs.chmodSync(primaryBin, 0o755);
+		const nestedLink = path.join(cwd, "pkg");
+		fs.symlinkSync(targetDir.path(), nestedLink);
+		fs.mkdirSync(path.join(targetDir.path(), "src"), { recursive: true });
+		fs.writeFileSync(path.join(targetDir.path(), "package.json"), "{}\n");
+		const filePath = path.join(nestedLink, "src", "index.ts");
+		fs.writeFileSync(path.join(targetDir.path(), "src", "index.ts"), "export const value = 1;\n");
+		try {
+			expect(piUtils.resolveEquivalentPath(nestedLink).length).toBeLessThan(path.resolve(cwd).length);
+			vi.spyOn(piUtils, "$which").mockReturnValue(null);
+			const config = loadConfig(cwd);
+			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(primaryBin);
+			const resolved = resolveServersForFile(config, filePath, [cwd, nestedLink]);
+			expect(resolved.find(server => server.name === "typescript-language-server")).toBeUndefined();
+		} finally {
+			cwdDir.removeSync();
+			targetDir.removeSync();
+		}
+	});
+
 	it("does not walk ancestors above the session workspace", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-boundary-");
 		try {

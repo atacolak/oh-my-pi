@@ -94,9 +94,11 @@ export function workspaceEntryPath(filePath: string, workspaceRoot?: string): st
 /**
  * Longest matching workspace directory that contains `filePath`.
  * Additional roots are not a hierarchy; the most specific prefix wins.
- * Specificity is actual containment of equivalent paths, not raw string length,
- * so a long symlink cwd cannot outrank a nested additional workspace.
- * Containment uses {@link workspaceEntryPath} so a leaf symlink or an
+ * Specificity is actual containment of equivalent paths, then lexical
+ * containment of workspace-root aliases, not raw string length, so a long
+ * symlink cwd cannot outrank a nested additional workspace — including when
+ * that nested root is itself a symlink to a shorter disjoint target.
+ * Containment uses {@link workspaceContainsPath} so a leaf symlink or an
  * in-workspace directory symlink is still routed here even when its target
  * sits outside.
  */
@@ -122,9 +124,20 @@ export function workspaceContainsPath(directory: string, filePath: string): bool
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function isLexicallyWithin(root: string, candidate: string): boolean {
+	const normalizedRoot = path.resolve(root);
+	const normalizedCandidate = path.resolve(candidate);
+	const rootCmp = process.platform === "win32" ? normalizedRoot.toLowerCase() : normalizedRoot;
+	const candidateCmp = process.platform === "win32" ? normalizedCandidate.toLowerCase() : normalizedCandidate;
+	const relative = path.relative(rootCmp, candidateCmp);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 function isMoreSpecificWorkspaceRoot(candidate: string, current: string): boolean {
 	if (pathIsWithin(current, candidate) && !pathIsWithin(candidate, current)) return true;
 	if (pathIsWithin(candidate, current) && !pathIsWithin(current, candidate)) return false;
+	if (isLexicallyWithin(current, candidate) && !isLexicallyWithin(candidate, current)) return true;
+	if (isLexicallyWithin(candidate, current) && !isLexicallyWithin(current, candidate)) return false;
 	return resolveEquivalentPath(candidate).length > resolveEquivalentPath(current).length;
 }
 

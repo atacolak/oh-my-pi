@@ -739,6 +739,67 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[0]).content)).not.toContain("target turn has enough text");
 	});
 
+	it("does not duplicate a completed last-turn retain after a no-in-flight switch rollback", async () => {
+		const bodies = captureBodies();
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const original = [
+			userEntry("u1", null, "home turn one has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "home reply one has enough text", "2026-08-17T10:00:01.000Z"),
+			userEntry("u2", "a1", "home turn two has enough text", "2026-08-17T10:01:00.000Z"),
+			assistantEntry("a2", "u2", "home reply two has enough text", "2026-08-17T10:01:01.000Z"),
+			userEntry("u3", "a2", "home turn three has enough text", "2026-08-17T10:02:00.000Z"),
+			assistantEntry("a3", "u3", "home reply three has enough text", "2026-08-17T10:02:01.000Z"),
+			userEntry("u4", "a3", "home turn four has enough text", "2026-08-17T10:03:00.000Z"),
+			assistantEntry("a4", "u4", "home reply four has enough text", "2026-08-17T10:03:01.000Z"),
+			userEntry("u5", "a4", "home turn five has enough text", "2026-08-17T10:04:00.000Z"),
+			assistantEntry("a5", "u5", "home reply five has enough text", "2026-08-17T10:04:01.000Z"),
+		];
+		const target = [
+			userEntry("tu1", null, "target turn has enough text", "2026-08-17T11:00:00.000Z"),
+			assistantEntry("ta1", "tu1", "target reply has enough text", "2026-08-17T11:00:01.000Z"),
+		];
+		let entries: SessionEntry[] = [];
+		const state = new HindsightSessionState({
+			sessionId: "sess-lastturn-idle-rollback",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 5, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-lastturn-idle-rollback",
+				loadedUserTurnCount: 0,
+				sessionManager: {
+					getHeader: () => ({
+						type: "session",
+						id: state.sessionId,
+						timestamp: SESSION_START,
+						cwd: "/tmp",
+					}),
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		entries = original;
+		await state.maybeRetainOnAgentEnd();
+		expect(bodies).toHaveLength(1);
+
+		const snapshot = state.captureConversationTracking();
+		entries = target;
+		state.setSessionId("sess-lastturn-idle-target");
+		state.resetConversationTracking();
+		entries = original;
+		state.setSessionId("sess-lastturn-idle-rollback");
+		state.restoreConversationTracking(snapshot);
+		await state.drainOnClose();
+
+		expect(bodies).toHaveLength(1);
+		expect(String(firstItem(bodies[0]).content)).toContain("home turn five has enough text");
+		expect(String(firstItem(bodies[0]).content)).not.toContain("target turn has enough text");
+	});
+
 	it("restores the close baseline when a session switch rolls back", async () => {
 		const bodies = captureBodies();
 		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });

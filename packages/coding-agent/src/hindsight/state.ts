@@ -325,12 +325,20 @@ export class HindsightSessionState {
 		this.#loadedMessageCount = snapshot.loadedMessageCount;
 		this.#loadedPrefixKey = snapshot.loadedPrefixKey;
 		this.#lastTurnRollbackSessions.add(this.sessionId);
-		this.#reconcileCompletedLastTurnRetain();
 		// Rekeying fences any retain that was already in flight. It may still
 		// have reached Hindsight, so a pre-switch append cursor is no longer a
 		// trustworthy server boundary after rollback. Rebuild canonically next.
 		this.#forceNextRetainReplace = true;
 		this.#invalidateRetainCache();
+		if (this.config.retainMode === "last-turn") {
+			// Last-turn docs are unique by timestamp. The saved branch identity
+			// remains the close-tail boundary unless a completed retain recorded
+			// a newer one; wiping it makes `loadedMessageCount === 0` sessions
+			// re-emit the already-persisted window.
+			this.#lastRetainedMessageIndex = snapshot.lastRetainedMessageIndex;
+			this.#lastRetainedPrefixKey = snapshot.lastRetainedPrefixKey;
+		}
+		this.#reconcileCompletedLastTurnRetain();
 	}
 
 	resetConversationTracking(closeRetainBaselineTurns?: number): void {
@@ -376,6 +384,10 @@ export class HindsightSessionState {
 		if (active.length < completed.messageCount) return;
 		if (retentionPrefixKey(active, completed.messageCount) !== completed.prefixKey) return;
 		this.lastRetainedTurn = Math.max(this.lastRetainedTurn, completed.userTurns);
+		if (completed.messageCount >= this.#lastRetainedMessageIndex) {
+			this.#lastRetainedMessageIndex = completed.messageCount;
+			this.#lastRetainedPrefixKey = completed.prefixKey;
+		}
 		this.#lastTurnRollbackSessions.delete(this.sessionId);
 	}
 

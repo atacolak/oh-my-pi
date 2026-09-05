@@ -752,15 +752,21 @@ function uriIsWithin(uri: string, root: string): boolean {
 	return uri === root || uri.startsWith(root.endsWith("/") ? root : `${root}/`);
 }
 
-/** Open overlay URI for an edit URI, translating across directory-symlink spellings. */
-function openDocumentUriForChange(client: LspClient, uri: string): string | undefined {
-	if (client.openFiles.has(uri)) return uri;
-	const translated = fileToUri(uriToFile(uri), client.cwd);
-	if (client.openFiles.has(translated)) return translated;
+/** Open overlay URIs for an edit URI, including every equivalent symlink alias. */
+function openDocumentUrisForChange(client: LspClient, uri: string): string[] {
+	const matches: string[] = [];
+	const seen = new Set<string>();
+	const add = (candidate: string | undefined) => {
+		if (!candidate || seen.has(candidate) || !client.openFiles.has(candidate)) return;
+		seen.add(candidate);
+		matches.push(candidate);
+	};
+	add(uri);
+	add(fileToUri(uriToFile(uri), client.cwd));
 	for (const openUri of client.openFiles.keys()) {
-		if (equivalentDocumentUri(openUri, uri)) return openUri;
+		if (equivalentDocumentUri(openUri, uri)) add(openUri);
 	}
-	return undefined;
+	return matches;
 }
 
 function equivalentDocumentUri(left: string, right: string): boolean {
@@ -786,7 +792,7 @@ export async function reconcileExecutedChanges(
 		if (client.status !== "ready") return false;
 		if (workspaceRoots.some(root => clientIsInsideWorkspace(client, root))) return true;
 		if (watchedFiles.some(change => workspaceContainsPath(clientWorkspaceCwd(client), change.filePath))) return true;
-		if (Array.from(finalUris).some(uri => openDocumentUriForChange(client, uri))) return true;
+		if (Array.from(finalUris).some(uri => openDocumentUrisForChange(client, uri).length > 0)) return true;
 		for (const uri of client.openFiles.keys()) {
 			for (const root of deletedRoots) {
 				if (openDocumentMatchesDeletedRoot(uri, root)) return true;
@@ -810,9 +816,9 @@ export async function reconcileExecutedChanges(
 			activeClient.diagnostics.delete(uri);
 		}
 		for (const uri of finalUris) {
-			const openUri = openDocumentUriForChange(activeClient, uri);
-			if (!openUri) continue;
-			await refreshFile(activeClient, uriToFile(openUri), signal);
+			for (const openUri of openDocumentUrisForChange(activeClient, uri)) {
+				await refreshOpenDocument(activeClient, openUri, signal);
+			}
 		}
 	}
 	const notifyRoots = Array.from(
@@ -1843,11 +1849,14 @@ export async function notifyWorkspaceWatchedFiles(
 		activeClients.map(async client => {
 			const clientRoot = path.resolve(clientWorkspaceCwd(client));
 			const clientChanges = changes.flatMap(change => {
-				const openUri = openDocumentUriForChange(client, fileToUri(change.filePath, client.cwd));
-				if (!workspaceContainsPath(clientRoot, change.filePath) && !openUri) return [];
-				const uri = openUri ?? fileToUri(change.filePath, client.cwd);
-				client.diagnostics.delete(uri);
-				return [{ uri, type: change.type }];
+				const documentUri = fileToUri(change.filePath, client.cwd);
+				const openUris = openDocumentUrisForChange(client, documentUri);
+				if (!workspaceContainsPath(clientRoot, change.filePath) && openUris.length === 0) return [];
+				const uris = openUris.length > 0 ? openUris : [documentUri];
+				return uris.map(uri => {
+					client.diagnostics.delete(uri);
+					return { uri, type: change.type };
+				});
 			});
 			if (clientChanges.length === 0) return;
 			await sendNotification(client, "workspace/didChangeWatchedFiles", { changes: clientChanges }, sendSignal);
@@ -1869,8 +1878,16 @@ export async function notifyWorkspaceWatchedFiles(
  * Increments version, sends didChange and didSave notifications.
  */
 export async function refreshFile(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
+	await refreshOpenDocument(client, fileToUri(filePath, client.cwd), signal, filePath);
+}
+
+async function refreshOpenDocument(
+	client: LspClient,
+	uri: string,
+	signal?: AbortSignal,
+	filePath = uriToFile(uri),
+): Promise<void> {
 	throwIfAborted(signal);
-	const uri = fileToUri(filePath, client.cwd);
 	const lockKey = `${client.name}:${uri}`;
 
 	const existingLock = fileOperationLocks.get(lockKey);
@@ -2184,6 +2201,8 @@ export interface LspServerStatus {
 	status: "connecting" | "ready" | "error";
 	fileTypes: string[];
 	cwd?: string;
+	/** Routed project root before client-cwd canonicalization. */
+	resolvedRoot?: string;
 	error?: string;
 }
 
@@ -2198,6 +2217,7 @@ export function getActiveClients(owner?: LspClientOwner): LspServerStatus[] {
 			status: client.status,
 			fileTypes: client.config.fileTypes,
 			cwd: client.cwd,
+			resolvedRoot: client.config.resolvedRoot,
 		}));
 }
 

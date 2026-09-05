@@ -4371,6 +4371,75 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace edits refresh every equivalent overlay alias on one client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-multi-alias-overlay-");
+		const shared = TempDir.createSync("@omp-lsp-multi-alias-overlay-shared-");
+		try {
+			const sharedFile = path.join(shared.path(), "foo.ts");
+			await Bun.write(sharedFile, "export const foo = 1;\n");
+			const aliasA = path.join(tempDir.path(), "a.ts");
+			const aliasB = path.join(tempDir.path(), "b.ts");
+			fs.symlinkSync(sharedFile, aliasA);
+			fs.symlinkSync(sharedFile, aliasB);
+			const uriA = fileToUri(aliasA, tempDir.path());
+			const uriB = fileToUri(aliasB, tempDir.path());
+			const canonicalUri = fileToUri(sharedFile, tempDir.path());
+			expect(uriA).not.toBe(uriB);
+			expect(uriA).not.toBe(canonicalUri);
+
+			const server = installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(
+				{
+					command: "multi-alias-lsp",
+					fileTypes: [".ts"],
+					rootMarkers: [],
+					resolvedRoot: tempDir.path(),
+				},
+				tempDir.path(),
+				1_000,
+			);
+			client.openFiles.set(uriA, { version: 1, languageId: "typescript" });
+			client.openFiles.set(uriB, { version: 1, languageId: "typescript" });
+
+			await lspClient.applyWorkspaceEditWithLsp(
+				{
+					changes: {
+						[canonicalUri]: [
+							{
+								range: { start: { line: 0, character: 19 }, end: { line: 0, character: 20 } },
+								newText: "2",
+							},
+						],
+					},
+				},
+				tempDir.path(),
+			);
+
+			const changes = server.received.filter(message => message.method === "textDocument/didChange");
+			expect(changes).toHaveLength(2);
+			expect(changes).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						params: expect.objectContaining({
+							textDocument: expect.objectContaining({ uri: uriA }),
+							contentChanges: [{ text: "export const foo = 2;\n" }],
+						}),
+					}),
+					expect.objectContaining({
+						params: expect.objectContaining({
+							textDocument: expect.objectContaining({ uri: uriB }),
+							contentChanges: [{ text: "export const foo = 2;\n" }],
+						}),
+					}),
+				]),
+			);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("releasing a removed additional workspace root stops that session's client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-remove-dir-release-");
 		try {
@@ -6252,6 +6321,44 @@ describe("lsp regressions", () => {
 		} finally {
 			workspaceA.removeSync();
 			workspaceB.removeSync();
+		}
+	});
+
+	it("status includes a nested client whose project root is a workspace symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-status-symlink-root-");
+		const shared = TempDir.createSync("@omp-lsp-status-symlink-root-shared-");
+		const linkedRoot = path.join(tempDir.path(), "packages", "foo");
+		fs.mkdirSync(path.dirname(linkedRoot), { recursive: true });
+		fs.symlinkSync(shared.path(), linkedRoot);
+		try {
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, definitions: {} });
+			const owner = lspClient.createLspClientOwner();
+			installHandshakeLsp();
+			await lspClient.getOrCreateClient(
+				{
+					command: "symlink-root-lsp",
+					fileTypes: [".py"],
+					rootMarkers: [],
+					resolvedRoot: linkedRoot,
+				},
+				tempDir.path(),
+				1_000,
+				undefined,
+				owner,
+			);
+			const active = lspClient.getActiveClients(owner);
+			expect(active[0]?.cwd).toBe(path.resolve(shared.path()));
+			expect(active[0]?.resolvedRoot).toBe(linkedRoot);
+
+			const result = await new LspTool(makeLspSession(tempDir.path()), owner).execute("status-symlink-root", {
+				action: "status",
+			});
+			expect(textResult(result)).toContain("symlink-root-lsp");
+			expect(textResult(result)).toContain("packages/foo");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+			shared.removeSync();
 		}
 	});
 

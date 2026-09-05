@@ -171,6 +171,10 @@ function formatStatusRoot(filePath: string, cwd: string): string {
 	return truncateToWidth(formatRenameStatPath(filePath, cwd), TRUNCATE_LENGTHS.CONTENT);
 }
 
+function statusClientRoot(client: LspServerStatus): string | undefined {
+	return client.resolvedRoot ?? client.cwd;
+}
+
 /** Filesystem error detail safe for model/TUI output: never echo raw paths. */
 function formatRenameStatError(error: unknown): string {
 	if (!isFsError(error)) return "unknown filesystem error";
@@ -267,9 +271,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// `Object.keys(config.servers)` reflects cwd-rooted auto-detect. Nested
 			// servers only appear here after a concrete-file operation started them.
 			const sessionWorkspace = { cwd: workspaceRoots[0], directories: workspaceRoots };
-			const startedClients = getActiveClients(this.#clientOwner).filter(
-				client => !client.cwd || Boolean(workspaceRootForPath(client.cwd, sessionWorkspace)),
-			);
+			const startedClients = getActiveClients(this.#clientOwner).filter(client => {
+				const root = statusClientRoot(client);
+				return !root || Boolean(workspaceRootForPath(root, sessionWorkspace));
+			});
 			const startedByConfigName = new Map<string, LspServerStatus[]>();
 			const catalog = config.definitions ?? config.servers;
 			for (const [name, serverConfig] of Object.entries(catalog)) {
@@ -288,14 +293,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				const labelled: string[] = configuredNames.map(name => {
 					const started = startedByConfigName.get(name);
 					if (!started || started.length === 0) return `${name} (configured, not started)`;
-					if (started.length === 1 && (!started[0].cwd || started[0].cwd === this.session.cwd)) {
+					if (
+						started.length === 1 &&
+						(!statusClientRoot(started[0]) || statusClientRoot(started[0]) === this.session.cwd)
+					) {
 						return `${name} (${started[0].status})`;
 					}
 					return started
 						.map(client => {
+							const rootPath = statusClientRoot(client);
 							const root =
-								client.cwd && client.cwd !== this.session.cwd
-									? ` @ ${formatStatusRoot(client.cwd, this.session.cwd)}`
+								rootPath && rootPath !== this.session.cwd
+									? ` @ ${formatStatusRoot(rootPath, this.session.cwd)}`
 									: "";
 							return `${name}${root} (${client.status})`;
 						})
@@ -305,7 +314,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					const nestedName =
 						Object.entries(catalog).find(([, serverConfig]) => serverConfig.command === client.name)?.[0] ??
 						client.name;
-					const root = client.cwd ? ` @ ${formatStatusRoot(client.cwd, this.session.cwd)}` : "";
+					const rootPath = statusClientRoot(client);
+					const root = rootPath ? ` @ ${formatStatusRoot(rootPath, this.session.cwd)}` : "";
 					labelled.push(`${nestedName}${root} (${client.status})`);
 				}
 				lines.push(`Language servers: ${labelled.join(", ")}`);

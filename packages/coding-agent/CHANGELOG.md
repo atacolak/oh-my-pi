@@ -21,6 +21,8 @@
 - Hindsight now retains a below-cadence tail when leaving a conversation through `/new`, `/clear`, `/resume`, fork, or branch, and when bank routing rebuilds mid-session.
 - Hindsight no longer duplicates a retained tail after `/fresh` or a same-file reload.
 - Hindsight close retain now waits through the configured retain timeout during dispose instead of the 5s event-drain deadline.
+- Hindsight close retain now gets a full retain-timeout budget after any in-flight cadence retain settles, instead of sharing one deadline with queued work.
+- Hindsight delayed startup now keeps a `/tree` ask re-answer as a pending tail instead of treating the later assistant reply as loaded history.
 
 ## [18.0.6] - 2026-08-26
 

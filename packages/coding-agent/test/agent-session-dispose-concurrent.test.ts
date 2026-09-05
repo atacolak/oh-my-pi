@@ -157,6 +157,7 @@ describe("AgentSession concurrent disposal", () => {
 
 		const current = createSession(owned);
 		const hindsight: HindsightSessionState = Object.create(HindsightSessionState.prototype);
+		vi.spyOn(hindsight, "waitForSessionRetainIdle").mockResolvedValue(undefined);
 		vi.spyOn(hindsight, "drainOnClose").mockImplementation(async () => {
 			order.push("hindsight:start");
 			await hindsightGate.promise;
@@ -215,6 +216,7 @@ describe("AgentSession concurrent disposal", () => {
 		const hindsight: HindsightSessionState = Object.create(HindsightSessionState.prototype);
 		hindsight.config = { retainTimeoutMs: 8_000 } as HindsightSessionState["config"];
 		let drained = false;
+		vi.spyOn(hindsight, "waitForSessionRetainIdle").mockResolvedValue(undefined);
 		vi.spyOn(hindsight, "drainOnClose").mockImplementation(async () => {
 			started.resolve();
 			await retainDone.promise;
@@ -238,6 +240,82 @@ describe("AgentSession concurrent disposal", () => {
 
 		expect(drained).toBe(true);
 		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+	});
+
+	it("gives the close retain a full timeout after an in-flight cadence retain", async () => {
+		vi.useFakeTimers();
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const current = createSession();
+		const idleStarted = Promise.withResolvers<void>();
+		const idleDone = Promise.withResolvers<void>();
+		const drainStarted = Promise.withResolvers<void>();
+		const drainDone = Promise.withResolvers<void>();
+		const hindsight: HindsightSessionState = Object.create(HindsightSessionState.prototype);
+		hindsight.config = { retainTimeoutMs: 8_000 } as HindsightSessionState["config"];
+		let drained = false;
+		vi.spyOn(hindsight, "waitForSessionRetainIdle").mockImplementation(async () => {
+			idleStarted.resolve();
+			await idleDone.promise;
+		});
+		vi.spyOn(hindsight, "drainOnClose").mockImplementation(async () => {
+			drainStarted.resolve();
+			await drainDone.promise;
+			drained = true;
+		});
+		vi.spyOn(hindsight, "flushRetainQueue").mockResolvedValue(undefined);
+		vi.spyOn(hindsight, "dispose").mockImplementation(() => {});
+		current.setHindsightSessionState(hindsight);
+
+		const dispose = current.dispose();
+		await idleStarted.promise;
+		vi.advanceTimersByTime(6_000);
+		await flushMicrotasks();
+		expect(drained).toBe(false);
+		expect(warn).not.toHaveBeenCalled();
+
+		idleDone.resolve();
+		await flushMicrotasks();
+		await drainStarted.promise;
+		vi.advanceTimersByTime(6_000);
+		await flushMicrotasks();
+		expect(drained).toBe(false);
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+
+		drainDone.resolve();
+		await flushMicrotasks();
+		await dispose;
+		session = undefined;
+
+		expect(drained).toBe(true);
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still in flight at dispose deadline", expect.anything());
+	});
+
+	it("does not materialize retainable turns when Hindsight is off", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("expected bundled model");
+		const mock = createMockModel({ handler: () => ({ content: ["ok"] }) });
+		const sessionManager = SessionManager.inMemory(tempDir.path());
+		sessionManager.appendMessage({
+			role: "user",
+			content: "this historical turn has enough text",
+			timestamp: Date.now(),
+		});
+		session = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["test"], tools: [] },
+				streamFn: mock.stream,
+			}),
+			sessionManager,
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
+		});
+		expect(session.loadedUserTurnCount).toBe(0);
+		expect(session.hindsightCloseRetainBaselineTurns).toBe(0);
+		expect(session.hindsightLoadedMessageCount).toBe(0);
+		await session.dispose();
+		session = undefined;
 	});
 
 	it("bounds post-prompt work that ignores abort", async () => {

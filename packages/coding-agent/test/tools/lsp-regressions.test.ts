@@ -3,7 +3,14 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentToolResult, type RenderResultOptions } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
@@ -4711,6 +4718,58 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("deferred move cleanup restores source clients after a rolled-back cwd transition", async () => {
+		const sourceDir = TempDir.createSync("@omp-lsp-move-defer-source-");
+		const destDir = TempDir.createSync("@omp-lsp-move-defer-dest-");
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		let session: AgentSession | undefined;
+		try {
+			const config: ServerConfig = {
+				command: "deferred-move-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sourceDir.path(),
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(config, sourceDir.path(), 1_000, undefined, owner);
+
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+			const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+			session = new AgentSession({
+				agent: new Agent({
+					getApiKey: () => "test-key",
+					initialState: { model, systemPrompt: ["Test"], tools: [] },
+					convertToLlm,
+					streamFn: mock.stream,
+				}),
+				sessionManager: SessionManager.create(sourceDir.path(), sourceDir.path()),
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				modelRegistry: new ModelRegistry(authStorage),
+				lspClientOwner: owner,
+			});
+
+			const previousState = session.sessionManager.captureState();
+			await session.moveSession(destDir.path(), undefined, { deferWorkspaceCleanup: true });
+			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).toContain("deferred-move-lsp");
+
+			await session.sessionManager.rollbackMove(previousState);
+			await session.commitMovedWorkspaceRoots();
+
+			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).toContain("deferred-move-lsp");
+			expect(session.sessionManager.getCwd()).toBe(sourceDir.path());
+		} finally {
+			await session?.dispose();
+			authStorage.close();
+			await lspClient.shutdownAll();
+			sourceDir.removeSync();
+			destDir.removeSync();
+		}
+	});
+
 	it("watched-file routing reaches nested clients and excludes sibling roots", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-watched-files-");
 		try {
@@ -4933,7 +4992,6 @@ describe("lsp regressions", () => {
 			tempDir.removeSync();
 		}
 	});
-
 	it("workspace reload does not reattach a reloading owner to a cached overlapping client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-overlapping-reload-reattach-");
 		try {

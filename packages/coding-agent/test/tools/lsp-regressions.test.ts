@@ -5050,6 +5050,52 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("shutdownAll drops routed owner aliases before a later restart", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-shutdown-all-owner-roots-");
+		try {
+			const physical = path.join(tempDir.path(), "physical");
+			const workspaceA = path.join(tempDir.path(), "a");
+			const workspaceB = path.join(tempDir.path(), "b");
+			const aliasA = path.join(workspaceA, "nested");
+			const aliasB = path.join(workspaceB, "nested");
+			fs.mkdirSync(physical);
+			fs.mkdirSync(workspaceA);
+			fs.mkdirSync(workspaceB);
+			fs.symlinkSync(physical, aliasA);
+			fs.symlinkSync(physical, aliasB);
+			const configA: ServerConfig = {
+				command: "shutdown-all-alias-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: aliasA,
+			};
+			const configB: ServerConfig = { ...configA, resolvedRoot: aliasB };
+			const owner = lspClient.createLspClientOwner();
+
+			installHandshakeLsp();
+			await lspClient.getOrCreateClient(configA, workspaceA, 1_000, undefined, owner);
+			expect(lspClient.getActiveClients(owner).map(active => active.resolvedRoot)).toContain(aliasA);
+
+			await lspClient.shutdownAll();
+			expect(lspClient.getActiveClients(owner)).toEqual([]);
+
+			const restarted = installHandshakeLsp();
+			await lspClient.getOrCreateClient(configB, workspaceB, 1_000, undefined, owner);
+			expect(lspClient.getActiveClients(owner).map(active => active.resolvedRoot)).toEqual([aliasB]);
+			expect(lspClient.getActiveClients(owner).map(active => active.resolvedRoot)).not.toContain(aliasA);
+
+			await lspClient.shutdownStaleClients(workspaceA, [], undefined, [workspaceA], owner);
+			expect(restarted.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(lspClient.getActiveClients(owner).map(active => active.name)).toContain("shutdown-all-alias-lsp");
+
+			await lspClient.shutdownStaleClients(workspaceB, [], undefined, [workspaceB], owner);
+			expect(restarted.received.some(message => message.method === "shutdown")).toBe(true);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload does not reattach a pending observer to a superseded overlapping client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-pending-observer-reload-");
 		const initialize = Promise.withResolvers<void>();

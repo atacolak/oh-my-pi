@@ -2263,6 +2263,7 @@ export async function shutdownAll(): Promise<void> {
 	clientIdentityReloadBarriers.clear();
 	clientOwners.clear();
 	ownerClientKeys.clear();
+	ownerClientRoots.clear();
 	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
 	clients.clear();

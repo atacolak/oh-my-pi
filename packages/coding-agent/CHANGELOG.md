@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `shutdownAll()` leaving routed workspace aliases on live session owners, so a later restart through a different alias no longer reports or filters on a workspace that no longer exists.
 - Fixed `lsp reload *` reattaching a reloading session to a superseded nested language-server client after the reload barrier, so a concurrent old-config request no longer shares an overlapping session's process and the replacement.
 - Fixed overlapping sessions that share one nested language-server client through different workspace aliases omitting that client from status, reload, and workspace-removal checks.
 - Fixed `rename_file` skipping `workspace/didRenameFiles` for a nested client still owned by another session after owner-scoped moved-root release, so the surviving process is notified of the vanished root.

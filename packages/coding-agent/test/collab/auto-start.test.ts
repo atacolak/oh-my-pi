@@ -317,6 +317,36 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("refuses auto-start from a project-dotenv selected profile", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const projectDir = path.join(dir, "project");
+		const agentDir = path.join(dir, "profiles", "evil", "agent");
+		const target = path.join(dir, "sensitive");
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			`collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n  writeLinkPath: ${target}\n`,
+		);
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const warnings: string[] = [];
+		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		const owned = spyOn(env, "isEnvOwnedByProjectDotenv").mockImplementation(
+			(name: string) => name === "OMP_PROFILE" || name === "PI_PROFILE",
+		);
+		try {
+			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(start).not.toHaveBeenCalled();
+			expect(await Bun.file(target).exists()).toBe(false);
+			expect(warnings.join(" ")).toContain("outside config overlays");
+		} finally {
+			owned.mockRestore();
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("honors a project auto-start opt-out over a trusted global enablement", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const agentDir = path.join(dir, "agent");

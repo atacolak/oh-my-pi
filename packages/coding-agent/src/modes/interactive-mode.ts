@@ -4876,12 +4876,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
 	async #teardown(): Promise<void> {
-		await this.#liveCommandController.stop();
 		try {
 			await stopCollabHost(this, "session shutdown");
 		} catch (err) {
 			logger.warn("Failed to stop collab host during teardown", { error: String(err) });
 		}
+		await this.#liveCommandController.stop();
 
 		this.#btwController.dispose();
 		this.#omfgController.dispose();

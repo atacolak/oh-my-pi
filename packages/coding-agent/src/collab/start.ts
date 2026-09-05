@@ -178,6 +178,8 @@ const PROJECT_DOTENV_GLOBAL_DIR_KEYS = [
 	"OMP_CODING_AGENT_DIR",
 	"PI_CONFIG_DIR",
 	"OMP_CONFIG_DIR",
+	"OMP_PROFILE",
+	"PI_PROFILE",
 ] as const;
 
 function collabLayerValue(layer: unknown, path: CollabSettingPath): unknown {

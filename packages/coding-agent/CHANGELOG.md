@@ -27,6 +27,8 @@
 - Distrusted collab auto-start when a project dotenv overwrites an empty launcher `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
 - Shortened collab and MCP status home paths even when the home directory contains spaces.
 - Detected Bun pre-dotenv `NODE_ENV` when judging project dotenv ownership of collab auto-start directories.
+- Rejected collab auto-start from a profile selected by a project dotenv `OMP_PROFILE` or `PI_PROFILE`.
+- Stopped collab hosting on interactive shutdown before awaiting live-mode teardown.
 
 ## [18.1.11] - 2026-09-05
 

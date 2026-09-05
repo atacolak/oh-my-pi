@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Effort } from "@oh-my-pi/pi-ai";
 import {
@@ -7,6 +7,7 @@ import {
 	Settings,
 	settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import {
 	getCurrentThemeName,
@@ -49,6 +50,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		stopThemeWatcher();
 		await initTheme();
 		resetSettingsForTest();
@@ -124,6 +126,16 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		expect(selector.render(120).join("\n")).toContain(`Settings · ${path.basename(projectDir)}`);
 		selector.handleInput("\x1bs");
 		expect(selector.render(120).join("\n")).toContain("Settings · global");
+	});
+	it("computes the project label once instead of rediscovering the repo on each render", () => {
+		const repoSpy = vi.spyOn(vcs, "repo");
+		const selector = createSelector();
+		const discoveries = repoSpy.mock.calls.length;
+		expect(discoveries).toBeGreaterThan(0);
+		selector.render(120);
+		selector.render(80);
+		expect(repoSpy.mock.calls.length).toBe(discoveries);
+		expect(selector.render(120).join("\n")).toContain(`Settings · ${path.basename(projectDir)}`);
 	});
 
 	it("sanitizes the project label before rendering the settings border", async () => {
@@ -631,9 +643,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		// Clear-all produced an empty map; the project scope must tombstone the
 		// global provider so the effective limits are empty, not the global cap.
 		expect(normalizeProviderMaxInFlightRequests(settings.get("providers.maxInFlightRequests"))).toEqual({});
-		expect(settings.get("providers.maxInFlightRequests") as Record<string, number | null>).toEqual({
-			anthropic: null,
-		});
+		expect(settings.get("providers.maxInFlightRequests")).toEqual({});
 		// The global layer itself is untouched.
 		expect(settings.getGlobalValue("providers.maxInFlightRequests")).toEqual({ anthropic: 3 });
 	});

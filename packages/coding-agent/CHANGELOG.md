@@ -18,6 +18,7 @@
 - Hindsight now flushes subagent retain/learn queues on close instead of dropping them with the alias state.
 - Hindsight last-turn close no longer duplicates a retained window after a failed `/resume` with no retain in flight.
 - Hindsight delayed startup now rebases the close-retain baseline after `/new`, `/clear`, `/resume`, or `/tree` instead of skipping the post-switch turn.
+- Hindsight now retains a below-cadence tail when leaving a conversation through `/new`, `/clear`, `/resume`, fork, or branch, and when bank routing rebuilds mid-session.
 
 ## [18.0.6] - 2026-08-26
 

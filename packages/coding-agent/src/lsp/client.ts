@@ -2360,21 +2360,21 @@ export async function sendNotification(
 
 /**
  * Shutdown all LSP clients.
+ *
+ * Ownership stays on each live process until `shutdownClientInstance` confirms
+ * exit. Clearing those maps first leaves a force-kill survivor ownerless, so
+ * status hides it and an overlapping reload can tear it down.
  */
 export async function shutdownAll(): Promise<void> {
 	stopIdleChecker();
 	invalidatedClientKeys.clear();
 	clientReloadBarriers.clear();
 	clientIdentityReloadBarriers.clear();
-	clientOwners.clear();
-	ownerClientKeys.clear();
-	ownerClientRoots.clear();
 	ownerReloadGeneration.clear();
 	ownerReleasedKeyGenerations.clear();
 	ownerReloadRootGenerations.clear();
 	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
-	clients.clear();
 	// Mid-initialize clients live only in clientLocks (publication is deferred
 	// until init succeeds) — without this, their server processes outlive
 	// shutdown. Failed init promises already cleaned up after themselves.

@@ -1466,7 +1466,11 @@ export async function getOrCreateClient(
 	// reject it so the caller re-resolves from the reloaded definition instead
 	// of spawning the pre-reload command/args/settings. Cached reuse above is
 	// also barrier-aware: a reloading owner cannot reattach to a client kept
-	// alive by another session until this wait finishes.
+	// alive by another session until this wait finishes, and the post-wait
+	// lookup still requires that owner to hold the published identity. Otherwise
+	// a concurrent old-config request would rejoin the overlapping process and
+	// leave this session attached to both the superseded client and its
+	// replacement.
 	if (reloadBarriers.length > 0) {
 		try {
 			for (const reloadBarrier of reloadBarriers) {
@@ -1477,13 +1481,17 @@ export async function getOrCreateClient(
 			throw error;
 		}
 		const clientAfterReload = clients.get(key);
-		if (clientAfterReload && !invalidatedClientKeys.has(key)) {
+		if (
+			clientAfterReload &&
+			!invalidatedClientKeys.has(key) &&
+			canReuseClientDuringReload(key, owner, reloadBarriers)
+		) {
 			registerClientOwner(key, owner, routedRoot);
 			clientAfterReload.lastActivity = Date.now();
 			return clientAfterReload;
 		}
 		const lockAfterReload = clientLocks.get(key);
-		if (lockAfterReload) {
+		if (lockAfterReload && canReuseClientDuringReload(key, owner, reloadBarriers)) {
 			registerClientOwner(key, owner, routedRoot);
 			if (owner) lockAfterReload.owners.add(owner);
 			try {

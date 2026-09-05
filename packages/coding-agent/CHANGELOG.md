@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `lsp reload *` reattaching a reloading session to a superseded nested language-server client after the reload barrier, so a concurrent old-config request no longer shares an overlapping session's process and the replacement.
 - Fixed overlapping sessions that share one nested language-server client through different workspace aliases omitting that client from status, reload, and workspace-removal checks.
 - Fixed `rename_file` skipping `workspace/didRenameFiles` for a nested client still owned by another session after owner-scoped moved-root release, so the surviving process is notified of the vanished root.
 - Fixed nested workspace routing attaching a file to the session cwd when an additional root is a nested symlink to a shorter disjoint path, so that extra workspace no longer inherits the cwd's language-server executable.

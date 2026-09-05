@@ -9,7 +9,7 @@ import {
 	workspaceContainsPath,
 	workspaceRootForPath,
 } from "@oh-my-pi/pi-coding-agent/session/session-workspace";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { resolveEquivalentPath, TempDir } from "@oh-my-pi/pi-utils";
 import { makeAssistantMessage } from "./helpers";
 
 describe("normalizeSessionWorkspace", () => {
@@ -107,6 +107,21 @@ describe("workspaceRootForPath", () => {
 		} finally {
 			fs.rmSync(linkRoot, { force: true });
 		}
+	});
+
+	it("prefers a lexically nested symlink additional workspace over a longer cwd", () => {
+		using cwdDir = TempDir.createSync("@pi-session-workspace-lexical-cwd-");
+		using targetDir = TempDir.createSync("@pi-ws-t-");
+		const cwd = path.join(cwdDir.path(), "very-long-session-cwd-alias");
+		fs.mkdirSync(cwd);
+		const nestedLink = path.join(cwd, "pkg");
+		fs.symlinkSync(targetDir.path(), nestedLink);
+		fs.mkdirSync(path.join(targetDir.path(), "src"), { recursive: true });
+		fs.writeFileSync(path.join(targetDir.path(), "src", "a.ts"), "export const a = 1;\n");
+		const filePath = path.join(nestedLink, "src", "a.ts");
+		expect(resolveEquivalentPath(nestedLink).length).toBeLessThan(path.resolve(cwd).length);
+		const workspace = normalizeSessionWorkspace({ cwd, directories: [nestedLink] });
+		expect(workspaceRootForPath(filePath, workspace)).toBe(path.resolve(nestedLink));
 	});
 
 	it("keeps a leaf symlink file inside the workspace", () => {

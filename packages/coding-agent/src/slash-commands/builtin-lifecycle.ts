@@ -86,7 +86,7 @@ async function relocateHeadlessSession(
 	}
 	const previousState = runtime.sessionManager.captureState();
 	try {
-		await runtime.session.moveSession(resolvedPath);
+		await runtime.session.moveSession(resolvedPath, undefined, { deferWorkspaceCleanup: true });
 	} catch (err) {
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
@@ -102,6 +102,7 @@ async function relocateHeadlessSession(
 				await rescopeHeadlessToCwd(runtime, actual);
 				realigned = true;
 			} catch {}
+			await runtime.session.commitMovedWorkspaceRoots();
 			if (!realigned) {
 				return fatalMoveFailure(
 					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
@@ -113,6 +114,7 @@ async function relocateHeadlessSession(
 				runtime,
 			);
 		}
+		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
 	try {
@@ -128,6 +130,7 @@ async function relocateHeadlessSession(
 				await rescopeHeadlessToCwd(runtime, actual);
 				realigned = true;
 			} catch {}
+			await runtime.session.commitMovedWorkspaceRoots();
 			if (!realigned) {
 				return fatalMoveFailure(
 					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
@@ -139,8 +142,10 @@ async function relocateHeadlessSession(
 				runtime,
 			);
 		}
+		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
+	await runtime.session.commitMovedWorkspaceRoots();
 	await runtime.notifyConfigChanged?.();
 	await runtime.notifyTitleChanged?.();
 	return undefined;

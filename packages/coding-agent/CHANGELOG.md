@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/move`, `/wt`, and interactive `!cd` releasing language-server ownership before the cwd transition committed, so a failed move that rolled the session back no longer dropped source clients from status.
 - Fixed `shutdownAll()` dropping live session owners before a language-server process that survived force-kill was republished, so owner-filtered status no longer went blank and an overlapping session could not tear that still-running client down.
 - Fixed `lsp reload *` reattaching a reloading session to a superseded overlapping language-server client after the reload barrier had already been removed, so a late old-config request no longer shares that process and the replacement.
 - Fixed `lsp reload *` starting a nested language server from a config captured before reload when that identity had not been started yet, so a sequential `rename_file` server list no longer keeps obsolete command, args, or settings.

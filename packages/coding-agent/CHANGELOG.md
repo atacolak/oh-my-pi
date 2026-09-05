@@ -21,6 +21,8 @@
 - Fixed Hindsight delayed startup skipping a below-cadence post-switch turn after `/new`, `/clear`, `/resume`, or `/tree`.
 - Hindsight no longer duplicates a retained tail after `/fresh` or a same-file reload.
 - Hindsight close retain now waits through the configured retain timeout during dispose instead of the 5s event-drain deadline.
+- Hindsight close retain now gets a full retain-timeout budget after any in-flight cadence retain settles, instead of sharing one deadline with queued work.
+- Hindsight delayed startup now keeps a `/tree` ask re-answer as a pending tail instead of treating the later assistant reply as loaded history.
 
 ## [18.1.11] - 2026-09-05
 

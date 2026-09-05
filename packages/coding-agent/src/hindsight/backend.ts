@@ -85,6 +85,7 @@ export const hindsightBackend: MemoryBackend = {
 			settings,
 			new Set(),
 			session.hindsightCloseRetainBaselineTurns ?? options.hindsightCloseRetainBaselineTurns,
+			session.hindsightLoadedMessageCount ?? options.hindsightLoadedMessageCount,
 		);
 	},
 
@@ -189,6 +190,7 @@ async function installPrimaryState(
 	settings: Settings,
 	banksSet: Set<string>,
 	closeRetainBaselineTurns?: number,
+	loadedMessageCount?: number,
 ): Promise<HindsightSessionState | undefined> {
 	const sessionId = session.sessionManager.getSessionId() || session.sessionId;
 	if (!sessionId) return undefined;
@@ -229,6 +231,7 @@ async function installPrimaryState(
 		session,
 		banksSet,
 		closeRetainBaselineTurns: closeRetainBaselineTurns ?? countRetainableUserTurns(session.sessionManager),
+		loadedMessageCount,
 		lastRetainedTurn: 0,
 		hasRecalledForFirstTurn: false,
 	});

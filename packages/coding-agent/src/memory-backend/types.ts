@@ -88,7 +88,7 @@ export interface MemoryBackendStartOptions {
 	modelRegistry: ModelRegistry;
 	agentDir: string;
 	taskDepth: number;
-	/** Construction-time transcript baseline for delayed initial Hindsight startup only. */
+	/** Close-retain baseline for delayed initial Hindsight startup only. */
 	hindsightCloseRetainBaselineTurns?: number;
 	parentHindsightSessionState?: HindsightSessionState;
 	parentMnemopiSessionState?: MnemopiSessionState;

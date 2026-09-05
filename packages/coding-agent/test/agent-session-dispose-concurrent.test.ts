@@ -206,6 +206,43 @@ describe("AgentSession concurrent disposal", () => {
 		expect(order.indexOf("hindsight:dispose")).toBeGreaterThan(order.indexOf("hindsight:end"));
 	});
 
+	it("waits for a close retain through the configured retain timeout", async () => {
+		vi.useFakeTimers();
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const current = createSession();
+		const started = Promise.withResolvers<void>();
+		const retainDone = Promise.withResolvers<void>();
+		const hindsight: HindsightSessionState = Object.create(HindsightSessionState.prototype);
+		Object.defineProperty(hindsight, "config", {
+			configurable: true,
+			value: { retainTimeoutMs: 8_000 },
+		});
+		let drained = false;
+		vi.spyOn(hindsight, "drainOnClose").mockImplementation(async () => {
+			started.resolve();
+			await retainDone.promise;
+			drained = true;
+		});
+		vi.spyOn(hindsight, "flushRetainQueue").mockResolvedValue(undefined);
+		vi.spyOn(hindsight, "dispose").mockImplementation(() => {});
+		current.setHindsightSessionState(hindsight);
+
+		const dispose = current.dispose();
+		await started.promise;
+		vi.advanceTimersByTime(5_000);
+		await flushMicrotasks();
+		expect(drained).toBe(false);
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+
+		retainDone.resolve();
+		await flushMicrotasks();
+		await dispose;
+		session = undefined;
+
+		expect(drained).toBe(true);
+		expect(warn).not.toHaveBeenCalledWith("Hindsight retain still draining at dispose deadline", expect.anything());
+	});
+
 	it("bounds post-prompt work that ignores abort", async () => {
 		vi.useFakeTimers();
 		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});

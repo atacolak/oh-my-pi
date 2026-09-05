@@ -24,6 +24,7 @@ export interface SessionMemoryHost {
 	setBaseSystemPrompt(prompt: string[]): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	replaceMemoryTools(tools: AgentTool[]): Promise<void>;
+	rebaseHindsightCloseRetainBaseline(closeRetainBaselineTurns?: number): void;
 }
 
 /** Owns memory backend transitions and transcript-scoped memory state. */
@@ -74,7 +75,7 @@ export class SessionMemory {
 	restorePromotionSnapshot(prompt: string[] | undefined): void {
 		this.#baseSystemPromptBeforeMemoryPromotion = prompt;
 	}
-	/** Rekeys every active memory backend to the current provider session. */
+	/** Rekeys memory backends after a conversation identity change. */
 	rekeyForCurrentSessionId(): void {
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
@@ -82,7 +83,11 @@ export class SessionMemory {
 
 	#rekeyHindsightMemoryForCurrentSessionId(): void {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return;
-		const sid = this.#host.agent.sessionId;
+		// Provider-only rotations (`/fresh`) change `agent.sessionId` while the
+		// local transcript and Hindsight document stay on the persisted
+		// conversation. Rekeying from the provider id would wipe the retain
+		// boundary and duplicate the already-written tail on close.
+		const sid = this.#host.memoryBackendSession().sessionManager.getSessionId();
 		if (!sid) return;
 		this.#host.getHindsightSessionState()?.setSessionId(sid);
 	}
@@ -109,6 +114,17 @@ export class SessionMemory {
 		this.#host.getMnemopiSessionState()?.setSessionId(sid);
 	}
 
+	/** Flush a below-cadence Hindsight tail while the current transcript is still loaded. */
+	async drainHindsightPendingRetain(): Promise<void> {
+		const hindsight = this.#host.getHindsightSessionState();
+		if (!hindsight) return;
+		try {
+			await hindsight.drainOnClose();
+		} catch (error) {
+			logger.warn("Memory lifecycle: Hindsight leave-path flush failed", { error: String(error) });
+		}
+	}
+
 	/** New session file: reset auto-recall / retain-threshold counters for the new transcript. */
 	#resetHindsightConversationTrackingIfHindsight(closeRetainBaselineTurns?: number): boolean {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;
@@ -129,6 +145,7 @@ export class SessionMemory {
 	/** Resets transcript-scoped memory counters and removes a promoted prompt. */
 	async resetContextForNewTranscript(options?: { closeRetainBaselineTurns?: number }): Promise<void> {
 		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
+		this.#host.rebaseHindsightCloseRetainBaseline(options?.closeRetainBaselineTurns);
 		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight(options?.closeRetainBaselineTurns);
 		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
 		if (hadPromotedMemoryPrompt) {

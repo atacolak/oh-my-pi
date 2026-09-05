@@ -5,6 +5,19 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+### Added
+
+- Added `isEnvOwnedByProjectDotenv` to identify environment variables that came from the launch project's dotenv files rather than the parent shell.
+
+### Changed
+
+- `withFileLock` now honors an optional `AbortSignal` and cancels lock-acquisition retries immediately.
+
+### Fixed
+
+- Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
+- Reused child-shell dotenv reconstruction so Bun's pre-dotenv `NODE_ENV` mode files are treated as project-owned.
+
 ## [18.1.11] - 2026-09-05
 
 ### Fixed

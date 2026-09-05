@@ -26,6 +26,7 @@ import { resolveLocalRoot } from "../internal-urls";
 import { cachedVaultRoots, isVaultEnabled } from "../internal-urls/vault-protocol";
 import {
 	createLspWritethrough,
+	fallbackLspClientOwner,
 	type FileDiagnosticsResult,
 	flushLspWritethroughBatch,
 	type WritethroughCallback,
@@ -34,6 +35,7 @@ import {
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../lsp/client";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
+import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import type { ToolSession } from "../tools";
 import { routeWriteThroughBridge } from "../tools/acp-bridge";
 import { truncateForPrompt } from "../tools/approval";
@@ -160,9 +162,12 @@ function createEditWritethrough(session: ToolSession): WritethroughCallback {
 	const enableFormat = enableLsp && session.settings.get("lsp.formatOnWrite");
 	const deduplicate = enableDiagnostics && session.settings.get("lsp.diagnosticsDeduplicate");
 	return enableLsp
-		? createLspWritethrough(session.cwd, {
+		? createLspWritethrough(() => session.cwd, {
 				enableFormat,
 				enableDiagnostics,
+				additionalDirectories: () => session.additionalDirectories,
+				cwd: () => session.cwd,
+				owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 				transformDiagnostics: deduplicate
 					? (filePath, result) => getDiagnosticsLedger(session).reduce(filePath, result)
 					: undefined,
@@ -546,7 +551,7 @@ export class EditTool implements AgentTool<TInput> {
 			await deleteFileWithFallback(request.path, Bun.file(request.path));
 			if (this.session.enableLsp ?? true) {
 				await notifyWorkspaceWatchedFiles(
-					this.session.cwd,
+					sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 					[{ filePath: request.path, type: FileChangeType.Deleted }],
 					signal,
 				);
@@ -576,7 +581,7 @@ export class EditTool implements AgentTool<TInput> {
 			await deleteFileWithFallback(request.path, Bun.file(request.path));
 			if (this.session.enableLsp ?? true) {
 				await notifyWorkspaceWatchedFiles(
-					this.session.cwd,
+					sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 					[
 						{ filePath: request.path, type: FileChangeType.Deleted },
 						{ filePath: request.moveTo, type: FileChangeType.Created },

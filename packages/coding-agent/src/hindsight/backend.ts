@@ -206,7 +206,7 @@ async function installPrimaryState(
 	banksSet: Set<string>,
 	closeRetainBaselineTurns?: number,
 ): Promise<HindsightSessionState | undefined> {
-	const sessionId = session.sessionId;
+	const sessionId = session.sessionManager.getSessionId() || session.sessionId;
 	if (!sessionId) return undefined;
 
 	const config = loadHindsightConfig(settings);

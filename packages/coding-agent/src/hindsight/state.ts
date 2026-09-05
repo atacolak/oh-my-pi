@@ -298,6 +298,7 @@ export class HindsightSessionState {
 	}
 
 	setSessionId(sessionId: string): void {
+		if (this.sessionId === sessionId) return;
 		this.sessionId = sessionId;
 		this.#invalidateRetainCache();
 	}

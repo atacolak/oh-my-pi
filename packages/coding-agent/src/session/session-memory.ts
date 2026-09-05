@@ -74,7 +74,7 @@ export class SessionMemory {
 	restorePromotionSnapshot(prompt: string[] | undefined): void {
 		this.#baseSystemPromptBeforeMemoryPromotion = prompt;
 	}
-	/** Rekeys every active memory backend to the current provider session. */
+	/** Rekeys memory backends after a conversation identity change. */
 	rekeyForCurrentSessionId(): void {
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
@@ -82,7 +82,11 @@ export class SessionMemory {
 
 	#rekeyHindsightMemoryForCurrentSessionId(): void {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return;
-		const sid = this.#host.agent.sessionId;
+		// Provider-only rotations (`/fresh`) change `agent.sessionId` while the
+		// local transcript and Hindsight document stay on the persisted
+		// conversation. Rekeying from the provider id would wipe the retain
+		// boundary and duplicate the already-written tail on close.
+		const sid = this.#host.memoryBackendSession().sessionManager.getSessionId();
 		if (!sid) return;
 		this.#host.getHindsightSessionState()?.setSessionId(sid);
 	}

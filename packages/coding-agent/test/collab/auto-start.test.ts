@@ -375,6 +375,39 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("honors a project auto-start opt-out under an overlay re-enablement", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const agentDir = path.join(dir, "agent");
+		const projectDir = path.join(dir, "project");
+		const overlay = path.join(projectDir, "reenable.yml");
+		await fs.mkdir(path.join(projectDir, ".omp"), { recursive: true });
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			"collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n",
+		);
+		await Bun.write(path.join(projectDir, ".omp", "config.yml"), "collab:\n  autoStart: false\n");
+		await Bun.write(overlay, "collab:\n  autoStart: true\n");
+		const settings = await Settings.loadIsolated({
+			cwd: projectDir,
+			agentDir,
+			inMemory: true,
+			configFiles: [overlay],
+		});
+		const ctx = context({}, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		try {
+			expect(settings.get("collab.autoStart")).toBe(true);
+			expect(settings.getProvenance("collab.autoStart")).toBe("overlay");
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(start).not.toHaveBeenCalled();
+			expect(ctx.collabHost).toBeUndefined();
+		} finally {
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not attach a host that closed fatally before start returned", async () => {
 		installInMemoryRelay();
 		class FatalAfterOpenWebSocket extends FakeWebSocket {

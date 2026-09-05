@@ -115,7 +115,8 @@ Set `collab.webUrl` when the browser UI is hosted separately from the websocket 
 Auto-start is interactive-TUI-only and is opt-in. Configure `collab.autoStart`
 in user config, a runtime override, or project settings (`.omp/config.yml`).
 Config overlays (`PI_CONFIG_FILES`, `--config`) cannot enable unattended hosting
-or auto-start write-link files, and overlay `collab.relayUrl` / `collab.webUrl`
+or auto-start write-link files, and a project `false` still suppresses hosting
+when a higher overlay sets `true`. Overlay `collab.relayUrl` / `collab.webUrl`
 are ignored during auto-start; `/collab` can still use overlay values after
 an explicit user command. Project-scoped auto-start only hosts sessions whose
 cwd loads that project file; it does not turn on every omp. Auto-start waits

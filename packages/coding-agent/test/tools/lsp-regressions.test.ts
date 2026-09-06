@@ -5975,6 +5975,143 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("cancelled workspace reload restores a shared client owner alongside pending teardown", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-abort-shared-owner-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const sharedConfig: ServerConfig = {
+				command: "shared-reload-abort-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const pendingConfig: ServerConfig = {
+				command: "pending-reload-abort-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const sharedServer = installHandshakeLsp();
+			const reloadingOwner = lspClient.createLspClientOwner();
+			const overlappingOwner = lspClient.createLspClientOwner();
+			const sharedClient = await lspClient.getOrCreateClient(
+				sharedConfig,
+				tempDir.path(),
+				1_000,
+				undefined,
+				reloadingOwner,
+			);
+			await lspClient.getOrCreateClient(sharedConfig, tempDir.path(), 1_000, undefined, overlappingOwner);
+			const pendingServer = installFakeLsp((message, server) => {
+				if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			const pending = lspClient.getOrCreateClient(
+				pendingConfig,
+				tempDir.path(),
+				undefined,
+				undefined,
+				reloadingOwner,
+			);
+			const initialize = await pendingServer.waitFor(message => message.method === "initialize");
+			const controller = new AbortController();
+			const cleanup = lspClient.shutdownStaleClients(
+				tempDir.path(),
+				[],
+				controller.signal,
+				[tempDir.path()],
+				reloadingOwner,
+			);
+			controller.abort(new Error("reload cancelled"));
+			await expect(cleanup).rejects.toBeInstanceOf(ToolAbortError);
+
+			pendingServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			await expect(pending).resolves.toMatchObject({ config: { command: "pending-reload-abort-lsp" } });
+
+			expect(lspClient.getActiveClients(reloadingOwner).map(client => client.name)).toEqual(
+				expect.arrayContaining(["shared-reload-abort-lsp", "pending-reload-abort-lsp"]),
+			);
+			await expect(
+				lspClient.getOrCreateClient(sharedConfig, tempDir.path(), 1_000, undefined, reloadingOwner),
+			).resolves.toBe(sharedClient);
+			expect(sharedServer.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(
+				await lspClient.getActiveOrPendingClient(sharedConfig, tempDir.path(), undefined, overlappingOwner),
+			).toBe(sharedClient);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("cancelled overlapping reload does not restore a newer owner generation", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-abort-newer-generation-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const pendingConfig: ServerConfig = {
+				command: "pending-reload-generation-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const capturedConfig: ServerConfig = {
+				command: "captured-reload-generation-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const pendingServer = installFakeLsp((message, server) => {
+				if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			lspClient.stampOwnerConfigGeneration(capturedConfig, owner);
+			const pending = lspClient.getOrCreateClient(pendingConfig, tempDir.path(), undefined, undefined, owner);
+			const initialize = await pendingServer.waitFor(message => message.method === "initialize");
+			const controller = new AbortController();
+			const firstReload = lspClient.shutdownStaleClients(
+				tempDir.path(),
+				[],
+				controller.signal,
+				[tempDir.path()],
+				owner,
+			);
+			const secondReload = lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			controller.abort(new Error("reload cancelled"));
+			await expect(firstReload).rejects.toBeInstanceOf(ToolAbortError);
+			pendingServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			await expect(pending).rejects.toThrow("superseded during initialization");
+			await secondReload;
+
+			await expect(lspClient.getOrCreateClient(capturedConfig, nestedRoot, 1_000, undefined, owner)).rejects.toThrow(
+				"superseded during reload",
+			);
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...capturedConfig, args: ["--mode", "new"] },
+				nestedRoot,
+				1_000,
+				undefined,
+				owner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload blocks a nested client that was not in the snapshot", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-unseen-root-");
 		try {

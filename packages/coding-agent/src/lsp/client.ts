@@ -1255,6 +1255,7 @@ export function shutdownStaleClients(
 	const previousCoveredRootGenerations = new Map<string, number | undefined>();
 	const previousConfigStamps = new Map<ServerConfig, number | undefined>();
 	let previousOwnerGeneration: number | undefined;
+	let thisReloadGeneration: number | undefined;
 	if (owner) {
 		for (const key of staleOwnedKeys) {
 			releasedOwnerRoots.set(key, Array.from(ownerClientRoots.get(owner)?.get(key) ?? []));
@@ -1268,6 +1269,7 @@ export function shutdownStaleClients(
 		if (invalidateUnusedIdentities || staleOwnedKeys.size > 0) {
 			previousOwnerGeneration = ownerReloadGeneration.get(owner);
 			const generation = (previousOwnerGeneration ?? 0) + 1;
+			thisReloadGeneration = generation;
 			ownerReloadGeneration.set(owner, generation);
 			let released = ownerReleasedKeyGenerations.get(owner);
 			if (!released) {
@@ -1329,7 +1331,7 @@ export function shutdownStaleClients(
 	const cleanup = (async (): Promise<string[]> => {
 		const restoreReleasedOwners = (): void => {
 			if (!owner) return;
-			for (const key of unownedStaleKeys) {
+			for (const key of staleOwnedKeys) {
 				if (clients.has(key) || clientLocks.has(key)) {
 					registerClientOwner(key, owner, releasedOwnerRoots.get(key));
 				}
@@ -1415,24 +1417,30 @@ export function shutdownStaleClients(
 				restoreReleasedOwners();
 				clearTemporaryNestedTombstones(stalePending);
 				clearTemporaryNestedTombstones(staleClients);
-				if (owner) {
-					if (previousOwnerGeneration === undefined) ownerReloadGeneration.delete(owner);
-					else ownerReloadGeneration.set(owner, previousOwnerGeneration);
+				if (owner && thisReloadGeneration !== undefined) {
+					const currentGeneration = ownerReloadGeneration.get(owner);
+					if (currentGeneration === thisReloadGeneration) {
+						if (previousOwnerGeneration === undefined) ownerReloadGeneration.delete(owner);
+						else ownerReloadGeneration.set(owner, previousOwnerGeneration);
+					}
 					const released = ownerReleasedKeyGenerations.get(owner);
 					if (released) {
 						for (const [key, previous] of previousReleasedGenerations) {
+							if (released.get(key) !== thisReloadGeneration) continue;
 							if (previous === undefined) released.delete(key);
 							else released.set(key, previous);
 						}
 						if (released.size === 0) ownerReleasedKeyGenerations.delete(owner);
 					}
 					for (const [config, previous] of previousConfigStamps) {
+						if (configReloadGenerations.get(config) !== thisReloadGeneration) continue;
 						if (previous === undefined) configReloadGenerations.delete(config);
 						else configReloadGenerations.set(config, previous);
 					}
 					const coveredRoots = ownerReloadRootGenerations.get(owner);
 					if (coveredRoots) {
 						for (const [root, previous] of previousCoveredRootGenerations) {
+							if (coveredRoots.get(root) !== thisReloadGeneration) continue;
 							if (previous === undefined) coveredRoots.delete(root);
 							else coveredRoots.set(root, previous);
 						}

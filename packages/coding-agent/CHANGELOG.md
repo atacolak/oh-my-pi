@@ -30,6 +30,7 @@
 - Rejected collab auto-start from a profile selected by a project dotenv `OMP_PROFILE` or `PI_PROFILE`.
 - Stopped collab hosting on interactive shutdown before awaiting live-mode teardown.
 - Shortened collab and MCP status home paths even when the home directory contains spaces.
+- Closed the collab relay socket when host start is cancelled after the handshake opens.
 
 ## [18.1.12] - 2026-09-06
 

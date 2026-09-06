@@ -283,7 +283,10 @@ export class CollabHost {
 		} finally {
 			clearTimeout(timeout);
 		}
-		if (signal?.aborted) throw new Error("Collab host start cancelled");
+		if (signal?.aborted) {
+			await this.#teardown();
+			throw new Error("Collab host start cancelled");
+		}
 		await Promise.resolve();
 		if (this.#stopped) {
 			await this.#teardown();

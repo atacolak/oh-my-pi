@@ -160,6 +160,7 @@ import { countRetainableUserTurns, extractMessages, hindsightDocumentIdForSessio
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
+import { type LspClientOwner, releaseUncoveredWorkspaceRoots } from "../lsp/client";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
@@ -364,6 +365,7 @@ import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import { SessionTools, type SessionToolsHost } from "./session-tools";
+import { sessionWorkspaceDirectories } from "./session-workspace";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { skillPromptTitleInput } from "./skill-title-input";
 import { ToolChoiceQueue } from "./tool-choice-queue";
@@ -572,6 +574,8 @@ export class AgentSession {
 
 	readonly #models: ModelControls;
 	readonly #tools: SessionTools;
+	readonly #lspClientOwner: LspClientOwner | undefined;
+	#pendingUncoveredWorkspaceRoots: readonly string[] | undefined;
 	readonly #prewalk: PrewalkCoordinator;
 
 	readonly #providerBoundary: SessionProviderBoundary;
@@ -1202,6 +1206,7 @@ export class AgentSession {
 			this.hindsightLoadedMessageCount = undefined;
 		}
 		this.#syncHindsightDocumentId();
+		this.#lspClientOwner = config.lspClientOwner;
 		this.#modelRegistry = config.modelRegistry;
 		this.#extensionRoots =
 			config.extensionRoots ??
@@ -5254,6 +5259,11 @@ export class AgentSession {
 		return this.#tools.getToolByName(name);
 	}
 
+	/** Shared identity for LSP clients acquired by this session's tools. */
+	getLspClientOwner(): LspClientOwner | undefined {
+		return this.#lspClientOwner;
+	}
+
 	/** Looks up an enabled eval-bridge tool with the session's permission gate applied. */
 	getToolForEvalBridge(name: string): AgentTool | undefined {
 		return this.#tools.getToolForEvalBridge(name);
@@ -7986,9 +7996,50 @@ export class AgentSession {
 	}
 
 	/** Move the active session and artifacts after enforcing mode transition invariants. */
-	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
+	async moveSession(
+		newCwd: string,
+		targetSessionDir?: string,
+		options?: { deferWorkspaceCleanup?: boolean },
+	): Promise<void> {
 		this.#assertVibeSessionTransitionAllowed("move the session");
+		const previousWorkspaceRoots = sessionWorkspaceDirectories(
+			this.sessionManager.getCwd(),
+			this.sessionManager.getAdditionalDirectories(),
+		);
 		await this.sessionManager.moveTo(newCwd, targetSessionDir);
+		const remainingWorkspaceRoots = sessionWorkspaceDirectories(
+			this.sessionManager.getCwd(),
+			this.sessionManager.getAdditionalDirectories(),
+		);
+		if (options?.deferWorkspaceCleanup) {
+			this.#pendingUncoveredWorkspaceRoots = previousWorkspaceRoots;
+			return;
+		}
+		this.#pendingUncoveredWorkspaceRoots = undefined;
+		await releaseUncoveredWorkspaceRoots(previousWorkspaceRoots, remainingWorkspaceRoots, this.#lspClientOwner);
+	}
+
+	/**
+	 * Release language-server ownership of workspace roots the settled cwd no
+	 * longer covers. Callers that can still roll `moveTo` back must pass
+	 * `{ deferWorkspaceCleanup: true }` to {@link moveSession}, then invoke this
+	 * after apply/rollback finishes so a failed cwd transition does not drop
+	 * still-valid source clients.
+	 */
+	async commitMovedWorkspaceRoots(signal?: AbortSignal): Promise<void> {
+		const previousWorkspaceRoots = this.#pendingUncoveredWorkspaceRoots;
+		this.#pendingUncoveredWorkspaceRoots = undefined;
+		if (!previousWorkspaceRoots) return;
+		const remainingWorkspaceRoots = sessionWorkspaceDirectories(
+			this.sessionManager.getCwd(),
+			this.sessionManager.getAdditionalDirectories(),
+		);
+		await releaseUncoveredWorkspaceRoots(
+			previousWorkspaceRoots,
+			remainingWorkspaceRoots,
+			this.#lspClientOwner,
+			signal,
+		);
 	}
 
 	// =========================================================================

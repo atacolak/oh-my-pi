@@ -96,6 +96,15 @@ function assistantEntry(id: string, parentId: string, content: string, timestamp
 	} as SessionEntry;
 }
 
+function resetBoundaryEntry(id: string, parentId: string, timestamp: string): SessionEntry {
+	return {
+		type: "reset_boundary",
+		id,
+		parentId,
+		timestamp,
+	};
+}
+
 describe("Hindsight append-mode session retention", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();

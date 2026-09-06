@@ -51,6 +51,8 @@ export function hindsightDocumentIdForSession(
  * prefix-cache keys aligned with the conversation the user is actually in.
  *
  * Implementation choices:
+ * - Start after the latest `reset_boundary` (`/clear`). Pre-clear history stays
+ *   on disk but is not part of the live conversation Hindsight should retain.
  * - Skip entries whose type isn't `"message"` (compaction, branch_summary,
  *   custom_message, tool exec records, ...). Those don't represent a
  *   conversational turn, only the LLM's plain-text utterances do.
@@ -67,9 +69,15 @@ export function countRetainableUserTurns(sessionManager: ReadonlySessionManagerL
 
 export function extractMessages(sessionManager: ReadonlySessionManagerLike): HindsightMessage[] {
 	const messages: HindsightMessage[] = [];
+	const branch = sessionManager.getBranch?.() ?? sessionManager.getEntries();
+	let start = 0;
+	for (let i = 0; i < branch.length; i++) {
+		if (branch[i]?.type === "reset_boundary") start = i + 1;
+	}
 
-	for (const entry of sessionManager.getBranch?.() ?? sessionManager.getEntries()) {
-		if (entry.type !== "message") continue;
+	for (let i = start; i < branch.length; i++) {
+		const entry = branch[i];
+		if (entry === undefined || entry.type !== "message") continue;
 		const msg = entry.message;
 		const role = msg.role;
 		if (role !== "user" && role !== "assistant") continue;

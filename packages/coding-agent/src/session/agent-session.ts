@@ -1909,10 +1909,7 @@ export class AgentSession {
 	}
 
 	#syncHindsightDocumentId(): void {
-		this.hindsightDocumentId = hindsightDocumentIdForSession(
-			this.sessionManager.getSessionId(),
-			this.sessionManager,
-		);
+		this.hindsightDocumentId = hindsightDocumentIdForSession(this.sessionManager.getSessionId(), this.sessionManager);
 	}
 
 	#clearHindsightDelayedBaselines(): void {

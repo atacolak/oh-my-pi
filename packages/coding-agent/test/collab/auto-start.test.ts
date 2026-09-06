@@ -195,6 +195,33 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("closes the relay socket when stop races a completed handshake", async () => {
+		installInMemoryRelay();
+		const ctx = context();
+		const close = spyOn(CollabSocket.prototype, "close");
+		const originalConnect = CollabSocket.prototype.connect;
+		const connect = spyOn(CollabSocket.prototype, "connect").mockImplementation(function (this: CollabSocket) {
+			const previous = this.onOpen;
+			this.onOpen = () => {
+				previous?.();
+				ctx.collabHostAbort?.abort();
+			};
+			originalConnect.call(this);
+		});
+		try {
+			await expect(startCollabHost(ctx, { relayUrl: "ws://localhost:8787" })).rejects.toThrow(
+				"Collab host start cancelled",
+			);
+			expect(close).toHaveBeenCalled();
+			expect(ctx.collabHost).toBeUndefined();
+			expect(ctx.collabHostStart).toBeUndefined();
+		} finally {
+			connect.mockRestore();
+			close.mockRestore();
+		}
+	});
+
+
 	it("does not attach or write a link after a cancelled pending start", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const file = path.join(dir, "collab.link");

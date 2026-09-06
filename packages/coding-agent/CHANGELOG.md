@@ -29,6 +29,8 @@
 - Detected Bun pre-dotenv `NODE_ENV` when judging project dotenv ownership of collab auto-start directories.
 - Rejected collab auto-start from a profile selected by a project dotenv `OMP_PROFILE` or `PI_PROFILE`.
 - Stopped collab hosting on interactive shutdown before awaiting live-mode teardown.
+- Rejected collab auto-start from a project dotenv key that only matches `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` by Windows case-fold.
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.

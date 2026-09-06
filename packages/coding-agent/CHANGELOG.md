@@ -52,6 +52,7 @@
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.

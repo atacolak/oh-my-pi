@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed file/glob diagnostics and raw `lsp request` stamping nested language-server configs after overlapping `lsp reload *` finished, so those operations no longer start superseded command, args, or settings.
 - Fixed `/move`, `/wt`, and interactive `!cd` releasing language-server ownership before the cwd transition committed, so a failed move that rolled the session back no longer dropped source clients from status.
 - Fixed `lsp status` omitting a still-owned nested language server after an equivalent extra-root alias was removed, so the remaining workspace route is reported instead of the stale first alias.
 - Fixed `shutdownAll()` dropping live session owners before a language-server process that survived force-kill was republished, so owner-filtered status no longer went blank and an overlapping session could not tear that still-running client down.

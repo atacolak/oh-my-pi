@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { SessionMemory } from "@oh-my-pi/pi-coding-agent/session/session-memory";
 import { assistantMsg, createTestSession, userMsg } from "./utilities";
 
 describe("AgentSession tree navigation onto skill injection", () => {
@@ -180,6 +182,51 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 			await ctx.cleanup();
 		}
 	});
+
+	it("restores delayed message baseline when /resume rolls back before install", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const resetContext = SessionMemory.prototype.resetContextForNewTranscript;
+		vi.spyOn(SessionMemory.prototype, "resetContextForNewTranscript").mockImplementation(async function (
+			this: SessionMemory,
+			options?: { closeRetainBaselineTurns?: number },
+		) {
+			await resetContext.call(this, options);
+			throw new Error("switch failed after baseline rebase");
+		});
+		const ctx = await createTestSession({
+			settingsOverrides: {
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainEveryNTurns": 5,
+				"hindsight.retainOverlapTurns": 0,
+			},
+		});
+		try {
+			const { session, sessionManager, tempDir } = ctx;
+			sessionManager.appendMessage(userMsg("home turn has enough text"));
+			sessionManager.appendMessage(assistantMsg("home reply has enough text"));
+			session.hindsightCloseRetainBaselineTurns = 1;
+			session.hindsightLoadedMessageCount = 2;
+			const target = SessionManager.createEmptySessionFile(tempDir);
+
+			await expect(session.switchSession(target)).rejects.toThrow("switch failed after baseline rebase");
+			expect(session.hindsightCloseRetainBaselineTurns).toBe(1);
+			expect(session.hindsightLoadedMessageCount).toBe(2);
+
+			await hindsightBackend.start({
+				session,
+				settings: session.settings,
+				modelRegistry: {} as never,
+				agentDir: tempDir,
+				taskDepth: 0,
+			});
+			await session.getHindsightSessionState()!.drainOnClose();
+			expect(retain).not.toHaveBeenCalled();
+		} finally {
+			await ctx.cleanup();
+		}
+	});
 });
 
 describe("AgentSession Hindsight leave-path retain", () => {
@@ -267,6 +314,60 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			await state.drainOnClose();
 			expect(retain).toHaveBeenCalledTimes(1);
 			expect(String(retain.mock.calls[0]?.[1])).toContain("fresh-path turn has enough text");
+		} finally {
+			await ctx.cleanup();
+		}
+	});
+
+	it("rotates the hindsight document on /clear while keeping /fresh on the persisted id", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const ctx = await createTestSession({
+			inMemory: true,
+			settingsOverrides: {
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainEveryNTurns": 1,
+				"hindsight.retainOverlapTurns": 0,
+			},
+		});
+		try {
+			const { session, sessionManager } = ctx;
+			sessionManager.appendMessage(userMsg("pre-clear turn has enough text"));
+			sessionManager.appendMessage(assistantMsg("pre-clear reply has enough text"));
+			session.hindsightCloseRetainBaselineTurns = 0;
+
+			await hindsightBackend.start({
+				session,
+				settings: session.settings,
+				modelRegistry: {} as never,
+				agentDir: ctx.tempDir,
+				taskDepth: 0,
+				hindsightCloseRetainBaselineTurns: 0,
+			});
+
+			const state = session.getHindsightSessionState()!;
+			await state.maybeRetainOnAgentEnd();
+			expect(retain).toHaveBeenCalledTimes(1);
+			const persistedId = sessionManager.getSessionId();
+			expect(state.sessionId).toBe(persistedId);
+			expect(retain.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ documentId: persistedId }));
+
+			await session.resetSessionContext();
+			expect(sessionManager.getSessionId()).toBe(persistedId);
+			expect(session.hindsightDocumentId).toBeDefined();
+			expect(session.hindsightDocumentId).not.toBe(persistedId);
+			expect(state.sessionId).toBe(session.hindsightDocumentId);
+
+			sessionManager.appendMessage(userMsg("post-clear turn has enough text"));
+			sessionManager.appendMessage(assistantMsg("post-clear reply has enough text"));
+			await state.drainOnClose();
+			expect(retain).toHaveBeenCalledTimes(2);
+			expect(retain.mock.calls[1]?.[2]).toEqual(
+				expect.objectContaining({ documentId: session.hindsightDocumentId }),
+			);
+			expect(String(retain.mock.calls[1]?.[1])).toContain("post-clear turn has enough text");
+			expect(String(retain.mock.calls[1]?.[1])).not.toContain("pre-clear turn has enough text");
 		} finally {
 			await ctx.cleanup();
 		}

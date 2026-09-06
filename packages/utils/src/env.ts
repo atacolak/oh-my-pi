@@ -158,8 +158,9 @@ export function filterChildShellEnv(
  * Parse one dotenv line with Bun-compatible semantics: an optional `export`
  * prefix, full-line `#` comments, inline `#` comments after whitespace on
  * unquoted values, and single/double/backtick quoting (a `#` inside quotes
- * stays literal). Returns undefined for blank lines, comments, and malformed
- * names.
+ * stays literal). Double-quoted values decode Bun's `\n` / `\r` escapes;
+ * `\\` is a literal pair, so `\\n` stays two slashes plus `n`. Returns
+ * undefined for blank lines, comments, and malformed names.
  */
 function parseEnvLine(line: string): { key: string; value: string } | undefined {
 	const trimmed = line.trim();
@@ -175,10 +176,45 @@ function parseEnvLine(line: string): { key: string; value: string } | undefined 
 	if (quote === '"' || quote === "'" || quote === "`") {
 		let close = raw.indexOf(quote, 1);
 		while (close !== -1 && raw[close - 1] === "\\") close = raw.indexOf(quote, close + 1);
-		return { key, value: close === -1 ? raw.slice(1) : raw.slice(1, close) };
+		const value = close === -1 ? raw.slice(1) : raw.slice(1, close);
+		return { key, value: quote === '"' ? decodeBunDoubleQuotedDotenvValue(value) : value };
 	}
 	const commentIndex = raw.search(/[ \t]#/);
 	return { key, value: (commentIndex === -1 ? raw : raw.slice(0, commentIndex)).trimEnd() };
+}
+
+/**
+ * Bun's dotenv loader decodes `\n` and `\r` only in double-quoted values, and
+ * treats `\\` as a literal pair rather than an escaped backslash. Ownership
+ * checks compare against `process.env`, so the parser has to match that
+ * decoded form when no pre-dotenv launch snapshot is available.
+ */
+function decodeBunDoubleQuotedDotenvValue(value: string): string {
+	let out = "";
+	for (let i = 0; i < value.length; i++) {
+		if (value[i] !== "\\") {
+			out += value[i];
+			continue;
+		}
+		const next = value[i + 1];
+		if (next === "\\") {
+			out += "\\\\";
+			i++;
+			continue;
+		}
+		if (next === "n") {
+			out += "\n";
+			i++;
+			continue;
+		}
+		if (next === "r") {
+			out += "\r";
+			i++;
+			continue;
+		}
+		out += "\\";
+	}
+	return out;
 }
 
 /**

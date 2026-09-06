@@ -15,6 +15,7 @@
 - Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
 - Detected project-dotenv ownership using Bun's pre-dotenv `NODE_ENV` mode so a `.env` that sets `NODE_ENV` cannot hide redirects in `.env.development`.
 - Matched project-dotenv ownership case-insensitively on Windows so a differently-cased dotenv key cannot masquerade as a trusted launcher variable.
+- Decoded Bun double-quoted dotenv `\n` and `\r` escapes when matching project-owned environment values.
 
 ## [18.1.11] - 2026-09-05
 

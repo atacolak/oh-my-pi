@@ -25,6 +25,15 @@
 - Hindsight close drain now budgets bank creation plus retain so a first-use `createBank` cannot starve the close retain.
 - Hindsight close drain now budgets a tool-retain batch plus the session retain so a slow `retainBatch` cannot starve the close tail.
 - Hindsight delayed startup now keeps a `/tree` ask re-answer as a pending tail instead of treating the later assistant reply as loaded history.
+- Hindsight `/clear` now retains post-reset turns under a new document instead of replacing the drained conversation.
+- Hindsight delayed startup now derives loaded history when enabling mid-session instead of treating an off-backend zero as already retained activity.
+- Hindsight delayed startup now restores the loaded-message baseline when a `/resume` rolls back, so idle close does not re-retain the original transcript.
+- Hindsight `/clear` now reconstructs the post-reset document identity from the persisted reset boundary, and branch/fork after `/clear` no longer retain into the source document.
+- Hindsight delayed startup now drops construction baselines when the backend is torn down, so re-enabling does not duplicate already drained history.
+- Hindsight now resets retain cadence after `branch` and `/btw` so a shorter branch cannot inherit the source session's last retained turn.
+- Hindsight `/tree` now resyncs the post-clear document overlay so a pre-reset leaf cannot overwrite the drained post-clear document.
+- Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.
@@ -42,14 +51,6 @@
 - `memory://` now resolves against the session that issued it: a caller's own memory backend answers `memory://<id>`, so co-located sessions no longer read each other's memory rows, and a caller whose session is no longer live fails closed instead of being answered by a peer. Prompt completion binds to the same caller, so `memory://<memory-id>` stays on offer while a subagent shares the working directory. Advisors retain their owning session's memory access even without a session file.
 - Fullscreen `/copy` now opens on the recent tail of the branch instead of replaying the whole session, so it appears immediately and steps without lag on long sessions (`a` loads the earlier turns). Both it and the esc-esc rewind selector also cache each transcript row set instead of re-stripping it every frame.
 - Fixed the fullscreen `/copy` and esc-esc rewind selectors repainting the whole frame for a wheel notch that cannot move the viewport; because both open scrolled to the newest turn, wheeling down there made the frame twitch.
-- Hindsight `/clear` now retains post-reset turns under a new document instead of replacing the drained conversation.
-- Hindsight delayed startup now derives loaded history when enabling mid-session instead of treating an off-backend zero as already retained activity.
-- Hindsight delayed startup now restores the loaded-message baseline when a `/resume` rolls back, so idle close does not re-retain the original transcript.
-- Hindsight `/clear` now reconstructs the post-reset document identity from the persisted reset boundary, and branch/fork after `/clear` no longer retain into the source document.
-- Hindsight delayed startup now drops construction baselines when the backend is torn down, so re-enabling does not duplicate already drained history.
-- Hindsight now resets retain cadence after `branch` and `/btw` so a shorter branch cannot inherit the source session's last retained turn.
-- Hindsight `/tree` now resyncs the post-clear document overlay so a pre-reset leaf cannot overwrite the drained post-clear document.
-- Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
 
 ## [18.1.11] - 2026-09-05
 

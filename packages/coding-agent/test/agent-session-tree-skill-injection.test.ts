@@ -597,6 +597,69 @@ describe("AgentSession Hindsight leave-path retain", () => {
 		}
 	});
 
+	it("resets retain cadence after /tree changes the post-clear overlay", async () => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const ctx = await createTestSession({
+			inMemory: true,
+			settingsOverrides: {
+				"memory.backend": "hindsight",
+				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainEveryNTurns": 5,
+				"hindsight.retainOverlapTurns": 0,
+			},
+		});
+		try {
+			const { session, sessionManager } = ctx;
+			sessionManager.appendMessage(userMsg("pre-clear turn has enough text"));
+			const firstAssistantId = sessionManager.appendMessage(assistantMsg("pre-clear reply has enough text"));
+			session.hindsightCloseRetainBaselineTurns = 0;
+
+			await hindsightBackend.start({
+				session,
+				settings: session.settings,
+				modelRegistry: {} as never,
+				agentDir: ctx.tempDir,
+				taskDepth: 0,
+				hindsightCloseRetainBaselineTurns: 0,
+			});
+			const state = session.getHindsightSessionState()!;
+			await session.resetSessionContext();
+			const overlayAfterClear = session.hindsightDocumentId;
+			if (!overlayAfterClear) throw new Error("expected post-clear hindsight document overlay");
+			expect(state.sessionId).toBe(overlayAfterClear);
+
+			for (const n of [1, 2, 3, 4, 5]) {
+				sessionManager.appendMessage(userMsg(`post-clear cadence turn ${n} has enough text`));
+				sessionManager.appendMessage(assistantMsg(`post-clear cadence reply ${n} has enough text`));
+			}
+			await state.maybeRetainOnAgentEnd();
+			expect(retain).toHaveBeenCalledTimes(2);
+			expect(state.lastRetainedTurn).toBe(5);
+
+			const result = await session.navigateTree(firstAssistantId, { summarize: false });
+			expect(result.cancelled).toBe(false);
+			expect(session.hindsightDocumentId).toBeUndefined();
+			expect(state.sessionId).toBe(sessionManager.getSessionId());
+			expect(state.sessionId).not.toBe(overlayAfterClear);
+			expect(state.lastRetainedTurn).toBe(0);
+
+			for (const n of [1, 2, 3, 4, 5]) {
+				sessionManager.appendMessage(userMsg(`pre-reset cadence turn ${n} has enough text`));
+				sessionManager.appendMessage(assistantMsg(`pre-reset cadence reply ${n} has enough text`));
+			}
+			await state.maybeRetainOnAgentEnd();
+			expect(retain).toHaveBeenCalledTimes(3);
+			expect(retain.mock.calls.at(-1)?.[2]).toEqual(
+				expect.objectContaining({ documentId: sessionManager.getSessionId() }),
+			);
+			expect(String(retain.mock.calls.at(-1)?.[1])).toContain("pre-reset cadence turn 5 has enough text");
+			expect(retain.mock.calls.filter(call => call[2]?.documentId === overlayAfterClear)).toHaveLength(1);
+		} finally {
+			await ctx.cleanup();
+		}
+	});
+
 	it("does not re-retain drained history after hindsight is re-enabled", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);

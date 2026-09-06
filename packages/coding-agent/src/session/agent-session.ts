@@ -9784,10 +9784,17 @@ export class AgentSession {
 		// pre-continue message boundary: the new answer is a toolResult, so the
 		// later assistant reply must stay a pending tail rather than loaded
 		// history. Live state also resyncs the post-clear overlay so a pre-reset
-		// leaf cannot replace the drained post-clear document.
+		// leaf cannot replace the drained post-clear document. Rekeying that
+		// overlay clears the retained prefix but used to keep lastRetainedTurn,
+		// so cadence skipped until the shorter branch caught up.
 		this.#rebaseHindsightCloseRetainBaseline();
+		const previousHindsightDocumentId = this.hindsightDocumentId ?? this.sessionManager.getSessionId();
 		this.#syncHindsightDocumentId();
 		this.#memory.rekeyForCurrentSessionId();
+		const nextHindsightDocumentId = this.hindsightDocumentId ?? this.sessionManager.getSessionId();
+		if (previousHindsightDocumentId !== nextHindsightDocumentId) {
+			await this.#memory.resetContextForNewTranscript();
+		}
 		return {
 			editorText,
 			editorImages,

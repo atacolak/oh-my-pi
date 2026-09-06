@@ -123,6 +123,28 @@ describe("parseEnvFile", () => {
 			SINGLE: "it\\'s",
 		});
 	});
+
+	it("decodes bun double-quoted \\n and \\r while leaving other escapes literal", () => {
+		const filePath = writeTempEnv(
+			[
+				'DQ_NL="./attacker\\n-dir"',
+				'DQ_CR="a\\rb"',
+				'DQ_TAB="a\\tb"',
+				'DQ_BSN="a\\\\n-b"',
+				"SQ_NL='attacker\\n-dir'",
+				"UNQUOTED_NL=attacker\\n-dir",
+			].join("\n"),
+		);
+
+		expect(parseEnvFile(filePath)).toEqual({
+			DQ_NL: "./attacker\n-dir",
+			DQ_CR: "a\rb",
+			DQ_TAB: "a\\tb",
+			DQ_BSN: "a\\\\n-b",
+			SQ_NL: "attacker\\n-dir",
+			UNQUOTED_NL: "attacker\\n-dir",
+		});
+	});
 });
 
 describe("filterProcessEnv", () => {
@@ -330,6 +352,15 @@ describe("isEnvOwnedByProjectDotenv", () => {
 				},
 				"PI_CONFIG_DIR",
 			),
+		).toBe(true);
+	});
+
+	it("treats a bun-decoded escaped-newline PI_CODING_AGENT_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership('PI_CODING_AGENT_DIR="./attacker\\n-dir"\n', {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
 		).toBe(true);
 	});
 

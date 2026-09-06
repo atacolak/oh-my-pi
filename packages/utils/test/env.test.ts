@@ -123,6 +123,28 @@ describe("parseEnvFile", () => {
 			SINGLE: "it\\'s",
 		});
 	});
+
+	it("decodes bun double-quoted \\n and \\r while leaving other escapes literal", () => {
+		const filePath = writeTempEnv(
+			[
+				'DQ_NL="./attacker\\n-dir"',
+				'DQ_CR="a\\rb"',
+				'DQ_TAB="a\\tb"',
+				'DQ_BSN="a\\\\n-b"',
+				"SQ_NL='attacker\\n-dir'",
+				"UNQUOTED_NL=attacker\\n-dir",
+			].join("\n"),
+		);
+
+		expect(parseEnvFile(filePath)).toEqual({
+			DQ_NL: "./attacker\n-dir",
+			DQ_CR: "a\rb",
+			DQ_TAB: "a\\tb",
+			DQ_BSN: "a\\\\n-b",
+			SQ_NL: "attacker\\n-dir",
+			UNQUOTED_NL: "attacker\\n-dir",
+		});
+	});
 });
 
 describe("filterProcessEnv", () => {
@@ -238,6 +260,171 @@ describe("filterChildShellEnv", () => {
 			childValue: null,
 			nodeEnv: "production",
 		});
+	});
+});
+
+describe("isEnvOwnedByProjectDotenv", () => {
+	const envModulePath = path.join(import.meta.dir, "..", "src", "env.ts");
+
+	async function probeProjectDotenvOwnership(
+		dotenv: string,
+		env: Record<string, string | undefined>,
+		name = "PI_CODING_AGENT_DIR",
+	): Promise<boolean> {
+		const cwd = path.dirname(writeTempEnv(dotenv));
+		const script = [
+			`import { isEnvOwnedByProjectDotenv } from ${JSON.stringify(envModulePath)};`,
+			`process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv(${JSON.stringify(name)})));`,
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: { ...process.env, ...env },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		return JSON.parse(stdout) as boolean;
+	}
+
+	it("treats PI_CODING_AGENT_DIR from the launch project dotenv as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("keeps a launcher-provided PI_CODING_AGENT_DIR trusted even if dotenv repeats it", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: "/trusted-agent",
+			}),
+		).toBe(false);
+	});
+
+	it("treats PI_CONFIG_DIR from the launch project dotenv as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				"PI_CONFIG_DIR=./attacker-config\n",
+				{
+					PI_CONFIG_DIR: undefined,
+					OMP_CONFIG_DIR: undefined,
+				},
+				"PI_CONFIG_DIR",
+			),
+		).toBe(true);
+	});
+
+	it("keeps a launcher-provided PI_CONFIG_DIR trusted even if dotenv repeats it", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				"PI_CONFIG_DIR=./attacker-config\n",
+				{
+					PI_CONFIG_DIR: ".trusted-config",
+				},
+				"PI_CONFIG_DIR",
+			),
+		).toBe(false);
+	});
+
+	it("treats a bun-overwritten empty launcher PI_CODING_AGENT_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-overwritten empty launcher PI_CONFIG_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				"PI_CONFIG_DIR=./attacker-config\n",
+				{
+					PI_CONFIG_DIR: "",
+					OMP_CONFIG_DIR: undefined,
+				},
+				"PI_CONFIG_DIR",
+			),
+		).toBe(true);
+	});
+
+	it("treats a bun-decoded escaped-newline PI_CODING_AGENT_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership('PI_CODING_AGENT_DIR="./attacker\\n-dir"\n', {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a .env.development redirect as project-owned when dotenv sets NODE_ENV", async () => {
+		const cwd = path.dirname(writeTempEnv("NODE_ENV=production\n"));
+		fs.writeFileSync(path.join(cwd, ".env.development"), "PI_CODING_AGENT_DIR=./attacker-dir\n");
+		const script = [
+			`import { isEnvOwnedByProjectDotenv } from ${JSON.stringify(envModulePath)};`,
+			'process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR")));',
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				NODE_ENV: undefined,
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toBe(true);
+	});
+
+	it("does not treat a differently cased dotenv key as owned on posix", async () => {
+		expect(
+			await probeProjectDotenvOwnership("pi_coding_agent_dir=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(false);
+	});
+
+	it("treats a differently cased dotenv key as owned on windows", async () => {
+		const cwd = path.dirname(writeTempEnv("pi_coding_agent_dir=./attacker-dir\n"));
+		const script = [
+			'Object.defineProperty(process, "platform", { configurable: true, value: "win32" });',
+			// Platform must be win32 before env.ts caches launch-dotenv names.
+			`const { isEnvOwnedByProjectDotenv } = await import(${JSON.stringify(envModulePath)});`,
+			'process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR")));',
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toBe(true);
 	});
 });
 

@@ -89,6 +89,35 @@ function readLaunchEnv(): ReadonlyMap<string, string> | undefined {
 }
 
 const launchEnvValues = readLaunchEnv();
+
+function matchingEnvName(names: Iterable<string>, name: string): string | undefined {
+	for (const key of names) {
+		if (process.platform === "win32" ? key.toLowerCase() === name.toLowerCase() : key === name) {
+			return key;
+		}
+	}
+	return undefined;
+}
+
+function matchingMapEntry(
+	map: ReadonlyMap<string, string> | undefined,
+	name: string,
+): { has: boolean; value: string | undefined } {
+	if (!map) return { has: false, value: undefined };
+	if (map.has(name)) return { has: true, value: map.get(name) };
+	const key = matchingEnvName(map.keys(), name);
+	if (key === undefined) return { has: false, value: undefined };
+	return { has: true, value: map.get(key) };
+}
+
+function readProcessEnv(name: string): string | undefined {
+	const value = process.env[name];
+	if (value !== undefined) return value;
+	if (process.platform !== "win32") return undefined;
+	const key = matchingEnvName(Object.keys(process.env), name);
+	return key === undefined ? undefined : process.env[key];
+}
+
 const projectEnvNamesLoadedByOmp = new Set<string>();
 
 function expandDotenvValues(values: Record<string, string>, env: Record<string, string>): Record<string, string> {
@@ -113,38 +142,10 @@ export function filterChildShellEnv(
 	cwd: string = process.cwd(),
 ): Record<string, string> {
 	const result = filterProcessEnv(env);
-	const projectEnv = parseEnvFile(path.join(cwd, ".env"));
-	const launchNodeEnv = launchEnvValues ? launchEnvValues.get("NODE_ENV") : env.NODE_ENV;
-	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;
-	const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
-	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
-	const modeLocalEnv = parseEnvFile(path.join(cwd, `${nodeEnvName}.local`));
-	const launchEnv = { ...projectEnv, ...modeEnv, ...localEnv, ...modeLocalEnv };
-	const expandedLaunchEnv = {
-		...expandDotenvValues(projectEnv, result),
-		...expandDotenvValues(modeEnv, result),
-		...expandDotenvValues(localEnv, result),
-		...expandDotenvValues(modeLocalEnv, result),
-	};
-	let fallbackLaunchEnv: Record<string, string> | undefined;
-	let expandedFallbackLaunchEnv: Record<string, string> | undefined;
-	if (!launchEnvValues && nodeEnvName !== ".env.development") {
-		const fallbackModeEnv = parseEnvFile(path.join(cwd, ".env.development"));
-		const fallbackModeLocalEnv = parseEnvFile(path.join(cwd, ".env.development.local"));
-		const candidate = { ...projectEnv, ...fallbackModeEnv, ...localEnv, ...fallbackModeLocalEnv };
-		const expandedCandidate = {
-			...expandDotenvValues(projectEnv, result),
-			...expandDotenvValues(fallbackModeEnv, result),
-			...expandDotenvValues(localEnv, result),
-			...expandDotenvValues(fallbackModeLocalEnv, result),
-		};
-		if (candidate.NODE_ENV === env.NODE_ENV || expandedCandidate.NODE_ENV === env.NODE_ENV) {
-			// Without a launch snapshot, NODE_ENV may itself have come from dotenv.
-			// Bun chose the default mode before loading it, so retain both candidates.
-			fallbackLaunchEnv = candidate;
-			expandedFallbackLaunchEnv = expandedCandidate;
-		}
-	}
+	const { launchEnv, expandedLaunchEnv, fallbackLaunchEnv, expandedFallbackLaunchEnv } = loadLaunchCwdDotenv(
+		cwd,
+		result,
+	);
 	const allLaunchEnv = fallbackLaunchEnv ? { ...launchEnv, ...fallbackLaunchEnv } : launchEnv;
 	for (const key in allLaunchEnv) {
 		const launchValue = launchEnvValues?.get(key);
@@ -186,8 +187,9 @@ export function filterChildShellEnv(
  * Parse one dotenv line with Bun-compatible semantics: an optional `export`
  * prefix, full-line `#` comments, inline `#` comments after whitespace on
  * unquoted values, and single/double/backtick quoting (a `#` inside quotes
- * stays literal). Returns undefined for blank lines, comments, and malformed
- * names.
+ * stays literal). Double-quoted values decode Bun's `\n` / `\r` escapes;
+ * `\\` is a literal pair, so `\\n` stays two slashes plus `n`. Returns
+ * undefined for blank lines, comments, and malformed names.
  */
 function parseEnvLine(line: string): { key: string; value: string } | undefined {
 	const trimmed = line.trim();
@@ -203,10 +205,45 @@ function parseEnvLine(line: string): { key: string; value: string } | undefined 
 	if (quote === '"' || quote === "'" || quote === "`") {
 		let close = raw.indexOf(quote, 1);
 		while (close !== -1 && raw[close - 1] === "\\") close = raw.indexOf(quote, close + 1);
-		return { key, value: close === -1 ? raw.slice(1) : raw.slice(1, close) };
+		const value = close === -1 ? raw.slice(1) : raw.slice(1, close);
+		return { key, value: quote === '"' ? decodeBunDoubleQuotedDotenvValue(value) : value };
 	}
 	const commentIndex = raw.search(/[ \t]#/);
 	return { key, value: (commentIndex === -1 ? raw : raw.slice(0, commentIndex)).trimEnd() };
+}
+
+/**
+ * Bun's dotenv loader decodes `\n` and `\r` only in double-quoted values, and
+ * treats `\\` as a literal pair rather than an escaped backslash. Ownership
+ * checks compare against `process.env`, so the parser has to match that
+ * decoded form when no pre-dotenv launch snapshot is available.
+ */
+function decodeBunDoubleQuotedDotenvValue(value: string): string {
+	let out = "";
+	for (let i = 0; i < value.length; i++) {
+		if (value[i] !== "\\") {
+			out += value[i];
+			continue;
+		}
+		const next = value[i + 1];
+		if (next === "\\") {
+			out += "\\\\";
+			i++;
+			continue;
+		}
+		if (next === "n") {
+			out += "\n";
+			i++;
+			continue;
+		}
+		if (next === "r") {
+			out += "\r";
+			i++;
+			continue;
+		}
+		out += "\\";
+	}
+	return out;
 }
 
 /**
@@ -234,6 +271,53 @@ export function parseEnvFile(filePath: string): Record<string, string> {
 	}
 
 	return result;
+}
+
+/**
+ * Reconstruct the dotenv files Bun actually loaded for `cwd`.
+ *
+ * Bun chooses `.env.${NODE_ENV || "development"}` from the *pre-dotenv*
+ * environment. After autoload, `process.env.NODE_ENV` may already be the
+ * value from `.env` itself (e.g. `production`), which would point a second
+ * implementation at the wrong mode file.
+ */
+function loadLaunchCwdDotenv(
+	cwd: string,
+	env: Record<string, string>,
+): {
+	launchEnv: Record<string, string>;
+	expandedLaunchEnv: Record<string, string>;
+	fallbackLaunchEnv?: Record<string, string>;
+	expandedFallbackLaunchEnv?: Record<string, string>;
+} {
+	const cwdProjectEnv = parseEnvFile(path.join(cwd, ".env"));
+	const launchNodeEnv = launchEnvValues ? launchEnvValues.get("NODE_ENV") : env.NODE_ENV;
+	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;
+	const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
+	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
+	const modeLocalEnv = parseEnvFile(path.join(cwd, `${nodeEnvName}.local`));
+	const launchEnv = { ...cwdProjectEnv, ...modeEnv, ...localEnv, ...modeLocalEnv };
+	const expandedLaunchEnv = {
+		...expandDotenvValues(cwdProjectEnv, env),
+		...expandDotenvValues(modeEnv, env),
+		...expandDotenvValues(localEnv, env),
+		...expandDotenvValues(modeLocalEnv, env),
+	};
+	if (!launchEnvValues && nodeEnvName !== ".env.development") {
+		const fallbackModeEnv = parseEnvFile(path.join(cwd, ".env.development"));
+		const fallbackModeLocalEnv = parseEnvFile(path.join(cwd, ".env.development.local"));
+		const fallbackLaunchEnv = { ...cwdProjectEnv, ...fallbackModeEnv, ...localEnv, ...fallbackModeLocalEnv };
+		const expandedFallbackLaunchEnv = {
+			...expandDotenvValues(cwdProjectEnv, env),
+			...expandDotenvValues(fallbackModeEnv, env),
+			...expandDotenvValues(localEnv, env),
+			...expandDotenvValues(fallbackModeLocalEnv, env),
+		};
+		if (fallbackLaunchEnv.NODE_ENV === env.NODE_ENV || expandedFallbackLaunchEnv.NODE_ENV === env.NODE_ENV) {
+			return { launchEnv, expandedLaunchEnv, fallbackLaunchEnv, expandedFallbackLaunchEnv };
+		}
+	}
+	return { launchEnv, expandedLaunchEnv };
 }
 
 // Eagerly parse the user's $HOME/.env and the current project's .env (from cwd)
@@ -264,6 +348,46 @@ for (const file of [projectEnv, agentEnv, piEnv, homeEnv]) {
 // it now from the updated env. `getAgentDir()` already located the `.env` from
 // the profile name + home, so this re-reads only the directory vars.
 refreshDirsFromEnv();
+
+const launchProjectDotenv = (() => {
+	const cwd = getProjectDir();
+	const processValues = filterProcessEnv(process.env);
+	const loaded = loadLaunchCwdDotenv(cwd, processValues);
+	const names = new Set(Object.keys(loaded.launchEnv));
+	if (loaded.fallbackLaunchEnv) {
+		for (const key in loaded.fallbackLaunchEnv) names.add(key);
+	}
+	return { names, ...loaded };
+})();
+
+/**
+ * True when `name` entered the process from the launch project's dotenv files
+ * rather than the parent shell. Used to distrust redirected global agent and
+ * config directories.
+ *
+ * Bun replaces an empty launcher value with the dotenv one, so an empty
+ * parent `PI_CODING_AGENT_DIR`/`PI_CONFIG_DIR` that now holds a dotenv value
+ * is still project-owned. Mode files follow Bun's pre-dotenv `NODE_ENV`
+ * selection, including a `.env.development` fallback when dotenv itself
+ * mutates `NODE_ENV`. On Windows, dotenv and queried names match
+ * case-insensitively because process env lookups do.
+ */
+export function isEnvOwnedByProjectDotenv(name: string): boolean {
+	if (matchingEnvName(projectEnvNamesLoadedByOmp, name) !== undefined) return true;
+	const dotenvName = matchingEnvName(launchProjectDotenv.names, name);
+	if (dotenvName === undefined) return false;
+	const launch = matchingMapEntry(launchEnvValues, name);
+	if (launch.has && launch.value !== "") return false;
+	if (launchEnvValues && !launch.has) return true;
+	const current = readProcessEnv(name);
+	if (current === undefined) return false;
+	return (
+		current === launchProjectDotenv.launchEnv[dotenvName] ||
+		current === launchProjectDotenv.expandedLaunchEnv[dotenvName] ||
+		current === launchProjectDotenv.fallbackLaunchEnv?.[dotenvName] ||
+		current === launchProjectDotenv.expandedFallbackLaunchEnv?.[dotenvName]
+	);
+}
 
 /**
  * Intentional re-export of Bun.env.

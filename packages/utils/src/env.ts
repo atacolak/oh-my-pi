@@ -295,6 +295,39 @@ const launchProjectDotenv = (() => {
 	return { names, ...loaded };
 })();
 
+function envKeysInclude(keys: Iterable<string>, name: string): boolean {
+	if (process.platform !== "win32") {
+		if (keys instanceof Set) return keys.has(name);
+		if (keys instanceof Map) return keys.has(name);
+	}
+	const needle = process.platform === "win32" ? name.toLowerCase() : name;
+	for (const key of keys instanceof Map ? keys.keys() : keys) {
+		if ((process.platform === "win32" ? key.toLowerCase() : key) === needle) return true;
+	}
+	return false;
+}
+
+function envLookup(
+	source: ReadonlyMap<string, string> | Record<string, string> | undefined,
+	name: string,
+): string | undefined {
+	if (!source) return undefined;
+	if (process.platform !== "win32") {
+		return source instanceof Map ? source.get(name) : source[name];
+	}
+	const needle = name.toLowerCase();
+	if (source instanceof Map) {
+		for (const [key, value] of source) {
+			if (key.toLowerCase() === needle) return value;
+		}
+		return undefined;
+	}
+	for (const key in source) {
+		if (key.toLowerCase() === needle) return source[key];
+	}
+	return undefined;
+}
+
 /**
  * True when `name` entered the process from the launch project's dotenv files
  * rather than the parent shell. Used to distrust redirected global agent and
@@ -307,17 +340,20 @@ const launchProjectDotenv = (() => {
  * mutates `NODE_ENV`.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
-	if (projectEnvNamesLoadedByOmp.has(name)) return true;
-	if (!launchProjectDotenv.names.has(name)) return false;
-	if (launchEnvValues?.has(name) && launchEnvValues.get(name) !== "") return false;
-	if (launchEnvValues && !launchEnvValues.has(name)) return true;
+	if (envKeysInclude(projectEnvNamesLoadedByOmp, name)) return true;
+	if (!envKeysInclude(launchProjectDotenv.names, name)) return false;
+	if (launchEnvValues) {
+		const launchValue = envLookup(launchEnvValues, name);
+		if (launchValue !== undefined && launchValue !== "") return false;
+		if (launchValue === undefined) return true;
+	}
 	const current = process.env[name];
 	if (current === undefined) return false;
 	return (
-		current === launchProjectDotenv.launchEnv[name] ||
-		current === launchProjectDotenv.expandedLaunchEnv[name] ||
-		current === launchProjectDotenv.fallbackLaunchEnv?.[name] ||
-		current === launchProjectDotenv.expandedFallbackLaunchEnv?.[name]
+		current === envLookup(launchProjectDotenv.launchEnv, name) ||
+		current === envLookup(launchProjectDotenv.expandedLaunchEnv, name) ||
+		current === envLookup(launchProjectDotenv.fallbackLaunchEnv, name) ||
+		current === envLookup(launchProjectDotenv.expandedFallbackLaunchEnv, name)
 	);
 }
 

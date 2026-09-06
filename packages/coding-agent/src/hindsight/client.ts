@@ -106,7 +106,11 @@ export interface RetainOptions extends HindsightRequestOptions {
 	documentId?: string;
 	async?: boolean;
 	tags?: string[];
+	/** Exact deterministic observation consolidation scopes for this item. */
+	observationScopes?: string[][];
 	updateMode?: UpdateMode;
+	/** Per-item extraction strategy override. Omitted from the body when unset. */
+	strategy?: string;
 }
 
 export interface RetainBatchOptions extends HindsightRequestOptions {
@@ -213,6 +217,55 @@ export interface GetMentalModelOptions extends HindsightRequestOptions {
 	detail?: MentalModelDetail;
 }
 
+export type KnowledgeNodeKind = "folder" | "page";
+
+export interface KnowledgeNode {
+	id: string;
+	kind: KnowledgeNodeKind;
+	name: string;
+	parent_id?: string | null;
+	mental_model_id?: string | null;
+	managed?: boolean;
+	description?: string | null;
+	tags?: string[];
+	timestamp?: string | null;
+	is_stale?: boolean | null;
+	children?: KnowledgeNode[];
+}
+
+export interface KnowledgeTreeResponse {
+	roots: KnowledgeNode[];
+}
+
+export interface KnowledgeSearchHit {
+	id: string;
+	name: string;
+	mental_model_id?: string | null;
+	snippet: string;
+	score: number;
+	updated_at?: string | null;
+}
+
+export interface KnowledgeSearchResponse {
+	results: KnowledgeSearchHit[];
+	total: number;
+}
+
+export interface KnowledgePageDocument {
+	id: string;
+	name: string;
+	type: string;
+	description?: string | null;
+	tags: string[];
+	timestamp?: string | null;
+	body: string;
+	markdown: string;
+}
+
+export interface KnowledgeSearchOptions extends HindsightRequestOptions {
+	limit?: number;
+}
+
 export class HindsightError extends Error {
 	statusCode?: number;
 	details?: unknown;
@@ -267,7 +320,10 @@ export class HindsightApi {
 			metadata: options?.metadata,
 			documentId: options?.documentId,
 			tags: options?.tags,
+			observationScopes: options?.observationScopes,
+
 			updateMode: options?.updateMode,
+			strategy: options?.strategy,
 		});
 
 		return this.#request<RetainResponse>(
@@ -527,6 +583,41 @@ export class HindsightApi {
 		);
 		if (Array.isArray(response)) return response;
 		return response.items ?? [];
+	}
+
+	async getKnowledgeBaseTree(bankId: string, options?: HindsightRequestOptions): Promise<KnowledgeTreeResponse> {
+		return this.#request<KnowledgeTreeResponse>(
+			"GET",
+			`/v1/default/banks/${encodeURIComponent(bankId)}/knowledge-base/tree`,
+			"getKnowledgeBaseTree",
+			{ signal: options?.signal },
+		);
+	}
+
+	async searchKnowledgeBase(
+		bankId: string,
+		query: string,
+		options?: KnowledgeSearchOptions,
+	): Promise<KnowledgeSearchResponse> {
+		return this.#request<KnowledgeSearchResponse>(
+			"GET",
+			`/v1/default/banks/${encodeURIComponent(bankId)}/knowledge-base/search`,
+			"searchKnowledgeBase",
+			{ query: { q: query, limit: options?.limit }, signal: options?.signal },
+		);
+	}
+
+	async getKnowledgePage(
+		bankId: string,
+		pageId: string,
+		options?: HindsightRequestOptions,
+	): Promise<KnowledgePageDocument | null> {
+		return this.#request<KnowledgePageDocument | null>(
+			"GET",
+			`/v1/default/banks/${encodeURIComponent(bankId)}/knowledge-base/pages/${encodeURIComponent(pageId)}`,
+			"getKnowledgePage",
+			{ allow404: true, signal: options?.signal },
+		);
 	}
 
 	async #request<T>(method: string, path: string, operation: string, opts?: RequestOptions): Promise<T> {

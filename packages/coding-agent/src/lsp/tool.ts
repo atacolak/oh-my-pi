@@ -29,6 +29,7 @@ import {
 	isRustAnalyzerClient,
 	type LspClientOwner,
 	type LspServerStatus,
+	ownerConfigGeneration,
 	reconcileExecutedChanges,
 	refreshFile,
 	releaseLspClientOwner,
@@ -360,7 +361,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					details: { action, success: false, request: params },
 				};
 			}
-
+			const diagnosticsGeneration = ownerConfigGeneration(this.#clientOwner);
 			let truncatedGlobTargets = false;
 			const resolvedTargets = await resolveDiagnosticTargets(file, this.session.cwd, MAX_GLOB_DIAGNOSTIC_TARGETS);
 			const targets = resolvedTargets.matches;
@@ -388,6 +389,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				throwIfAborted(signal);
 				const resolved = resolveToCwd(target, this.session.cwd);
 				const servers = getServersForFile(config, resolved, workspaceRoots);
+				for (const [, serverConfig] of servers) {
+					stampOwnerConfigGeneration(serverConfig, this.#clientOwner, diagnosticsGeneration);
+				}
 				if (servers.length === 0) {
 					results.push(`${theme.status.error} ${target}: No language server found`);
 					continue;
@@ -1056,6 +1060,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			const [chosenName, chosenConfig] = chosenServer;
+			stampOwnerConfigGeneration(chosenConfig, this.#clientOwner);
 			let requestParams: unknown;
 			if (params.payload !== undefined) {
 				try {

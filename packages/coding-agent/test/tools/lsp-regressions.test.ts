@@ -42,6 +42,7 @@ import {
 	type TextDocumentEdit,
 	type WorkspaceEdit,
 } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import * as lspUtils from "@oh-my-pi/pi-coding-agent/lsp/utils";
 import {
 	applyCodeAction,
 	collectGlobMatches,
@@ -5237,6 +5238,142 @@ describe("lsp regressions", () => {
 				1_000,
 				undefined,
 				reloadingOwner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
+	it("file diagnostics reject a nested config captured before overlapping reload", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-diagnostics-reload-stamp-");
+		try {
+			await initTheme();
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			await Bun.write(path.join(nestedRoot, "package.json"), "{}\n");
+			const targetFile = path.join(nestedRoot, "a.ts");
+			await Bun.write(targetFile, "export const a = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-diagnostics-reload-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: ["package.json"],
+			};
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "nested-diagnostics-reload-lsp" ? "/usr/bin/nested-diagnostics-reload-lsp" : null,
+			);
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: {},
+				definitions: { nested: nestedConfig },
+			});
+			const owner = lspClient.createLspClientOwner();
+			const entered = Promise.withResolvers<void>();
+			const delayed = Promise.withResolvers<void>();
+			vi.spyOn(lspUtils, "resolveDiagnosticTargets").mockImplementation(async () => {
+				entered.resolve();
+				await delayed.promise;
+				return { matches: [targetFile], truncated: false };
+			});
+			const oldServer = installHandshakeLsp();
+			const tool = new LspTool(
+				{ cwd: tempDir.path(), settings: lspTestSettings, lspClientOwner: owner } as ToolSession,
+				owner,
+			);
+			const diagnostics = tool.execute("diagnostics-reload-stamp", {
+				action: "diagnostics",
+				file: targetFile,
+				timeout: 5,
+			});
+			await entered.promise;
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			delayed.resolve();
+			const result = await diagnostics;
+			expect(result.details?.success).toBe(false);
+			expect(textResult(result)).toContain("nested");
+			expect(textResult(result)).toContain("all language servers failed");
+			expect(oldServer.received.map(message => message.method)).not.toContain("initialize");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain(
+				"nested-diagnostics-reload-lsp",
+			);
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...nestedConfig, args: ["--mode", "new"], resolvedRoot: nestedRoot },
+				tempDir.path(),
+				1_000,
+				undefined,
+				owner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
+	it("raw request rejects a nested config captured before symbol resolution", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-request-reload-stamp-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			await Bun.write(path.join(nestedRoot, "package.json"), "{}\n");
+			const targetFile = path.join(nestedRoot, "a.ts");
+			await Bun.write(targetFile, "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-request-reload-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: ["package.json"],
+			};
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "nested-request-reload-lsp" ? "/usr/bin/nested-request-reload-lsp" : null,
+			);
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: {},
+				definitions: { nested: nestedConfig },
+			});
+			const owner = lspClient.createLspClientOwner();
+			const entered = Promise.withResolvers<void>();
+			const delayed = Promise.withResolvers<void>();
+			vi.spyOn(lspUtils, "resolveSymbolColumn").mockImplementation(async () => {
+				entered.resolve();
+				await delayed.promise;
+				return 0;
+			});
+			const oldServer = installHandshakeLsp();
+			const tool = new LspTool(
+				{ cwd: tempDir.path(), settings: lspTestSettings, lspClientOwner: owner } as ToolSession,
+				owner,
+			);
+			const request = tool.execute("request-reload-stamp", {
+				action: "request",
+				file: targetFile,
+				line: 1,
+				query: "textDocument/hover",
+				timeout: 5,
+			});
+			await entered.promise;
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			delayed.resolve();
+			const result = await request;
+			expect(result.details?.success).toBe(false);
+			expect(textResult(result)).toContain("superseded during reload");
+			expect(oldServer.received.map(message => message.method)).not.toContain("initialize");
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).not.toContain(
+				"nested-request-reload-lsp",
+			);
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...nestedConfig, args: ["--mode", "new"], resolvedRoot: nestedRoot },
+				tempDir.path(),
+				1_000,
+				undefined,
+				owner,
 			);
 			expect(replacement.config.args).toEqual(["--mode", "new"]);
 			expect(replacementServer.received.map(message => message.method)).toContain("initialize");

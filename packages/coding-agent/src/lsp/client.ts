@@ -1493,12 +1493,16 @@ function collectReloadBarriers(config: ServerConfig, cwd: string): Promise<unkno
 	return reloadBarriers;
 }
 
-export function stampOwnerConfigGeneration(config: ServerConfig, owner?: LspClientOwner): number {
+export function ownerConfigGeneration(owner?: LspClientOwner): number {
+	return owner ? (ownerReloadGeneration.get(owner) ?? 0) : 0;
+}
+
+export function stampOwnerConfigGeneration(config: ServerConfig, owner?: LspClientOwner, generation?: number): number {
 	const stamped = configReloadGenerations.get(config);
 	if (stamped !== undefined) return stamped;
-	const generation = owner ? (ownerReloadGeneration.get(owner) ?? 0) : 0;
-	configReloadGenerations.set(config, generation);
-	return generation;
+	const resolved = generation ?? ownerConfigGeneration(owner);
+	configReloadGenerations.set(config, resolved);
+	return resolved;
 }
 
 function capturedBeforeOwnerReload(config: ServerConfig, key: string, cwd: string, owner?: LspClientOwner): boolean {

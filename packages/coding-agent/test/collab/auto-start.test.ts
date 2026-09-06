@@ -221,7 +221,6 @@ describe("collab auto-start", () => {
 		}
 	});
 
-
 	it("does not attach or write a link after a cancelled pending start", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const file = path.join(dir, "collab.link");

@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- Fixed `/settings` leaving the project-effective appearance after adopting a theme or status-line edit while previewing another scope.
+- Fixed `/settings` keeping the previous scope's theme after Alt+S onto an unloadable Dark/Light mapping.
+- Fixed `/settings` leaving a hovered theme after canceling an unloadable Dark/Light Theme submenu.
+- Fixed `/settings` previewing project glyphs and color-blind colors while browsing a different scope.
+- Fixed `/settings` dropping custom status-line segment options when closing the overlay.
+- Fixed `/settings` leaving a stale live theme or status preview after adopting a search-mode appearance submenu edit.
 - Fixed project saves leaving live browser and computer tools on the rejected local value after adopting a newer disk edit.
 - Fixed project-cleared provider request limits leaking `null` tombstones through `Settings.get()` and `omp config get --json`.
 - Fixed project saves leaving the live advisor status-line indicator stale after adopting an `advisor.enabled` disk edit.

@@ -10,6 +10,7 @@ import {
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import {
+	getColorBlindMode,
 	getCurrentThemeName,
 	initTheme,
 	onTerminalAppearanceChange,
@@ -216,6 +217,48 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		selector.handleInput("\x1bs");
 		expect(previews.at(-1)).toBe("dark-one");
 	});
+	it("falls back when switching to a scope whose theme cannot load", async () => {
+		settings.set("theme.dark", "titanium", "project");
+		settings.set("theme.light", "titanium", "project");
+		settings.set("theme.dark", "missing-custom", "global");
+		settings.set("theme.light", "missing-custom", "global");
+		await setTheme("titanium");
+		expect(getCurrentThemeName()).toBe("titanium");
+		const titaniumAccent = theme.fg("accent", "*");
+
+		const previewed: string[] = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: async themeName => {
+					previewed.push(themeName);
+					const preview = previewTheme(themeName);
+					pendingPreviews.push(preview);
+					await preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("titanium");
+		expect(theme.fg("accent", "*")).toBe(titaniumAccent);
+
+		selector.handleInput("\x1bs");
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("dark");
+		expect(previewed).not.toContain("missing-custom");
+		expect(theme.fg("accent", "*")).not.toBe(titaniumAccent);
+		expect(settings.get("theme.dark")).toBe("titanium");
+	});
+
 	it("restores the live fallback when the effective theme cannot load", async () => {
 		resetSettingsForTest();
 		AgentStorage.close();
@@ -372,6 +415,53 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		selector.handleInput("\x1b");
 		expect(previews.at(-1)?.segmentOptions).toEqual({ path: { abbreviate: true } });
 	});
+	it("previews the selected scope's symbol and color-blind options", async () => {
+		settings.set("symbolPreset", "nerd", "project");
+		settings.set("symbolPreset", "ascii", "global");
+		settings.set("colorBlindMode", true, "project");
+		settings.set("colorBlindMode", false, "global");
+		const previews: Array<{ theme?: string; symbolPreset?: string; colorBlindMode?: boolean }> = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: (themeName, options) => {
+					previews.push({ theme: themeName, ...options });
+					const preview = previewTheme(themeName, {
+						ephemeral: true,
+						symbolPreset: options?.symbolPreset,
+						colorBlindMode: options?.colorBlindMode,
+					});
+					pendingPreviews.push(preview);
+					void preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toMatchObject({ symbolPreset: "nerd", colorBlindMode: true });
+		expect(theme.getSymbolPreset()).toBe("nerd");
+		expect(getColorBlindMode()).toBe(true);
+		selector.handleInput("\x1bs");
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toMatchObject({ symbolPreset: "ascii", colorBlindMode: false });
+		expect(theme.getSymbolPreset()).toBe("ascii");
+		expect(getColorBlindMode()).toBe(false);
+		expect(settings.get("symbolPreset")).toBe("nerd");
+		expect(settings.get("colorBlindMode")).toBe(true);
+		selector.handleInput("\x1b");
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toMatchObject({ symbolPreset: "nerd", colorBlindMode: true });
+		expect(theme.getSymbolPreset()).toBe("nerd");
+		expect(getColorBlindMode()).toBe(true);
+	});
 
 	it("restores the scoped theme when canceling a theme submenu", () => {
 		const previews: string[] = [];
@@ -403,6 +493,56 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		selector.handleInput("\x1b");
 		expect(previews.at(-1)).toBe("titanium");
 		expect(settings.get("theme.dark")).toBe("dark-one");
+	});
+	it("restores the live fallback when canceling an unloadable theme submenu", async () => {
+		resetSettingsForTest();
+		AgentStorage.close();
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ theme: { dark: "missing-custom", light: "missing-custom" } }, null, 2),
+		);
+		await Settings.init({ cwd: projectDir, agentDir });
+		await setTheme("dark");
+		expect(getCurrentThemeName()).toBe("dark");
+		expect(settings.get("theme.dark")).toBe("missing-custom");
+		const fallbackAccent = theme.fg("accent", "*");
+
+		const previewed: string[] = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: async themeName => {
+					previewed.push(themeName);
+					const preview = previewTheme(themeName);
+					pendingPreviews.push(preview);
+					await preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		expect(theme.fg("accent", "*")).toBe(fallbackAccent);
+
+		for (const ch of "dark theme") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("titanium");
+		expect(theme.fg("accent", "*")).not.toBe(fallbackAccent);
+
+		selector.handleInput("\x1b");
+		await Promise.all(pendingPreviews);
+		expect(previewed.at(-1)).toBe("dark");
+		expect(theme.fg("accent", "*")).toBe(fallbackAccent);
+		expect(settings.get("theme.dark")).toBe("missing-custom");
 	});
 
 	it("reapplies the scoped theme after a shadowed global theme submenu commit", () => {
@@ -798,6 +938,96 @@ describe("SettingsSelectorComponent persistence scope", () => {
 			hindsight: { apiToken: "global-secret-token" },
 		});
 	});
+	it("reapplies appearance after adopting a search-mode theme submenu", async () => {
+		settings.set("theme.dark", "dark-one", "project");
+		await settings.flush();
+		const previews: string[] = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium", "alabaster"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: themeName => {
+					previews.push(themeName);
+				},
+				onCancel: () => {},
+			},
+		);
+		expect(previews.at(-1)).toBe("dark-one");
+
+		settings.set("ask.enabled", false, "project");
+		for (const ch of "dark theme") selector.handleInput(ch);
+		selector.handleInput("\n");
+		selector.handleInput("\x1b[B");
+		expect(previews.at(-1)).toBe("titanium");
+
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ ask: { enabled: true }, custom: { keep: true }, theme: { dark: "alabaster" } }, null, 2),
+		);
+		await settings.flush();
+
+		expect(settings.get("theme.dark")).toBe("alabaster");
+		expect(previews.at(-1)).toBe("alabaster");
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).toContain("alabaster");
+	});
+
+	it("reapplies scoped appearance after adopting a theme on a non-appearance tab", async () => {
+		settings.set("theme.dark", "dark-one", "project");
+		settings.set("theme.dark", "titanium", "global");
+		await settings.flush();
+		const previews: string[] = [];
+		const pendingPreviews: Array<Promise<unknown>> = [];
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: ["dark-one", "titanium", "alabaster"],
+				providers: [],
+				cwd: projectDir,
+			},
+			{
+				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
+				onThemePreview: async themeName => {
+					previews.push(themeName);
+					const preview = previewTheme(themeName);
+					pendingPreviews.push(preview);
+					await preview;
+				},
+				onCancel: () => {},
+			},
+		);
+		await Promise.all(pendingPreviews);
+		selector.handleInput("\x1bs");
+		await Promise.all(pendingPreviews);
+		expect(previews.at(-1)).toBe("titanium");
+		const titaniumAccent = theme.fg("accent", "*");
+		const previewCountBeforeAdopt = previews.length;
+		selector.handleInput("\x1b[C");
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).toContain("Settings · global");
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).not.toContain("Preview:");
+
+		settings.set("ask.enabled", false, "project");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ ask: { enabled: true }, custom: { keep: true }, theme: { dark: "alabaster" } }, null, 2),
+		);
+		await settings.flush();
+		await Promise.all(pendingPreviews);
+
+		expect(settings.get("theme.dark")).toBe("alabaster");
+		expect(settings.getGlobalValue("theme.dark")).toBe("titanium");
+		expect(previews.length).toBeGreaterThan(previewCountBeforeAdopt);
+		expect(previews.at(-1)).toBe("titanium");
+		expect(theme.fg("accent", "*")).toBe(titaniumAccent);
+		expect(Bun.stripANSI(selector.render(120).join("\n"))).toContain("Settings · global");
+	});
+
 	it("rebuilds open rows after a skipped same-key project save", async () => {
 		settings.set("defaultThinkingLevel", Effort.Low, "project");
 		await settings.flush();

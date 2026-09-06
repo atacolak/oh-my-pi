@@ -55,6 +55,7 @@ import {
 	getCurrentThemeName,
 	getSelectListTheme,
 	getSettingsListTheme,
+	type SymbolPreset,
 	theme,
 } from "../../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
@@ -588,12 +589,16 @@ export interface StatusLinePreviewSettings {
 	compactThinkingLevel?: boolean;
 	segmentOptions?: Record<string, unknown>;
 }
+export interface ThemePreviewOptions {
+	symbolPreset?: SymbolPreset;
+	colorBlindMode?: boolean;
+}
 
 export interface SettingsCallbacks {
 	/** Called when any setting value changes */
 	onChange: (path: SettingPath, newValue: unknown) => void;
 	/** Called for theme preview while browsing */
-	onThemePreview?: (theme: string) => void | Promise<void>;
+	onThemePreview?: (theme: string, options?: ThemePreviewOptions) => void | Promise<void>;
 	/** Called for status line preview while configuring */
 	onStatusLinePreview?: (settings: StatusLinePreviewSettings) => void;
 	/** Get current rendered status line for inline preview */
@@ -1126,13 +1131,18 @@ export class SettingsSelectorComponent implements Component {
 		let onPreviewCancel: (() => void) | undefined;
 		let footer: Component | undefined;
 
-		const activeThemeBeforePreview = this.#scopedThemeName() ?? currentValue;
 		if (def.path === "theme.dark" || def.path === "theme.light") {
 			onPreview = value => {
-				return this.callbacks.onThemePreview?.(value);
+				return this.callbacks.onThemePreview?.(
+					value,
+					this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
+				);
 			};
 			onPreviewCancel = () => {
-				this.callbacks.onThemePreview?.(activeThemeBeforePreview);
+				this.#triggerThemePreview(
+					this.#loadableScopedThemeName(),
+					this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
+				);
 			};
 		} else if (def.path === "statusLine.preset") {
 			onPreview = value => {
@@ -1500,18 +1510,23 @@ export class SettingsSelectorComponent implements Component {
 			this.#refreshCurrentTabItems(getSettingsForTab(this.#currentTabId));
 			if (selectedId) this.#currentList?.selectItem(selectedId);
 		}
-		if (
+		const shouldRefreshOpenSubmenu =
 			this.#scope === "project" &&
-			openSubmenuId &&
-			list &&
-			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths))
-		) {
+			openSubmenuId !== null &&
+			list !== null &&
+			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths));
+		if (shouldRefreshOpenSubmenu && list) {
 			const refreshed = list.refreshOpenSubmenu();
 			if (!refreshed && this.#textInputActive && !list.hasOpenSubmenu()) {
 				this.#textInputActive = false;
 			}
 		}
-		if (this.#currentTabId === "appearance" && !this.#searchList) {
+		// Adopted theme/status/symbol/color-blind values first apply the
+		// project-effective appearance through setting hooks. Reassert the
+		// selected scope even when the current tab or search result is not an
+		// appearance editor; otherwise global-scope rows keep rendering the
+		// project-effective preview until the next scope/tab action.
+		if (adoptedPaths.some(path => getSettingDef(path)?.tab === "appearance")) {
 			this.#previewAppearanceForScope();
 		}
 		this.context.requestRender?.();
@@ -1580,8 +1595,10 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	#previewAppearanceForScope(): void {
-		const themeName = this.#scopedThemeName();
-		if (themeName) void this.callbacks.onThemePreview?.(themeName);
+		this.#triggerThemePreview(
+			this.#loadableScopedThemeName(),
+			this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
+		);
 		this.#triggerStatusLinePreview();
 	}
 
@@ -1589,8 +1606,26 @@ export class SettingsSelectorComponent implements Component {
 		return this.#themeName(this.#scopedValue("theme.dark"), this.#scopedValue("theme.light"));
 	}
 
+	#loadableScopedThemeName(): string | undefined {
+		const name = this.#scopedThemeName();
+		if (name && this.context.availableThemes.includes(name)) return name;
+		// Deleted or overlay-only names must not keep the previous scope's
+		// preview. Startup falls back to dark when this mapping is effective.
+		return name ? "dark" : undefined;
+	}
+
 	#effectiveThemeName(): string | undefined {
 		return this.#themeName(settings.get("theme.dark"), settings.get("theme.light"));
+	}
+
+	#themePreviewOptions(symbolPreset: unknown, colorBlindMode: unknown): ThemePreviewOptions {
+		return {
+			symbolPreset:
+				symbolPreset === "unicode" || symbolPreset === "nerd" || symbolPreset === "ascii"
+					? symbolPreset
+					: undefined,
+			colorBlindMode: typeof colorBlindMode === "boolean" ? colorBlindMode : undefined,
+		};
 	}
 
 	#themeName(dark: unknown, light: unknown): string | undefined {
@@ -1599,6 +1634,20 @@ export class SettingsSelectorComponent implements Component {
 		if (typeof dark === "string" && dark.length > 0) return dark;
 		if (typeof light === "string" && light.length > 0) return light;
 		return undefined;
+	}
+
+	#triggerThemePreview(themeName: string | undefined, options: ThemePreviewOptions): void {
+		if (themeName) void this.callbacks.onThemePreview?.(themeName, options);
+	}
+
+	/**
+	 * Prefer a theme the selector can load. Deleted custom names and overlay
+	 * paths that never made `availableThemes` restore the live fallback captured
+	 * before the first scoped preview, then `dark`.
+	 */
+	#loadableThemeName(name: string | undefined): string | undefined {
+		if (name && this.context.availableThemes.includes(name)) return name;
+		return this.#themeBeforePreview ?? (name ? "dark" : undefined);
 	}
 
 	/**
@@ -1611,12 +1660,10 @@ export class SettingsSelectorComponent implements Component {
 	#close(): void {
 		this.#unsubscribeProjectSettings?.();
 		this.#unsubscribeProjectSettings = undefined;
-		const effective = this.#effectiveThemeName();
-		const themeName =
-			effective && this.context.availableThemes.includes(effective)
-				? effective
-				: (this.#themeBeforePreview ?? (effective ? "dark" : undefined));
-		if (themeName) void this.callbacks.onThemePreview?.(themeName);
+		this.#triggerThemePreview(
+			this.#loadableThemeName(this.#effectiveThemeName()),
+			this.#themePreviewOptions(settings.get("symbolPreset"), settings.get("colorBlindMode")),
+		);
 		this.#triggerEffectiveStatusLinePreview();
 		this.callbacks.onCancel();
 	}

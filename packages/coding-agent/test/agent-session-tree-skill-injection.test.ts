@@ -360,8 +360,10 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			expect(sessionManager.getSessionId()).toBe(persistedId);
 			const resetId = sessionManager.getBranch().findLast(entry => entry.type === "reset_boundary")?.id;
 			expect(resetId).toBeDefined();
-			expect(session.hindsightDocumentId).toBe(`${persistedId}:${resetId}`);
-			expect(state.sessionId).toBe(session.hindsightDocumentId);
+			const overlayAfterClear = session.hindsightDocumentId;
+			if (!overlayAfterClear) throw new Error("expected post-clear hindsight document overlay");
+			expect(overlayAfterClear).toBe(`${persistedId}:${resetId}`);
+			expect(state.sessionId).toBe(overlayAfterClear);
 
 			sessionManager.appendMessage(userMsg("post-clear turn has enough text"));
 			sessionManager.appendMessage(assistantMsg("post-clear reply has enough text"));
@@ -447,7 +449,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			const state = session.getHindsightSessionState()!;
 			await session.resetSessionContext();
 			const overlayAfterClear = session.hindsightDocumentId;
-			expect(overlayAfterClear).toBeDefined();
+			if (!overlayAfterClear) throw new Error("expected post-clear hindsight document overlay");
 			expect(state.sessionId).toBe(overlayAfterClear);
 
 			const result = await session.branch(branchUserId);
@@ -460,9 +462,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			sessionManager.appendMessage(assistantMsg("post-branch reply has enough text"));
 			await state.drainOnClose();
 			expect(retain).toHaveBeenCalled();
-			expect(retain.mock.calls.at(-1)?.[2]).toEqual(
-				expect.objectContaining({ documentId: state.sessionId }),
-			);
+			expect(retain.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({ documentId: state.sessionId }));
 			expect(retain.mock.calls.some(call => call[2]?.documentId === overlayAfterClear)).toBe(false);
 		} finally {
 			await ctx.cleanup();
@@ -565,16 +565,14 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			const state = session.getHindsightSessionState()!;
 			await session.resetSessionContext();
 			const overlayAfterClear = session.hindsightDocumentId;
-			expect(overlayAfterClear).toBeDefined();
+			if (!overlayAfterClear) throw new Error("expected post-clear hindsight document overlay");
 			expect(state.sessionId).toBe(overlayAfterClear);
 
 			sessionManager.appendMessage(userMsg("post-clear turn has enough text"));
 			sessionManager.appendMessage(assistantMsg("post-clear reply has enough text"));
 			await state.maybeRetainOnAgentEnd();
 			expect(retain).toHaveBeenCalledTimes(2);
-			expect(retain.mock.calls.at(-1)?.[2]).toEqual(
-				expect.objectContaining({ documentId: overlayAfterClear }),
-			);
+			expect(retain.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({ documentId: overlayAfterClear }));
 			expect(String(retain.mock.calls.at(-1)?.[1])).toContain("post-clear turn has enough text");
 
 			const result = await session.navigateTree(firstAssistantId, { summarize: false });

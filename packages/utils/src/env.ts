@@ -89,6 +89,35 @@ function readLaunchEnv(): ReadonlyMap<string, string> | undefined {
 }
 
 const launchEnvValues = readLaunchEnv();
+
+function matchingEnvName(names: Iterable<string>, name: string): string | undefined {
+	for (const key of names) {
+		if (process.platform === "win32" ? key.toLowerCase() === name.toLowerCase() : key === name) {
+			return key;
+		}
+	}
+	return undefined;
+}
+
+function matchingMapEntry(
+	map: ReadonlyMap<string, string> | undefined,
+	name: string,
+): { has: boolean; value: string | undefined } {
+	if (!map) return { has: false, value: undefined };
+	if (map.has(name)) return { has: true, value: map.get(name) };
+	const key = matchingEnvName(map.keys(), name);
+	if (key === undefined) return { has: false, value: undefined };
+	return { has: true, value: map.get(key) };
+}
+
+function readProcessEnv(name: string): string | undefined {
+	const value = process.env[name];
+	if (value !== undefined) return value;
+	if (process.platform !== "win32") return undefined;
+	const key = matchingEnvName(Object.keys(process.env), name);
+	return key === undefined ? undefined : process.env[key];
+}
+
 const projectEnvNamesLoadedByOmp = new Set<string>();
 
 function expandDotenvValues(values: Record<string, string>, env: Record<string, string>): Record<string, string> {
@@ -304,20 +333,23 @@ const launchProjectDotenv = (() => {
  * parent `PI_CODING_AGENT_DIR`/`PI_CONFIG_DIR` that now holds a dotenv value
  * is still project-owned. Mode files follow Bun's pre-dotenv `NODE_ENV`
  * selection, including a `.env.development` fallback when dotenv itself
- * mutates `NODE_ENV`.
+ * mutates `NODE_ENV`. On Windows, dotenv and queried names match
+ * case-insensitively because process env lookups do.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
-	if (projectEnvNamesLoadedByOmp.has(name)) return true;
-	if (!launchProjectDotenv.names.has(name)) return false;
-	if (launchEnvValues?.has(name) && launchEnvValues.get(name) !== "") return false;
-	if (launchEnvValues && !launchEnvValues.has(name)) return true;
-	const current = process.env[name];
+	if (matchingEnvName(projectEnvNamesLoadedByOmp, name) !== undefined) return true;
+	const dotenvName = matchingEnvName(launchProjectDotenv.names, name);
+	if (dotenvName === undefined) return false;
+	const launch = matchingMapEntry(launchEnvValues, name);
+	if (launch.has && launch.value !== "") return false;
+	if (launchEnvValues && !launch.has) return true;
+	const current = readProcessEnv(name);
 	if (current === undefined) return false;
 	return (
-		current === launchProjectDotenv.launchEnv[name] ||
-		current === launchProjectDotenv.expandedLaunchEnv[name] ||
-		current === launchProjectDotenv.fallbackLaunchEnv?.[name] ||
-		current === launchProjectDotenv.expandedFallbackLaunchEnv?.[name]
+		current === launchProjectDotenv.launchEnv[dotenvName] ||
+		current === launchProjectDotenv.expandedLaunchEnv[dotenvName] ||
+		current === launchProjectDotenv.fallbackLaunchEnv?.[dotenvName] ||
+		current === launchProjectDotenv.expandedFallbackLaunchEnv?.[dotenvName]
 	);
 }
 

@@ -238,9 +238,9 @@ export function splitServers(servers: Array<[string, ServerConfig]>): {
 }
 
 export function getLspServers(config: LspConfig): Array<[string, ServerConfig]> {
-	return (Object.entries(config.servers) as Array<[string, ServerConfig]>).filter(
-		([, serverConfig]) => !isCustomLinter(serverConfig),
-	);
+	return (Object.entries(config.servers) as Array<[string, ServerConfig]>)
+		.filter(([, serverConfig]) => !isCustomLinter(serverConfig))
+		.map(([name, serverConfig]) => [name, { ...serverConfig }]);
 }
 
 export function getLspServersForFile(

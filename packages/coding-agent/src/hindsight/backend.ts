@@ -192,7 +192,7 @@ async function installPrimaryState(
 	closeRetainBaselineTurns?: number,
 	loadedMessageCount?: number,
 ): Promise<HindsightSessionState | undefined> {
-	const sessionId = session.sessionManager.getSessionId() || session.sessionId;
+	const sessionId = session.hindsightDocumentId || session.sessionManager.getSessionId() || session.sessionId;
 	if (!sessionId) return undefined;
 
 	const config = loadHindsightConfig(settings);

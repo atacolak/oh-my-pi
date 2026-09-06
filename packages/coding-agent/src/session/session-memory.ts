@@ -83,11 +83,11 @@ export class SessionMemory {
 
 	#rekeyHindsightMemoryForCurrentSessionId(): void {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return;
-		// Provider-only rotations (`/fresh`) change `agent.sessionId` while the
-		// local transcript and Hindsight document stay on the persisted
-		// conversation. Rekeying from the provider id would wipe the retain
-		// boundary and duplicate the already-written tail on close.
-		const sid = this.#host.memoryBackendSession().sessionManager.getSessionId();
+		// `/fresh` keeps the persisted conversation document. `/clear` overlays
+		// `sessionId:resetBoundaryId` so resume reconstructs the same identity
+		// and a later retain cannot replace the drained pre-clear history.
+		const session = this.#host.memoryBackendSession();
+		const sid = session.hindsightDocumentId ?? session.sessionManager.getSessionId();
 		if (!sid) return;
 		this.#host.getHindsightSessionState()?.setSessionId(sid);
 	}

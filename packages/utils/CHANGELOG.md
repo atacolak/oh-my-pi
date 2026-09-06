@@ -17,6 +17,7 @@
 
 - Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
 - Reused child-shell dotenv reconstruction so Bun's pre-dotenv `NODE_ENV` mode files are treated as project-owned.
+- Matched project-dotenv ownership of environment names case-insensitively on Windows.
 
 ## [18.1.11] - 2026-09-05
 

@@ -3,7 +3,7 @@ import { isEnoent, logger, once, untilAborted } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
 import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import { isPermissionDeniedError, writeFileWithFallback } from "../tools/file-write-fallback";
-import { FileChangeType, type LspClientOwner, notifyWorkspaceWatchedFiles } from "./client";
+import { FileChangeType, type LspClientOwner, notifyWorkspaceWatchedFiles, stampOwnerConfigGeneration } from "./client";
 import { getServersForFile } from "./config";
 import {
 	captureDiagnosticVersions,
@@ -57,6 +57,11 @@ export type WritethroughDeferredHandle = {
 	finalize: (diagnostics: FileDiagnosticsResult | undefined) => void;
 };
 
+export interface WritethroughResult {
+	diagnostics?: FileDiagnosticsResult;
+	finalContent: string;
+}
+
 /** Callback type for the LSP writethrough */
 export type WritethroughCallback = (
 	dst: string,
@@ -65,7 +70,7 @@ export type WritethroughCallback = (
 	file?: BunFile,
 	batch?: LspWritethroughBatchRequest,
 	getDeferred?: (dst: string) => WritethroughDeferredHandle | undefined,
-) => Promise<FileDiagnosticsResult | undefined>;
+) => Promise<WritethroughResult>;
 
 /** No-op writethrough callback */
 export async function writethroughNoop(
@@ -75,9 +80,9 @@ export async function writethroughNoop(
 	file?: BunFile,
 	_batch?: LspWritethroughBatchRequest,
 	_getDeferred?: (dst: string) => WritethroughDeferredHandle | undefined,
-): Promise<FileDiagnosticsResult | undefined> {
+): Promise<WritethroughResult> {
 	await writeFileWithFallback(dst, content, file);
-	return undefined;
+	return { finalContent: content };
 }
 
 interface PendingWritethrough {
@@ -134,7 +139,8 @@ export async function flushLspWritethroughBatch(
 		return undefined;
 	}
 	writethroughBatches.delete(id);
-	return flushWritethroughBatch(Array.from(state.entries.values()), cwd, state.options, signal);
+	return (await flushWritethroughBatch(Array.from(state.entries.values()), "", cwd, state.options, signal))
+		.diagnostics;
 }
 
 function mergeDiagnostics(
@@ -316,7 +322,7 @@ async function runLspWritethrough(
 		signal: AbortSignal;
 	},
 	runOptions?: RunLspWritethroughOptions,
-): Promise<FileDiagnosticsResult | undefined> {
+): Promise<WritethroughResult> {
 	const { enableFormat, enableDiagnostics } = options;
 	const contentAlreadyWritten = runOptions?.contentAlreadyWritten ?? false;
 
@@ -350,16 +356,17 @@ async function runLspWritethrough(
 	if (!enableFormat && !enableDiagnostics) {
 		await getWritePromise();
 		await notifyWriteCommitted();
-		return undefined;
+		return { finalContent, diagnostics: undefined };
 	}
 
 	const config = getConfig(cwd);
 	const servers = getServersForFile(config, dst, workspaceRoots);
+	for (const [, serverConfig] of servers) stampOwnerConfigGeneration(serverConfig, options.owner);
 
 	if (servers.length === 0) {
 		await getWritePromise();
 		await notifyWriteCommitted();
-		return undefined;
+		return { finalContent, diagnostics: undefined };
 	}
 	const { lspServers, customLinterServers } = splitServers(servers);
 	const useCustomFormatter = enableFormat && customLinterServers.length > 0;
@@ -514,20 +521,22 @@ async function runLspWritethrough(
 		diagnostics.formatter = formatter;
 	}
 
-	return diagnostics;
+	return { finalContent, diagnostics };
 }
 
 async function flushWritethroughBatch(
 	batch: PendingWritethrough[],
+	requestedDst: string | undefined,
 	cwd: string,
 	options: ResolvedWritethroughOptions,
 	signal?: AbortSignal,
 	getDeferred?: (dst: string) => WritethroughDeferredHandle | undefined,
-): Promise<FileDiagnosticsResult | undefined> {
+): Promise<WritethroughResult> {
 	if (batch.length === 0) {
-		return undefined;
+		return { finalContent: "" };
 	}
 	const results: Array<FileDiagnosticsResult | undefined> = [];
+	const finalContents = new Map<string, string>();
 	for (const entry of batch) {
 		const bundle = getDeferred?.(entry.dst);
 		let content: string;
@@ -538,10 +547,8 @@ async function flushWritethroughBatch(
 				bundle?.finalize(undefined);
 				continue;
 			}
-			// A brokered write lands bytes this process may not be able to read
-			// back: a sandbox that denies the write commonly denies the read too.
-			// Failing here would fail a flush whose every write succeeded, so the
-			// content this entry committed stands in for the unreadable file.
+			// A brokered write may deny read-back even after the write succeeds.
+			// Keep the committed request content as the source for diagnostics.
 			if (!isPermissionDeniedError(error)) throw error;
 			content = entry.content;
 		}
@@ -562,10 +569,17 @@ async function flushWritethroughBatch(
 			deferredInner,
 			{ contentAlreadyWritten: true },
 		);
-		bundle?.finalize(diag);
-		results.push(diag);
+		finalContents.set(entry.dst, diag.finalContent);
+		bundle?.finalize(diag.diagnostics);
+		results.push(diag.diagnostics);
 	}
-	return mergeDiagnostics(results, options);
+	const finalContent = requestedDst
+		? (finalContents.get(requestedDst) ?? batch.find(entry => entry.dst === requestedDst)?.content ?? "")
+		: "";
+	return {
+		finalContent,
+		diagnostics: mergeDiagnostics(results, options),
+	};
 }
 
 function resolveWritethroughCwd(cwd: string | (() => string), options?: ResolvedWritethroughOptions): string {
@@ -615,7 +629,7 @@ export function createLspWritethrough(
 				file,
 				deferredInner,
 			);
-			bundle?.finalize(diagnostics);
+			bundle?.finalize(diagnostics.diagnostics);
 			return diagnostics;
 		}
 
@@ -631,6 +645,7 @@ export function createLspWritethrough(
 					try {
 						await flushWritethroughBatch(
 							Array.from(pending.entries.values()),
+							"",
 							resolvedCwd,
 							pending.options,
 							signal,
@@ -649,15 +664,16 @@ export function createLspWritethrough(
 
 		const state = getOrCreateWritethroughBatch(batch.id, resolvedOptions);
 		state.entries.set(dst, { dst, file, changeType, content });
-		if (!batch.flush) return undefined;
-
+		if (!batch.flush) return { finalContent: content };
 		writethroughBatches.delete(batch.id);
-		return flushWritethroughBatch(
+		const result = await flushWritethroughBatch(
 			Array.from(state.entries.values()),
+			dst,
 			resolvedCwd,
 			state.options,
 			signal,
 			getDeferred,
 		);
+		return result;
 	};
 }

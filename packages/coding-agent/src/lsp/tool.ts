@@ -24,10 +24,12 @@ import {
 	ensureFileOpen,
 	fallbackLspClientOwner,
 	getActiveClients,
+	getActiveOrPendingClient,
 	getOrCreateClient,
 	isRustAnalyzerClient,
 	type LspClientOwner,
 	type LspServerStatus,
+	ownerConfigGeneration,
 	reconcileExecutedChanges,
 	refreshFile,
 	releaseLspClientOwner,
@@ -36,6 +38,7 @@ import {
 	sendNotification,
 	sendRequest,
 	shutdownStaleClients,
+	stampOwnerConfigGeneration,
 	waitForProjectLoaded,
 } from "./client";
 import { getLinterClient } from "./clients";
@@ -358,7 +361,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					details: { action, success: false, request: params },
 				};
 			}
-
+			const diagnosticsGeneration = ownerConfigGeneration(this.#clientOwner);
 			let truncatedGlobTargets = false;
 			const resolvedTargets = await resolveDiagnosticTargets(file, this.session.cwd, MAX_GLOB_DIAGNOSTIC_TARGETS);
 			const targets = resolvedTargets.matches;
@@ -386,6 +389,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				throwIfAborted(signal);
 				const resolved = resolveToCwd(target, this.session.cwd);
 				const servers = getServersForFile(config, resolved, workspaceRoots);
+				for (const [, serverConfig] of servers) {
+					stampOwnerConfigGeneration(serverConfig, this.#clientOwner, diagnosticsGeneration);
+				}
 				if (servers.length === 0) {
 					results.push(`${theme.status.error} ${target}: No language server found`);
 					continue;
@@ -635,6 +641,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					const key = `${name}:${resolveEquivalentPath(serverConfig.resolvedRoot ?? this.session.cwd)}`;
 					if (seenServers.has(key)) continue;
 					seenServers.add(key);
+					stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 					servers.push([name, serverConfig]);
 				}
 			};
@@ -877,10 +884,34 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			for (const [serverName, serverConfig] of servers) {
-				if (
-					sourceStat.isDirectory() &&
-					workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd)
-				) {
+				const movedRootClient =
+					sourceStat.isDirectory() && workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd);
+				if (movedRootClient) {
+					const live = await getActiveOrPendingClient(serverConfig, this.session.cwd, signal);
+					if (!live) continue;
+					const serverPairs = pairsForServer(serverConfig);
+					if (serverPairs.length === 0) continue;
+					try {
+						for (const pair of serverPairs) {
+							const overlayOldUri = fileToUri(uriToFile(pair.oldUri), live.cwd);
+							if (live.openFiles.has(overlayOldUri)) {
+								await sendNotification(
+									live,
+									"textDocument/didClose",
+									{ textDocument: { uri: overlayOldUri } },
+									signal,
+								);
+								live.openFiles.delete(overlayOldUri);
+							}
+						}
+						await sendNotification(live, "workspace/didRenameFiles", { files: serverPairs }, signal);
+					} catch (err) {
+						if (err instanceof ToolAbortError || signal?.aborted) {
+							throw err;
+						}
+						const msg = err instanceof Error ? err.message : String(err);
+						serverNotes.push(`  ${serverName}: ${msg}`);
+					}
 					continue;
 				}
 				const serverPairs = pairsForServer(serverConfig);
@@ -937,6 +968,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			if (file && file !== "*") {
 				const resolved = resolveToCwd(file, this.session.cwd);
 				serverList = getLspServersForFile(config, resolved, workspaceRoots);
+				for (const [, serverConfig] of serverList) stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 				if (serverList.length === 0) {
 					return {
 						content: [{ type: "text", text: "No language server found for this file" }],
@@ -945,6 +977,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 			} else {
 				serverList = getLspServers(config);
+				for (const [, serverConfig] of serverList) stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 			}
 
 			if (serverList.length === 0) {
@@ -1027,6 +1060,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			const [chosenName, chosenConfig] = chosenServer;
+			stampOwnerConfigGeneration(chosenConfig, this.#clientOwner);
 			let requestParams: unknown;
 			if (params.payload !== undefined) {
 				try {
@@ -1117,6 +1151,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				};
 			}
 			const servers = getLspServers(config);
+			for (const [, serverConfig] of servers) stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 			if (servers.length === 0) {
 				return {
 					content: [{ type: "text", text: "No language server found for this action" }],

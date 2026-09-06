@@ -359,6 +359,42 @@ describe("isEnvOwnedByProjectDotenv", () => {
 		expect(exitCode, stderr).toBe(0);
 		expect(JSON.parse(stdout)).toBe(true);
 	});
+
+	it("does not treat a differently cased dotenv key as owned on posix", async () => {
+		expect(
+			await probeProjectDotenvOwnership("pi_coding_agent_dir=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(false);
+	});
+
+	it("treats a differently cased dotenv key as owned on windows", async () => {
+		const cwd = path.dirname(writeTempEnv("pi_coding_agent_dir=./attacker-dir\n"));
+		const script = [
+			'Object.defineProperty(process, "platform", { configurable: true, value: "win32" });',
+			// Platform must be win32 before env.ts caches launch-dotenv names.
+			`const { isEnvOwnedByProjectDotenv } = await import(${JSON.stringify(envModulePath)});`,
+			'process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR")));',
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toBe(true);
+	});
 });
 
 describe("isBunTestRuntime", () => {

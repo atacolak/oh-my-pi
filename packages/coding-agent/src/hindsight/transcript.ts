@@ -20,12 +20,39 @@ export interface ReadonlySessionManagerLike {
 	getBranch?: (fromId?: string) => SessionEntry[];
 }
 
+/** Latest `/clear` marker on the active branch, if any. */
+export function latestResetBoundaryId(sessionManager: ReadonlySessionManagerLike): string | undefined {
+	const branch = sessionManager.getBranch?.() ?? sessionManager.getEntries();
+	let id: string | undefined;
+	for (const entry of branch) {
+		if (entry?.type === "reset_boundary") id = entry.id;
+	}
+	return id;
+}
+
+/**
+ * Retention document overlay for a live conversation. `/clear` keeps the
+ * persisted session id, so post-reset retains use `sessionId:resetId` until
+ * a later identity change. Resume reconstructs the same overlay from the
+ * persisted reset boundary.
+ */
+export function hindsightDocumentIdForSession(
+	persistedSessionId: string | undefined,
+	sessionManager: ReadonlySessionManagerLike,
+): string | undefined {
+	if (!persistedSessionId) return undefined;
+	const resetId = latestResetBoundaryId(sessionManager);
+	return resetId ? `${persistedSessionId}:${resetId}` : undefined;
+}
+
 /**
  * Walk the active branch (root→leaf) top-to-bottom. `getEntries()` includes
  * abandoned `/tree` suffixes; using `getBranch()` keeps retain transcripts and
  * prefix-cache keys aligned with the conversation the user is actually in.
  *
  * Implementation choices:
+ * - Start after the latest `reset_boundary` (`/clear`). Pre-clear history stays
+ *   on disk but is not part of the live conversation Hindsight should retain.
  * - Skip entries whose type isn't `"message"` (compaction, branch_summary,
  *   custom_message, tool exec records, ...). Those don't represent a
  *   conversational turn, only the LLM's plain-text utterances do.
@@ -42,9 +69,15 @@ export function countRetainableUserTurns(sessionManager: ReadonlySessionManagerL
 
 export function extractMessages(sessionManager: ReadonlySessionManagerLike): HindsightMessage[] {
 	const messages: HindsightMessage[] = [];
+	const branch = sessionManager.getBranch?.() ?? sessionManager.getEntries();
+	let start = 0;
+	for (let i = 0; i < branch.length; i++) {
+		if (branch[i]?.type === "reset_boundary") start = i + 1;
+	}
 
-	for (const entry of sessionManager.getBranch?.() ?? sessionManager.getEntries()) {
-		if (entry.type !== "message") continue;
+	for (let i = start; i < branch.length; i++) {
+		const entry = branch[i];
+		if (entry === undefined || entry.type !== "message") continue;
 		const msg = entry.message;
 		const role = msg.role;
 		if (role !== "user" && role !== "assistant") continue;

@@ -96,6 +96,15 @@ function assistantEntry(id: string, parentId: string, content: string, timestamp
 	} as SessionEntry;
 }
 
+function resetBoundaryEntry(id: string, parentId: string, timestamp: string): SessionEntry {
+	return {
+		type: "reset_boundary",
+		id,
+		parentId,
+		timestamp,
+	};
+}
+
 describe("Hindsight append-mode session retention", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -160,6 +169,50 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[1]).content)).toContain("hello second turn here");
 		expect(String(firstItem(bodies[1]).content)).not.toContain("hello first turn here");
 		expect(String(firstItem(bodies[1]).content)).not.toContain("first reply is long enough");
+	});
+
+	it("writes post-clear retain to a new document instead of replacing drained history", async () => {
+		const bodies = captureBodies();
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		const beforeClear = [
+			userEntry("u1", null, "cleared turn one has enough text", "2026-08-17T10:00:00.000Z"),
+			assistantEntry("a1", "u1", "cleared reply one has enough text", "2026-08-17T10:00:01.000Z"),
+		];
+		let entries: SessionEntry[] = beforeClear;
+		const state = new HindsightSessionState({
+			sessionId: "sess-clear-doc",
+			client,
+			bankId: "personal",
+			config: makeConfig({ retainEveryNTurns: 1, retainOverlapTurns: 0 }),
+			session: {
+				sessionId: "sess-clear-doc",
+				sessionManager: {
+					getHeader: () => ({ type: "session", id: "sess-clear-doc", timestamp: SESSION_START, cwd: "/tmp" }),
+					getEntries: () => entries,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+
+		await state.maybeRetainOnAgentEnd();
+		expect(bodies).toHaveLength(1);
+		expect(firstItem(bodies[0]).document_id).toBe("sess-clear-doc");
+
+		entries = [...beforeClear, resetBoundaryEntry("rb1", "a1", "2026-08-17T10:02:00.000Z")];
+		state.setSessionId("sess-clear-doc-epoch");
+		state.resetConversationTracking();
+		entries = [
+			...entries,
+			userEntry("u2", "rb1", "fresh turn after clear has enough text", "2026-08-17T10:03:00.000Z"),
+			assistantEntry("a2", "u2", "fresh reply after clear has enough text", "2026-08-17T10:03:01.000Z"),
+		];
+
+		await state.drainOnClose();
+		expect(bodies).toHaveLength(2);
+		expect(firstItem(bodies[1]).document_id).toBe("sess-clear-doc-epoch");
+		expect(String(firstItem(bodies[1]).content)).toContain("fresh turn after clear has enough text");
+		expect(String(firstItem(bodies[1]).content)).not.toContain("cleared turn one has enough text");
 	});
 
 	it("rebuilds with replace when the retained prefix diverges", async () => {

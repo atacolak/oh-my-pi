@@ -404,8 +404,8 @@ describe("AgentSession concurrent disposal", () => {
 			modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
 		});
 		expect(session.loadedUserTurnCount).toBe(0);
-		expect(session.hindsightCloseRetainBaselineTurns).toBe(0);
-		expect(session.hindsightLoadedMessageCount).toBe(0);
+		expect(session.hindsightCloseRetainBaselineTurns).toBeUndefined();
+		expect(session.hindsightLoadedMessageCount).toBeUndefined();
 		await session.dispose();
 		session = undefined;
 	});

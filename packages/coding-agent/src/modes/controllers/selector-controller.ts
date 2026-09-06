@@ -214,8 +214,12 @@ export class SelectorController {
 				},
 				{
 					onChange: (id, value) => this.handleSettingChange(id, value),
-					onThemePreview: async themeName => {
-						const result = await previewTheme(themeName);
+					onThemePreview: async (themeName, presentation) => {
+						const result = await previewTheme(themeName, {
+							ephemeral: true,
+							symbolPreset: presentation?.symbolPreset,
+							colorBlindMode: presentation?.colorBlindMode,
+						});
 						if (result.success) {
 							this.ctx.statusLine.invalidate();
 							this.ctx.ui.invalidate();
@@ -264,6 +268,7 @@ export class SelectorController {
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
 							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+							segmentOptions: settings.get("statusLine.segmentOptions"),
 							contextLine: settings.get("statusLine.contextLine"),
 						});
 						this.ctx.ui.requestRender();

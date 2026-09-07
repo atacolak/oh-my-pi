@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed interactive `!cd` skipping deferred language-server owner cleanup, so a later command still runs in the new directory and uncovered roots are released after the cwd change commits.
 - Fixed workspace edits that overwrite the originating language server's project root skipping overlay refresh on that unpublished client, so a follow-up command still sees the committed documents.
 - Fixed workspace edits aborting while waiting for a still-initializing overwrite destination skipping retirement of the successfully moved source root.
 - Fixed `rename_file` reporting an unreadable source as a crash or missing path when `stat` failed after `lstat` succeeded.

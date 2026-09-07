@@ -1386,7 +1386,7 @@ export class CommandController {
 
 	async #moveInteractiveCwd(resolvedPath: string): Promise<void> {
 		const previousState = this.ctx.sessionManager.captureState();
-		await this.ctx.sessionManager.moveTo(resolvedPath);
+		await this.ctx.session.moveSession(resolvedPath, undefined, { deferWorkspaceCleanup: true });
 		let applied = false;
 		try {
 			applied = await this.ctx.applyCwdChange(resolvedPath);
@@ -1399,6 +1399,7 @@ export class CommandController {
 			return;
 		}
 
+		await this.ctx.session.commitMovedWorkspaceRoots();
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadTodos();
 	}

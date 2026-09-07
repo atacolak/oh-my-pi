@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed workspace edits that overwrite the originating language server's project root skipping overlay refresh on that unpublished client, so a follow-up command still sees the committed documents.
+- Fixed workspace edits aborting while waiting for a still-initializing overwrite destination skipping retirement of the successfully moved source root.
 - Fixed `rename_file` reporting an unreadable source as a crash or missing path when `stat` failed after `lstat` succeeded.
 - Fixed workspace edits that overwrite a still-initializing nested project root leaving that pending language-server process attachable through overlay reconciliation.
 - Fixed workspace edits that overwrite a destination directory symlink shutting down another session's language server at the unchanged physical target.

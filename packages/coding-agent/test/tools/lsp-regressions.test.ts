@@ -7354,8 +7354,10 @@ describe("lsp regressions", () => {
 			expect(fs.existsSync(sourceRoot)).toBe(false);
 			expect(fs.existsSync(path.join(destRoot, "source.ts"))).toBe(true);
 			const methods = destServer.received.map(message => message.method);
+			expect(methods).toContain("textDocument/didClose");
 			expect(methods).toContain("workspace/executeCommand");
 			expect(methods).toContain("shutdown");
+			expect(methods.indexOf("textDocument/didClose")).toBeLessThan(methods.indexOf("workspace/executeCommand"));
 			expect(methods.indexOf("workspace/executeCommand")).toBeLessThan(methods.indexOf("shutdown"));
 			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
 			expect(lspClient.getActiveClients(destOwner).some(active => active.cwd === destRoot)).toBe(false);
@@ -7738,6 +7740,73 @@ describe("lsp regressions", () => {
 			).toBe(false);
 			expect(fs.existsSync(path.join(destRoot, "source.ts"))).toBe(true);
 			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("retires moved nested clients when pending overwrite-destination wait is aborted", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-overwrite-dest-pending-abort-");
+		try {
+			const sourceRoot = path.join(tempDir.path(), "source");
+			const destRoot = path.join(tempDir.path(), "dest");
+			fs.mkdirSync(sourceRoot);
+			fs.mkdirSync(destRoot);
+			await Bun.write(path.join(sourceRoot, "source.ts"), "export const source = 1;\n");
+			await Bun.write(path.join(destRoot, "dest.ts"), "export const dest = 1;\n");
+			const sourceConfig: ServerConfig = {
+				command: "source-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sourceRoot,
+			};
+			const destConfig: ServerConfig = {
+				command: "dest-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: destRoot,
+			};
+			const destServer = installFakeLsp((message, fake) => {
+				if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const destOwner = lspClient.createLspClientOwner();
+			const destPending = lspClient.getOrCreateClient(destConfig, tempDir.path(), undefined, undefined, destOwner);
+			void destPending.catch(() => {});
+			const initialize = await destServer.waitFor(message => message.method === "initialize");
+			const sourceServer = installHandshakeLsp();
+			const sourceOwner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(sourceConfig, tempDir.path(), 1_000, undefined, sourceOwner);
+			const aborted = new AbortController();
+			aborted.abort(new Error("pending dest wait timed out"));
+
+			const appliedPromise = lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToUri(sourceRoot),
+							newUri: fileToUri(destRoot),
+							options: { overwrite: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+				aborted.signal,
+			);
+			await Bun.sleep(50);
+			destServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			await expect(appliedPromise).rejects.toThrow(/aborted/i);
+
+			expect(fs.existsSync(sourceRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "source.ts"))).toBe(true);
+			expect(lspClient.getActiveClients(sourceOwner).some(active => active.cwd === sourceRoot)).toBe(false);
+			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
+			expect(lspClient.getActiveClients(destOwner).some(active => active.cwd === destRoot)).toBe(false);
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

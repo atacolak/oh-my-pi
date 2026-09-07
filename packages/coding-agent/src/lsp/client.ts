@@ -1182,6 +1182,8 @@ function pruneOverwriteDestinationAliasOwners(item: CapturedMovedDirectoryRoot, 
 	return !clientOwners.has(key) && (clientLocks.get(key)?.owners.size ?? 0) === 0;
 }
 
+const OVERWRITE_DESTINATION_WAIT_MS = 2_000;
+
 /** Unpublish overwritten destination clients so another session cannot reuse
  *  the displaced process, but keep the instance alive until the originating
  *  applyEdit / code-action command finishes. Pending initializers at that
@@ -1191,7 +1193,6 @@ function pruneOverwriteDestinationAliasOwners(item: CapturedMovedDirectoryRoot, 
 async function unpublishExecutedOverwriteDestinationClients(
 	executed: ExecutedWorkspaceChange[],
 	captured: ReadonlyArray<CapturedMovedDirectoryRoot>,
-	signal?: AbortSignal,
 ): Promise<LspClient[]> {
 	const deferred: LspClient[] = [];
 	const seen = new Set<LspClient>();
@@ -1219,9 +1220,11 @@ async function unpublishExecutedOverwriteDestinationClients(
 	}
 	for (const [key, lock] of pending) {
 		try {
-			await untilAborted(signal, lock.promise);
+			await untilAborted(AbortSignal.timeout(OVERWRITE_DESTINATION_WAIT_MS), lock.promise);
 		} catch {
-			throwIfAborted(signal);
+			// Init may fail or exceed the independent cleanup budget. Still
+			// unpublish if it published; never inherit the caller's expired
+			// tool signal or skip later moved-root retirement.
 		}
 		const started = clients.get(key);
 		if (!started || seen.has(started)) continue;
@@ -1267,11 +1270,19 @@ export async function reconcileExecutedChanges(
 	executed: ExecutedWorkspaceChange[],
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
+	deferredClients: readonly LspClient[] = [],
 ): Promise<void> {
 	if (executed.length === 0) return;
 	const { finalUris, deletedRoots, watchedFiles } = workspaceEditChanges(executed);
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
-	const activeClients = Array.from(clients.values()).filter(client => {
+	const seenClients = new Set<LspClient>();
+	const candidateClients: LspClient[] = [];
+	for (const client of [...clients.values(), ...deferredClients]) {
+		if (seenClients.has(client)) continue;
+		seenClients.add(client);
+		candidateClients.push(client);
+	}
+	const activeClients = candidateClients.filter(client => {
 		if (client.status !== "ready") return false;
 		if (workspaceRoots.some(root => clientIsInsideWorkspace(client.name, client, root))) return true;
 		if (
@@ -1297,6 +1308,13 @@ export async function reconcileExecutedChanges(
 				if (openDocumentMatchesDeletedRoot(uri, root)) {
 					deleted = true;
 					break;
+				}
+			}
+			if (!deleted) {
+				try {
+					await fs.stat(uriToFile(uri));
+				} catch (err) {
+					if (isEnoent(err)) deleted = true;
 				}
 			}
 			if (!deleted) continue;
@@ -1379,10 +1397,9 @@ export async function applyAndReconcileWorkspaceEdit(
 		const deferredOverwriteDestinationClients = await unpublishExecutedOverwriteDestinationClients(
 			executed,
 			capturedMovedRoots,
-			signal,
 		);
 		try {
-			await reconcileExecutedChanges(executed, workspaceRoots, signal);
+			await reconcileExecutedChanges(executed, workspaceRoots, signal, deferredOverwriteDestinationClients);
 		} catch (reconcileErr) {
 			logger.warn("LSP overlay reconciliation after failed workspace edit failed", {
 				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
@@ -1393,10 +1410,9 @@ export async function applyAndReconcileWorkspaceEdit(
 	const deferredOverwriteDestinationClients = await unpublishExecutedOverwriteDestinationClients(
 		executed,
 		capturedMovedRoots,
-		signal,
 	);
 	try {
-		await reconcileExecutedChanges(executed, workspaceRoots, signal);
+		await reconcileExecutedChanges(executed, workspaceRoots, signal, deferredOverwriteDestinationClients);
 	} catch (reconcileErr) {
 		logger.warn("LSP overlay reconciliation after workspace edit failed", {
 			error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),

@@ -5546,6 +5546,44 @@ describe("lsp regressions", () => {
 		}
 	}, 15_000);
 
+	it("shutdownAll keeps pre-shutdown captured configs stale after the next reload", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-shutdown-all-generation-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "shutdown-all-generation-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const owner = lspClient.createLspClientOwner();
+			lspClient.stampOwnerConfigGeneration(nestedConfig, owner);
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			await lspClient.shutdownAll();
+
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], owner);
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner),
+			).rejects.toThrow("superseded during reload");
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...nestedConfig, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				owner,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("workspace reload does not reattach a pending observer to a superseded overlapping client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-pending-observer-reload-");
 		const initialize = Promise.withResolvers<void>();

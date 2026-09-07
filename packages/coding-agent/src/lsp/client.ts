@@ -2486,15 +2486,16 @@ export async function sendNotification(
  * Ownership stays on each live process until `shutdownClientInstance` confirms
  * exit. Clearing those maps first leaves a force-kill survivor ownerless, so
  * status hides it and an overlapping reload can tear it down.
+ *
+ * Owner reload generations stay monotonic: `configReloadGenerations` is a
+ * WeakMap that cannot be reset with the live clients, so zeroing these
+ * counters would let a pre-shutdown stamp survive the next reload.
  */
 export async function shutdownAll(): Promise<void> {
 	stopIdleChecker();
 	invalidatedClientKeys.clear();
 	clientReloadBarriers.clear();
 	clientIdentityReloadBarriers.clear();
-	ownerReloadGeneration.clear();
-	ownerReleasedKeyGenerations.clear();
-	ownerReloadRootGenerations.clear();
 	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
 	// Mid-initialize clients live only in clientLocks (publication is deferred

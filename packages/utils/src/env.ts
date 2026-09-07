@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, getConfigRootDir, getProjectDir, refreshDirsFromEnv } from "./dirs";
+import { getAgentDir, getConfigRootDir, getProjectDir, isProfileSelectedFromArgv, refreshDirsFromEnv } from "./dirs";
 
 export * from "./worker-host";
 
@@ -449,9 +449,11 @@ function envLookup(
  * mutates `NODE_ENV`. Value matching reproduces Bun `$NAME` / `${NAME}` /
  * `${NAME:-default}` expansion and quoted values that span literal newlines,
  * including trailing whitespace on the opening quoted line. Unrecognized `$`
- * syntax fails closed.
+ * syntax fails closed. An explicit `--profile` selection is not treated as
+ * project-owned even when dotenv also declared `OMP_PROFILE`/`PI_PROFILE`.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
+	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;
 	if (envKeysInclude(projectEnvNamesLoadedByOmp, name)) return true;
 	if (!envKeysInclude(launchProjectDotenv.names, name)) return false;
 	if (launchEnvValues) {

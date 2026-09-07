@@ -10,6 +10,7 @@ import {
 	getActiveProfile,
 	getAgentDbPath,
 	getAgentDir,
+	isProfileSelectedFromArgv,
 	setAgentDir,
 	setProfile,
 	VERSION,
@@ -102,6 +103,7 @@ describe("global --profile flag", () => {
 		expect(writeSpy).toHaveBeenCalled();
 		expect(getActiveProfile()).toBe("work");
 		expect(getAgentDir()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
+		expect(isProfileSelectedFromArgv()).toBe(true);
 	});
 
 	it("activates a profile inherited from OMP_PROFILE at run time", async () => {
@@ -117,6 +119,7 @@ describe("global --profile flag", () => {
 		expect(getActiveProfile()).toBe("work");
 		expect(getAgentDir()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
 		expect(getAgentDbPath()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent", "agent.db"));
+		expect(isProfileSelectedFromArgv()).toBe(false);
 	});
 
 	it("accepts the profile flag after other root flags", async () => {

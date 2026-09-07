@@ -173,24 +173,27 @@ export function filterChildShellEnv(
  * comments after whitespace on unquoted values, and single/double/backtick
  * quoting. Quoted values may span literal newlines until an unescaped closer;
  * leftover text after that closer (other than a `#` comment) rejects the
- * quoted span so the first line is parsed unquoted, matching Bun. Double-quoted
- * values decode Bun's `\n` / `\r` escapes; `\\` is a literal pair, so `\\n`
- * stays two slashes plus `n`. Returns undefined for blank lines, comments, and
+ * quoted span so the first line is parsed unquoted, matching Bun. Trailing
+ * whitespace on the opening quoted line is preserved. Double-quoted values
+ * decode Bun's `\n` / `\r` escapes; `\\` is a literal pair, so `\\n` stays
+ * two slashes plus `n`. Returns undefined for blank lines, comments, and
  * malformed names.
  */
 function parseEnvAssignment(
 	lines: string[],
 	start: number,
 ): { key: string; value: string; nextIndex: number } | undefined {
-	const trimmed = lines[start].trim();
-	if (!trimmed || trimmed.startsWith("#")) return undefined;
-	const eqIndex = trimmed.indexOf("=");
+	// Only strip leading whitespace. Trailing spaces on the first line of a
+	// quoted multiline value are part of Bun's decoded result.
+	const leading = lines[start].replace(/^[ \t]+/, "");
+	if (!leading || leading.startsWith("#")) return undefined;
+	const eqIndex = leading.indexOf("=");
 	if (eqIndex === -1) return undefined;
-	let key = trimmed.slice(0, eqIndex).trim();
+	let key = leading.slice(0, eqIndex).trim();
 	const exported = key.match(/^export[ \t]+(.*)$/);
 	if (exported) key = exported[1].trim();
 	if (!isValidEnvName(key)) return undefined;
-	const raw = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
+	const raw = leading.slice(eqIndex + 1).replace(/^[ \t]+/, "");
 	const quote = raw[0];
 	if (quote === '"' || quote === "'" || quote === "`") {
 		const spanned = collectQuotedDotenvValue(raw, quote, lines, start);
@@ -444,8 +447,9 @@ function envLookup(
  * is still project-owned. Mode files follow Bun's pre-dotenv `NODE_ENV`
  * selection, including a `.env.development` fallback when dotenv itself
  * mutates `NODE_ENV`. Value matching reproduces Bun `$NAME` / `${NAME}` /
- * `${NAME:-default}` expansion and quoted values that span literal newlines;
- * unrecognized `$` syntax fails closed.
+ * `${NAME:-default}` expansion and quoted values that span literal newlines,
+ * including trailing whitespace on the opening quoted line. Unrecognized `$`
+ * syntax fails closed.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if (envKeysInclude(projectEnvNamesLoadedByOmp, name)) return true;

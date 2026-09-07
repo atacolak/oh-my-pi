@@ -5212,6 +5212,60 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("committed /move still succeeds when stale catalog retirement cannot confirm exit", async () => {
+		const sessionA = TempDir.createSync("@omp-lsp-move-teardown-a-");
+		const sessionB = TempDir.createSync("@omp-lsp-move-teardown-b-");
+		const extra = TempDir.createSync("@omp-lsp-move-teardown-extra-");
+		const nestedRoot = path.join(extra.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const oldConfig: ServerConfig = {
+			command: "stuck-extra-root-lsp",
+			args: ["--mode", "old"],
+			fileTypes: [".ts"],
+			rootMarkers: [],
+			resolvedRoot: nestedRoot,
+		};
+		const newConfig: ServerConfig = {
+			...oldConfig,
+			args: ["--mode", "new"],
+		};
+		try {
+			configCache.set(sessionA.path(), { servers: { extra: oldConfig } });
+			configCache.set(sessionB.path(), { servers: { extra: newConfig } });
+			configCache.set(extra.path(), { servers: { extra: oldConfig } });
+			configCache.set(nestedRoot, { servers: { extra: oldConfig } });
+			installFakeLsp(
+				(message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(oldConfig, sessionA.path(), 1_000, undefined, owner);
+
+			await expect(
+				lspClient.releaseUncoveredWorkspaceRoots(
+					[sessionA.path(), extra.path()],
+					[sessionB.path(), extra.path()],
+					owner,
+				),
+			).resolves.toBeUndefined();
+		} finally {
+			configCache.delete(sessionA.path());
+			configCache.delete(sessionB.path());
+			configCache.delete(extra.path());
+			configCache.delete(nestedRoot);
+			await lspClient.shutdownAll();
+			sessionA.removeSync();
+			sessionB.removeSync();
+			extra.removeSync();
+		}
+	}, 15_000);
+
 	it("deferred move cleanup restores source clients after a rolled-back cwd transition", async () => {
 		const sourceDir = TempDir.createSync("@omp-lsp-move-defer-source-");
 		const destDir = TempDir.createSync("@omp-lsp-move-defer-dest-");

@@ -124,7 +124,8 @@ export function workspaceContainsPath(directory: string, filePath: string): bool
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function isLexicallyWithin(root: string, candidate: string): boolean {
+/** True when `candidate` is the same path as `root` or a lexical descendant. */
+export function isLexicallyWithin(root: string, candidate: string): boolean {
 	const normalizedRoot = path.resolve(root);
 	const normalizedCandidate = path.resolve(candidate);
 	const rootCmp = process.platform === "win32" ? normalizedRoot.toLowerCase() : normalizedRoot;

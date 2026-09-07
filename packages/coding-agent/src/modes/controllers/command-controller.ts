@@ -102,6 +102,7 @@ export class CommandController {
 			try {
 				realigned = await this.ctx.applyCwdChange(actual);
 			} catch {}
+			await this.ctx.session.commitMovedWorkspaceRoots();
 			if (!realigned) {
 				this.ctx.showError(
 					`Failed to roll back move: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)} (failed to re-align workspace to ${actual})`,
@@ -119,6 +120,7 @@ export class CommandController {
 		try {
 			sourceRestored = await this.ctx.applyCwdChange(previousState.cwd);
 		} catch {}
+		await this.ctx.session.commitMovedWorkspaceRoots();
 		if (sourceRestored) return;
 
 		const actual = this.ctx.sessionManager.getCwd();
@@ -1292,11 +1294,10 @@ export class CommandController {
 		}
 		if (!applied) {
 			await this.#restoreAfterMoveFailure(previousState);
-			await this.ctx.session.commitMovedWorkspaceRoots();
 			return false;
 		}
-		await this.ctx.session.commitMovedWorkspaceRoots();
 
+		await this.ctx.session.commitMovedWorkspaceRoots();
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadTodos();
 		this.ctx.ui.requestRender();
@@ -1391,16 +1392,14 @@ export class CommandController {
 			applied = await this.ctx.applyCwdChange(resolvedPath);
 		} catch (error) {
 			await this.#restoreAfterMoveFailure(previousState, error);
-			await this.ctx.session.commitMovedWorkspaceRoots();
 			return;
 		}
 		if (!applied) {
 			await this.#restoreAfterMoveFailure(previousState);
-			await this.ctx.session.commitMovedWorkspaceRoots();
 			return;
 		}
-		await this.ctx.session.commitMovedWorkspaceRoots();
 
+		await this.ctx.session.commitMovedWorkspaceRoots();
 		this.ctx.updateEditorBorderColor();
 		await this.ctx.reloadTodos();
 	}

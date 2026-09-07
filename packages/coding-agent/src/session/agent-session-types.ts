@@ -200,6 +200,8 @@ export interface AgentSessionConfig {
 	modelRegistry: ModelRegistry;
 	/** Whether the startup model may be replaced by refreshed same-selector registry metadata. */
 	rebindModelAfterDiscovery?: boolean;
+	/** Shared identity for LSP clients acquired by this session's tools. */
+	lspClientOwner?: LspClientOwner;
 	/** Tool registry for LSP and settings. */
 	toolRegistry?: Map<string, AgentTool>;
 	/** Creates tools registered only while vibe mode is active. */

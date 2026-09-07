@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
 	isEnoent,
@@ -9,7 +10,12 @@ import {
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../jsonrpc/message-framing";
-import { normalizeSessionWorkspace, workspaceContainsPath, workspaceRootForPath } from "../session/session-workspace";
+import {
+	isLexicallyWithin,
+	normalizeSessionWorkspace,
+	workspaceContainsPath,
+	workspaceRootForPath,
+} from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { getConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
@@ -27,7 +33,7 @@ import type {
 	ServerConfig,
 	WorkspaceEdit,
 } from "./types";
-import { detectLanguageId, EquivalentUriMap, fileToUri, uriToFile } from "./utils";
+import { detectLanguageId, equivalentDocumentUri, EquivalentUriMap, fileToUri, uriToFile } from "./utils";
 
 // =============================================================================
 // Client State
@@ -50,7 +56,7 @@ const clientOwners = new Map<string, Set<LspClientOwner>>();
 const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
 const ownerClientRoots = new Map<LspClientOwner, Map<string, Set<string>>>();
 const ownerReloadGeneration = new Map<LspClientOwner, number>();
-const configReloadGenerations = new WeakMap<ServerConfig, number>();
+const configReloadGenerations = new Map<LspClientOwner, WeakMap<ServerConfig, number>>();
 const ownerReleasedKeyGenerations = new Map<LspClientOwner, Map<string, number>>();
 const ownerReloadRootGenerations = new Map<LspClientOwner, Map<string, number>>();
 
@@ -136,8 +142,24 @@ function dropClientOwnership(key: string): void {
 	clientOwners.delete(key);
 }
 
+interface UnpublishedClientOwnership {
+	owners: LspClientOwner[];
+	roots: Map<LspClientOwner, string[]>;
+}
+
+const unpublishedClientOwnership = new WeakMap<LspClient, UnpublishedClientOwnership>();
+
+function snapshotClientOwnership(key: string): UnpublishedClientOwnership {
+	const owners = Array.from(clientOwners.get(key) ?? []);
+	return {
+		owners,
+		roots: new Map(owners.map(owner => [owner, Array.from(ownerClientRoots.get(owner)?.get(key) ?? [])])),
+	};
+}
+
 function unpublishClient(key: string, client: LspClient): boolean {
 	if (clients.get(key) !== client) return false;
+	unpublishedClientOwnership.set(client, snapshotClientOwnership(key));
 	clients.delete(key);
 	dropClientOwnership(key);
 	return true;
@@ -147,6 +169,7 @@ function releaseOwnerIfUnpublished(key: string, owner: LspClientOwner | undefine
 	if (!owner || clients.has(key)) return;
 	releaseClientOwnerKey(key, owner);
 }
+
 /**
  * Release this session's ownership of language servers started under a
  * workspace root that is no longer in the session. `/remove-dir` calls this
@@ -156,7 +179,9 @@ function releaseOwnerIfUnpublished(key: string, owner: LspClientOwner | undefine
  * Clients still covered by `sessionCwd` or `remainingWorkspaceRoots` are left
  * alone: an additional root may be nested under, an ancestor of, or a symlink
  * alias of a retained workspace. Tearing those clients down would drop a
- * still-valid nested server or tombstone the primary root.
+ * still-valid nested server or tombstone the primary root. Owner route
+ * spellings under the removed root are still pruned so `lsp status` reports
+ * a remaining alias instead of the vanished extra-root path.
  */
 export async function releaseRemovedWorkspaceRoots(
 	sessionCwd: string,
@@ -171,7 +196,7 @@ export async function releaseRemovedWorkspaceRoots(
 		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots);
 	try {
 		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
-		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots);
+		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots, removedRoot);
 		clearWorkspaceInitializationFailures(roots, owner, retainClient);
 		return stopped;
 	} catch (error) {
@@ -192,7 +217,7 @@ export async function releaseRemovedWorkspaceRoots(
 			}
 			releaseClientOwnerKey(key, owner);
 		}
-		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots);
+		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots, removedRoot);
 		clearWorkspaceInitializationFailures(roots, owner, retainClient);
 		throw error;
 	}
@@ -211,16 +236,41 @@ function clientCoveredByRemainingWorkspace(
 	return workspaceRootForPath(clientCwd, remaining) !== null;
 }
 
-/** Drop owner aliases that remaining workspace roots no longer cover. */
+/** Drop owner aliases that remaining workspace roots no longer cover.
+ *  Equivalent-path containment keeps an extra-root symlink of a retained
+ *  workspace, so also drop aliases spelled under `removedRoot` unless a
+ *  remaining root still contains that spelling. If that was the last route
+ *  and the client is still covered, register a remaining workspace path so
+ *  status/reload do not fall back to the vanished extra-root `resolvedRoot`. */
 function pruneUncoveredOwnerRoots(
 	owner: LspClientOwner,
 	sessionCwd: string,
 	remainingWorkspaceRoots: readonly string[],
+	removedRoot?: string,
 ): void {
 	const byKey = ownerClientRoots.get(owner);
 	if (!byKey) return;
+	const removed = removedRoot ? path.resolve(removedRoot) : undefined;
+	const remaining = remainingWorkspaceRoots.map(root => path.resolve(root));
 	for (const [key, roots] of byKey) {
 		for (const root of Array.from(roots)) {
+			const remainingLexical = remaining.some(workspace => isLexicallyWithin(workspace, root));
+			if (removed && isLexicallyWithin(removed, root) && !remainingLexical) {
+				if (clientCoveredByRemainingWorkspace(root, sessionCwd, remainingWorkspaceRoots)) {
+					const covering = workspaceRootForPath(
+						root,
+						normalizeSessionWorkspace({
+							cwd: sessionCwd,
+							directories: remainingWorkspaceRoots.filter(
+								workspace => path.resolve(workspace) !== path.resolve(sessionCwd),
+							),
+						}),
+					);
+					roots.add(path.resolve(covering ?? sessionCwd));
+				}
+				roots.delete(root);
+				continue;
+			}
 			if (!clientCoveredByRemainingWorkspace(root, sessionCwd, remainingWorkspaceRoots)) {
 				roots.delete(root);
 			}
@@ -235,6 +285,12 @@ function pruneUncoveredOwnerRoots(
  * workspace no longer covers. `/move`, `/wt`, and interactive `!cd` keep
  * additional roots that still exist, but the previous cwd is otherwise a
  * dropped workspace.
+ *
+ * Equivalent-path containment treats a previous symlink alias of the new
+ * cwd as still covered, so also process previous roots that remaining
+ * workspaces do not contain lexically. `releaseRemovedWorkspaceRoots()`
+ * keeps those clients running and rebinds owner routes onto a remaining
+ * spelling; otherwise status and reload keep the vanished alias.
  */
 export async function releaseUncoveredWorkspaceRoots(
 	previousWorkspaceRoots: readonly string[],
@@ -245,8 +301,9 @@ export async function releaseUncoveredWorkspaceRoots(
 	if (!owner) return;
 	const remainingCwd = remainingWorkspaceRoots[0];
 	if (!remainingCwd) return;
+	const remainingResolved = remainingWorkspaceRoots.map(root => path.resolve(root));
 	const droppedRoots = previousWorkspaceRoots.filter(
-		root => !clientCoveredByRemainingWorkspace(root, remainingCwd, remainingWorkspaceRoots),
+		root => !remainingResolved.some(workspace => isLexicallyWithin(workspace, path.resolve(root))),
 	);
 	for (const removedRoot of droppedRoots) {
 		try {
@@ -261,39 +318,145 @@ export async function releaseUncoveredWorkspaceRoots(
 }
 
 /**
- * Shut down language servers whose routed root was moved by `rename_file`.
- * Remaining session workspace roots still contain the old path string, so
- * `/remove-dir` retention would keep the vanished-root process alive.
+ * Shut down language servers whose routed root was moved or recursively
+ * deleted. `rename_file` and generic workspace edits both use this: remaining
+ * session workspace roots still contain the old path string, so `/remove-dir`
+ * retention would keep the vanished-root process alive.
+ *
+ * `movedRootIdentity` is the equivalent path captured before the filesystem
+ * mutation. A workspace symlink is keyed by its canonical target, and after
+ * the alias moves `movedRoot` no longer resolves to that identity, so failure
+ * cache lookup still needs the pre-move root. When `owner` is omitted, every
+ * session's matching client is retired — workspace edits do not send
+ * `didRenameFiles` to overlapping owners. A moved directory symlink is an
+ * exception: only routes through that alias are pruned, so a session that
+ * still reaches the unchanged physical target — including the same owner
+ * through another equivalent route — keeps its live client. Ordinary
+ * directories reached through a symlink parent still physically move, so
+ * they take the full retirement path even when lexical and canonical paths
+ * differ.
  */
 export async function releaseMovedWorkspaceRoots(
 	sessionCwd: string,
 	movedRoot: string,
 	owner: LspClientOwner | undefined,
 	signal?: AbortSignal,
+	movedRootIdentity = movedRoot,
+	leafSymlink = false,
 ): Promise<string[]> {
-	if (!owner) return [];
-	const roots = [path.resolve(movedRoot)];
+	const lexical = path.resolve(movedRoot);
+	const equivalent = path.resolve(movedRootIdentity);
+	const roots = [lexical];
+	if (!leafSymlink && !roots.includes(equivalent)) roots.push(equivalent);
+	const failureRoots = roots.includes(equivalent) ? roots : [...roots, equivalent];
+	if (leafSymlink) {
+		const stopped = await releaseMovedSymlinkAlias(lexical, signal, owner);
+		if (owner) clearWorkspaceInitializationFailures(failureRoots, owner);
+		return stopped;
+	}
 	try {
 		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner);
-		clearWorkspaceInitializationFailures(roots, owner);
+		clearWorkspaceInitializationFailures(failureRoots, owner);
 		return stopped;
 	} catch (error) {
-		for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
-			const live = clients.get(key);
-			const pending = clientLocks.get(key);
-			const cwds = live
-				? clientWorkspaceCwds(key, live, owner)
-				: pending
-					? clientWorkspaceCwds(key, pending, owner)
-					: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
-			if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) {
-				continue;
+		if (owner) {
+			for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
+				const live = clients.get(key);
+				const pending = clientLocks.get(key);
+				const cwds = live
+					? clientWorkspaceCwds(key, live, owner)
+					: pending
+						? clientWorkspaceCwds(key, pending, owner)
+						: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
+				if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) {
+					continue;
+				}
+				releaseClientOwnerKey(key, owner);
 			}
-			releaseClientOwnerKey(key, owner);
 		}
-		clearWorkspaceInitializationFailures(roots, owner);
+		clearWorkspaceInitializationFailures(failureRoots, owner);
 		throw error;
 	}
+}
+
+/** Drop routes through a vanished directory symlink without tearing down
+ *  sessions that still reach the same physical client through another path.
+ *  Pass `owner` to prune only that session; omit it for workspace-edit
+ *  retirement across every owner. */
+async function releaseMovedSymlinkAlias(
+	movedRoot: string,
+	signal?: AbortSignal,
+	owner?: LspClientOwner,
+): Promise<string[]> {
+	const staleKeys = new Set<string>();
+	const pruneOwner = (key: string, item: LspClientOwner): void => {
+		const routes = ownerClientRoots.get(item)?.get(key);
+		if (!routes) return;
+		let moved = false;
+		for (const route of Array.from(routes)) {
+			if (!isLexicallyWithin(movedRoot, route)) continue;
+			routes.delete(route);
+			moved = true;
+		}
+		if (!moved) return;
+		staleKeys.add(key);
+		if (routes.size === 0) {
+			releaseClientOwnerKey(key, item);
+			clientLocks.get(key)?.owners.delete(item);
+		}
+	};
+	if (owner) {
+		const keys = new Set(ownerClientKeys.get(owner) ?? []);
+		for (const [key, pending] of clientLocks) {
+			if (pending.owners.has(owner)) keys.add(key);
+		}
+		for (const key of keys) pruneOwner(key, owner);
+		const generation = (ownerReloadGeneration.get(owner) ?? 0) + 1;
+		ownerReloadGeneration.set(owner, generation);
+		let coveredRoots = ownerReloadRootGenerations.get(owner);
+		if (!coveredRoots) {
+			coveredRoots = new Map();
+			ownerReloadRootGenerations.set(owner, coveredRoots);
+		}
+		coveredRoots.set(path.resolve(movedRoot), generation);
+		let released = ownerReleasedKeyGenerations.get(owner);
+		if (!released) {
+			released = new Map();
+			ownerReleasedKeyGenerations.set(owner, released);
+		}
+		for (const key of staleKeys) {
+			if (clientOwners.get(key)?.has(owner)) continue;
+			released.set(key, generation);
+		}
+	} else {
+		for (const [key, owners] of clientOwners) {
+			for (const item of Array.from(owners)) pruneOwner(key, item);
+		}
+		for (const [key, pending] of clientLocks) {
+			for (const item of Array.from(pending.owners)) pruneOwner(key, item);
+		}
+	}
+	const stopped: string[] = [];
+	for (const key of staleKeys) {
+		if (clientOwners.has(key)) continue;
+		const live = clients.get(key);
+		if (live) {
+			if (await shutdownClientInstance(live)) stopped.push(live.config.command);
+			continue;
+		}
+		const pending = clientLocks.get(key);
+		if (!pending) continue;
+		try {
+			await untilAborted(signal, pending.promise);
+		} catch {
+			throwIfAborted(signal);
+		}
+		const started = clients.get(key);
+		if (started && !clientOwners.has(key) && (await shutdownClientInstance(started))) {
+			stopped.push(started.config.command);
+		}
+	}
+	return stopped;
 }
 
 /** Release all client identities associated with a disposed tool session. */
@@ -302,6 +465,7 @@ export function releaseLspClientOwner(owner: LspClientOwner): void {
 	ownerReloadGeneration.delete(owner);
 	ownerReleasedKeyGenerations.delete(owner);
 	ownerReloadRootGenerations.delete(owner);
+	configReloadGenerations.delete(owner);
 }
 const fileOperationLocks = new Map<string, Promise<void>>();
 
@@ -824,10 +988,28 @@ async function handleApplyEditRequest(client: LspClient, message: LspJsonRpcRequ
 		);
 		return;
 	}
-
 	try {
-		await applyWorkspaceEditWithLsp(params.edit, client.cwd);
-		await sendResponse(client, message.id, { applied: true }, "workspace/applyEdit");
+		const result = await applyAndReconcileWorkspaceEdit(params.edit, client.cwd);
+		if (result.error) {
+			await sendResponse(
+				client,
+				message.id,
+				{ applied: false, failureReason: String(result.error) },
+				"workspace/applyEdit",
+			);
+		} else {
+			await sendResponse(client, message.id, { applied: true }, "workspace/applyEdit");
+		}
+		// Retirement sends `shutdown` and waits for the reply. That reply can only
+		// be read after this handler returns to `startMessageReader()`, so do not
+		// await teardown here.
+		void releaseExecutedMovedDirectoryRoots(
+			result.executed,
+			result.capturedMovedRoots,
+			result.cwd,
+			undefined,
+			result.deferredOverwriteDestinationClients,
+		);
 	} catch (err) {
 		await sendResponse(client, message.id, { applied: false, failureReason: String(err) }, "workspace/applyEdit");
 	}
@@ -887,14 +1069,205 @@ function openDocumentUrisForChange(client: LspClient, uri: string): string[] {
 	return matches;
 }
 
-function equivalentDocumentUri(left: string, right: string): boolean {
-	if (left === right) return true;
-	return resolveEquivalentPath(uriToFile(left)) === resolveEquivalentPath(uriToFile(right));
-}
-
 function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boolean {
 	if (uriIsWithin(uri, deletedRoot)) return true;
 	return workspaceContainsPath(uriToFile(deletedRoot), uriToFile(uri));
+}
+
+type CapturedMovedDirectoryRoot = {
+	root: string;
+	identity: string;
+	leafSymlink: boolean;
+	overwriteDestination?: boolean;
+};
+
+/** Directory roots a workspace edit may move or delete, captured before apply. */
+async function captureDirectoryRoot(
+	uri: string,
+	captured: Array<CapturedMovedDirectoryRoot>,
+	seen: Set<string>,
+	overwriteDestination = false,
+): Promise<void> {
+	const root = path.resolve(uriToFile(uri));
+	if (seen.has(root)) {
+		if (overwriteDestination) {
+			const existing = captured.find(item => item.root === root);
+			if (existing) existing.overwriteDestination = true;
+		}
+		return;
+	}
+	try {
+		const st = await fs.lstat(root);
+		const leafSymlink = st.isSymbolicLink();
+		const isDirectory = st.isDirectory() || (leafSymlink && (await fs.stat(root)).isDirectory());
+		if (!isDirectory) return;
+		seen.add(root);
+		captured.push({ root, identity: resolveEquivalentPath(root), leafSymlink, overwriteDestination });
+	} catch {
+		// Missing paths are not live project roots.
+	}
+}
+
+async function captureMovedDirectoryRoots(edit: WorkspaceEdit): Promise<CapturedMovedDirectoryRoot[]> {
+	const captured: CapturedMovedDirectoryRoot[] = [];
+	const seen = new Set<string>();
+	for (const change of edit.documentChanges ?? []) {
+		if (!("kind" in change)) continue;
+		if (change.kind === "rename") {
+			await captureDirectoryRoot(change.oldUri, captured, seen);
+			// overwrite:true displaces and deletes the destination inode
+			// before the source moves onto that path.
+			if (change.options?.overwrite) {
+				await captureDirectoryRoot(change.newUri, captured, seen, true);
+			}
+			continue;
+		}
+		if (change.kind === "delete") {
+			await captureDirectoryRoot(change.uri, captured, seen);
+		}
+	}
+	return captured;
+}
+
+function executedMovedDirectoryRoots(
+	executed: ExecutedWorkspaceChange[],
+	captured: ReadonlyArray<CapturedMovedDirectoryRoot>,
+): CapturedMovedDirectoryRoot[] {
+	if (captured.length === 0 || executed.length === 0) return [];
+	const executedPaths = new Set<string>();
+	for (const change of executed) {
+		if (change.kind === "rename") {
+			executedPaths.add(path.resolve(uriToFile(change.oldUri)));
+			executedPaths.add(path.resolve(uriToFile(change.newUri)));
+		} else if (change.kind === "delete") executedPaths.add(path.resolve(uriToFile(change.uri)));
+	}
+	return captured.filter(item => executedPaths.has(path.resolve(item.root)));
+}
+
+function overwriteDestinationMatchesEntry(
+	item: CapturedMovedDirectoryRoot,
+	key: string,
+	entry: { cwd: string; config: ServerConfig },
+): boolean {
+	const cwds = clientWorkspaceCwds(key, entry);
+	const lexical = path.resolve(item.root);
+	if (item.leafSymlink) return cwds.some(cwd => isLexicallyWithin(lexical, cwd));
+	const roots = [lexical];
+	const equivalent = path.resolve(item.identity);
+	if (!roots.includes(equivalent)) roots.push(equivalent);
+	return roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)));
+}
+
+/** Drop owner routes spelled under an overwritten destination symlink.
+ *  Returns true when no owner still reaches the identity, so the displaced
+ *  alias process can be unpublished without touching a physical-target session. */
+function pruneOverwriteDestinationAliasOwners(item: CapturedMovedDirectoryRoot, key: string): boolean {
+	const lexical = path.resolve(item.root);
+	const owners = new Set<LspClientOwner>([
+		...Array.from(clientOwners.get(key) ?? []),
+		...Array.from(clientLocks.get(key)?.owners ?? []),
+	]);
+	for (const owner of owners) {
+		const routes = ownerClientRoots.get(owner)?.get(key);
+		if (!routes) continue;
+		for (const route of Array.from(routes)) {
+			if (!isLexicallyWithin(lexical, route)) continue;
+			routes.delete(route);
+		}
+		if (routes.size === 0) {
+			releaseClientOwnerKey(key, owner);
+			clientLocks.get(key)?.owners.delete(owner);
+		}
+	}
+	return !clientOwners.has(key) && (clientLocks.get(key)?.owners.size ?? 0) === 0;
+}
+
+const OVERWRITE_DESTINATION_WAIT_MS = 2_000;
+
+/** Unpublish overwritten destination clients so another session cannot reuse
+ *  the displaced process, but keep the instance alive until the originating
+ *  applyEdit / code-action command finishes. Pending initializers at that
+ *  destination are tombstoned immediately so they cannot publish during
+ *  overlay reconciliation. Overwriting a directory symlink only retires
+ *  alias routes; a session using the unchanged physical target keeps the process. */
+async function unpublishExecutedOverwriteDestinationClients(
+	executed: ExecutedWorkspaceChange[],
+	captured: ReadonlyArray<CapturedMovedDirectoryRoot>,
+): Promise<LspClient[]> {
+	const deferred: LspClient[] = [];
+	const seen = new Set<LspClient>();
+	const pending = new Map<string, PendingClient>();
+	for (const item of executedMovedDirectoryRoots(executed, captured)) {
+		if (!item.overwriteDestination) continue;
+		if (captured.some(other => other !== item && !other.overwriteDestination && other.identity === item.identity)) {
+			continue;
+		}
+		for (const [key, lock] of clientLocks) {
+			if (!overwriteDestinationMatchesEntry(item, key, lock)) continue;
+			if (item.leafSymlink && !pruneOverwriteDestinationAliasOwners(item, key)) continue;
+			invalidatedClientKeys.add(key);
+			pending.set(key, lock);
+			clientLocks.delete(key);
+		}
+		for (const [key, client] of clients) {
+			if (seen.has(client)) continue;
+			if (!overwriteDestinationMatchesEntry(item, key, client)) continue;
+			if (item.leafSymlink && !pruneOverwriteDestinationAliasOwners(item, key)) continue;
+			if (!unpublishClient(key, client)) continue;
+			seen.add(client);
+			deferred.push(client);
+		}
+	}
+	for (const [key, lock] of pending) {
+		const tracked = lock.promise.finally(() => {
+			invalidatedClientKeys.delete(key);
+		});
+		try {
+			await untilAborted(AbortSignal.timeout(OVERWRITE_DESTINATION_WAIT_MS), tracked);
+		} catch {
+			// Init may fail or exceed the independent cleanup budget. Still
+			// unpublish if it published; never inherit the caller's expired
+			// tool signal or skip later moved-root retirement. The tombstone
+			// stays until this initializer settles so a late publish still
+			// throws superseded, then drops so a replacement can start.
+		}
+		const started = clients.get(key);
+		if (!started || seen.has(started)) continue;
+		if (!unpublishClient(key, started)) continue;
+		seen.add(started);
+		deferred.push(started);
+	}
+	return deferred;
+}
+
+export async function releaseExecutedMovedDirectoryRoots(
+	executed: ExecutedWorkspaceChange[],
+	captured: ReadonlyArray<CapturedMovedDirectoryRoot>,
+	sessionCwd: string,
+	signal?: AbortSignal,
+	deferredOverwriteDestinationClients: readonly LspClient[] = [],
+): Promise<void> {
+	for (const item of executedMovedDirectoryRoots(executed, captured)) {
+		if (item.overwriteDestination) continue;
+		try {
+			await releaseMovedWorkspaceRoots(sessionCwd, item.root, undefined, signal, item.identity, item.leafSymlink);
+		} catch (error) {
+			logger.warn("Failed to stop language servers for a renamed project root", {
+				movedRoot: item.root,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	for (const client of deferredOverwriteDestinationClients) {
+		try {
+			await shutdownClientInstance(client);
+		} catch (error) {
+			logger.warn("Failed to stop language servers for an overwritten project root", {
+				movedRoot: client.cwd,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 }
 
 /** Reconcile open overlays and file watchers with the ops a workspace edit actually performed. */
@@ -902,11 +1275,19 @@ export async function reconcileExecutedChanges(
 	executed: ExecutedWorkspaceChange[],
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
+	deferredClients: readonly LspClient[] = [],
 ): Promise<void> {
 	if (executed.length === 0) return;
 	const { finalUris, deletedRoots, watchedFiles } = workspaceEditChanges(executed);
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
-	const activeClients = Array.from(clients.values()).filter(client => {
+	const seenClients = new Set<LspClient>();
+	const candidateClients: LspClient[] = [];
+	for (const client of [...clients.values(), ...deferredClients]) {
+		if (seenClients.has(client)) continue;
+		seenClients.add(client);
+		candidateClients.push(client);
+	}
+	const activeClients = candidateClients.filter(client => {
 		if (client.status !== "ready") return false;
 		if (workspaceRoots.some(root => clientIsInsideWorkspace(client.name, client, root))) return true;
 		if (
@@ -932,6 +1313,13 @@ export async function reconcileExecutedChanges(
 				if (openDocumentMatchesDeletedRoot(uri, root)) {
 					deleted = true;
 					break;
+				}
+			}
+			if (!deleted) {
+				try {
+					await fs.stat(uriToFile(uri));
+				} catch (err) {
+					if (isEnoent(err)) deleted = true;
 				}
 			}
 			if (!deleted) continue;
@@ -963,33 +1351,80 @@ export async function reconcileExecutedChanges(
  * paths resolve against the first root. Overlay and watcher reconciliation covers every
  * ready client inside those roots, plus any ready client that owns an overlay or watched
  * path the edit actually touched, so a nested `workspace/applyEdit` still refreshes
- * sibling and session-root clients.
+ * sibling and session-root clients. Directory rename/delete ops then retire nested
+ * clients whose routed root vanished, matching `rename_file`. Overwrite
+ * destinations are unpublished after a committed apply and before overlay
+ * reconciliation, so another session cannot reuse the displaced-root process,
+ * while the originating client stays alive through a follow-up command or
+ * applyEdit response. Overlay reconciliation failures after a successful apply
+ * still return the executed prefix so remaining moved-root retirement can run.
  */
 export async function applyWorkspaceEditWithLsp(
 	edit: WorkspaceEdit,
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
 ): Promise<string[]> {
+	const { applied, executed, capturedMovedRoots, cwd, error, deferredOverwriteDestinationClients } =
+		await applyAndReconcileWorkspaceEdit(edit, workspace, signal);
+	await releaseExecutedMovedDirectoryRoots(
+		executed,
+		capturedMovedRoots,
+		cwd,
+		undefined,
+		deferredOverwriteDestinationClients,
+	);
+	if (error) throw error;
+	return applied;
+}
+
+export async function applyAndReconcileWorkspaceEdit(
+	edit: WorkspaceEdit,
+	workspace: string | readonly string[],
+	signal?: AbortSignal,
+): Promise<{
+	applied: string[];
+	executed: ExecutedWorkspaceChange[];
+	capturedMovedRoots: CapturedMovedDirectoryRoot[];
+	cwd: string;
+	deferredOverwriteDestinationClients: LspClient[];
+	error?: unknown;
+}> {
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
 	const cwd = workspaceRoots[0] ?? path.resolve(".");
+	const capturedMovedRoots = await captureMovedDirectoryRoots(edit);
 	const executed: ExecutedWorkspaceChange[] = [];
-	let applied: string[];
+	let applied: string[] = [];
 	try {
 		({ applied } = await applyWorkspaceEdit(edit, cwd, change => executed.push(change)));
 	} catch (err) {
 		// Best-effort: overlays for the mutated prefix must not stay stale, but
 		// reconciliation problems must not mask the original apply failure.
+		const deferredOverwriteDestinationClients = await unpublishExecutedOverwriteDestinationClients(
+			executed,
+			capturedMovedRoots,
+		);
 		try {
-			await reconcileExecutedChanges(executed, workspaceRoots, signal);
+			await reconcileExecutedChanges(executed, workspaceRoots, signal, deferredOverwriteDestinationClients);
 		} catch (reconcileErr) {
 			logger.warn("LSP overlay reconciliation after failed workspace edit failed", {
 				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
 			});
 		}
-		throw err;
+		return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients, error: err };
 	}
-	await reconcileExecutedChanges(executed, workspaceRoots, signal);
-	return applied;
+	const deferredOverwriteDestinationClients = await unpublishExecutedOverwriteDestinationClients(
+		executed,
+		capturedMovedRoots,
+	);
+	try {
+		await reconcileExecutedChanges(executed, workspaceRoots, signal, deferredOverwriteDestinationClients);
+	} catch (reconcileErr) {
+		logger.warn("LSP overlay reconciliation after workspace edit failed", {
+			error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
+		});
+		return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients, error: reconcileErr };
+	}
+	return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients };
 }
 
 interface DynamicCapabilityRegistration {
@@ -1279,14 +1714,15 @@ export function shutdownStaleClients(
 	workspaceRoots: readonly string[] = [cwd],
 	owner?: LspClientOwner,
 	retainClient?: (clientCwd: string) => boolean,
+	contains: (root: string, cwd: string) => boolean = workspaceContainsPath,
 ): Promise<string[]> {
 	const fresh = new Set(configs.map(config => clientKey(config, config.resolvedRoot ?? cwd)));
 	const roots = workspaceRoots.map(root => path.resolve(root));
 	const isRelevant = (key: string, entry: { cwd: string; config: ServerConfig }) => {
 		const cwds = clientWorkspaceCwds(key, entry, owner);
 		return (
-			roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd))) &&
-			!cwds.some(cwd => retainClient?.(cwd))
+			roots.some(root => cwds.some(clientCwd => contains(root, clientCwd))) &&
+			!cwds.some(clientCwd => retainClient?.(clientCwd))
 		);
 	};
 	const collectRelevantEntries = () => {
@@ -1335,9 +1771,10 @@ export function shutdownStaleClients(
 				previousReleasedGenerations.set(key, released.get(key));
 				released.set(key, generation);
 			}
+			const stamps = ownerConfigStamps(owner);
 			for (const config of configs) {
-				previousConfigStamps.set(config, configReloadGenerations.get(config));
-				configReloadGenerations.set(config, generation);
+				previousConfigStamps.set(config, stamps.get(config));
+				stamps.set(config, generation);
 			}
 			if (invalidateUnusedIdentities) {
 				let coveredRoots = ownerReloadRootGenerations.get(owner);
@@ -1484,8 +1921,7 @@ export function shutdownStaleClients(
 			for (const key of unownedStaleKeys) initFailures.delete(key);
 
 			const stale = Array.from(clients.entries()).filter(
-				([key, client]) =>
-					unownedStaleKeys.has(key) && roots.some(root => clientIsInsideWorkspace(key, client, root, owner)),
+				([key, client]) => unownedStaleKeys.has(key) && isRelevant(key, client),
 			);
 			const results = await Promise.all(stale.map(([, client]) => shutdownClientInstance(client)));
 			const failed = stale.filter((_entry, index) => results[index] !== true);
@@ -1538,10 +1974,11 @@ export function shutdownStaleClients(
 						}
 						if (released.size === 0) ownerReleasedKeyGenerations.delete(owner);
 					}
+					const stamps = ownerConfigStamps(owner);
 					for (const [config, previous] of previousConfigStamps) {
-						if (configReloadGenerations.get(config) !== thisReloadGeneration) continue;
-						if (previous === undefined) configReloadGenerations.delete(config);
-						else configReloadGenerations.set(config, previous);
+						if (stamps.get(config) !== thisReloadGeneration) continue;
+						if (previous === undefined) stamps.delete(config);
+						else stamps.set(config, previous);
 					}
 					const coveredRoots = ownerReloadRootGenerations.get(owner);
 					if (coveredRoots) {
@@ -1609,11 +2046,22 @@ export function ownerConfigGeneration(owner?: LspClientOwner): number {
 	return owner ? (ownerReloadGeneration.get(owner) ?? 0) : 0;
 }
 
+function ownerConfigStamps(owner: LspClientOwner): WeakMap<ServerConfig, number> {
+	let stamps = configReloadGenerations.get(owner);
+	if (!stamps) {
+		stamps = new WeakMap();
+		configReloadGenerations.set(owner, stamps);
+	}
+	return stamps;
+}
+
 export function stampOwnerConfigGeneration(config: ServerConfig, owner?: LspClientOwner, generation?: number): number {
-	const stamped = configReloadGenerations.get(config);
+	if (!owner) return generation ?? 0;
+	const stamps = ownerConfigStamps(owner);
+	const stamped = stamps.get(config);
 	if (stamped !== undefined) return stamped;
 	const resolved = generation ?? ownerConfigGeneration(owner);
-	configReloadGenerations.set(config, resolved);
+	stamps.set(config, resolved);
 	return resolved;
 }
 
@@ -1822,7 +2270,10 @@ export async function getOrCreateClient(
 
 		// Register crash recovery - remove client on process exit
 		proc.exited.then(() => {
-			if (clients.get(key) === client) clients.delete(key);
+			if (clients.get(key) === client) {
+				clients.delete(key);
+				dropClientOwnership(key);
+			}
 			maybeStopIdleChecker();
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);
 			client.resolveProjectLoaded();
@@ -2302,7 +2753,15 @@ async function waitForExit(client: LspClient, timeoutMs: number): Promise<boolea
  * failed teardown, not a completed restart.
  */
 export async function shutdownClientInstance(client: LspClient): Promise<boolean> {
-	if (clients.get(client.name) === client) clients.delete(client.name);
+	const unpublished = clients.get(client.name) === client;
+	const snapshot = unpublished ? snapshotClientOwnership(client.name) : unpublishedClientOwnership.get(client);
+	const previousOwners = snapshot?.owners ?? [];
+	const previousOwnerRoots = snapshot?.roots ?? new Map();
+	if (unpublished) {
+		if (snapshot) unpublishedClientOwnership.set(client, snapshot);
+		clients.delete(client.name);
+		dropClientOwnership(client.name);
+	}
 	maybeStopIdleChecker();
 
 	const err = new Error("LSP client shutdown");
@@ -2330,11 +2789,18 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 
 	client.proc.kill();
 	const exited = await waitForExit(client, EXIT_TIMEOUT_MS);
-	if (!exited && !clients.has(client.name)) {
-		clients.set(client.name, client);
-		maybeStartIdleChecker(client);
+	if (!exited) {
+		unpublishedClientOwnership.delete(client);
+		if (!clients.has(client.name)) {
+			clients.set(client.name, client);
+			for (const owner of previousOwners) registerClientOwner(client.name, owner, previousOwnerRoots.get(owner));
+			maybeStartIdleChecker(client);
+		}
+		return false;
 	}
-	return exited;
+	unpublishedClientOwnership.delete(client);
+	dropIfStillThisInstance();
+	return true;
 }
 
 /**
@@ -2491,15 +2957,16 @@ export async function sendNotification(
  * Ownership stays on each live process until `shutdownClientInstance` confirms
  * exit. Clearing those maps first leaves a force-kill survivor ownerless, so
  * status hides it and an overlapping reload can tear it down.
+ *
+ * Owner reload generations stay monotonic: per-owner config stamps live in
+ * WeakMaps that cannot be reset with the live clients, so zeroing these
+ * counters would let a pre-shutdown stamp survive the next reload.
  */
 export async function shutdownAll(): Promise<void> {
 	stopIdleChecker();
 	invalidatedClientKeys.clear();
 	clientReloadBarriers.clear();
 	clientIdentityReloadBarriers.clear();
-	ownerReloadGeneration.clear();
-	ownerReleasedKeyGenerations.clear();
-	ownerReloadRootGenerations.clear();
 	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
 	// Mid-initialize clients live only in clientLocks (publication is deferred
@@ -2528,6 +2995,10 @@ export interface LspServerStatus {
 	cwd?: string;
 	/** Routed project root before client-cwd canonicalization. */
 	resolvedRoot?: string;
+	args?: string[];
+	initOptions?: Record<string, unknown>;
+	settings?: Record<string, unknown>;
+	languageId?: string;
 	error?: string;
 }
 
@@ -2545,6 +3016,10 @@ export function getActiveClients(owner?: LspClientOwner): LspServerStatus[] {
 			resolvedRoot:
 				(owner ? ownerClientRoots.get(owner)?.get(key)?.values().next().value : undefined) ??
 				client.config.resolvedRoot,
+			args: client.config.args,
+			initOptions: client.config.initOptions,
+			settings: client.config.settings,
+			languageId: client.config.languageId,
 		}));
 }
 

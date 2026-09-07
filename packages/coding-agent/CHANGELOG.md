@@ -12,7 +12,7 @@
 - Fixed `/remove-dir` dropping the last owner route for a language-server client acquired only through an extra-root symlink of a remaining workspace, so `lsp status` and later reload still report that retained client from the canonical cwd.
 - Fixed `lsp status` interpolating unsanitized nested server labels, so a fallback command path no longer leaks the home directory or breaks TUI rendering.
 - Fixed `lsp status` omitting a still-owned nested language server after an extra-root symlink of a remaining workspace was removed, so the retained alias is reported instead of the first-inserted extra-root route.
-- Fixed `rename_file` leaving a nested initialization failure cached when the renamed project root is a workspace symlink, so a later operation through the destination alias retries instead of hitting the three-minute negative cache.
+- Fixed `rename_file` omitting the pre-move identity of a workspace-symlink project root from owner-scoped failure cleanup, so a nested initialization failure recorded at the canonical target is cleared when that alias moves.
 - Fixed `rename_file` capturing surviving nested language-server clients by server name only, so a renamed directory with multiple same-name nested projects still notifies each overlapping session's process.
 - Fixed `rename_file` applying `willRenameFiles` edits once per symlink URI spelling of the same physical file, so a length-changing first edit no longer corrupts the second application.
 - Fixed `rename_file` skipping `workspace/didRenameFiles` for a nested language-server client kept alive by another session when the renamed project root is a workspace symlink, so the surviving process is still notified after the alias moves.

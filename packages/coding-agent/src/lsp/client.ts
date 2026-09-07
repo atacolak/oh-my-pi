@@ -323,10 +323,11 @@ export async function releaseMovedWorkspaceRoots(
 	}
 	const roots = [lexical];
 	if (!symlinkAlias && !roots.includes(equivalent)) roots.push(equivalent);
+	const failureRoots = roots.includes(equivalent) ? roots : [...roots, equivalent];
 	const contains = symlinkAlias ? isLexicallyWithin : workspaceContainsPath;
 	try {
 		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, undefined, contains);
-		clearWorkspaceInitializationFailures(roots, owner);
+		clearWorkspaceInitializationFailures(failureRoots, owner);
 		return stopped;
 	} catch (error) {
 		if (owner) {
@@ -344,7 +345,7 @@ export async function releaseMovedWorkspaceRoots(
 				releaseClientOwnerKey(key, owner);
 			}
 		}
-		clearWorkspaceInitializationFailures(roots, owner);
+		clearWorkspaceInitializationFailures(failureRoots, owner);
 		throw error;
 	}
 }

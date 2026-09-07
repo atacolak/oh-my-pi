@@ -26,6 +26,7 @@ import {
 	loadConfig,
 } from "@oh-my-pi/pi-coding-agent/lsp/config";
 import { waitForDiagnostics } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
+import { warmupLspServers } from "@oh-my-pi/pi-coding-agent/lsp/servers";
 import {
 	applyTextEditsToString,
 	applyWorkspaceEdit,
@@ -727,6 +728,29 @@ describe("lsp regressions", () => {
 			expect(configCache.has(path.resolve(tempDir.path()))).toBe(false);
 			expect(configCache.has(nestedRoot)).toBe(false);
 		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("warmup caches session config so idle timeout still applies", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-warmup-idle-cache-");
+		const config: ServerConfig = {
+			command: "fake-lsp-warmup-idle",
+			fileTypes: [".ts"],
+			rootMarkers: [],
+		};
+		try {
+			configCache.set(tempDir.path(), { servers: { [config.command]: config }, idleTimeoutMs: 5_000 });
+			installHandshakeLsp();
+			await warmupLspServers(tempDir.path());
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			client.lastActivity = Date.now() - 6_000;
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(entry => entry.name)).not.toContain("fake-lsp-warmup-idle");
+		} finally {
+			configCache.delete(tempDir.path());
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}

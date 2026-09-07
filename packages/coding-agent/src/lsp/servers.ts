@@ -14,7 +14,7 @@ import {
 	syncContent,
 	WARMUP_TIMEOUT_MS,
 } from "./client";
-import { getServersForFile, type LspConfig, loadConfig } from "./config";
+import { getConfig, getServersForFile, type LspConfig, loadConfig } from "./config";
 import { MUX_RESTART_METHOD } from "./mux/protocol";
 import type { LspClient, ServerConfig } from "./types";
 
@@ -78,7 +78,7 @@ export async function warmupLspServers(
 	options?: LspWarmupOptions,
 	owner?: LspClientOwner,
 ): Promise<LspWarmupResult> {
-	const config = loadConfig(cwd);
+	const config = getConfig(cwd);
 	const servers: LspWarmupResult["servers"] = [];
 	const lspServers = getLspServers(config);
 

@@ -7584,6 +7584,60 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("notifies an unpublished overwrite-destination client of watched-file changes", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-overwrite-dest-watched-");
+		try {
+			const sourceRoot = path.join(tempDir.path(), "source");
+			const destRoot = path.join(tempDir.path(), "dest");
+			fs.mkdirSync(sourceRoot);
+			fs.mkdirSync(destRoot);
+			await Bun.write(path.join(sourceRoot, "source.ts"), "export const source = 1;\n");
+			await Bun.write(path.join(destRoot, "dest.ts"), "export const dest = 1;\n");
+			const sourceConfig: ServerConfig = {
+				command: "source-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sourceRoot,
+			};
+			const destConfig: ServerConfig = {
+				command: "dest-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: destRoot,
+			};
+			const destServer = installHandshakeLsp();
+			const destOwner = lspClient.createLspClientOwner();
+			const destClient = await lspClient.getOrCreateClient(destConfig, tempDir.path(), 1_000, undefined, destOwner);
+			expect(destClient.cwd).toBe(destRoot);
+			installHandshakeLsp();
+			const sourceOwner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(sourceConfig, tempDir.path(), 1_000, undefined, sourceOwner);
+
+			await lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToUri(sourceRoot),
+							newUri: fileToUri(destRoot),
+							options: { overwrite: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+
+			expect(fs.existsSync(path.join(destRoot, "source.ts"))).toBe(true);
+			expect(destServer.received.some(message => message.method === "workspace/didChangeWatchedFiles")).toBe(true);
+			expect(
+				lspClient.getActiveClients().some(active => active.cwd === destRoot && active.name === destClient.name),
+			).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not reuse an overwritten destination client during overlay reconciliation", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-overwrite-dest-barrier-");
 		try {

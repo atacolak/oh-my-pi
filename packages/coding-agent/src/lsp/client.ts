@@ -1336,7 +1336,7 @@ export async function reconcileExecutedChanges(
 	const notifyRoots = Array.from(
 		new Set([...workspaceRoots, ...activeClients.flatMap(client => clientWorkspaceCwds(client.name, client))]),
 	);
-	await notifyWorkspaceWatchedFiles(notifyRoots, watchedFiles, signal);
+	await notifyWorkspaceWatchedFiles(notifyRoots, watchedFiles, signal, deferredClients);
 }
 
 /**
@@ -2618,6 +2618,8 @@ const WATCHED_FILES_NOTIFY_TIMEOUT_MS = 2_000;
  *
  * This covers sibling files that are not open text documents, such as generated
  * CSS modules or type files that another edited document imports immediately.
+ * Unpublished overwrite-destination clients stay off the live map but still
+ * receive these notifications when passed as `deferredClients`.
  *
  * The underlying stdin write drain is self-bounded by
  * {@link WATCHED_FILES_NOTIFY_TIMEOUT_MS}; only an abort of the caller's
@@ -2627,12 +2629,20 @@ export async function notifyWorkspaceWatchedFiles(
 	workspace: string | readonly string[],
 	changes: readonly WatchedFileChange[],
 	signal?: AbortSignal,
+	deferredClients: readonly LspClient[] = [],
 ): Promise<void> {
 	throwIfAborted(signal);
 	if (changes.length === 0) return;
 
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
-	const activeClients = Array.from(clients.values()).filter(
+	const seenClients = new Set<LspClient>();
+	const candidateClients: LspClient[] = [];
+	for (const client of [...clients.values(), ...deferredClients]) {
+		if (seenClients.has(client)) continue;
+		seenClients.add(client);
+		candidateClients.push(client);
+	}
+	const activeClients = candidateClients.filter(
 		client =>
 			client.status === "ready" && workspaceRoots.some(root => clientIsInsideWorkspace(client.name, client, root)),
 	);

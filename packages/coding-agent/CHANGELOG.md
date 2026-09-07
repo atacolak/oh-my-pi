@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed server-initiated workspace edits reporting `applied: false` after the filesystem mutation already committed when overlay reconciliation later failed, so the requesting language server is not told to retry an already-applied edit.
+- Fixed workspace edits that unpublish an overwrite-destination language server skipping watched-file notifications to that still-live client, so a follow-up command still sees files it did not have open.
 - Fixed edit language-server writethrough using construction-time cwd and omitting extra-root directories and session ownership, so `/move`, `!cd`, and `--add-dir` still bound nested format and diagnostics.
 - Fixed native edit move and delete notifying language servers from session cwd only, so an extra-root nested client still receives watched-file events.
 - Fixed workspace edits that overwrite a still-initializing destination leaving that client key permanently tombstoned, so a replacement language server can start for the new project.

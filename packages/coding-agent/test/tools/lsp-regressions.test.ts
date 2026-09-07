@@ -5169,6 +5169,49 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("retires extra-root clients when that extra root becomes cwd", async () => {
+		const sessionA = TempDir.createSync("@omp-lsp-move-promote-a-");
+		const sessionB = TempDir.createSync("@omp-lsp-move-promote-b-");
+		const nestedRoot = path.join(sessionB.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const oldConfig: ServerConfig = {
+			command: "promoted-extra-root-lsp",
+			args: ["--mode", "old"],
+			fileTypes: [".ts"],
+			rootMarkers: [],
+			resolvedRoot: nestedRoot,
+		};
+		const newConfig: ServerConfig = {
+			...oldConfig,
+			args: ["--mode", "new"],
+		};
+		try {
+			configCache.set(sessionA.path(), { servers: { extra: oldConfig } });
+			configCache.set(sessionB.path(), { servers: { extra: newConfig } });
+			configCache.set(nestedRoot, { servers: { extra: oldConfig } });
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(oldConfig, sessionA.path(), 1_000, undefined, owner);
+
+			await lspClient.releaseUncoveredWorkspaceRoots([sessionA.path(), sessionB.path()], [sessionB.path()], owner);
+
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(lspClient.getActiveClients(owner).map(entry => entry.name)).not.toContain("promoted-extra-root-lsp");
+
+			const replacement = installHandshakeLsp();
+			const started = await lspClient.getOrCreateClient(newConfig, sessionB.path(), 1_000, undefined, owner);
+			expect(started.config.args).toEqual(["--mode", "new"]);
+			expect(replacement.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			configCache.delete(sessionA.path());
+			configCache.delete(sessionB.path());
+			configCache.delete(nestedRoot);
+			await lspClient.shutdownAll();
+			sessionA.removeSync();
+			sessionB.removeSync();
+		}
+	});
+
 	it("deferred move cleanup restores source clients after a rolled-back cwd transition", async () => {
 		const sourceDir = TempDir.createSync("@omp-lsp-move-defer-source-");
 		const destDir = TempDir.createSync("@omp-lsp-move-defer-dest-");

@@ -355,7 +355,13 @@ export async function releaseUncoveredWorkspaceRoots(
 		}
 	}
 	rebindIdleTimeoutOrigins(owner, remainingResolved);
-	await retireRetainedClientsAbsentFromSessionConfig(remainingCwd, remainingResolved, owner, signal);
+	await retireRetainedClientsAbsentFromSessionConfig(
+		remainingCwd,
+		remainingResolved,
+		previousWorkspaceRoots,
+		owner,
+		signal,
+	);
 }
 
 /**
@@ -563,23 +569,32 @@ function sessionCatalogConfigs(cwd: string): ServerConfig[] {
 	return Object.values(catalog.definitions ?? catalog.servers);
 }
 
+function isEquivalentWorkspaceRoot(left: string, right: string): boolean {
+	return workspaceContainsPath(left, right) && workspaceContainsPath(right, left);
+}
+
 async function retireRetainedClientsAbsentFromSessionConfig(
 	remainingCwd: string,
 	remainingWorkspaceRoots: readonly string[],
+	previousWorkspaceRoots: readonly string[],
 	owner: LspClientOwner,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const extraRemaining = remainingWorkspaceRoots.filter(
-		root => !(workspaceContainsPath(remainingCwd, root) && workspaceContainsPath(root, remainingCwd)),
-	);
-	if (extraRemaining.length === 0) return;
+	const extraRemaining = remainingWorkspaceRoots.filter(root => !isEquivalentWorkspaceRoot(remainingCwd, root));
+	const previousCwd = previousWorkspaceRoots[0];
+	const promotedRemaining = remainingWorkspaceRoots.filter(root => {
+		if (!isEquivalentWorkspaceRoot(remainingCwd, root)) return false;
+		return !previousCwd || !isEquivalentWorkspaceRoot(previousCwd, root);
+	});
+	const catalogRoots = [...extraRemaining, ...promotedRemaining];
+	if (catalogRoots.length === 0) return;
 	const catalog = sessionCatalogConfigs(remainingCwd);
 	const freshConfigs: ServerConfig[] = [];
 	const consider = (key: string, entry: { cwd: string; config: ServerConfig }): void => {
 		const owners = clientOwners.get(key);
 		if (!owners?.has(owner) && clientLocks.get(key)?.owners.has(owner) !== true) return;
 		const cwds = clientWorkspaceCwds(key, entry, owner);
-		if (!extraRemaining.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
+		if (!catalogRoots.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
 			return;
 		}
 		const match = catalog.find(definition => clientKey(definition, entry.cwd) === key);
@@ -587,7 +602,7 @@ async function retireRetainedClientsAbsentFromSessionConfig(
 	};
 	for (const [key, client] of clients) consider(key, client);
 	for (const [key, pending] of clientLocks) consider(key, pending);
-	await shutdownStaleClients(remainingCwd, freshConfigs, signal, extraRemaining, owner, () => false);
+	await shutdownStaleClients(remainingCwd, freshConfigs, signal, catalogRoots, owner, () => false);
 }
 
 function rememberIdleTimeoutOrigins(key: string, owner: LspClientOwner | undefined, ...cwds: string[]): void {

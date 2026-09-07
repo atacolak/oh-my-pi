@@ -1219,12 +1219,17 @@ async function unpublishExecutedOverwriteDestinationClients(
 		}
 	}
 	for (const [key, lock] of pending) {
+		const tracked = lock.promise.finally(() => {
+			invalidatedClientKeys.delete(key);
+		});
 		try {
-			await untilAborted(AbortSignal.timeout(OVERWRITE_DESTINATION_WAIT_MS), lock.promise);
+			await untilAborted(AbortSignal.timeout(OVERWRITE_DESTINATION_WAIT_MS), tracked);
 		} catch {
 			// Init may fail or exceed the independent cleanup budget. Still
 			// unpublish if it published; never inherit the caller's expired
-			// tool signal or skip later moved-root retirement.
+			// tool signal or skip later moved-root retirement. The tombstone
+			// stays until this initializer settles so a late publish still
+			// throws superseded, then drops so a replacement can start.
 		}
 		const started = clients.get(key);
 		if (!started || seen.has(started)) continue;

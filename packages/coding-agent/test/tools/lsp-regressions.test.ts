@@ -7740,6 +7740,16 @@ describe("lsp regressions", () => {
 			).toBe(false);
 			expect(fs.existsSync(path.join(destRoot, "source.ts"))).toBe(true);
 			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				destConfig,
+				tempDir.path(),
+				1_000,
+				undefined,
+				concurrentOwner,
+			);
+			expect(replacement.cwd).toBe(destRoot);
+			expect(replacementServer.received.some(message => message.method === "initialize")).toBe(true);
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

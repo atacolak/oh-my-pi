@@ -6984,6 +6984,65 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("retires a pending alias-only client when a workspace edit moves that symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-pending-symlink-alias-");
+		const initialize = Promise.withResolvers<void>();
+		try {
+			const realNested = path.join(tempDir.path(), "real-nested");
+			const aliasRoot = path.join(tempDir.path(), "alias-nested");
+			const destRoot = path.join(tempDir.path(), "moved-alias");
+			fs.mkdirSync(realNested);
+			await Bun.write(path.join(realNested, "old.ts"), "export const value = 1;\n");
+			fs.symlinkSync(realNested, aliasRoot);
+			const aliasConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: aliasRoot,
+			};
+			const server = installFakeLsp(async (message, fake) => {
+				if (message.method === "initialize") {
+					await initialize.promise;
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const aliasOwner = lspClient.createLspClientOwner();
+			const starting = lspClient.getOrCreateClient(aliasConfig, tempDir.path(), 5_000, undefined, aliasOwner);
+			await server.waitFor(message => message.method === "initialize");
+
+			const { executed, capturedMovedRoots, cwd } = await lspClient.applyAndReconcileWorkspaceEdit(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToLexicalUri(aliasRoot),
+							newUri: fileToLexicalUri(destRoot),
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+			expect(fs.existsSync(aliasRoot)).toBe(false);
+			const retiring = lspClient.releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd);
+			initialize.resolve();
+			await retiring;
+			await starting.catch(() => undefined);
+
+			expect(fs.existsSync(realNested)).toBe(true);
+			expect(lspClient.getActiveClients(aliasOwner).some(active => active.cwd === realNested)).toBe(false);
+			expect(lspClient.getActiveClients().some(active => active.cwd === realNested)).toBe(false);
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+		} finally {
+			initialize.resolve();
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not await shutdown on the reader after a server-initiated root delete", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-apply-edit-root-unawaited-");
 		try {

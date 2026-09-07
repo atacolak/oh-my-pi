@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed workspace edits that rename a directory symlink leaving a still-initializing alias-only language-server client published ownerless at the unchanged physical target.
 - Fixed code-action, rename, and server-initiated workspace edits leaving a nested language-server process initialized at a directory that was itself moved or recursively deleted, so a later operation under the destination no longer kept the vanished-root server running.
 - Fixed code actions that both move a nested project root and run a follow-up command shutting the language server down before that command, so the command still runs against the live client.
 - Fixed workspace edits that rename or delete a directory symlink shutting down another session's language server at the unchanged physical target.

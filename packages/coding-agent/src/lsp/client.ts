@@ -365,7 +365,10 @@ async function releaseMovedSymlinkAlias(movedRoot: string, signal?: AbortSignal)
 		}
 		if (!moved) return;
 		staleKeys.add(key);
-		if (routes.size === 0) releaseClientOwnerKey(key, item);
+		if (routes.size === 0) {
+			releaseClientOwnerKey(key, item);
+			clientLocks.get(key)?.owners.delete(item);
+		}
 	};
 	for (const [key, owners] of clientOwners) {
 		for (const item of Array.from(owners)) pruneOwner(key, item);
@@ -375,7 +378,7 @@ async function releaseMovedSymlinkAlias(movedRoot: string, signal?: AbortSignal)
 	}
 	const stopped: string[] = [];
 	for (const key of staleKeys) {
-		if (clientOwners.has(key) || (clientLocks.get(key)?.owners.size ?? 0) > 0) continue;
+		if (clientOwners.has(key)) continue;
 		const live = clients.get(key);
 		if (live) {
 			if (await shutdownClientInstance(live)) stopped.push(live.config.command);

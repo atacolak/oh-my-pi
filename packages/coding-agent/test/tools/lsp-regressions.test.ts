@@ -7668,6 +7668,44 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file keeps a remaining physical owner route after moving a directory symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-symlink-keep-physical-route-");
+		try {
+			const sessionCwd = path.join(tempDir.path(), "app");
+			const extraRoot = path.join(tempDir.path(), "extra");
+			const destRoot = path.join(tempDir.path(), "moved-extra");
+			fs.mkdirSync(sessionCwd);
+			await Bun.write(path.join(sessionCwd, "old.ts"), "export const value = 1;\n");
+			fs.symlinkSync(sessionCwd, extraRoot);
+			const extraConfig: ServerConfig = {
+				command: "keep-physical-route-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: extraRoot,
+			};
+			const cwdConfig: ServerConfig = { ...extraConfig, resolvedRoot: sessionCwd };
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(extraConfig, extraRoot, 1_000, undefined, owner);
+			await lspClient.getOrCreateClient(cwdConfig, sessionCwd, 1_000, undefined, owner);
+			expect(lspClient.getActiveClients(owner).map(active => active.cwd)).toEqual([sessionCwd]);
+			expect(lspClient.getActiveClients(owner).map(active => active.resolvedRoot)).toEqual([extraRoot]);
+
+			const movedRootIdentity = path.resolve(sessionCwd);
+			await fsp.rename(extraRoot, destRoot);
+			await lspClient.releaseMovedWorkspaceRoots(sessionCwd, extraRoot, owner, undefined, movedRootIdentity, true);
+
+			expect(fs.existsSync(extraRoot)).toBe(false);
+			expect(fs.existsSync(sessionCwd)).toBe(true);
+			expect(server.received.map(message => message.method)).not.toContain("shutdown");
+			expect(lspClient.getActiveClients(owner).some(active => active.cwd === sessionCwd)).toBe(true);
+			expect(lspClient.getActiveClients(owner).map(active => active.resolvedRoot)).toEqual([sessionCwd]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("rename_file clears a nested init failure when a symlink project root moves", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-rename-symlink-root-init-failure-");
 		const shared = TempDir.createSync("@omp-lsp-rename-symlink-root-init-failure-target-");

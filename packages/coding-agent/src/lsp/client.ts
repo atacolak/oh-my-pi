@@ -312,8 +312,9 @@ export async function releaseUncoveredWorkspaceRoots(
  * cache lookup still needs the pre-move root. When `owner` is omitted, every
  * session's matching client is retired — workspace edits do not send
  * `didRenameFiles` to overlapping owners. A moved directory symlink is an
- * exception: only owners routed through that alias are released, so a session
- * using the unchanged physical target keeps its live client. Ordinary
+ * exception: only routes through that alias are pruned, so a session that
+ * still reaches the unchanged physical target — including the same owner
+ * through another equivalent route — keeps its live client. Ordinary
  * directories reached through a symlink parent still physically move, so
  * they take the full retirement path even when lexical and canonical paths
  * differ.
@@ -328,15 +329,16 @@ export async function releaseMovedWorkspaceRoots(
 ): Promise<string[]> {
 	const lexical = path.resolve(movedRoot);
 	const equivalent = path.resolve(movedRootIdentity);
-	if (!owner && leafSymlink) {
-		return await releaseMovedSymlinkAlias(lexical, signal);
-	}
 	const roots = [lexical];
 	if (!leafSymlink && !roots.includes(equivalent)) roots.push(equivalent);
 	const failureRoots = roots.includes(equivalent) ? roots : [...roots, equivalent];
-	const contains = leafSymlink ? isLexicallyWithin : workspaceContainsPath;
+	if (leafSymlink) {
+		const stopped = await releaseMovedSymlinkAlias(lexical, signal, owner);
+		if (owner) clearWorkspaceInitializationFailures(failureRoots, owner);
+		return stopped;
+	}
 	try {
-		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, undefined, contains);
+		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner);
 		clearWorkspaceInitializationFailures(failureRoots, owner);
 		return stopped;
 	} catch (error) {
@@ -349,7 +351,7 @@ export async function releaseMovedWorkspaceRoots(
 					: pending
 						? clientWorkspaceCwds(key, pending, owner)
 						: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
-				if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => contains(root, cwd)))) {
+				if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) {
 					continue;
 				}
 				releaseClientOwnerKey(key, owner);
@@ -360,9 +362,15 @@ export async function releaseMovedWorkspaceRoots(
 	}
 }
 
-/** Drop owners routed through a vanished directory symlink without tearing down
- *  sessions that still reach the same physical client through another path. */
-async function releaseMovedSymlinkAlias(movedRoot: string, signal?: AbortSignal): Promise<string[]> {
+/** Drop routes through a vanished directory symlink without tearing down
+ *  sessions that still reach the same physical client through another path.
+ *  Pass `owner` to prune only that session; omit it for workspace-edit
+ *  retirement across every owner. */
+async function releaseMovedSymlinkAlias(
+	movedRoot: string,
+	signal?: AbortSignal,
+	owner?: LspClientOwner,
+): Promise<string[]> {
 	const staleKeys = new Set<string>();
 	const pruneOwner = (key: string, item: LspClientOwner): void => {
 		const routes = ownerClientRoots.get(item)?.get(key);
@@ -380,11 +388,36 @@ async function releaseMovedSymlinkAlias(movedRoot: string, signal?: AbortSignal)
 			clientLocks.get(key)?.owners.delete(item);
 		}
 	};
-	for (const [key, owners] of clientOwners) {
-		for (const item of Array.from(owners)) pruneOwner(key, item);
-	}
-	for (const [key, pending] of clientLocks) {
-		for (const item of Array.from(pending.owners)) pruneOwner(key, item);
+	if (owner) {
+		const keys = new Set(ownerClientKeys.get(owner) ?? []);
+		for (const [key, pending] of clientLocks) {
+			if (pending.owners.has(owner)) keys.add(key);
+		}
+		for (const key of keys) pruneOwner(key, owner);
+		const generation = (ownerReloadGeneration.get(owner) ?? 0) + 1;
+		ownerReloadGeneration.set(owner, generation);
+		let coveredRoots = ownerReloadRootGenerations.get(owner);
+		if (!coveredRoots) {
+			coveredRoots = new Map();
+			ownerReloadRootGenerations.set(owner, coveredRoots);
+		}
+		coveredRoots.set(path.resolve(movedRoot), generation);
+		let released = ownerReleasedKeyGenerations.get(owner);
+		if (!released) {
+			released = new Map();
+			ownerReleasedKeyGenerations.set(owner, released);
+		}
+		for (const key of staleKeys) {
+			if (clientOwners.get(key)?.has(owner)) continue;
+			released.set(key, generation);
+		}
+	} else {
+		for (const [key, owners] of clientOwners) {
+			for (const item of Array.from(owners)) pruneOwner(key, item);
+		}
+		for (const [key, pending] of clientLocks) {
+			for (const item of Array.from(pending.owners)) pruneOwner(key, item);
+		}
 	}
 	const stopped: string[] = [];
 	for (const key of staleKeys) {

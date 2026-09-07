@@ -961,6 +961,25 @@ function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boole
 }
 
 /** Directory roots a workspace edit may move or delete, captured before apply. */
+async function captureDirectoryRoot(
+	uri: string,
+	captured: Array<{ root: string; identity: string; leafSymlink: boolean }>,
+	seen: Set<string>,
+): Promise<void> {
+	const root = path.resolve(uriToFile(uri));
+	if (seen.has(root)) return;
+	try {
+		const st = await fs.lstat(root);
+		const leafSymlink = st.isSymbolicLink();
+		const isDirectory = st.isDirectory() || (leafSymlink && (await fs.stat(root)).isDirectory());
+		if (!isDirectory) return;
+		seen.add(root);
+		captured.push({ root, identity: resolveEquivalentPath(root), leafSymlink });
+	} catch {
+		// Missing paths are not live project roots.
+	}
+}
+
 async function captureMovedDirectoryRoots(
 	edit: WorkspaceEdit,
 ): Promise<Array<{ root: string; identity: string; leafSymlink: boolean }>> {
@@ -968,19 +987,17 @@ async function captureMovedDirectoryRoots(
 	const seen = new Set<string>();
 	for (const change of edit.documentChanges ?? []) {
 		if (!("kind" in change)) continue;
-		const sourceUri = change.kind === "rename" ? change.oldUri : change.kind === "delete" ? change.uri : undefined;
-		if (!sourceUri) continue;
-		const root = path.resolve(uriToFile(sourceUri));
-		if (seen.has(root)) continue;
-		try {
-			const st = await fs.lstat(root);
-			const leafSymlink = st.isSymbolicLink();
-			const isDirectory = st.isDirectory() || (leafSymlink && (await fs.stat(root)).isDirectory());
-			if (!isDirectory) continue;
-			seen.add(root);
-			captured.push({ root, identity: resolveEquivalentPath(root), leafSymlink });
-		} catch {
+		if (change.kind === "rename") {
+			await captureDirectoryRoot(change.oldUri, captured, seen);
+			// overwrite:true displaces and deletes the destination inode
+			// before the source moves onto that path.
+			if (change.options?.overwrite) {
+				await captureDirectoryRoot(change.newUri, captured, seen);
+			}
 			continue;
+		}
+		if (change.kind === "delete") {
+			await captureDirectoryRoot(change.uri, captured, seen);
 		}
 	}
 	return captured;
@@ -993,8 +1010,10 @@ function executedMovedDirectoryRoots(
 	if (captured.length === 0 || executed.length === 0) return [];
 	const executedPaths = new Set<string>();
 	for (const change of executed) {
-		if (change.kind === "rename") executedPaths.add(path.resolve(uriToFile(change.oldUri)));
-		else if (change.kind === "delete") executedPaths.add(path.resolve(uriToFile(change.uri)));
+		if (change.kind === "rename") {
+			executedPaths.add(path.resolve(uriToFile(change.oldUri)));
+			executedPaths.add(path.resolve(uriToFile(change.newUri)));
+		} else if (change.kind === "delete") executedPaths.add(path.resolve(uriToFile(change.uri)));
 	}
 	return captured.filter(item => executedPaths.has(path.resolve(item.root)));
 }
@@ -1084,7 +1103,9 @@ export async function reconcileExecutedChanges(
  * ready client inside those roots, plus any ready client that owns an overlay or watched
  * path the edit actually touched, so a nested `workspace/applyEdit` still refreshes
  * sibling and session-root clients. Directory rename/delete ops then retire nested
- * clients whose routed root vanished, matching `rename_file`.
+ * clients whose routed root vanished, matching `rename_file`. Overlay reconciliation
+ * failures after a successful apply still return the executed prefix so moved-root
+ * retirement can run.
  */
 export async function applyWorkspaceEditWithLsp(
 	edit: WorkspaceEdit,
@@ -1096,7 +1117,7 @@ export async function applyWorkspaceEditWithLsp(
 		workspace,
 		signal,
 	);
-	await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd, signal);
+	await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd);
 	if (error) throw error;
 	return applied;
 }
@@ -1131,7 +1152,14 @@ export async function applyAndReconcileWorkspaceEdit(
 		}
 		return { applied, executed, capturedMovedRoots, cwd, error: err };
 	}
-	await reconcileExecutedChanges(executed, workspaceRoots, signal);
+	try {
+		await reconcileExecutedChanges(executed, workspaceRoots, signal);
+	} catch (reconcileErr) {
+		logger.warn("LSP overlay reconciliation after workspace edit failed", {
+			error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
+		});
+		return { applied, executed, capturedMovedRoots, cwd, error: reconcileErr };
+	}
 	return { applied, executed, capturedMovedRoots, cwd };
 }
 

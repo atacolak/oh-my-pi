@@ -1662,7 +1662,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 									pendingRootRetirement.executed,
 									pendingRootRetirement.capturedMovedRoots,
 									pendingRootRetirement.cwd,
-									signal,
 								);
 							}
 						}

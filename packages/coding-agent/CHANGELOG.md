@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed workspace edits that overwrite an existing nested project directory leaving that destination's language server published at the displaced inode.
+- Fixed workspace edits that successfully move or delete a nested project root skipping language-server retirement when overlay reconciliation later fails.
 - Fixed workspace edits that rename an ordinary nested directory through a symlink parent leaving another session's language server published at the vanished physical path.
 - Fixed workspace edits that rename a directory symlink leaving a still-initializing alias-only language-server client published ownerless at the unchanged physical target.
 - Fixed code-action, rename, and server-initiated workspace edits leaving a nested language-server process initialized at a directory that was itself moved or recursively deleted, so a later operation under the destination no longer kept the vanished-root server running.

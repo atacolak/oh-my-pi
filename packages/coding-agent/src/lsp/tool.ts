@@ -100,6 +100,7 @@ import {
 import {
 	applyCodeAction,
 	dedupeWorkspaceSymbols,
+	equivalentDocumentUri,
 	extractHoverText,
 	fileToLexicalUri,
 	fileToUri,
@@ -797,7 +798,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				const incomingPrimary = cfg ? isProjectAwareLspServer(cfg) : false;
 				const flat = flattenWorkspaceTextEdits(edit);
 				for (const [uri, edits] of flat) {
-					const existing = acceptedByUri.get(uri);
+					let existing: AcceptedBucket | undefined;
+					for (const [acceptedUri, bucket] of acceptedByUri) {
+						if (equivalentDocumentUri(acceptedUri, uri)) {
+							existing = bucket;
+							break;
+						}
+					}
 					if (!existing) {
 						acceptedByUri.set(uri, {
 							primaryServer: serverName,

@@ -2,7 +2,7 @@ export { truncate } from "@oh-my-pi/pi-utils";
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { isEnoent, resolveEquivalentPath } from "@oh-my-pi/pi-utils";
 import { workspaceEntryPath } from "../session/session-workspace";
 import { type Theme, theme } from "../modes/theme/theme";
 import { formatGroupedFiles } from "../tools/grouped-file-output";
@@ -77,6 +77,12 @@ export function uriToFile(uri: string): string {
 		// component). Fall back to a lenient manual conversion.
 		return laxUriToFile(uri);
 	}
+}
+
+/** True when two document URIs name the same physical file, including symlink aliases. */
+export function equivalentDocumentUri(left: string, right: string): boolean {
+	if (left === right) return true;
+	return resolveEquivalentPath(uriToFile(left)) === resolveEquivalentPath(uriToFile(right));
 }
 
 function laxUriToFile(uri: string): string {

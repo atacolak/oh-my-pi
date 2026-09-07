@@ -48,6 +48,7 @@ import {
 	collectGlobMatches,
 	dedupeWorkspaceSymbols,
 	detectLanguageId,
+	fileToLexicalUri,
 	fileToUri,
 	filterWorkspaceSymbols,
 	hasGlobPattern,
@@ -6833,6 +6834,91 @@ describe("lsp regressions", () => {
 			expect(lspClient.getActiveClients(renamingOwner).some(active => active.cwd === nestedB)).toBe(false);
 		} finally {
 			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("rename_file coalesces equivalent symlink URIs before applying willRenameFiles edits", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-equivalent-uri-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "src", "old.ts");
+			const destFile = path.join(tempDir.path(), "src", "new.ts");
+			const referencingFile = path.join(tempDir.path(), "src", "consumer.ts");
+			const aliasDir = path.join(tempDir.path(), "alias");
+			fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+			fs.symlinkSync(path.join(tempDir.path(), "src"), aliasDir);
+			await Bun.write(sourceFile, "export const value = 42;\n");
+			await Bun.write(referencingFile, "import { value } from './old';\n");
+
+			const canonicalUri = fileToUri(referencingFile);
+			const aliasUri = fileToLexicalUri(path.join(aliasDir, "consumer.ts"));
+			expect(canonicalUri).not.toBe(aliasUri);
+			expect(lspUtils.equivalentDocumentUri(canonicalUri, aliasUri)).toBe(true);
+
+			const serverA: ServerConfig = { command: "ts-a", fileTypes: ["ts"], rootMarkers: [] };
+			const serverB: ServerConfig = { command: "ts-b", fileTypes: ["ts"], rootMarkers: [] };
+			const makeClient = (config: ServerConfig): LspClient => ({
+				name: config.command,
+				cwd: tempDir.path(),
+				config,
+				proc: {
+					stdin: { write() {}, flush: async () => {} },
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			});
+			const clientA = makeClient(serverA);
+			const clientB = makeClient(serverB);
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "ts-a": serverA, "ts-b": serverB },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async config =>
+				config.command === "ts-a" ? clientA : clientB,
+			);
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (client, method) => {
+				if (method === "workspace/willRenameFiles") {
+					const uri = client.name === "ts-a" ? canonicalUri : aliasUri;
+					const range =
+						client.name === "ts-a"
+							? { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }
+							: {
+									start: { line: 0, character: 22 },
+									end: { line: 0, character: 29 },
+								};
+					const newText = client.name === "ts-a" ? "// keep\n" : "'./new'";
+					return { changes: { [uri]: [{ range, newText }] } };
+				}
+				return null;
+			});
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("rename-equivalent-uri", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(fs.existsSync(sourceFile)).toBe(false);
+			expect(fs.existsSync(destFile)).toBe(true);
+			expect(await Bun.file(referencingFile).text()).toBe("// keep\nimport { value } from './new';\n");
+		} finally {
+			vi.restoreAllMocks();
 			tempDir.removeSync();
 		}
 	});

@@ -26,7 +26,7 @@ import type {
 	ServerConfig,
 	WorkspaceEdit,
 } from "./types";
-import { detectLanguageId, EquivalentUriMap, fileToUri, uriToFile } from "./utils";
+import { detectLanguageId, equivalentDocumentUri, EquivalentUriMap, fileToUri, uriToFile } from "./utils";
 
 // =============================================================================
 // Client State
@@ -834,11 +834,6 @@ function openDocumentUrisForChange(client: LspClient, uri: string): string[] {
 		if (equivalentDocumentUri(openUri, uri)) add(openUri);
 	}
 	return matches;
-}
-
-function equivalentDocumentUri(left: string, right: string): boolean {
-	if (left === right) return true;
-	return resolveEquivalentPath(uriToFile(left)) === resolveEquivalentPath(uriToFile(right));
 }
 
 function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boolean {

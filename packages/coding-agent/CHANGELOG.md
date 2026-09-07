@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `lsp status` reporting a reused language server as not started after `reload *` changed only `fileTypes`, so the live client keeps the catalog's routing metadata instead of appearing twice.
 - Fixed `/move` keeping a previous session cwd in extra-root idle-timeout origins, so a nested client covered by a retained additional workspace uses the settled session timeout instead of the old cwd's shorter timeout.
 - Fixed `/move` leaving extra-root language servers running under the previous session's command, args, or settings when the new cwd's catalog differs, so the next operation under that extra root starts the current identity instead of leaking the old process.
 - Fixed code actions skipping `workspace/executeCommand` when overlay reconciliation fails after the filesystem edit already committed, so the originating server still runs its follow-up command.

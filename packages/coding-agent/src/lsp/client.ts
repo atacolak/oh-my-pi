@@ -1833,6 +1833,15 @@ function clientKey(config: ServerConfig, cwd: string): string {
 	return `${canonicalSpawnCommand(config)}:${resolveEquivalentPath(cwd)}:${identity}`;
 }
 
+/**
+ * `clientKey()` omits routing-only fields such as `fileTypes` so a process is
+ * reused when only those change. Copy them onto the live client so status and
+ * later file matching follow the catalog that acquired this identity.
+ */
+function refreshReusableClientRouting(entry: { config: ServerConfig }, config: ServerConfig): void {
+	entry.config.fileTypes = config.fileTypes;
+}
+
 function clientServerRootKey(config: ServerConfig, cwd: string): string {
 	return `${canonicalSpawnCommand(config)}:${resolveEquivalentPath(cwd)}`;
 }
@@ -1878,6 +1887,13 @@ export function shutdownStaleClients(
 		return { relevantPending: nextPending, relevantClients: nextClients };
 	};
 	let { relevantPending, relevantClients } = collectRelevantEntries();
+	const refreshFreshRouting = (key: string, entry: { cwd: string; config: ServerConfig }): void => {
+		if (!fresh.has(key)) return;
+		const match = configs.find(definition => clientKey(definition, definition.resolvedRoot ?? cwd) === key);
+		if (match) refreshReusableClientRouting(entry, match);
+	};
+	for (const [key, pending] of relevantPending) refreshFreshRouting(key, pending);
+	for (const [key, client] of relevantClients) refreshFreshRouting(key, client);
 	const staleOwnedKeys = new Set([
 		...relevantPending.filter(([key]) => !fresh.has(key)).map(([key]) => key),
 		...relevantClients.filter(([key]) => !fresh.has(key)).map(([key]) => key),
@@ -2268,6 +2284,7 @@ export async function getOrCreateClient(
 	) {
 		registerClientOwner(key, owner, routedRoot);
 		existingClient.lastActivity = Date.now();
+		refreshReusableClientRouting(existingClient, config);
 		rememberAcquiredIdleTimeout(existingClient);
 		return existingClient;
 	}
@@ -2279,6 +2296,7 @@ export async function getOrCreateClient(
 		if (owner) existingLock.owners.add(owner);
 		try {
 			const client = await existingLock.promise;
+			refreshReusableClientRouting(client, config);
 			rememberAcquiredIdleTimeout(client);
 			return client;
 		} catch (error) {

@@ -5303,6 +5303,41 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload refreshes fileTypes on a reused client so status stays started", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-filetypes-status-");
+		try {
+			installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const oldConfig: ServerConfig = {
+				command: "fake-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			const started = await lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000, undefined, owner);
+			const newConfig: ServerConfig = {
+				...oldConfig,
+				fileTypes: [".ts", ".tsx"],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": newConfig },
+				definitions: { "fake-lsp": newConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			await tool.execute("reload-filetypes", { action: "reload", file: "*" });
+			const status = await tool.execute("status-filetypes", { action: "status" });
+			const output = textResult(status);
+			expect(output).toContain("Language servers: fake-lsp (ready)");
+			expect(output).not.toMatch(/fake-lsp \(configured, not started\)/);
+			expect(output).not.toMatch(/fake-lsp @/);
+			expect(started.config.fileTypes).toEqual([".ts", ".tsx"]);
+			expect(lspClient.getActiveClients(owner).map(client => client.fileTypes)).toEqual([[".ts", ".tsx"]]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload replaces a client whose process or initialization config changed", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-identity-");
 		try {

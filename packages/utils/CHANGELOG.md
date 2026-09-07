@@ -17,6 +17,7 @@
 - Matched project-dotenv ownership case-insensitively on Windows so a differently-cased dotenv key cannot masquerade as a trusted launcher variable.
 - Decoded Bun double-quoted dotenv `\n` and `\r` escapes when matching project-owned environment values.
 - Expanded Bun `${VAR:-fallback}` when matching project-owned dotenv values and treated unrecognized `$` syntax as project-owned.
+- Closed Bun-quoted dotenv values after an even-length backslash run when matching project-owned environment variables.
 - Preserved trailing whitespace in Bun-quoted multiline dotenv values when matching project-owned environment variables.
 - Trusted an explicit `--profile` selection over a project dotenv `OMP_PROFILE`/`PI_PROFILE` when determining environment ownership.
 - Treated Bun-quoted dotenv values that span literal newlines as project-owned instead of trusted global configuration.

@@ -174,10 +174,11 @@ export function filterChildShellEnv(
  * quoting. Quoted values may span literal newlines until an unescaped closer;
  * leftover text after that closer (other than a `#` comment) rejects the
  * quoted span so the first line is parsed unquoted, matching Bun. Trailing
- * whitespace on the opening quoted line is preserved. Double-quoted values
- * decode Bun's `\n` / `\r` escapes; `\\` is a literal pair, so `\\n` stays
- * two slashes plus `n`. Returns undefined for blank lines, comments, and
- * malformed names.
+ * whitespace on the opening quoted line is preserved. A quote after an
+ * even-length backslash run is a closer; an odd-length run escapes it.
+ * Double-quoted values decode Bun's `\n` / `\r` escapes; `\\` is a literal
+ * pair, so `\\n` stays two slashes plus `n`. Returns undefined for blank
+ * lines, comments, and malformed names.
  */
 function parseEnvAssignment(
 	lines: string[],
@@ -211,8 +212,13 @@ function parseEnvAssignment(
 
 function findUnescapedQuote(segment: string, quote: string): number {
 	let close = segment.indexOf(quote);
-	while (close > 0 && segment[close - 1] === "\\") close = segment.indexOf(quote, close + 1);
-	return close;
+	while (close !== -1) {
+		let slashes = 0;
+		for (let i = close - 1; i >= 0 && segment[i] === "\\"; i--) slashes++;
+		if (slashes % 2 === 0) return close;
+		close = segment.indexOf(quote, close + 1);
+	}
+	return -1;
 }
 
 /**
@@ -448,9 +454,10 @@ function envLookup(
  * selection, including a `.env.development` fallback when dotenv itself
  * mutates `NODE_ENV`. Value matching reproduces Bun `$NAME` / `${NAME}` /
  * `${NAME:-default}` expansion and quoted values that span literal newlines,
- * including trailing whitespace on the opening quoted line. Unrecognized `$`
- * syntax fails closed. An explicit `--profile` selection is not treated as
- * project-owned even when dotenv also declared `OMP_PROFILE`/`PI_PROFILE`.
+ * including trailing whitespace on the opening quoted line and quotes that
+ * close after an even-length backslash run. Unrecognized `$` syntax fails
+ * closed. An explicit `--profile` selection is not treated as project-owned
+ * even when dotenv also declared `OMP_PROFILE`/`PI_PROFILE`.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;

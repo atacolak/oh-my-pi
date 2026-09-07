@@ -35,6 +35,7 @@
 - Distrusted collab auto-start when a project dotenv uses Bun `${VAR:-fallback}` expansion in agent or config directory variables.
 - Distrusted collab auto-start when a project dotenv uses a quoted multiline `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
 - Distrusted collab auto-start when a project dotenv uses a quoted multiline agent or config directory whose first line includes trailing whitespace.
+- Distrusted collab auto-start when a project dotenv closes a quoted agent or config directory after an even-length backslash run.
 - Trusted collab auto-start from a profile selected by `--profile` even when a project dotenv also declared `OMP_PROFILE` or `PI_PROFILE`.
 
 ## [18.1.12] - 2026-09-06

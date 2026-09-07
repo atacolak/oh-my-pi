@@ -420,19 +420,21 @@ function envKeysInclude(keys: Iterable<string>, name: string): boolean {
 function lookupMap(source: ReadonlyMap<string, string>, name: string): string | undefined {
 	if (process.platform !== "win32") return source.get(name);
 	const needle = name.toLowerCase();
+	let found: string | undefined;
 	for (const [key, value] of source) {
-		if (key.toLowerCase() === needle) return value;
+		if (key.toLowerCase() === needle) found = value;
 	}
-	return undefined;
+	return found;
 }
 
 function lookupRecord(source: Record<string, string>, name: string): string | undefined {
 	if (process.platform !== "win32") return source[name];
 	const needle = name.toLowerCase();
+	let found: string | undefined;
 	for (const key in source) {
-		if (key.toLowerCase() === needle) return source[key];
+		if (key.toLowerCase() === needle) found = source[key];
 	}
-	return undefined;
+	return found;
 }
 
 function envLookup(
@@ -455,10 +457,11 @@ function envLookup(
  * mutates `NODE_ENV`. Value matching reproduces Bun `$NAME` / `${NAME}` /
  * `${NAME:-default}` expansion and quoted values that span literal newlines,
  * including trailing whitespace on the opening quoted line and quotes that
- * close after an even-length backslash run. Unrecognized `$` syntax fails
- * closed. An explicit `--profile` selection, including `--profile default`,
- * is not treated as project-owned even when dotenv also declared
- * `OMP_PROFILE`/`PI_PROFILE`.
+ * close after an even-length backslash run. On Windows, a later assignment
+ * with different casing wins, matching Bun's case-insensitive environment.
+ * Unrecognized `$` syntax fails closed. An explicit `--profile` selection,
+ * including `--profile default`, is not treated as project-owned even when
+ * dotenv also declared `OMP_PROFILE`/`PI_PROFILE`.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;

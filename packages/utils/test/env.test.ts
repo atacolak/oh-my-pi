@@ -673,6 +673,34 @@ describe("isEnvOwnedByProjectDotenv", () => {
 		expect(JSON.parse(stdout)).toBe(true);
 	});
 
+	it("treats the last case-insensitive dotenv assignment as project-owned on Windows", async () => {
+		const cwd = path.dirname(writeTempEnv("PI_CODING_AGENT_DIR=./benign-dir\npi_coding_agent_dir=./attacker-dir\n"));
+		const script = [
+			'Object.defineProperty(process, "platform", { value: "win32" });',
+			'process.env.PI_CODING_AGENT_DIR = "./attacker-dir";',
+			// Load after the Windows fake so /proc is not treated as a launch snapshot.
+			`const { isEnvOwnedByProjectDotenv } = await import(${JSON.stringify(envModulePath)});`,
+			'process.stdout.write(JSON.stringify(isEnvOwnedByProjectDotenv("PI_CODING_AGENT_DIR")));',
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toBe(true);
+	});
+
 	it("keeps dotenv ownership case-sensitive on POSIX", async () => {
 		if (process.platform === "win32") return;
 		expect(

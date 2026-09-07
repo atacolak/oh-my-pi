@@ -569,13 +569,17 @@ async function retireRetainedClientsAbsentFromSessionConfig(
 	owner: LspClientOwner,
 	signal?: AbortSignal,
 ): Promise<void> {
+	const extraRemaining = remainingWorkspaceRoots.filter(
+		root => !(workspaceContainsPath(remainingCwd, root) && workspaceContainsPath(root, remainingCwd)),
+	);
+	if (extraRemaining.length === 0) return;
 	const catalog = sessionCatalogConfigs(remainingCwd);
 	const freshConfigs: ServerConfig[] = [];
 	const consider = (key: string, entry: { cwd: string; config: ServerConfig }): void => {
 		const owners = clientOwners.get(key);
 		if (!owners?.has(owner) && clientLocks.get(key)?.owners.has(owner) !== true) return;
 		const cwds = clientWorkspaceCwds(key, entry, owner);
-		if (!remainingWorkspaceRoots.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
+		if (!extraRemaining.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
 			return;
 		}
 		const match = catalog.find(definition => clientKey(definition, entry.cwd) === key);
@@ -583,7 +587,7 @@ async function retireRetainedClientsAbsentFromSessionConfig(
 	};
 	for (const [key, client] of clients) consider(key, client);
 	for (const [key, pending] of clientLocks) consider(key, pending);
-	await shutdownStaleClients(remainingCwd, freshConfigs, signal, remainingWorkspaceRoots, owner, () => false);
+	await shutdownStaleClients(remainingCwd, freshConfigs, signal, extraRemaining, owner, () => false);
 }
 
 function rememberIdleTimeoutOrigins(key: string, owner: LspClientOwner | undefined, ...cwds: string[]): void {

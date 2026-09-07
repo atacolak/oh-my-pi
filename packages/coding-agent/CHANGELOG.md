@@ -11,11 +11,12 @@
 ### Changed
 
 - Hindsight now retains any remaining below-cadence session tail on clean close (`AgentSession.dispose` / session-memory teardown), independent of `retainUpdateMode`.
-- Hindsight now retains a below-cadence tail when leaving a conversation through `/new`, `/clear`, `/resume`, fork, or branch, and when bank routing rebuilds mid-session.
+- Hindsight now retains a below-cadence tail when leaving a conversation through `/new`, `/clear`, `/resume`, `/tree`, fork, or branch, and when bank routing rebuilds mid-session.
 
 ### Fixed
 
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
+- Hindsight leave-path retain now waits for delayed backend startup before treating a missing live state as having nothing pending.
 - Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
 - Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
 - Fixed Hindsight delayed startup skipping a below-cadence post-switch turn after `/new`, `/clear`, `/resume`, or `/tree`.

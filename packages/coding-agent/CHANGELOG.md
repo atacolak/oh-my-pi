@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `lsp status` omitting a still-owned nested language server after an extra-root symlink of a remaining workspace was removed, so the retained alias is reported instead of the first-inserted extra-root route.
 - Fixed `rename_file` leaving a nested initialization failure cached when the renamed project root is a workspace symlink, so a later operation through the destination alias retries instead of hitting the three-minute negative cache.
 - Fixed `rename_file` capturing surviving nested language-server clients by server name only, so a renamed directory with multiple same-name nested projects still notifies each overlapping session's process.
 - Fixed `rename_file` applying `willRenameFiles` edits once per symlink URI spelling of the same physical file, so a length-changing first edit no longer corrupts the second application.

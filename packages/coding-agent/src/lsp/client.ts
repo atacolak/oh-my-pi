@@ -9,7 +9,12 @@ import {
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
 import { MessageFramer } from "../jsonrpc/message-framing";
-import { normalizeSessionWorkspace, workspaceContainsPath, workspaceRootForPath } from "../session/session-workspace";
+import {
+	isLexicallyWithin,
+	normalizeSessionWorkspace,
+	workspaceContainsPath,
+	workspaceRootForPath,
+} from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
@@ -146,6 +151,7 @@ function releaseOwnerIfUnpublished(key: string, owner: LspClientOwner | undefine
 	if (!owner || clients.has(key)) return;
 	releaseClientOwnerKey(key, owner);
 }
+
 /**
  * Release this session's ownership of language servers started under a
  * workspace root that is no longer in the session. `/remove-dir` calls this
@@ -155,7 +161,9 @@ function releaseOwnerIfUnpublished(key: string, owner: LspClientOwner | undefine
  * Clients still covered by `sessionCwd` or `remainingWorkspaceRoots` are left
  * alone: an additional root may be nested under, an ancestor of, or a symlink
  * alias of a retained workspace. Tearing those clients down would drop a
- * still-valid nested server or tombstone the primary root.
+ * still-valid nested server or tombstone the primary root. Owner route
+ * spellings under the removed root are still pruned so `lsp status` reports
+ * a remaining alias instead of the vanished extra-root path.
  */
 export async function releaseRemovedWorkspaceRoots(
 	sessionCwd: string,
@@ -170,7 +178,7 @@ export async function releaseRemovedWorkspaceRoots(
 		clientCoveredByRemainingWorkspace(clientCwd, sessionCwd, remainingWorkspaceRoots);
 	try {
 		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, retainClient);
-		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots);
+		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots, removedRoot);
 		clearWorkspaceInitializationFailures(roots, owner, retainClient);
 		return stopped;
 	} catch (error) {
@@ -191,7 +199,7 @@ export async function releaseRemovedWorkspaceRoots(
 			}
 			releaseClientOwnerKey(key, owner);
 		}
-		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots);
+		pruneUncoveredOwnerRoots(owner, sessionCwd, remainingWorkspaceRoots, removedRoot);
 		clearWorkspaceInitializationFailures(roots, owner, retainClient);
 		throw error;
 	}
@@ -210,16 +218,27 @@ function clientCoveredByRemainingWorkspace(
 	return workspaceRootForPath(clientCwd, remaining) !== null;
 }
 
-/** Drop owner aliases that remaining workspace roots no longer cover. */
+/** Drop owner aliases that remaining workspace roots no longer cover.
+ *  Equivalent-path containment keeps an extra-root symlink of a retained
+ *  workspace, so also drop aliases spelled under `removedRoot` unless a
+ *  remaining root still contains that spelling. */
 function pruneUncoveredOwnerRoots(
 	owner: LspClientOwner,
 	sessionCwd: string,
 	remainingWorkspaceRoots: readonly string[],
+	removedRoot?: string,
 ): void {
 	const byKey = ownerClientRoots.get(owner);
 	if (!byKey) return;
+	const removed = removedRoot ? path.resolve(removedRoot) : undefined;
+	const remaining = remainingWorkspaceRoots.map(root => path.resolve(root));
 	for (const [key, roots] of byKey) {
 		for (const root of Array.from(roots)) {
+			const remainingLexical = remaining.some(workspace => isLexicallyWithin(workspace, root));
+			if (removed && isLexicallyWithin(removed, root) && !remainingLexical) {
+				roots.delete(root);
+				continue;
+			}
 			if (!clientCoveredByRemainingWorkspace(root, sessionCwd, remainingWorkspaceRoots)) {
 				roots.delete(root);
 			}

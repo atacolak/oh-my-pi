@@ -2731,6 +2731,10 @@ export interface LspServerStatus {
 	cwd?: string;
 	/** Routed project root before client-cwd canonicalization. */
 	resolvedRoot?: string;
+	args?: string[];
+	initOptions?: Record<string, unknown>;
+	settings?: Record<string, unknown>;
+	languageId?: string;
 	error?: string;
 }
 
@@ -2748,6 +2752,10 @@ export function getActiveClients(owner?: LspClientOwner): LspServerStatus[] {
 			resolvedRoot:
 				(owner ? ownerClientRoots.get(owner)?.get(key)?.values().next().value : undefined) ??
 				client.config.resolvedRoot,
+			args: client.config.args,
+			initOptions: client.config.initOptions,
+			settings: client.config.settings,
+			languageId: client.config.languageId,
 		}));
 }
 

@@ -7,7 +7,15 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import { isEnoent, isFsError, logger, prompt, resolveEquivalentPath, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	isEnoent,
+	isFsError,
+	logger,
+	prompt,
+	resolveEquivalentPath,
+	stableStringifyJson,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import { sessionWorkspaceDirectories, workspaceContainsPath, workspaceRootForPath } from "../session/session-workspace";
@@ -186,6 +194,18 @@ function statusClientRoot(client: LspServerStatus): string | undefined {
 	return client.resolvedRoot ?? client.cwd;
 }
 
+/** True when a live client is the same identity as a catalog definition. */
+function statusClientMatchesDefinition(client: LspServerStatus, serverConfig: ServerConfig): boolean {
+	return (
+		client.name === serverConfig.command &&
+		stableStringifyJson(client.args ?? []) === stableStringifyJson(serverConfig.args ?? []) &&
+		stableStringifyJson(client.initOptions ?? null) === stableStringifyJson(serverConfig.initOptions ?? null) &&
+		stableStringifyJson(client.settings ?? null) === stableStringifyJson(serverConfig.settings ?? null) &&
+		(client.languageId ?? null) === (serverConfig.languageId ?? null) &&
+		stableStringifyJson(client.fileTypes) === stableStringifyJson(serverConfig.fileTypes)
+	);
+}
+
 /** Filesystem error detail safe for model/TUI output: never echo raw paths. */
 function formatRenameStatError(error: unknown): string {
 	if (!isFsError(error)) return "unknown filesystem error";
@@ -288,14 +308,20 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			});
 			const startedByConfigName = new Map<string, LspServerStatus[]>();
 			const catalog = config.definitions ?? config.servers;
-			for (const [name, serverConfig] of Object.entries(catalog)) {
-				const matched = startedClients.filter(client => client.name === serverConfig.command);
-				if (matched.length > 0) startedByConfigName.set(name, matched);
+			const assignedClients = new Set<LspServerStatus>();
+			for (const name of configuredNames) {
+				const serverConfig = catalog[name];
+				if (!serverConfig) continue;
+				const matched = startedClients.filter(
+					client => !assignedClients.has(client) && statusClientMatchesDefinition(client, serverConfig),
+				);
+				if (matched.length > 0) {
+					startedByConfigName.set(name, matched);
+					for (const client of matched) assignedClients.add(client);
+				}
 			}
 
-			const nestedStarted = startedClients.filter(
-				client => !configuredNames.some(name => catalog[name]?.command === client.name),
-			);
+			const nestedStarted = startedClients.filter(client => !assignedClients.has(client));
 
 			const lines: string[] = [];
 			if (configuredNames.length === 0 && startedClients.length === 0) {
@@ -324,8 +350,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				});
 				for (const client of nestedStarted) {
 					const nestedName =
-						Object.entries(catalog).find(([, serverConfig]) => serverConfig.command === client.name)?.[0] ??
-						client.name;
+						Object.entries(catalog).find(([, serverConfig]) =>
+							statusClientMatchesDefinition(client, serverConfig),
+						)?.[0] ?? client.name;
 					const rootPath = statusClientRoot(client);
 					const root = rootPath ? ` @ ${formatStatusRoot(rootPath, this.session.cwd)}` : "";
 					labelled.push(

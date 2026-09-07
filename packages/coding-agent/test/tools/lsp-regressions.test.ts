@@ -8370,6 +8370,66 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("status matches started clients by full identity instead of command only", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-status-identity-");
+		const nestedRoot = path.join(tempDir.path(), "nested");
+		fs.mkdirSync(nestedRoot, { recursive: true });
+		try {
+			const alpha: ServerConfig = {
+				command: "shared-lsp",
+				args: ["--alpha"],
+				fileTypes: [".py"],
+				rootMarkers: ["pyproject.toml"],
+				settings: { mode: "alpha" },
+			};
+			const beta: ServerConfig = {
+				command: "shared-lsp",
+				args: ["--beta"],
+				fileTypes: [".py"],
+				rootMarkers: ["pyrightconfig.json"],
+				settings: { mode: "beta" },
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { alpha },
+				definitions: { alpha, beta },
+			});
+			vi.spyOn(lspClient, "getActiveClients").mockReturnValue([
+				{
+					name: "shared-lsp",
+					status: "ready",
+					fileTypes: [".py"],
+					cwd: tempDir.path(),
+					resolvedRoot: tempDir.path(),
+					args: alpha.args,
+					settings: alpha.settings,
+				},
+				{
+					name: "shared-lsp",
+					status: "ready",
+					fileTypes: [".py"],
+					cwd: nestedRoot,
+					resolvedRoot: nestedRoot,
+					args: beta.args,
+					settings: beta.settings,
+				},
+			]);
+
+			const output = textResult(
+				await new LspTool(makeLspSession(tempDir.path())).execute("status-identity", {
+					action: "status",
+				}),
+			);
+
+			expect(output).toContain("alpha (ready)");
+			expect(output).toContain("beta @ nested (ready)");
+			expect(output).not.toContain("alpha @ nested");
+			expect(output.match(/alpha/g)?.length).toBe(1);
+			expect(output.match(/beta/g)?.length).toBe(1);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("reload * invalidates the per-cwd config cache so newly written .omp/lsp.json is observed", async () => {
 		// #3546: `getConfig` caches the first `loadConfig` result per cwd
 		// permanently. Creating `.omp/lsp.json` after the first LSP call left

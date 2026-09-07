@@ -21,6 +21,7 @@
 - Preserved trailing whitespace in Bun quoted dotenv values that span literal newlines when matching project-owned environment values.
 - Trusted an explicit `--profile` selection, including `--profile default`, over a project dotenv `OMP_PROFILE`/`PI_PROFILE` when determining environment ownership.
 - Closed Bun-quoted dotenv values after an even-length backslash run when matching project-owned environment variables.
+- Used the last case-insensitive dotenv assignment on Windows when matching project-owned environment variables.
 
 ## [18.1.13] - 2026-09-07
 

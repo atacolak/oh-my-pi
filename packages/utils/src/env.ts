@@ -91,12 +91,18 @@ function readLaunchEnv(): ReadonlyMap<string, string> | undefined {
 const launchEnvValues = readLaunchEnv();
 
 function matchingEnvName(names: Iterable<string>, name: string): string | undefined {
-	for (const key of names) {
-		if (process.platform === "win32" ? key.toLowerCase() === name.toLowerCase() : key === name) {
-			return key;
+	if (process.platform !== "win32") {
+		for (const key of names) {
+			if (key === name) return key;
 		}
+		return undefined;
 	}
-	return undefined;
+	const needle = name.toLowerCase();
+	let found: string | undefined;
+	for (const key of names) {
+		if (key.toLowerCase() === needle) found = key;
+	}
+	return found;
 }
 
 function matchingMapEntry(
@@ -104,16 +110,17 @@ function matchingMapEntry(
 	name: string,
 ): { has: boolean; value: string | undefined } {
 	if (!map) return { has: false, value: undefined };
-	if (map.has(name)) return { has: true, value: map.get(name) };
+	if (process.platform !== "win32") {
+		if (map.has(name)) return { has: true, value: map.get(name) };
+		return { has: false, value: undefined };
+	}
 	const key = matchingEnvName(map.keys(), name);
 	if (key === undefined) return { has: false, value: undefined };
 	return { has: true, value: map.get(key) };
 }
 
 function readProcessEnv(name: string): string | undefined {
-	const value = process.env[name];
-	if (value !== undefined) return value;
-	if (process.platform !== "win32") return undefined;
+	if (process.platform !== "win32") return process.env[name];
 	const key = matchingEnvName(Object.keys(process.env), name);
 	return key === undefined ? undefined : process.env[key];
 }
@@ -449,13 +456,15 @@ const launchProjectDotenv = (() => {
  * is still project-owned. Mode files follow Bun's pre-dotenv `NODE_ENV`
  * selection, including a `.env.development` fallback when dotenv itself
  * mutates `NODE_ENV`. On Windows, dotenv and queried names match
- * case-insensitively because process env lookups do. Value matching
- * reproduces Bun `$NAME` / `${NAME}` / `${NAME:-default}` expansion and
- * quoted values that span literal newlines, including trailing whitespace
- * on the opening quoted line and quotes that close after an even-length
- * backslash run. Unrecognized `$` syntax fails closed. An explicit
- * `--profile` selection, including `--profile default`, is not treated as
- * project-owned even when dotenv also declared `OMP_PROFILE`/`PI_PROFILE`.
+ * case-insensitively because process env lookups do. A later assignment
+ * with different casing wins, matching Bun's case-insensitive environment.
+ * Value matching reproduces Bun `$NAME` / `${NAME}` / `${NAME:-default}`
+ * expansion and quoted values that span literal newlines, including trailing
+ * whitespace on the opening quoted line and quotes that close after an
+ * even-length backslash run. Unrecognized `$` syntax fails closed. An
+ * explicit `--profile` selection, including `--profile default`, is not
+ * treated as project-owned even when dotenv also declared `OMP_PROFILE`/
+ * `PI_PROFILE`.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;

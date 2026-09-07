@@ -456,8 +456,9 @@ function envLookup(
  * `${NAME:-default}` expansion and quoted values that span literal newlines,
  * including trailing whitespace on the opening quoted line and quotes that
  * close after an even-length backslash run. Unrecognized `$` syntax fails
- * closed. An explicit `--profile` selection is not treated as project-owned
- * even when dotenv also declared `OMP_PROFILE`/`PI_PROFILE`.
+ * closed. An explicit `--profile` selection, including `--profile default`,
+ * is not treated as project-owned even when dotenv also declared
+ * `OMP_PROFILE`/`PI_PROFILE`.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;

@@ -18,8 +18,7 @@
 - Decoded Bun double-quoted dotenv `\n` and `\r` escapes when matching project-owned environment values.
 - Expanded Bun `${VAR:-fallback}` when matching project-owned dotenv values and treated unrecognized `$` syntax as project-owned.
 - Closed Bun-quoted dotenv values after an even-length backslash run when matching project-owned environment variables.
-- Preserved trailing whitespace in Bun-quoted multiline dotenv values when matching project-owned environment variables.
-- Trusted an explicit `--profile` selection over a project dotenv `OMP_PROFILE`/`PI_PROFILE` when determining environment ownership.
+- Trusted an explicit `--profile` selection, including `--profile default`, over a project dotenv `OMP_PROFILE`/`PI_PROFILE` when determining environment ownership.
 - Treated Bun-quoted dotenv values that span literal newlines as project-owned instead of trusted global configuration.
 
 ## [18.1.13] - 2026-09-07

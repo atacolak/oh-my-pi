@@ -548,6 +548,38 @@ describe("isEnvOwnedByProjectDotenv", () => {
 		expect(JSON.parse(stdout)).toEqual({ omp: false, pi: false });
 	});
 
+	it("does not treat an explicit --profile default selection as project-owned", async () => {
+		const cwd = path.dirname(writeTempEnv("OMP_PROFILE=evil\nPI_PROFILE=evil\n"));
+		const dirsModulePath = path.join(import.meta.dir, "..", "src", "dirs.ts");
+		const script = [
+			`import { isProfileSelectedFromArgv, setProfile } from ${JSON.stringify(dirsModulePath)};`,
+			`import { isEnvOwnedByProjectDotenv } from ${JSON.stringify(envModulePath)};`,
+			'setProfile("default", { fromArgv: true });',
+			"process.stdout.write(JSON.stringify({",
+			'  omp: isEnvOwnedByProjectDotenv("OMP_PROFILE"),',
+			'  pi: isEnvOwnedByProjectDotenv("PI_PROFILE"),',
+			"  fromArgv: isProfileSelectedFromArgv(),",
+			"}));",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				OMP_PROFILE: undefined,
+				PI_PROFILE: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ omp: false, pi: false, fromArgv: true });
+	});
+
 	it("still treats a dotenv-selected profile as project-owned after setProfile", async () => {
 		const cwd = path.dirname(writeTempEnv("OMP_PROFILE=evil\nPI_PROFILE=evil\n"));
 		const dirsModulePath = path.join(import.meta.dir, "..", "src", "dirs.ts");

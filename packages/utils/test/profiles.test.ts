@@ -141,6 +141,9 @@ describe("profile directories", () => {
 
 		setProfile("default");
 		expect(isProfileSelectedFromArgv()).toBe(false);
+
+		setProfile("default", { fromArgv: true });
+		expect(isProfileSelectedFromArgv()).toBe(true);
 	});
 
 	it("treats the default profile as regular mode", () => {

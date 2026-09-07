@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/move` keeping a language server started from the previous cwd catalog after an additional workspace is promoted to the session cwd, so the new cwd's command, args, or settings replace that identity.
 - Fixed eager language-server warmup ignoring `idleTimeoutMs` because startup loaded config without caching it, so a warmed unused process still shuts down after the configured timeout.
 
 - Fixed `/move` shutting down a still-covered language server after a rolled-back cwd change or equivalent workspace-alias move, so only extra-root identities absent from the new session catalog are retired.

@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { getActiveProfile, isProfileSelectedFromArgv } from "@oh-my-pi/pi-utils/dirs";
 import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
@@ -182,6 +183,14 @@ const PROJECT_DOTENV_GLOBAL_DIR_KEYS = [
 	"PI_PROFILE",
 ] as const;
 
+function isProjectDotenvGlobalUntrusted(): boolean {
+	const ignoreAgentDir = Boolean(isProfileSelectedFromArgv() && getActiveProfile());
+	return PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => {
+		if (ignoreAgentDir && (name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR")) return false;
+		return env.isEnvOwnedByProjectDotenv(name);
+	});
+}
+
 function layerCollabValue(layer: unknown, path: CollabSettingPath): unknown {
 	let current: unknown = layer;
 	for (const segment of path.split(".")) {
@@ -202,7 +211,7 @@ function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, p
 			return false as SettingValue<P>;
 		}
 	}
-	if (PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name))) return getDefault(path);
+	if (isProjectDotenvGlobalUntrusted()) return getDefault(path);
 	if (provenance === "project" || provenance === "overlay") {
 		const globalValue = layerCollabValue(settings.getGlobalSettings(), path);
 		return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
@@ -213,7 +222,7 @@ function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, p
 function isTrustedCollabConfigured(settings: Settings, path: CollabSettingPath): boolean {
 	const provenance = settings.getProvenance(path);
 	if (provenance === "runtime") return true;
-	if (PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name))) return false;
+	if (isProjectDotenvGlobalUntrusted()) return false;
 	if (provenance === "global") return true;
 	if (provenance !== "project" && provenance !== "overlay") return false;
 	return layerCollabValue(settings.getGlobalSettings(), path) !== undefined;

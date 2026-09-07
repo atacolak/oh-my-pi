@@ -326,6 +326,10 @@ function pruneUncoveredOwnerRoots(
  * workspaces do not contain lexically. `releaseRemovedWorkspaceRoots()`
  * keeps those clients running and rebinds owner routes onto a remaining
  * spelling; otherwise status and reload keep the vanished alias.
+ *
+ * Retained extra-root clients rebind idle-timeout origins to the settled
+ * workspace and retire identities absent from the new session catalog, so a
+ * previous cwd timeout or command/args/settings cannot leak onto the move.
  */
 export async function releaseUncoveredWorkspaceRoots(
 	previousWorkspaceRoots: readonly string[],
@@ -350,6 +354,8 @@ export async function releaseUncoveredWorkspaceRoots(
 			});
 		}
 	}
+	rebindIdleTimeoutOrigins(owner, remainingResolved);
+	await retireRetainedClientsAbsentFromSessionConfig(remainingCwd, remainingResolved, owner, signal);
 }
 
 /**
@@ -536,6 +542,43 @@ export function setSharedLspEnabled(enabled: boolean): void {
 export function setIdleTimeout(ms: number | null | undefined): void {
 	idleTimeoutMs = ms ?? null;
 	reconcileIdleChecker();
+}
+
+function rebindIdleTimeoutOrigins(owner: LspClientOwner, cwds: readonly string[]): void {
+	const rebound = new Set(cwds.map(cwd => path.resolve(cwd)));
+	for (const origins of clientIdleTimeoutOrigins.values()) {
+		if (!origins.has(owner)) continue;
+		origins.set(owner, new Set(rebound));
+	}
+	reconcileIdleChecker();
+}
+
+function sessionCatalogConfigs(cwd: string): ServerConfig[] {
+	const catalog = configCache.get(cwd) ?? configCache.get(path.resolve(cwd)) ?? loadConfig(cwd);
+	return Object.values(catalog.definitions ?? catalog.servers);
+}
+
+async function retireRetainedClientsAbsentFromSessionConfig(
+	remainingCwd: string,
+	remainingWorkspaceRoots: readonly string[],
+	owner: LspClientOwner,
+	signal?: AbortSignal,
+): Promise<void> {
+	const catalog = sessionCatalogConfigs(remainingCwd);
+	const freshConfigs: ServerConfig[] = [];
+	const consider = (key: string, entry: { cwd: string; config: ServerConfig }): void => {
+		const owners = clientOwners.get(key);
+		if (!owners?.has(owner) && clientLocks.get(key)?.owners.has(owner) !== true) return;
+		const cwds = clientWorkspaceCwds(key, entry, owner);
+		if (!remainingWorkspaceRoots.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
+			return;
+		}
+		const match = catalog.find(definition => clientKey(definition, entry.cwd) === key);
+		if (match) freshConfigs.push({ ...match, resolvedRoot: entry.cwd });
+	};
+	for (const [key, client] of clients) consider(key, client);
+	for (const [key, pending] of clientLocks) consider(key, pending);
+	await shutdownStaleClients(remainingCwd, freshConfigs, signal, remainingWorkspaceRoots, owner, () => false);
 }
 
 function rememberIdleTimeoutOrigins(key: string, owner: LspClientOwner | undefined, ...cwds: string[]): void {

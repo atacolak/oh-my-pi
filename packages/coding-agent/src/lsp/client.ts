@@ -990,7 +990,7 @@ async function handleApplyEditRequest(client: LspClient, message: LspJsonRpcRequ
 	}
 	try {
 		const result = await applyAndReconcileWorkspaceEdit(params.edit, client.cwd);
-		if (result.error) {
+		if (result.error && !result.committed) {
 			await sendResponse(
 				client,
 				message.id,
@@ -1387,6 +1387,7 @@ export async function applyAndReconcileWorkspaceEdit(
 	capturedMovedRoots: CapturedMovedDirectoryRoot[];
 	cwd: string;
 	deferredOverwriteDestinationClients: LspClient[];
+	committed: boolean;
 	error?: unknown;
 }> {
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
@@ -1410,7 +1411,15 @@ export async function applyAndReconcileWorkspaceEdit(
 				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
 			});
 		}
-		return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients, error: err };
+		return {
+			applied,
+			executed,
+			capturedMovedRoots,
+			cwd,
+			committed: false,
+			deferredOverwriteDestinationClients,
+			error: err,
+		};
 	}
 	const deferredOverwriteDestinationClients = await unpublishExecutedOverwriteDestinationClients(
 		executed,
@@ -1422,9 +1431,17 @@ export async function applyAndReconcileWorkspaceEdit(
 		logger.warn("LSP overlay reconciliation after workspace edit failed", {
 			error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
 		});
-		return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients, error: reconcileErr };
+		return {
+			applied,
+			executed,
+			capturedMovedRoots,
+			cwd,
+			committed: true,
+			deferredOverwriteDestinationClients,
+			error: reconcileErr,
+		};
 	}
-	return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients };
+	return { applied, executed, capturedMovedRoots, cwd, committed: true, deferredOverwriteDestinationClients };
 }
 
 interface DynamicCapabilityRegistration {

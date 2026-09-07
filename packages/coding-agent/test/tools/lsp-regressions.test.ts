@@ -7984,6 +7984,55 @@ describe("lsp regressions", () => {
 		}
 	}, 15_000);
 
+	it("reports a committed server-initiated applyEdit as applied when overlay reconciliation fails", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-apply-edit-committed-reconcile-fail-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const destRoot = path.join(tempDir.path(), "moved");
+			fs.mkdirSync(nestedRoot);
+			await Bun.write(path.join(nestedRoot, "old.ts"), "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner);
+			expect(client.cwd).toBe(nestedRoot);
+			vi.spyOn(lspClient, "reconcileExecutedChanges").mockRejectedValue(new Error("overlay notify failed"));
+
+			server.send({
+				jsonrpc: "2.0",
+				id: 9203,
+				method: "workspace/applyEdit",
+				params: {
+					edit: {
+						documentChanges: [
+							{
+								kind: "rename",
+								oldUri: fileToUri(nestedRoot),
+								newUri: fileToUri(destRoot),
+							} satisfies RenameFile,
+						],
+					},
+				},
+			});
+
+			const applied = await server.waitFor(message => message.id === 9203 && message.method === undefined);
+			expect(applied.error).toBeUndefined();
+			expect(applied.result).toEqual({ applied: true });
+			expect(fs.existsSync(nestedRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			await server.waitFor(message => message.method === "shutdown");
+			expect(lspClient.getActiveClients(owner).some(active => active.cwd === nestedRoot)).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("retires moved nested clients when overlay reconciliation fails after a workspace edit", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-reconcile-fail-");
 		try {

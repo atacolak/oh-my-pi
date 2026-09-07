@@ -18,6 +18,7 @@
 - Decoded Bun double-quoted dotenv `\n` and `\r` escapes when matching project-owned environment values.
 - Expanded Bun `${NAME:-default}` values when matching project-owned environment values, and failed closed on unrecognized `$` syntax.
 - Parsed Bun quoted dotenv values that span literal newlines when matching project-owned environment values.
+- Preserved trailing whitespace in Bun quoted dotenv values that span literal newlines when matching project-owned environment values.
 
 ## [18.1.13] - 2026-09-07
 

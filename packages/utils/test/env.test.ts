@@ -158,6 +158,15 @@ describe("parseEnvFile", () => {
 		});
 	});
 
+	it("preserves trailing whitespace on the first bun quoted multiline line", () => {
+		const filePath = writeTempEnv(['DQ="./attacker ', '-dir"', "SQ='./attacker ", "-dir'"].join("\n"));
+
+		expect(parseEnvFile(filePath)).toEqual({
+			DQ: "./attacker \n-dir",
+			SQ: "./attacker \n-dir",
+		});
+	});
+
 	it("parses leftover-after-close quotes as unquoted, matching bun", () => {
 		const filePath = writeTempEnv(['UNCLOSED="./attacker', '-dir" leftover', "NEXT=yes"].join("\n"));
 
@@ -432,6 +441,15 @@ describe("isEnvOwnedByProjectDotenv", () => {
 	it("treats a bun-quoted multiline PI_CODING_AGENT_DIR as project-owned", async () => {
 		expect(
 			await probeProjectDotenvOwnership('PI_CODING_AGENT_DIR="./attacker\n-dir"\n', {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-quoted multiline PI_CODING_AGENT_DIR with first-line trailing space as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership('PI_CODING_AGENT_DIR="./attacker \n-dir"\n', {
 				PI_CODING_AGENT_DIR: "",
 				OMP_CODING_AGENT_DIR: undefined,
 			}),

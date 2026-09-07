@@ -211,7 +211,8 @@ function parseEnvAssignment(
 	lines: string[],
 	start: number,
 ): { key: string; value: string; nextIndex: number } | undefined {
-	const trimmed = lines[start].trim();
+	const line = lines[start];
+	const trimmed = line.trim();
 	if (!trimmed || trimmed.startsWith("#")) return undefined;
 	const eqIndex = trimmed.indexOf("=");
 	if (eqIndex === -1) return undefined;
@@ -219,7 +220,8 @@ function parseEnvAssignment(
 	const exported = key.match(/^export[ \t]+(.*)$/);
 	if (exported) key = exported[1].trim();
 	if (!isValidEnvName(key)) return undefined;
-	const raw = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
+	const rawStart = line.indexOf("=") + 1;
+	const raw = line.slice(rawStart).replace(/^[ \t]+/, "");
 	const quote = raw[0];
 	if (quote === '"' || quote === "'" || quote === "`") {
 		const spanned = collectQuotedDotenvValue(raw, quote, lines, start);
@@ -231,8 +233,13 @@ function parseEnvAssignment(
 			};
 		}
 	}
-	const commentIndex = raw.search(/[ \t]#/);
-	return { key, value: (commentIndex === -1 ? raw : raw.slice(0, commentIndex)).trimEnd(), nextIndex: start + 1 };
+	const unquoted = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
+	const commentIndex = unquoted.search(/[ \t]#/);
+	return {
+		key,
+		value: (commentIndex === -1 ? unquoted : unquoted.slice(0, commentIndex)).trimEnd(),
+		nextIndex: start + 1,
+	};
 }
 
 function findUnescapedQuote(segment: string, quote: string): number {

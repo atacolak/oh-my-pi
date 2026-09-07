@@ -1,11 +1,11 @@
 > [!NOTE]
 > ## `cap/copy-outline-lazy-read` — `/copy` folds lazy grouped reads
 >
-> Upstream OMP bug: fullscreen `/copy` outlined only the lazily created grouped Read card when `ChatTranscriptBuilder` added children for collapsed filesystem reads, so Enter copied tool output instead of the assistant yield. #10922 landed in 18.1.12; this cap now tracks 18.1.13 so runtime composition does not chase live `upstream/main`.
+> Upstream OMP bug: fullscreen `/copy` outlined only the lazily created grouped Read card when `ChatTranscriptBuilder` added children for collapsed filesystem reads, so Enter copied tool output instead of the assistant yield. #10922 landed in 18.1.12; this cap now tracks 18.1.14 so runtime composition does not chase live `upstream/main`.
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR(s):** [#10922](https://github.com/can1357/oh-my-pi/pull/10922) — fold lazy grouped reads into `/copy` outline *(merged)*
-> - **Upstream base:** [OMP 18.1.13 (`a1b25404`)](https://github.com/can1357/oh-my-pi/tree/a1b254047d12e143b7c6011536e918c6c35c5906)
+> - **Upstream base:** [OMP 18.1.14 (`daf07999`)](https://github.com/can1357/oh-my-pi/tree/daf07999c2fee9b22edc7bf8fea1fb6272e0df5e)
 >
 > PR head stays independently reviewable without this banner.
 

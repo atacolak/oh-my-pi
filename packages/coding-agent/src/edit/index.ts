@@ -197,9 +197,6 @@ function createEditWritethrough(session: ToolSession): WritethroughCallback {
 		? createLspWritethrough(() => session.cwd, {
 				enableFormat,
 				enableDiagnostics,
-				additionalDirectories: () => session.additionalDirectories,
-				cwd: () => session.cwd,
-				owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 				transformDiagnostics: deduplicate
 					? (filePath, result) => getDiagnosticsLedger(session).reduce(filePath, result)
 					: undefined,

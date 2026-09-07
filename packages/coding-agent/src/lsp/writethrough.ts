@@ -3,8 +3,8 @@ import { isEnoent, logger, once, untilAborted } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
 import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import { isPermissionDeniedError, writeFileWithFallback } from "../tools/file-write-fallback";
-import { FileChangeType, type LspClientOwner, notifyWorkspaceWatchedFiles, stampOwnerConfigGeneration } from "./client";
-import { getServersForFile } from "./config";
+import { FileChangeType, notifyWorkspaceWatchedFiles } from "./client";
+import { getConfig, getServersForFile } from "./config";
 import {
 	captureDiagnosticVersions,
 	captureOpenFileVersions,
@@ -17,7 +17,7 @@ import {
 	limitDiagnosticMessages,
 	type ServerVersionMap,
 } from "./diagnostics";
-import { getConfig, notifyFileSaved, splitServers, syncFileContent } from "./servers";
+import { notifyFileSaved, splitServers, syncFileContent } from "./servers";
 import type { ServerConfig } from "./types";
 import { summarizeDiagnosticMessages } from "./utils";
 
@@ -582,12 +582,6 @@ async function flushWritethroughBatch(
 	};
 }
 
-function resolveWritethroughCwd(cwd: string | (() => string), options?: ResolvedWritethroughOptions): string {
-	if (typeof options?.cwd === "function") return options.cwd();
-	if (typeof options?.cwd === "string") return options.cwd;
-	return typeof cwd === "function" ? cwd() : cwd;
-}
-
 /** Create a writethrough callback for LSP aware write operations */
 export function createLspWritethrough(
 	cwd: string | (() => string),
@@ -646,7 +640,7 @@ export function createLspWritethrough(
 						await flushWritethroughBatch(
 							Array.from(pending.entries.values()),
 							"",
-							resolvedCwd,
+							cwd,
 							pending.options,
 							signal,
 							getDeferred,

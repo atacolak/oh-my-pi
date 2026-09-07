@@ -545,9 +545,9 @@ export function loadConfig(cwd: string): LspConfig {
 	const catalog = applyRuntimeDefaults(mergedServers);
 	const definitions: Record<string, ServerConfig> = {};
 	const servers: Record<string, ServerConfig> = {};
-
-	for (const name in catalog) {
-		const config = catalog[name];
+	const candidates = applyRuntimeDefaults(mergedServers);
+	for (const name in candidates) {
+		const config = candidates[name];
 		if (config.disabled) continue;
 		definitions[name] = config;
 		if (!hasRootMarkers(cwd, config.rootMarkers)) continue;
@@ -557,7 +557,19 @@ export function loadConfig(cwd: string): LspConfig {
 	}
 	selectTypescriptServer(servers);
 
-	return { servers, definitions, idleTimeoutMs };
+	return { servers, idleTimeoutMs };
+}
+
+// Cache config per cwd to avoid repeated file I/O
+export const configCache = new Map<string, LspConfig>();
+
+export function getConfig(cwd: string): LspConfig {
+	let config = configCache.get(cwd);
+	if (!config) {
+		config = loadConfig(cwd);
+		configCache.set(cwd, config);
+	}
+	return config;
 }
 
 // =============================================================================

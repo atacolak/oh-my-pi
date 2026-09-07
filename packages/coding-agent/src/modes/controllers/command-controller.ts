@@ -1288,7 +1288,6 @@ export class CommandController {
 			applied = await this.ctx.applyCwdChange(resolvedPath);
 		} catch (error) {
 			await this.#restoreAfterMoveFailure(previousState, error);
-			await this.ctx.session.commitMovedWorkspaceRoots();
 			return false;
 		}
 		if (!applied) {

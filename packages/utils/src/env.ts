@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, getConfigRootDir, getProjectDir, refreshDirsFromEnv } from "./dirs";
+import { getAgentDir, getConfigRootDir, getProjectDir, isProfileSelectedFromArgv, refreshDirsFromEnv } from "./dirs";
 
 export * from "./worker-host";
 
@@ -445,9 +445,11 @@ const launchProjectDotenv = (() => {
  * case-insensitively because process env lookups do. Value matching
  * reproduces Bun `$NAME` / `${NAME}` / `${NAME:-default}` expansion and
  * quoted values that span literal newlines; unrecognized `$` syntax fails
- * closed.
+ * closed. An explicit `--profile` selection is not treated as
+ * project-owned even when dotenv also declared `OMP_PROFILE`/`PI_PROFILE`.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
+	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;
 	if (matchingEnvName(projectEnvNamesLoadedByOmp, name) !== undefined) return true;
 	const dotenvName = matchingEnvName(launchProjectDotenv.names, name);
 	if (dotenvName === undefined) return false;

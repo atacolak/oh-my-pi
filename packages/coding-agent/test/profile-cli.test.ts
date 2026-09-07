@@ -10,6 +10,7 @@ import {
 	getActiveProfile,
 	getAgentDbPath,
 	getAgentDir,
+	isProfileSelectedFromArgv,
 	setAgentDir,
 	setProfile,
 	VERSION,
@@ -101,6 +102,7 @@ describe("global --profile flag", () => {
 		expect(process.exitCode).toBe(0);
 		expect(writeSpy).toHaveBeenCalled();
 		expect(getActiveProfile()).toBe("work");
+		expect(isProfileSelectedFromArgv()).toBe(true);
 		expect(getAgentDir()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
 	});
 
@@ -116,6 +118,7 @@ describe("global --profile flag", () => {
 		expect(writeSpy).toHaveBeenCalled();
 		expect(getActiveProfile()).toBe("work");
 		expect(getAgentDir()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
+		expect(isProfileSelectedFromArgv()).toBe(false);
 		expect(getAgentDbPath()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent", "agent.db"));
 	});
 

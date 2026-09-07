@@ -300,12 +300,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			} else {
 				const labelled: string[] = configuredNames.map(name => {
 					const started = startedByConfigName.get(name);
-					if (!started || started.length === 0) return `${name} (configured, not started)`;
+					const displayName = truncateToWidth(replaceTabs(shortenPath(name)), TRUNCATE_LENGTHS.TITLE);
+					if (!started || started.length === 0) return `${displayName} (configured, not started)`;
 					if (
 						started.length === 1 &&
 						(!statusClientRoot(started[0]) || statusClientRoot(started[0]) === this.session.cwd)
 					) {
-						return `${name} (${started[0].status})`;
+						return `${displayName} (${started[0].status})`;
 					}
 					return started
 						.map(client => {
@@ -314,7 +315,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 								rootPath && rootPath !== this.session.cwd
 									? ` @ ${formatStatusRoot(rootPath, this.session.cwd)}`
 									: "";
-							return `${name}${root} (${client.status})`;
+							return `${displayName}${root} (${client.status})`;
 						})
 						.join(", ");
 				});
@@ -324,7 +325,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						client.name;
 					const rootPath = statusClientRoot(client);
 					const root = rootPath ? ` @ ${formatStatusRoot(rootPath, this.session.cwd)}` : "";
-					labelled.push(`${nestedName}${root} (${client.status})`);
+					labelled.push(
+						`${truncateToWidth(replaceTabs(shortenPath(nestedName)), TRUNCATE_LENGTHS.TITLE)}${root} (${client.status})`,
+					);
 				}
 				lines.push(`Language servers: ${labelled.join(", ")}`);
 				lines.push(

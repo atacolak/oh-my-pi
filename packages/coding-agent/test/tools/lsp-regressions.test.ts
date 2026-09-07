@@ -7535,6 +7535,38 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("status sanitizes nested server labels that fall back to a user command path", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-status-sanitize-label-");
+		try {
+			const rawCommand = path.join(lspHomeOverride!, "bin", `custom\t${"x".repeat(120)}-lsp`);
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, definitions: {} });
+			vi.spyOn(lspClient, "getActiveClients").mockReturnValue([
+				{
+					name: rawCommand,
+					status: "ready",
+					fileTypes: [".py"],
+				},
+			]);
+
+			const output = textResult(
+				await new LspTool(makeLspSession(tempDir.path())).execute("status-sanitize-label", {
+					action: "status",
+				}),
+			);
+
+			const statusLine = output.split("\n")[0] ?? "";
+			const label = statusLine.slice("Language servers: ".length, statusLine.lastIndexOf(" (ready)"));
+			expect(statusLine).toContain("Language servers: ~/bin/custom");
+			expect(output).not.toContain(rawCommand);
+			expect(output).not.toContain("\t");
+			expect(output).not.toContain(lspHomeOverride);
+			expect(label).not.toContain("-lsp");
+			expect(label.length).toBeLessThanOrEqual(60);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("reload * invalidates the per-cwd config cache so newly written .omp/lsp.json is observed", async () => {
 		// #3546: `getConfig` caches the first `loadConfig` result per cwd
 		// permanently. Creating `.omp/lsp.json` after the first LSP call left

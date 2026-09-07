@@ -881,6 +881,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				string,
 				{ live: LspClient; serverPairs: FileRenamePair[]; serverName: string; serverConfig: ServerConfig }
 			>();
+			const movedRootIdentity = sourceStat.isDirectory() ? resolveEquivalentPath(source) : source;
 			if (sourceStat.isDirectory()) {
 				for (const [serverName, serverConfig] of servers) {
 					if (!workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd)) continue;
@@ -909,7 +910,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			if (sourceStat.isDirectory()) {
 				try {
-					await releaseMovedWorkspaceRoots(this.session.cwd, source, this.#clientOwner, signal);
+					await releaseMovedWorkspaceRoots(this.session.cwd, source, this.#clientOwner, signal, movedRootIdentity);
 				} catch (error) {
 					logger.warn("Failed to stop language servers for a renamed project root", {
 						movedRoot: source,

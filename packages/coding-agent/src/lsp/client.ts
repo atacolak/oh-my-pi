@@ -263,15 +263,23 @@ export async function releaseUncoveredWorkspaceRoots(
  * Shut down language servers whose routed root was moved by `rename_file`.
  * Remaining session workspace roots still contain the old path string, so
  * `/remove-dir` retention would keep the vanished-root process alive.
+ *
+ * `movedRootIdentity` is the equivalent path captured before the filesystem
+ * rename. A workspace symlink is keyed by its canonical target, and after the
+ * alias moves `movedRoot` no longer resolves to that identity, so failure
+ * cache lookup still needs the pre-move root.
  */
 export async function releaseMovedWorkspaceRoots(
 	sessionCwd: string,
 	movedRoot: string,
 	owner: LspClientOwner | undefined,
 	signal?: AbortSignal,
+	movedRootIdentity = movedRoot,
 ): Promise<string[]> {
 	if (!owner) return [];
 	const roots = [path.resolve(movedRoot)];
+	const equivalent = path.resolve(movedRootIdentity);
+	if (!roots.includes(equivalent)) roots.push(equivalent);
 	try {
 		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner);
 		clearWorkspaceInitializationFailures(roots, owner);

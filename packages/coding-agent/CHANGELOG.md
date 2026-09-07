@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `rename_file` leaving a nested initialization failure cached when the renamed project root is a workspace symlink, so a later operation through the destination alias retries instead of hitting the three-minute negative cache.
 - Fixed `rename_file` capturing surviving nested language-server clients by server name only, so a renamed directory with multiple same-name nested projects still notifies each overlapping session's process.
 - Fixed `rename_file` applying `willRenameFiles` edits once per symlink URI spelling of the same physical file, so a length-changing first edit no longer corrupts the second application.
 - Fixed `rename_file` skipping `workspace/didRenameFiles` for a nested language-server client kept alive by another session when the renamed project root is a workspace symlink, so the surviving process is still notified after the alias moves.

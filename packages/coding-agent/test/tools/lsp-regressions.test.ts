@@ -6765,6 +6765,74 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file clears a nested init failure when a symlink project root moves", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-symlink-root-init-failure-");
+		const shared = TempDir.createSync("@omp-lsp-rename-symlink-root-init-failure-target-");
+		const linkedRoot = path.join(tempDir.path(), "packages", "foo");
+		fs.mkdirSync(path.dirname(linkedRoot), { recursive: true });
+		fs.symlinkSync(shared.path(), linkedRoot);
+		try {
+			const destRoot = path.join(tempDir.path(), "packages", "bar");
+			const sourceFile = path.join(linkedRoot, "old.ts");
+			await Bun.write(sourceFile, "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: linkedRoot,
+			};
+			const failingServer = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						error: { code: -32000, message: "nested symlink init failed" },
+					});
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), undefined, undefined, owner),
+			).rejects.toThrow("nested symlink init failed");
+			expect(failingServer.spawnCount).toBe(1);
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner),
+			).rejects.toThrow("failed to initialize recently");
+
+			vi.restoreAllMocks();
+			const retryServer = installHandshakeLsp();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			const result = await tool.execute("rename-symlink-root-init-failure", {
+				action: "rename_file",
+				file: linkedRoot,
+				new_name: destRoot,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(fs.existsSync(linkedRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			await expect(
+				lspClient.getOrCreateClient(
+					{ ...nestedConfig, resolvedRoot: destRoot },
+					tempDir.path(),
+					1_000,
+					undefined,
+					owner,
+				),
+			).resolves.toMatchObject({ cwd: path.resolve(shared.path()) });
+			expect(retryServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("rename_file notifies each surviving same-name nested client under a renamed directory", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-rename-same-name-nested-");
 		try {

@@ -123,13 +123,24 @@ const projectEnvNamesLoadedByOmp = new Set<string>();
 function expandDotenvValues(values: Record<string, string>, env: Record<string, string>): Record<string, string> {
 	const expanded: Record<string, string> = {};
 	for (const key in values) {
+		// Bun expands `$NAME`, `${NAME}`, and `${NAME:-default}` (unset only;
+		// an empty-but-set value is kept). Other `${...}` forms are left intact
+		// so ownership can fail closed instead of treating them as trusted.
 		expanded[key] = values[key].replace(
-			/(\\)?\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g,
-			(match, escaped: string | undefined, braced: string | undefined, bare: string | undefined) => {
+			/(\\)?\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))/g,
+			(
+				match,
+				escaped: string | undefined,
+				braced: string | undefined,
+				fallback: string | undefined,
+				bare: string | undefined,
+			) => {
 				if (escaped) return match.slice(1);
 				const name = braced ?? bare;
 				if (!name) return match;
-				return env[name] ?? expanded[name] ?? "";
+				const current = env[name] ?? expanded[name];
+				if (current !== undefined) return current;
+				return fallback ?? "";
 			},
 		);
 	}
@@ -141,14 +152,16 @@ export function filterChildShellEnv(
 	env: Record<string, string | undefined>,
 	cwd: string = process.cwd(),
 ): Record<string, string> {
+	const runtimeLaunchEnvValues = env === Bun.env || env === process.env ? launchEnvValues : undefined;
 	const result = filterProcessEnv(env);
 	const { launchEnv, expandedLaunchEnv, fallbackLaunchEnv, expandedFallbackLaunchEnv } = loadLaunchCwdDotenv(
 		cwd,
 		result,
+		runtimeLaunchEnvValues,
 	);
 	const allLaunchEnv = fallbackLaunchEnv ? { ...launchEnv, ...fallbackLaunchEnv } : launchEnv;
 	for (const key in allLaunchEnv) {
-		const launchValue = launchEnvValues?.get(key);
+		const launchValue = runtimeLaunchEnvValues?.get(key);
 		if (launchValue !== undefined) {
 			// Launcher-owned name: it keeps the launcher's own value. Bun overwrites
 			// an empty launcher value with the dotenv one, so restore the launcher
@@ -164,7 +177,7 @@ export function filterChildShellEnv(
 			}
 			continue;
 		}
-		if (launchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
+		if (runtimeLaunchEnvValues || projectEnvNamesLoadedByOmp.has(key)) {
 			// Strong provenance: the launch environment is known and this name is
 			// absent from it, or OMP itself injected the value — either way it came
 			// from a project dotenv file, not the parent shell.
@@ -184,15 +197,21 @@ export function filterChildShellEnv(
 }
 
 /**
- * Parse one dotenv line with Bun-compatible semantics: an optional `export`
- * prefix, full-line `#` comments, inline `#` comments after whitespace on
- * unquoted values, and single/double/backtick quoting (a `#` inside quotes
- * stays literal). Double-quoted values decode Bun's `\n` / `\r` escapes;
- * `\\` is a literal pair, so `\\n` stays two slashes plus `n`. Returns
- * undefined for blank lines, comments, and malformed names.
+ * Parse a dotenv assignment starting at `lines[start]` with Bun-compatible
+ * semantics: an optional `export` prefix, full-line `#` comments, inline `#`
+ * comments after whitespace on unquoted values, and single/double/backtick
+ * quoting. Quoted values may span literal newlines until an unescaped closer;
+ * leftover text after that closer (other than a `#` comment) rejects the
+ * quoted span so the first line is parsed unquoted, matching Bun. Double-quoted
+ * values decode Bun's `\n` / `\r` escapes; `\\` is a literal pair, so `\\n`
+ * stays two slashes plus `n`. Returns undefined for blank lines, comments, and
+ * malformed names.
  */
-function parseEnvLine(line: string): { key: string; value: string } | undefined {
-	const trimmed = line.trim();
+function parseEnvAssignment(
+	lines: string[],
+	start: number,
+): { key: string; value: string; nextIndex: number } | undefined {
+	const trimmed = lines[start].trim();
 	if (!trimmed || trimmed.startsWith("#")) return undefined;
 	const eqIndex = trimmed.indexOf("=");
 	if (eqIndex === -1) return undefined;
@@ -203,13 +222,48 @@ function parseEnvLine(line: string): { key: string; value: string } | undefined 
 	const raw = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
 	const quote = raw[0];
 	if (quote === '"' || quote === "'" || quote === "`") {
-		let close = raw.indexOf(quote, 1);
-		while (close !== -1 && raw[close - 1] === "\\") close = raw.indexOf(quote, close + 1);
-		const value = close === -1 ? raw.slice(1) : raw.slice(1, close);
-		return { key, value: quote === '"' ? decodeBunDoubleQuotedDotenvValue(value) : value };
+		const spanned = collectQuotedDotenvValue(raw, quote, lines, start);
+		if (spanned) {
+			return {
+				key,
+				value: quote === '"' ? decodeBunDoubleQuotedDotenvValue(spanned.value) : spanned.value,
+				nextIndex: spanned.nextIndex,
+			};
+		}
 	}
 	const commentIndex = raw.search(/[ \t]#/);
-	return { key, value: (commentIndex === -1 ? raw : raw.slice(0, commentIndex)).trimEnd() };
+	return { key, value: (commentIndex === -1 ? raw : raw.slice(0, commentIndex)).trimEnd(), nextIndex: start + 1 };
+}
+
+function findUnescapedQuote(segment: string, quote: string): number {
+	let close = segment.indexOf(quote);
+	while (close > 0 && segment[close - 1] === "\\") close = segment.indexOf(quote, close + 1);
+	return close;
+}
+
+/**
+ * Collect a Bun-quoted dotenv value that may include literal newlines.
+ * Returns undefined when the quote is unclosed or followed by leftover text,
+ * so the caller can parse the first line unquoted the way Bun does.
+ */
+function collectQuotedDotenvValue(
+	raw: string,
+	quote: string,
+	lines: string[],
+	start: number,
+): { value: string; nextIndex: number } | undefined {
+	let value = "";
+	for (let i = start; i < lines.length; i++) {
+		const segment = i === start ? raw.slice(1) : lines[i];
+		const close = findUnescapedQuote(segment, quote);
+		if (close !== -1) {
+			const rest = segment.slice(close + 1);
+			if (rest.trim() !== "" && !rest.trimStart().startsWith("#")) return undefined;
+			return { value: value + segment.slice(0, close), nextIndex: i + 1 };
+		}
+		value += `${segment}\n`;
+	}
+	return undefined;
 }
 
 /**
@@ -248,16 +302,22 @@ function decodeBunDoubleQuotedDotenvValue(value: string): string {
 
 /**
  * Parses a .env file synchronously into key-value string pairs using
- * {@link parseEnvLine} for Bun-compatible line semantics, then mirrors valid
- * `OMP_` variables to their `PI_` aliases.
+ * {@link parseEnvAssignment} for Bun-compatible line and quoted-span
+ * semantics, then mirrors valid `OMP_` variables to their `PI_` aliases.
  */
 export function parseEnvFile(filePath: string): Record<string, string> {
 	const result: Record<string, string> = {};
 	try {
-		const content = fs.readFileSync(filePath, "utf-8");
-		for (const line of content.split("\n")) {
-			const parsed = parseEnvLine(line);
-			if (parsed && isSafeEnvValue(parsed.value)) result[parsed.key] = parsed.value;
+		const content = fs.readFileSync(filePath, "utf-8").replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+		const lines = content.split("\n");
+		for (let i = 0; i < lines.length;) {
+			const parsed = parseEnvAssignment(lines, i);
+			if (parsed) {
+				if (isSafeEnvValue(parsed.value)) result[parsed.key] = parsed.value;
+				i = parsed.nextIndex;
+			} else {
+				i++;
+			}
 		}
 	} catch {
 		// File doesn't exist or can't be read - return empty result
@@ -280,10 +340,15 @@ export function parseEnvFile(filePath: string): Record<string, string> {
  * environment. After autoload, `process.env.NODE_ENV` may already be the
  * value from `.env` itself (e.g. `production`), which would point a second
  * implementation at the wrong mode file.
+ *
+ * `runtimeLaunchEnvValues` is the omp process's own pre-dotenv snapshot and
+ * must only be supplied when `env` is that live process environment. Isolated
+ * caller-built env objects resolve mode from their own `NODE_ENV`.
  */
 function loadLaunchCwdDotenv(
 	cwd: string,
 	env: Record<string, string>,
+	runtimeLaunchEnvValues: ReadonlyMap<string, string> | undefined,
 ): {
 	launchEnv: Record<string, string>;
 	expandedLaunchEnv: Record<string, string>;
@@ -291,7 +356,7 @@ function loadLaunchCwdDotenv(
 	expandedFallbackLaunchEnv?: Record<string, string>;
 } {
 	const cwdProjectEnv = parseEnvFile(path.join(cwd, ".env"));
-	const launchNodeEnv = launchEnvValues ? launchEnvValues.get("NODE_ENV") : env.NODE_ENV;
+	const launchNodeEnv = runtimeLaunchEnvValues ? runtimeLaunchEnvValues.get("NODE_ENV") : env.NODE_ENV;
 	const nodeEnvName = `.env.${launchNodeEnv || "development"}`;
 	const modeEnv = parseEnvFile(path.join(cwd, nodeEnvName));
 	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
@@ -303,7 +368,7 @@ function loadLaunchCwdDotenv(
 		...expandDotenvValues(localEnv, env),
 		...expandDotenvValues(modeLocalEnv, env),
 	};
-	if (!launchEnvValues && nodeEnvName !== ".env.development") {
+	if (!runtimeLaunchEnvValues && nodeEnvName !== ".env.development") {
 		const fallbackModeEnv = parseEnvFile(path.join(cwd, ".env.development"));
 		const fallbackModeLocalEnv = parseEnvFile(path.join(cwd, ".env.development.local"));
 		const fallbackLaunchEnv = { ...cwdProjectEnv, ...fallbackModeEnv, ...localEnv, ...fallbackModeLocalEnv };
@@ -352,7 +417,7 @@ refreshDirsFromEnv();
 const launchProjectDotenv = (() => {
 	const cwd = getProjectDir();
 	const processValues = filterProcessEnv(process.env);
-	const loaded = loadLaunchCwdDotenv(cwd, processValues);
+	const loaded = loadLaunchCwdDotenv(cwd, processValues, launchEnvValues);
 	const names = new Set(Object.keys(loaded.launchEnv));
 	if (loaded.fallbackLaunchEnv) {
 		for (const key in loaded.fallbackLaunchEnv) names.add(key);
@@ -370,7 +435,10 @@ const launchProjectDotenv = (() => {
  * is still project-owned. Mode files follow Bun's pre-dotenv `NODE_ENV`
  * selection, including a `.env.development` fallback when dotenv itself
  * mutates `NODE_ENV`. On Windows, dotenv and queried names match
- * case-insensitively because process env lookups do.
+ * case-insensitively because process env lookups do. Value matching
+ * reproduces Bun `$NAME` / `${NAME}` / `${NAME:-default}` expansion and
+ * quoted values that span literal newlines; unrecognized `$` syntax fails
+ * closed.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if (matchingEnvName(projectEnvNamesLoadedByOmp, name) !== undefined) return true;
@@ -381,12 +449,19 @@ export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if (launchEnvValues && !launch.has) return true;
 	const current = readProcessEnv(name);
 	if (current === undefined) return false;
-	return (
+	if (
 		current === launchProjectDotenv.launchEnv[dotenvName] ||
 		current === launchProjectDotenv.expandedLaunchEnv[dotenvName] ||
 		current === launchProjectDotenv.fallbackLaunchEnv?.[dotenvName] ||
 		current === launchProjectDotenv.expandedFallbackLaunchEnv?.[dotenvName]
-	);
+	) {
+		return true;
+	}
+	// No snapshot (or an empty launcher value) and a `$` in the dotenv source
+	// means Bun may have expanded syntax we do not reproduce. Fail closed.
+	const raw = launchProjectDotenv.launchEnv[dotenvName];
+	const rawFallback = launchProjectDotenv.fallbackLaunchEnv?.[dotenvName];
+	return Boolean(raw?.includes("$") || rawFallback?.includes("$"));
 }
 
 /**

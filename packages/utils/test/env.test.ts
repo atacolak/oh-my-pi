@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	$envExact,
-	filterChildShellEnv,
 	filterProcessEnv,
 	getDbBusyTimeoutMs,
 	parseEnvFile,
@@ -145,6 +144,28 @@ describe("parseEnvFile", () => {
 			UNQUOTED_NL: "attacker\\n-dir",
 		});
 	});
+
+	it("keeps bun quoted values that span literal newlines", () => {
+		const filePath = writeTempEnv(
+			['DQ="./attacker', '-dir"', "SQ='./attacker", "-dir'", "BT=`./attacker", "-dir`", "NEXT=yes"].join("\n"),
+		);
+
+		expect(parseEnvFile(filePath)).toEqual({
+			DQ: "./attacker\n-dir",
+			SQ: "./attacker\n-dir",
+			BT: "./attacker\n-dir",
+			NEXT: "yes",
+		});
+	});
+
+	it("parses leftover-after-close quotes as unquoted, matching bun", () => {
+		const filePath = writeTempEnv(['UNCLOSED="./attacker', '-dir" leftover', "NEXT=yes"].join("\n"));
+
+		expect(parseEnvFile(filePath)).toEqual({
+			UNCLOSED: '"./attacker',
+			NEXT: "yes",
+		});
+	});
 });
 
 describe("filterProcessEnv", () => {
@@ -192,38 +213,60 @@ describe("filterProcessEnv", () => {
 });
 
 describe("filterChildShellEnv", () => {
-	// filterChildShellEnv resolves the mode-local dotenv name from the *launch*
-	// NODE_ENV (on Linux, /proc/self/environ — e.g. `test` inside a parallel
-	// bun-test worker), so the fixture must target that same mode instead of
-	// assuming `development`.
-	function launchDotenvMode(): string {
-		if (process.platform === "linux") {
-			try {
-				for (const entry of fs.readFileSync("/proc/self/environ", "utf8").split("\0")) {
-					if (entry.startsWith("NODE_ENV=")) return entry.slice("NODE_ENV=".length) || "development";
-				}
-				return "development";
-			} catch {}
-		}
-		return "development";
-	}
-
-	it("drops values Bun loaded from the default mode-local dotenv file", () => {
+	it("uses the supplied mode for an isolated environment and cwd", async () => {
 		const cwd = path.dirname(writeTempEnv(""));
 		fs.writeFileSync(
-			path.join(cwd, `.env.${launchDotenvMode()}.local`),
+			path.join(cwd, ".env.development.local"),
 			"OMP_DOTENV_REPRO_MARKER=synthetic-mode-local-value\n",
 		);
+		const envModulePath = path.join(import.meta.dir, "..", "src", "env.ts");
+		const script = [
+			`import { filterChildShellEnv } from ${JSON.stringify(envModulePath)};`,
+			"const child = filterChildShellEnv(",
+			'  { OMP_DOTENV_REPRO_MARKER: "synthetic-mode-local-value", UNCHANGED: "parent-value" },',
+			`  ${JSON.stringify(cwd)},`,
+			");",
+			"process.stdout.write(JSON.stringify(child));",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			env: { ...process.env, NODE_ENV: "test", OMP_DOTENV_REPRO_MARKER: undefined },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
 
-		const child = filterChildShellEnv(
-			{
-				OMP_DOTENV_REPRO_MARKER: "synthetic-mode-local-value",
-				UNCHANGED: "parent-value",
-			},
-			cwd,
-		);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ UNCHANGED: "parent-value" });
+	});
 
-		expect(child).toEqual({ UNCHANGED: "parent-value" });
+	it("drops launch-cwd values expanded from bun ${" + "VAR:-fallback} syntax", async () => {
+		const cwd = path.dirname(writeTempEnv("PI_CODING_AGENT_DIR=${" + "UNSET:-./attacker-dir}\n"));
+		const envModulePath = path.join(import.meta.dir, "..", "src", "env.ts");
+		const script = [
+			`import { filterChildShellEnv } from ${JSON.stringify(envModulePath)};`,
+			"const child = filterChildShellEnv(",
+			'  { PI_CODING_AGENT_DIR: "./attacker-dir", UNCHANGED: "parent-value" },',
+			`  ${JSON.stringify(cwd)},`,
+			");",
+			"process.stdout.write(JSON.stringify(child));",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			env: { ...process.env, NODE_ENV: "test", PI_CODING_AGENT_DIR: undefined },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ UNCHANGED: "parent-value" });
 	});
 
 	it("uses the launch mode when dotenv changes NODE_ENV", async () => {
@@ -358,6 +401,59 @@ describe("isEnvOwnedByProjectDotenv", () => {
 	it("treats a bun-decoded escaped-newline PI_CODING_AGENT_DIR as project-owned", async () => {
 		expect(
 			await probeProjectDotenvOwnership('PI_CODING_AGENT_DIR="./attacker\\n-dir"\n', {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-expanded ${" + "VAR:-fallback} PI_CODING_AGENT_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=${" + "UNSET:-./attacker-dir}\n", {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-expanded ${" + "VAR:-fallback} PI_CONFIG_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				"PI_CONFIG_DIR=${" + "UNSET:-./attacker-config}\n",
+				{
+					PI_CONFIG_DIR: "",
+					OMP_CONFIG_DIR: undefined,
+				},
+				"PI_CONFIG_DIR",
+			),
+		).toBe(true);
+	});
+
+	it("treats a bun-quoted multiline PI_CODING_AGENT_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership('PI_CODING_AGENT_DIR="./attacker\n-dir"\n', {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-quoted multiline PI_CONFIG_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				'PI_CONFIG_DIR="./attacker\n-config"\n',
+				{
+					PI_CONFIG_DIR: "",
+					OMP_CONFIG_DIR: undefined,
+				},
+				"PI_CONFIG_DIR",
+			),
+		).toBe(true);
+	});
+
+	it("treats unrecognized bun $ syntax in PI_CODING_AGENT_DIR as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=${" + "UNSET:=./attacker-dir}\n", {
 				PI_CODING_AGENT_DIR: "",
 				OMP_CODING_AGENT_DIR: undefined,
 			}),

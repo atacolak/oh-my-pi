@@ -17,7 +17,7 @@ import {
 	workspaceRootForPath,
 } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
-import { configCache, loadConfig, type LspConfig } from "./config";
+import { configCache, loadConfig, resolveCommand, type LspConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
 import { connectSharedLspTransport } from "./mux/daemon";
@@ -576,6 +576,11 @@ function sessionCatalogConfigs(cwd: string): ServerConfig[] {
 	return Object.values(catalog.definitions ?? catalog.servers);
 }
 
+function withResolvedCatalogCommand(definition: ServerConfig, cwd: string): ServerConfig {
+	const resolvedCommand = resolveCommand(definition.command, cwd) ?? definition.resolvedCommand;
+	return resolvedCommand ? { ...definition, resolvedCommand } : definition;
+}
+
 function isEquivalentWorkspaceRoot(left: string, right: string): boolean {
 	return workspaceContainsPath(left, right) && workspaceContainsPath(right, left);
 }
@@ -604,8 +609,12 @@ async function retireRetainedClientsAbsentFromSessionConfig(
 		if (!catalogRoots.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
 			return;
 		}
-		const match = catalog.find(definition => clientKey(definition, entry.cwd) === key);
-		if (match) freshConfigs.push({ ...match, resolvedRoot: entry.cwd });
+		const match = catalog.find(
+			definition => clientKey(withResolvedCatalogCommand(definition, entry.cwd), entry.cwd) === key,
+		);
+		if (match) {
+			freshConfigs.push({ ...withResolvedCatalogCommand(match, entry.cwd), resolvedRoot: entry.cwd });
+		}
 	};
 	for (const [key, client] of clients) consider(key, client);
 	for (const [key, pending] of clientLocks) consider(key, pending);

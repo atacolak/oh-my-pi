@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/move` restarting a retained extra-root language server whose catalog entry still used a bare command, so a lazily discovered nested process is kept when that command resolves to the same binary.
 - Fixed `/move` failing after the cwd change already committed when a stale extra-root language server refused to exit, so the command still reports success and refreshes from the new directory.
 - Fixed `/move` keeping a language server started from the previous cwd catalog after an additional workspace is promoted to the session cwd, so the new cwd's command, args, or settings replace that identity.
 - Fixed eager language-server warmup ignoring `idleTimeoutMs` because startup loaded config without caching it, so a warmed unused process still shuts down after the configured timeout.

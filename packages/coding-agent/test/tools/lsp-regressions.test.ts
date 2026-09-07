@@ -5074,6 +5074,45 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("status rebinds a retained client after its only extra-root alias is removed", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-status-rebind-extra-alias-");
+		try {
+			const sessionCwd = path.join(tempDir.path(), "app");
+			const extraRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(sessionCwd);
+			fs.symlinkSync(sessionCwd, extraRoot);
+			const extraConfig: ServerConfig = {
+				command: "rebind-extra-alias-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: extraRoot,
+			};
+			installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(extraConfig, extraRoot, 1_000, undefined, owner);
+
+			await lspClient.releaseRemovedWorkspaceRoots(sessionCwd, extraRoot, owner, undefined, [sessionCwd]);
+			fs.unlinkSync(extraRoot);
+
+			expect(lspClient.getActiveClients(owner).map(active => active.name)).toContain("rebind-extra-alias-lsp");
+			expect(lspClient.getActiveClients(owner).map(active => active.resolvedRoot)).toEqual([sessionCwd]);
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, definitions: {} });
+			const result = await new LspTool(
+				{ cwd: sessionCwd, settings: lspTestSettings, lspClientOwner: owner } as ToolSession,
+				owner,
+			).execute("status-rebind-extra-alias", { action: "status" });
+			expect(textResult(result)).toContain("rebind-extra-alias-lsp");
+			expect(textResult(result)).not.toContain(extraRoot);
+
+			await lspClient.shutdownStaleClients(sessionCwd, [], undefined, [sessionCwd], owner);
+			expect(lspClient.getActiveClients(owner).map(active => active.name)).not.toContain("rebind-extra-alias-lsp");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload does not reattach a reloading owner to a cached overlapping client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-overlapping-reload-reattach-");
 		try {

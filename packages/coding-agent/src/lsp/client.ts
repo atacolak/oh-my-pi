@@ -221,7 +221,9 @@ function clientCoveredByRemainingWorkspace(
 /** Drop owner aliases that remaining workspace roots no longer cover.
  *  Equivalent-path containment keeps an extra-root symlink of a retained
  *  workspace, so also drop aliases spelled under `removedRoot` unless a
- *  remaining root still contains that spelling. */
+ *  remaining root still contains that spelling. If that was the last route
+ *  and the client is still covered, register a remaining workspace path so
+ *  status/reload do not fall back to the vanished extra-root `resolvedRoot`. */
 function pruneUncoveredOwnerRoots(
 	owner: LspClientOwner,
 	sessionCwd: string,
@@ -236,6 +238,18 @@ function pruneUncoveredOwnerRoots(
 		for (const root of Array.from(roots)) {
 			const remainingLexical = remaining.some(workspace => isLexicallyWithin(workspace, root));
 			if (removed && isLexicallyWithin(removed, root) && !remainingLexical) {
+				if (clientCoveredByRemainingWorkspace(root, sessionCwd, remainingWorkspaceRoots)) {
+					const covering = workspaceRootForPath(
+						root,
+						normalizeSessionWorkspace({
+							cwd: sessionCwd,
+							directories: remainingWorkspaceRoots.filter(
+								workspace => path.resolve(workspace) !== path.resolve(sessionCwd),
+							),
+						}),
+					);
+					roots.add(path.resolve(covering ?? sessionCwd));
+				}
 				roots.delete(root);
 				continue;
 			}

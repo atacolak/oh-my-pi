@@ -268,6 +268,12 @@ function pruneUncoveredOwnerRoots(
  * workspace no longer covers. `/move`, `/wt`, and interactive `!cd` keep
  * additional roots that still exist, but the previous cwd is otherwise a
  * dropped workspace.
+ *
+ * Equivalent-path containment treats a previous symlink alias of the new
+ * cwd as still covered, so also process previous roots that remaining
+ * workspaces do not contain lexically. `releaseRemovedWorkspaceRoots()`
+ * keeps those clients running and rebinds owner routes onto a remaining
+ * spelling; otherwise status and reload keep the vanished alias.
  */
 export async function releaseUncoveredWorkspaceRoots(
 	previousWorkspaceRoots: readonly string[],
@@ -278,8 +284,9 @@ export async function releaseUncoveredWorkspaceRoots(
 	if (!owner) return;
 	const remainingCwd = remainingWorkspaceRoots[0];
 	if (!remainingCwd) return;
+	const remainingResolved = remainingWorkspaceRoots.map(root => path.resolve(root));
 	const droppedRoots = previousWorkspaceRoots.filter(
-		root => !clientCoveredByRemainingWorkspace(root, remainingCwd, remainingWorkspaceRoots),
+		root => !remainingResolved.some(workspace => isLexicallyWithin(workspace, path.resolve(root))),
 	);
 	for (const removedRoot of droppedRoots) {
 		try {

@@ -5113,6 +5113,48 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("status rebinds a retained client after /move between equivalent workspace aliases", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-move-equivalent-alias-");
+		try {
+			const physical = path.join(tempDir.path(), "physical");
+			const aliasCwd = path.join(tempDir.path(), "alias");
+			fs.mkdirSync(physical);
+			fs.symlinkSync(physical, aliasCwd);
+			const aliasConfig: ServerConfig = {
+				command: "move-equivalent-alias-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: aliasCwd,
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(aliasConfig, aliasCwd, 1_000, undefined, owner);
+
+			await lspClient.releaseUncoveredWorkspaceRoots([aliasCwd], [physical], owner);
+			expect(server.received.some(message => message.method === "shutdown")).toBe(false);
+			expect(lspClient.getActiveClients(owner).map(active => active.name)).toContain("move-equivalent-alias-lsp");
+			expect(lspClient.getActiveClients(owner).map(active => active.resolvedRoot)).toEqual([physical]);
+
+			fs.unlinkSync(aliasCwd);
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: {}, definitions: {} });
+			const result = await new LspTool(
+				{ cwd: physical, settings: lspTestSettings, lspClientOwner: owner } as ToolSession,
+				owner,
+			).execute("status-move-equivalent-alias", { action: "status" });
+			expect(textResult(result)).toContain("move-equivalent-alias-lsp");
+			expect(textResult(result)).not.toContain(aliasCwd);
+
+			await lspClient.shutdownStaleClients(physical, [], undefined, [physical], owner);
+			expect(lspClient.getActiveClients(owner).map(active => active.name)).not.toContain(
+				"move-equivalent-alias-lsp",
+			);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload does not reattach a reloading owner to a cached overlapping client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-overlapping-reload-reattach-");
 		try {

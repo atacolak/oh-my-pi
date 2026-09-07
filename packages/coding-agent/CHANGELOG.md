@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/move`, `/wt`, and interactive `!cd` leaving language-server owner routes on a previous workspace symlink after moving to an equivalent alias, so `lsp status` and later reload still match the retained client from the current workspace.
 - Fixed `rename_file` skipping `workspace/didRenameFiles` for a nested client kept alive by another session when overlay reconciliation fails after the directory move.
 - Fixed overlapping sessions sharing one language-server config object inheriting each other's reload generation stamps, so a later session's first `lsp reload *` no longer treated a pre-reload nested config as current.
 - Fixed `rename_file` skipping language-server retirement when overlay reconciliation fails after a nested project directory has already moved.

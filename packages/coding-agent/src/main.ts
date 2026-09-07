@@ -580,6 +580,9 @@ async function runInteractiveMode(
 	await logger.time("InteractiveMode.renderInitialMessages", () =>
 		mode.renderInitialMessages({ preserveExistingChat: true }),
 	);
+	if (joinLink === undefined && process.stdin.isTTY && process.stdout.isTTY) {
+		await autoStartCollab(mode);
+	}
 	// A resolved version check must not insert its banner into a partial transcript.
 	checkedVersionPromise.then(newVersion => {
 		if (!settings.get("startup.checkUpdate")) {

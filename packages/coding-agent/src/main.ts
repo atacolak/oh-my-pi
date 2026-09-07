@@ -33,6 +33,7 @@ import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { getLatestRelease } from "./cli/update-cli";
 import { CliUsageError } from "./cli/usage-error";
+import { autoStartCollab } from "./collab/start";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import {

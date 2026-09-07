@@ -1661,6 +1661,15 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		if (this.#appViewportActive) {
+			const mouseExit = this.#appViewportMouseTrackingActive ? APP_VIEWPORT_MOUSE_TRACKING_OFF : "";
+			this.terminal.write(`${mouseExit}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			setAltScreenActive(false);
+			this.#appViewportActive = false;
+			this.#appViewportMouseTrackingActive = false;
+			this.#appViewportPreviousLines = [];
+			this.#appViewportPreviousWidth = 0;
+		}
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = undefined;
 		this.#debugServer?.stop();

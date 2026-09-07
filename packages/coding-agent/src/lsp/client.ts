@@ -478,6 +478,8 @@ const READER_EXIT_GRACE_MS = 100;
 let idleTimeoutMs: number | null = null;
 let idleCheckInterval: NodeJS.Timeout | null = null;
 const IDLE_CHECK_INTERVAL_MS = 60 * 1000;
+/** Request/session cwds whose config may supply idleTimeoutMs after nested-root rewrite. */
+const clientIdleTimeoutOrigins = new Map<string, Set<string>>();
 
 // Broker-shared server mode (one language server per project shared by every
 // omp instance through the LSP mux daemon). Off by default so embedders and
@@ -492,12 +494,39 @@ export function setSharedLspEnabled(enabled: boolean): void {
 
 /**
  * Configure the global fallback idle timeout for LSP clients (used in tests/overrides).
- * When unset, each client evaluates against its workspace config (`getConfig(client.cwd).idleTimeoutMs`).
+ * When unset, each client evaluates against its spawn cwd and any originating
+ * session/request cwds recorded before nested-root rewrite.
  * @param ms - Timeout in milliseconds, or null/undefined to disable global override
  */
 export function setIdleTimeout(ms: number | null | undefined): void {
 	idleTimeoutMs = ms ?? null;
 	reconcileIdleChecker();
+}
+
+function rememberIdleTimeoutOrigins(key: string, ...cwds: string[]): void {
+	let origins = clientIdleTimeoutOrigins.get(key);
+	if (!origins) {
+		origins = new Set();
+		clientIdleTimeoutOrigins.set(key, origins);
+	}
+	for (const cwd of cwds) origins.add(path.resolve(cwd));
+}
+
+function configuredIdleTimeoutMs(cwd: string): number | undefined {
+	const timeoutMs = getConfig(cwd).idleTimeoutMs;
+	return timeoutMs && timeoutMs > 0 ? timeoutMs : undefined;
+}
+
+function idleTimeoutForClient(client: LspClient): number | undefined {
+	if (idleTimeoutMs && idleTimeoutMs > 0) return idleTimeoutMs;
+	let found: number | undefined;
+	const origins = clientIdleTimeoutOrigins.get(client.name);
+	for (const cwd of [client.cwd, ...(origins ?? [])]) {
+		const timeoutMs = configuredIdleTimeoutMs(cwd);
+		if (timeoutMs === undefined) continue;
+		found = found === undefined ? timeoutMs : Math.min(found, timeoutMs);
+	}
+	return found;
 }
 
 /**
@@ -521,13 +550,9 @@ export function isIdleClient(client: LspClient, now: number, timeoutMs: number):
 
 function hasConfiguredIdleTimeout(client?: LspClient): boolean {
 	if (idleTimeoutMs && idleTimeoutMs > 0) return true;
-	if (client) {
-		const timeoutMs = getConfig(client.cwd).idleTimeoutMs;
-		if (timeoutMs && timeoutMs > 0) return true;
-	}
+	if (client && idleTimeoutForClient(client)) return true;
 	for (const c of clients.values()) {
-		const timeoutMs = getConfig(c.cwd).idleTimeoutMs;
-		if (timeoutMs && timeoutMs > 0) return true;
+		if (idleTimeoutForClient(c)) return true;
 	}
 	return false;
 }
@@ -572,7 +597,7 @@ function maybeStopIdleChecker(): void {
 export async function checkIdleClients(): Promise<void> {
 	const now = Date.now();
 	for (const [key, client] of Array.from(clients.entries())) {
-		const timeoutMs = idleTimeoutMs ?? getConfig(client.cwd).idleTimeoutMs;
+		const timeoutMs = idleTimeoutForClient(client);
 		if (timeoutMs && timeoutMs > 0 && isIdleClient(client, now, timeoutMs)) {
 			await shutdownClient(key);
 		}
@@ -2126,9 +2151,11 @@ export async function getOrCreateClient(
 	owner?: LspClientOwner,
 ): Promise<LspClient> {
 	stampOwnerConfigGeneration(config, owner);
+	const originCwd = path.resolve(cwd);
 	const routedRoot = config.resolvedRoot ?? cwd;
 	cwd = resolveEquivalentPath(routedRoot);
 	const key = clientKey(config, cwd);
+	rememberIdleTimeoutOrigins(key, originCwd, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	// Check if client already exists
 	const existingClient = clients.get(key);
@@ -2408,11 +2435,13 @@ export async function getActiveOrPendingClient(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<LspClient | undefined> {
+	const originCwd = path.resolve(cwd);
 	const routedRoot = config.resolvedRoot ?? cwd;
 	stampOwnerConfigGeneration(config, owner);
 	cwd = resolveEquivalentPath(routedRoot);
 	throwIfAborted(signal);
 	const key = clientKey(config, cwd);
+	rememberIdleTimeoutOrigins(key, originCwd, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	const client = clients.get(key);
 	if (client && canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)) {
@@ -2994,6 +3023,7 @@ export async function shutdownAll(): Promise<void> {
 	invalidatedClientKeys.clear();
 	clientReloadBarriers.clear();
 	clientIdentityReloadBarriers.clear();
+	clientIdleTimeoutOrigins.clear();
 	initFailures.clear();
 	const clientsToShutdown = Array.from(clients.values());
 	// Mid-initialize clients live only in clientLocks (publication is deferred

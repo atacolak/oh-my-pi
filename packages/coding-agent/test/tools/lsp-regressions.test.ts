@@ -680,6 +680,36 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("inherits session idle timeout for a nested client whose spawn cwd has none", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-idle-");
+		const nestedRoot = path.join(tempDir.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const config: ServerConfig = {
+			command: "fake-lsp-nested-idle",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+			resolvedRoot: nestedRoot,
+		};
+		try {
+			configCache.set(tempDir.path(), { servers: { [config.command]: config }, idleTimeoutMs: 5_000 });
+			configCache.set(nestedRoot, { servers: { [config.command]: config } });
+			installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+
+			expect(client.cwd).toBe(nestedRoot);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+
+			client.lastActivity = Date.now() - 6_000;
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(c => c.name)).not.toContain("fake-lsp-nested-idle");
+		} finally {
+			configCache.delete(tempDir.path());
+			configCache.delete(nestedRoot);
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("returns an already-starting client without creating a second client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-pending-client-");
 		const initialize = Promise.withResolvers<void>();

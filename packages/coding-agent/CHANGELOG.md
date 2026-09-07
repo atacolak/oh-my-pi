@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed nested language-server clients ignoring a session-cwd idle timeout, so a nested process still shuts down after inactivity when only the session config sets `idleTimeoutMs`.
 - Fixed server-initiated workspace edits reporting `applied: false` after the filesystem mutation already committed when overlay reconciliation later failed, so the requesting language server is not told to retry an already-applied edit.
 - Fixed workspace edits that unpublish an overwrite-destination language server skipping watched-file notifications to that still-live client, so a follow-up command still sees files it did not have open.
 - Fixed edit language-server writethrough using construction-time cwd and omitting extra-root directories and session ownership, so `/move`, `!cd`, and `--add-dir` still bound nested format and diagnostics.

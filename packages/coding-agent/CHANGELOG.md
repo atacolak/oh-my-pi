@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `lsp reload *` crashing or re-reading language-server config for idle-timeout peeks, so a newly written `.omp/lsp.json` is observed once and missing cached config is treated as no timeout.
 - Fixed `lsp status` reporting a reused language server as not started after `reload *` changed only `fileTypes`, so the live client keeps the catalog's routing metadata instead of appearing twice.
 - Fixed `/move` keeping a previous session cwd in extra-root idle-timeout origins, so a nested client covered by a retained additional workspace uses the settled session timeout instead of the old cwd's shorter timeout.
 - Fixed `/move` leaving extra-root language servers running under the previous session's command, args, or settings when the new cwd's catalog differs, so the next operation under that extra root starts the current identity instead of leaking the old process.

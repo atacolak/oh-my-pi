@@ -17,7 +17,7 @@ import {
 	workspaceRootForPath,
 } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
-import { configCache, loadConfig } from "./config";
+import { configCache, loadConfig, type LspConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
 import { connectSharedLspTransport } from "./mux/daemon";
@@ -553,8 +553,13 @@ function rebindIdleTimeoutOrigins(owner: LspClientOwner, cwds: readonly string[]
 	reconcileIdleChecker();
 }
 
+function peekCachedConfig(cwd: string): LspConfig | undefined {
+	return configCache.get(cwd) ?? configCache.get(path.resolve(cwd));
+}
+
 function sessionCatalogConfigs(cwd: string): ServerConfig[] {
-	const catalog = configCache.get(cwd) ?? configCache.get(path.resolve(cwd)) ?? loadConfig(cwd);
+	const catalog = peekCachedConfig(cwd) ?? loadConfig(cwd);
+	if (!catalog) return [];
 	return Object.values(catalog.definitions ?? catalog.servers);
 }
 
@@ -597,7 +602,7 @@ function rememberIdleTimeoutOrigins(key: string, owner: LspClientOwner | undefin
 }
 
 function configuredIdleTimeoutMs(cwd: string): number | undefined {
-	const timeoutMs = (configCache.get(cwd) ?? configCache.get(path.resolve(cwd)) ?? loadConfig(cwd)).idleTimeoutMs;
+	const timeoutMs = peekCachedConfig(cwd)?.idleTimeoutMs;
 	return timeoutMs && timeoutMs > 0 ? timeoutMs : undefined;
 }
 

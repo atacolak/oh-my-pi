@@ -354,7 +354,7 @@ export async function releaseUncoveredWorkspaceRoots(
 			});
 		}
 	}
-	rebindIdleTimeoutOrigins(owner, remainingResolved);
+	rebindIdleTimeoutOrigins(owner, [remainingCwd]);
 	try {
 		await retireRetainedClientsAbsentFromSessionConfig(
 			remainingCwd,

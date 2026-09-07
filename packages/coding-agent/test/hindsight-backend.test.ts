@@ -679,6 +679,44 @@ describe("hindsightBackend live bank routing", () => {
 		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.strategy).toBe("personal_chat");
 	});
 
+	it("does not adopt silent apiUrl or timeout edits on a retainStrategy refresh", async () => {
+		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		settings.set("hindsight.scoping", "global");
+		const session = makeFakeSession({ sessionId: "s-strategy-silent", settings });
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		const initial = session.getHindsightSessionState();
+		const originalUrl = initial?.config.hindsightApiUrl;
+		const originalTimeout = initial?.config.requestTimeoutMs;
+		expect(originalUrl).toBe("http://localhost:8888");
+
+		settings.set("hindsight.apiUrl", "http://stale.example");
+		settings.set("hindsight.requestTimeoutMs", 1_000);
+		settings.set("hindsight.retainStrategy", "personal_chat");
+		await Bun.sleep(0);
+
+		const next = session.getHindsightSessionState();
+		expect(next).toBe(initial);
+		expect(next?.config.retainStrategy).toBe("personal_chat");
+		expect(next?.config.hindsightApiUrl).toBe(originalUrl);
+		expect(next?.config.requestTimeoutMs).toBe(originalTimeout);
+		next?.enqueueRetain("strategy only");
+		await next?.flushRetainQueue();
+		expect(retainBatchSpy.mock.calls[0]?.[1][0]?.strategy).toBe("personal_chat");
+	});
+
 	it("propagates retainStrategy to live subagent aliases without rebuilding", async () => {
 		const retainBatchSpy = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);

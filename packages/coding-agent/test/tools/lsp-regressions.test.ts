@@ -7663,6 +7663,7 @@ describe("lsp regressions", () => {
 			expect(destServer.received.map(message => message.method)).toContain("shutdown");
 			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
 			expect(replacementServer?.received.map(message => message.method)).not.toContain("shutdown");
+
 			expect(lspClient.getActiveClients(concurrentOwner).some(active => active.cwd === destRoot)).toBe(true);
 			expect(lspClient.getActiveClients(destOwner).some(active => active.cwd === destRoot)).toBe(false);
 		} finally {
@@ -7670,6 +7671,196 @@ describe("lsp regressions", () => {
 			tempDir.removeSync();
 		}
 	});
+
+	it("retires a pending nested client at an overwritten destination", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-overwrite-dest-pending-");
+		try {
+			const sourceRoot = path.join(tempDir.path(), "source");
+			const destRoot = path.join(tempDir.path(), "dest");
+			fs.mkdirSync(sourceRoot);
+			fs.mkdirSync(destRoot);
+			await Bun.write(path.join(sourceRoot, "source.ts"), "export const source = 1;\n");
+			await Bun.write(path.join(destRoot, "dest.ts"), "export const dest = 1;\n");
+			const sourceConfig: ServerConfig = {
+				command: "source-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sourceRoot,
+			};
+			const destConfig: ServerConfig = {
+				command: "dest-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: destRoot,
+			};
+			const destServer = installFakeLsp((message, fake) => {
+				if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const destOwner = lspClient.createLspClientOwner();
+			const destPending = lspClient.getOrCreateClient(destConfig, tempDir.path(), undefined, undefined, destOwner);
+			void destPending.catch(() => {});
+			const initialize = await destServer.waitFor(message => message.method === "initialize");
+			const sourceServer = installHandshakeLsp();
+			const sourceOwner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(sourceConfig, tempDir.path(), 1_000, undefined, sourceOwner);
+			const concurrentOwner = lspClient.createLspClientOwner();
+			vi.spyOn(lspClient, "reconcileExecutedChanges").mockImplementation(async () => {
+				expect(
+					await lspClient.getActiveOrPendingClient(destConfig, tempDir.path(), undefined, concurrentOwner),
+				).toBeUndefined();
+			});
+
+			const appliedPromise = lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToUri(sourceRoot),
+							newUri: fileToUri(destRoot),
+							options: { overwrite: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+			await Bun.sleep(50);
+			destServer.send({ jsonrpc: "2.0", id: initialize.id, result: { capabilities: {} } });
+			const applied = await appliedPromise;
+
+			expect(applied.some(line => line.includes("Renamed"))).toBe(true);
+			expect(lspClient.getActiveClients(destOwner).some(active => active.cwd === destRoot)).toBe(false);
+			expect(
+				lspClient.getActiveClients().some(active => active.cwd === destRoot && active.name === "dest-root-lsp"),
+			).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "source.ts"))).toBe(true);
+			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not retire a physical nested client when overwriting a destination symlink", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-overwrite-dest-symlink-");
+		try {
+			const sourceRoot = path.join(tempDir.path(), "source");
+			const realDest = path.join(tempDir.path(), "real-dest");
+			const destAlias = path.join(tempDir.path(), "dest-alias");
+			fs.mkdirSync(sourceRoot);
+			fs.mkdirSync(realDest);
+			await Bun.write(path.join(sourceRoot, "source.ts"), "export const source = 1;\n");
+			await Bun.write(path.join(realDest, "dest.ts"), "export const dest = 1;\n");
+			fs.symlinkSync(realDest, destAlias);
+			const sharedConfig = (resolvedRoot: string): ServerConfig => ({
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot,
+			});
+			const server = installHandshakeLsp();
+			const aliasOwner = lspClient.createLspClientOwner();
+			const physicalOwner = lspClient.createLspClientOwner();
+			const aliasClient = await lspClient.getOrCreateClient(
+				sharedConfig(destAlias),
+				tempDir.path(),
+				1_000,
+				undefined,
+				aliasOwner,
+			);
+			await lspClient.getOrCreateClient(sharedConfig(realDest), tempDir.path(), 1_000, undefined, physicalOwner);
+			expect(aliasClient.cwd).toBe(realDest);
+
+			const applied = await lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToLexicalUri(sourceRoot),
+							newUri: fileToLexicalUri(destAlias),
+							options: { overwrite: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+
+			expect(applied.some(line => line.includes("Renamed"))).toBe(true);
+			expect(fs.existsSync(sourceRoot)).toBe(false);
+			expect(fs.existsSync(realDest)).toBe(true);
+			expect(lspClient.getActiveClients(physicalOwner).some(active => active.cwd === realDest)).toBe(true);
+			expect(lspClient.getActiveClients(aliasOwner).some(active => active.cwd === realDest)).toBe(false);
+			expect(server.received.map(message => message.method)).not.toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("restores owners when deferred overwrite-destination shutdown survives force-kill", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-overwrite-dest-survivor-");
+		try {
+			const sourceRoot = path.join(tempDir.path(), "source");
+			const destRoot = path.join(tempDir.path(), "dest");
+			fs.mkdirSync(sourceRoot);
+			fs.mkdirSync(destRoot);
+			await Bun.write(path.join(sourceRoot, "source.ts"), "export const source = 1;\n");
+			await Bun.write(path.join(destRoot, "dest.ts"), "export const dest = 1;\n");
+			const sourceConfig: ServerConfig = {
+				command: "source-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: sourceRoot,
+			};
+			const destConfig: ServerConfig = {
+				command: "dest-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: destRoot,
+			};
+			const destServer = installFakeLsp(
+				(message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const destOwner = lspClient.createLspClientOwner();
+			const destClient = await lspClient.getOrCreateClient(destConfig, tempDir.path(), 1_000, undefined, destOwner);
+			expect(destClient.cwd).toBe(destRoot);
+			const sourceServer = installHandshakeLsp();
+			const sourceOwner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(sourceConfig, tempDir.path(), 1_000, undefined, sourceOwner);
+
+			const applied = await lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToUri(sourceRoot),
+							newUri: fileToUri(destRoot),
+							options: { overwrite: true },
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+
+			expect(applied.some(line => line.includes("Renamed"))).toBe(true);
+			expect(destServer.received.map(message => message.method)).toContain("shutdown");
+			expect(lspClient.getActiveClients(destOwner).map(entry => entry.name)).toContain("dest-root-lsp");
+			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
 
 	it("retires moved nested clients when overlay reconciliation fails after a workspace edit", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-reconcile-fail-");

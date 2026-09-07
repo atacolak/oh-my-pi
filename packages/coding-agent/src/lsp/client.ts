@@ -55,7 +55,7 @@ const clientOwners = new Map<string, Set<LspClientOwner>>();
 const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
 const ownerClientRoots = new Map<LspClientOwner, Map<string, Set<string>>>();
 const ownerReloadGeneration = new Map<LspClientOwner, number>();
-const configReloadGenerations = new WeakMap<ServerConfig, number>();
+const configReloadGenerations = new Map<LspClientOwner, WeakMap<ServerConfig, number>>();
 const ownerReleasedKeyGenerations = new Map<LspClientOwner, Map<string, number>>();
 const ownerReloadRootGenerations = new Map<LspClientOwner, Map<string, number>>();
 
@@ -408,6 +408,7 @@ export function releaseLspClientOwner(owner: LspClientOwner): void {
 	ownerReloadGeneration.delete(owner);
 	ownerReleasedKeyGenerations.delete(owner);
 	ownerReloadRootGenerations.delete(owner);
+	configReloadGenerations.delete(owner);
 }
 const fileOperationLocks = new Map<string, Promise<void>>();
 
@@ -1507,9 +1508,10 @@ export function shutdownStaleClients(
 				previousReleasedGenerations.set(key, released.get(key));
 				released.set(key, generation);
 			}
+			const stamps = ownerConfigStamps(owner);
 			for (const config of configs) {
-				previousConfigStamps.set(config, configReloadGenerations.get(config));
-				configReloadGenerations.set(config, generation);
+				previousConfigStamps.set(config, stamps.get(config));
+				stamps.set(config, generation);
 			}
 			if (invalidateUnusedIdentities) {
 				let coveredRoots = ownerReloadRootGenerations.get(owner);
@@ -1709,10 +1711,11 @@ export function shutdownStaleClients(
 						}
 						if (released.size === 0) ownerReleasedKeyGenerations.delete(owner);
 					}
+					const stamps = ownerConfigStamps(owner);
 					for (const [config, previous] of previousConfigStamps) {
-						if (configReloadGenerations.get(config) !== thisReloadGeneration) continue;
-						if (previous === undefined) configReloadGenerations.delete(config);
-						else configReloadGenerations.set(config, previous);
+						if (stamps.get(config) !== thisReloadGeneration) continue;
+						if (previous === undefined) stamps.delete(config);
+						else stamps.set(config, previous);
 					}
 					const coveredRoots = ownerReloadRootGenerations.get(owner);
 					if (coveredRoots) {
@@ -1780,11 +1783,22 @@ export function ownerConfigGeneration(owner?: LspClientOwner): number {
 	return owner ? (ownerReloadGeneration.get(owner) ?? 0) : 0;
 }
 
+function ownerConfigStamps(owner: LspClientOwner): WeakMap<ServerConfig, number> {
+	let stamps = configReloadGenerations.get(owner);
+	if (!stamps) {
+		stamps = new WeakMap();
+		configReloadGenerations.set(owner, stamps);
+	}
+	return stamps;
+}
+
 export function stampOwnerConfigGeneration(config: ServerConfig, owner?: LspClientOwner, generation?: number): number {
-	const stamped = configReloadGenerations.get(config);
+	if (!owner) return generation ?? 0;
+	const stamps = ownerConfigStamps(owner);
+	const stamped = stamps.get(config);
 	if (stamped !== undefined) return stamped;
 	const resolved = generation ?? ownerConfigGeneration(owner);
-	configReloadGenerations.set(config, resolved);
+	stamps.set(config, resolved);
 	return resolved;
 }
 
@@ -2673,8 +2687,8 @@ export async function sendNotification(
  * exit. Clearing those maps first leaves a force-kill survivor ownerless, so
  * status hides it and an overlapping reload can tear it down.
  *
- * Owner reload generations stay monotonic: `configReloadGenerations` is a
- * WeakMap that cannot be reset with the live clients, so zeroing these
+ * Owner reload generations stay monotonic: per-owner config stamps live in
+ * WeakMaps that cannot be reset with the live clients, so zeroing these
  * counters would let a pre-shutdown stamp survive the next reload.
  */
 export async function shutdownAll(): Promise<void> {

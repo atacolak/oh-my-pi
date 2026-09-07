@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed overlapping sessions sharing one language-server config object inheriting each other's reload generation stamps, so a later session's first `lsp reload *` no longer treated a pre-reload nested config as current.
 - Fixed `rename_file` skipping language-server retirement when overlay reconciliation fails after a nested project directory has already moved.
 - Fixed workspace edits that overwrite an existing nested project directory leaving that destination's language server published at the displaced inode.
 - Fixed workspace edits that successfully move or delete a nested project root skipping language-server retirement when overlay reconciliation later fails.

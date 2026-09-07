@@ -5324,6 +5324,46 @@ describe("lsp regressions", () => {
 		}
 	}, 10_000);
 
+	it("workspace reload does not inherit another owner's shared config stamp", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-shared-config-stamp-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "subproject");
+			fs.mkdirSync(nestedRoot);
+			const nestedConfig: ServerConfig = {
+				command: "shared-config-stamp-lsp",
+				args: ["--mode", "old"],
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const ownerA = lspClient.createLspClientOwner();
+			const ownerB = lspClient.createLspClientOwner();
+			lspClient.stampOwnerConfigGeneration(nestedConfig, ownerA);
+			for (let reload = 0; reload < 5; reload++) {
+				await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], ownerA);
+			}
+			lspClient.stampOwnerConfigGeneration(nestedConfig, ownerB);
+			await lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], ownerB);
+			await expect(
+				lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, ownerB),
+			).rejects.toThrow("superseded during reload");
+
+			const replacementServer = installHandshakeLsp();
+			const replacement = await lspClient.getOrCreateClient(
+				{ ...nestedConfig, args: ["--mode", "new"] },
+				tempDir.path(),
+				1_000,
+				undefined,
+				ownerB,
+			);
+			expect(replacement.config.args).toEqual(["--mode", "new"]);
+			expect(replacementServer.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 10_000);
+
 	it("file diagnostics reject a nested config captured before overlapping reload", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-diagnostics-reload-stamp-");
 		try {

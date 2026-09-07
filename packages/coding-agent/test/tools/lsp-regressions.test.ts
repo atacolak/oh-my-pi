@@ -6764,6 +6764,79 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file notifies each surviving same-name nested client under a renamed directory", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-same-name-nested-");
+		try {
+			const packagesRoot = path.join(tempDir.path(), "packages");
+			const nestedA = path.join(packagesRoot, "a");
+			const nestedB = path.join(packagesRoot, "b");
+			const destRoot = path.join(tempDir.path(), "moved");
+			fs.mkdirSync(nestedA, { recursive: true });
+			fs.mkdirSync(nestedB, { recursive: true });
+			await Bun.write(path.join(nestedA, "package.json"), "{}\n");
+			await Bun.write(path.join(nestedB, "package.json"), "{}\n");
+			await Bun.write(path.join(nestedA, "old.ts"), "export const a = 1;\n");
+			await Bun.write(path.join(nestedB, "old.ts"), "export const b = 1;\n");
+			const nestedDefinition: ServerConfig = {
+				command: "nested-root-lsp",
+				resolvedCommand: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: ["package.json"],
+			};
+			const configA: ServerConfig = { ...nestedDefinition, resolvedRoot: nestedA };
+			const configB: ServerConfig = { ...nestedDefinition, resolvedRoot: nestedB };
+			const handshake = (message: RpcMessage, fake: FakeLspServer) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "workspace/willRenameFiles") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			};
+			const serverA = installFakeLsp(handshake);
+			const renamingOwner = lspClient.createLspClientOwner();
+			const overlappingOwner = lspClient.createLspClientOwner();
+			const clientA = await lspClient.getOrCreateClient(configA, tempDir.path(), 1_000, undefined, renamingOwner);
+			await lspClient.getOrCreateClient(configA, tempDir.path(), 1_000, undefined, overlappingOwner);
+			clientA.resolveProjectLoaded();
+			const serverB = installFakeLsp(handshake);
+			const clientB = await lspClient.getOrCreateClient(configB, tempDir.path(), 1_000, undefined, renamingOwner);
+			await lspClient.getOrCreateClient(configB, tempDir.path(), 1_000, undefined, overlappingOwner);
+			clientB.resolveProjectLoaded();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: {},
+				definitions: { nested: nestedDefinition },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), renamingOwner);
+			const result = await tool.execute("rename-same-name-nested", {
+				action: "rename_file",
+				file: packagesRoot,
+				new_name: destRoot,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(fs.existsSync(packagesRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "a", "old.ts"))).toBe(true);
+			expect(fs.existsSync(path.join(destRoot, "b", "old.ts"))).toBe(true);
+			expect(serverA.received.map(message => message.method)).toContain("workspace/didRenameFiles");
+			expect(serverB.received.map(message => message.method)).toContain("workspace/didRenameFiles");
+			expect(serverA.received.map(message => message.method)).not.toContain("shutdown");
+			expect(serverB.received.map(message => message.method)).not.toContain("shutdown");
+			expect(lspClient.getActiveClients(overlappingOwner).some(active => active.cwd === nestedA)).toBe(true);
+			expect(lspClient.getActiveClients(overlappingOwner).some(active => active.cwd === nestedB)).toBe(true);
+			expect(lspClient.getActiveClients(renamingOwner).some(active => active.cwd === nestedA)).toBe(false);
+			expect(lspClient.getActiveClients(renamingOwner).some(active => active.cwd === nestedB)).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload retries a nested identity whose pending init was superseded", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-teardown-failure-");
 		try {

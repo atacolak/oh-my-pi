@@ -127,6 +127,10 @@ interface FileRenamePair {
 	newUri: string;
 }
 
+function renameServerIdentity(name: string, serverConfig: ServerConfig, cwd: string): string {
+	return `${name}:${resolveEquivalentPath(serverConfig.resolvedRoot ?? cwd)}`;
+}
+
 /**
  * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
  * For files this is a single pair. For directories this walks every regular file underneath
@@ -638,7 +642,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const servers: Array<[string, ServerConfig]> = [];
 			const collectRelevant = (filePath: string) => {
 				for (const [name, serverConfig] of getLspServersForFile(config, filePath, workspaceRoots)) {
-					const key = `${name}:${resolveEquivalentPath(serverConfig.resolvedRoot ?? this.session.cwd)}`;
+					const key = renameServerIdentity(name, serverConfig, this.session.cwd);
 					if (seenServers.has(key)) continue;
 					seenServers.add(key);
 					stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
@@ -866,7 +870,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// alias moves, getActiveOrPendingClient can no longer reconstruct that
 			// identity and would skip workspace/didRenameFiles for a process kept
 			// alive by another session.
-			const survivingMovedClients: Record<string, { live: LspClient; serverPairs: FileRenamePair[] }> = {};
+			const survivingMovedClients = new Map<
+				string,
+				{ live: LspClient; serverPairs: FileRenamePair[]; serverName: string; serverConfig: ServerConfig }
+			>();
 			if (sourceStat.isDirectory()) {
 				for (const [serverName, serverConfig] of servers) {
 					if (!workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd)) continue;
@@ -874,7 +881,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					if (!live) continue;
 					const serverPairs = pairsForServer(serverConfig);
 					if (serverPairs.length === 0) continue;
-					survivingMovedClients[serverName] = { live, serverPairs };
+					survivingMovedClients.set(renameServerIdentity(serverName, serverConfig, this.session.cwd), {
+						live,
+						serverPairs,
+						serverName,
+						serverConfig,
+					});
 				}
 			}
 
@@ -900,33 +912,34 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
-			for (const [serverName, serverConfig] of servers) {
-				const surviving = survivingMovedClients[serverName];
-				if (surviving) {
-					const { live, serverPairs } = surviving;
-					try {
-						for (const pair of serverPairs) {
-							const overlayOldUri = fileToUri(uriToFile(pair.oldUri), live.cwd);
-							if (live.openFiles.has(overlayOldUri)) {
-								await sendNotification(
-									live,
-									"textDocument/didClose",
-									{ textDocument: { uri: overlayOldUri } },
-									signal,
-								);
-								live.openFiles.delete(overlayOldUri);
-							}
+			const survivingConfigs = new Set<ServerConfig>();
+			for (const surviving of survivingMovedClients.values()) {
+				const { live, serverPairs, serverName, serverConfig } = surviving;
+				survivingConfigs.add(serverConfig);
+				try {
+					for (const pair of serverPairs) {
+						const overlayOldUri = fileToUri(uriToFile(pair.oldUri), live.cwd);
+						if (live.openFiles.has(overlayOldUri)) {
+							await sendNotification(
+								live,
+								"textDocument/didClose",
+								{ textDocument: { uri: overlayOldUri } },
+								signal,
+							);
+							live.openFiles.delete(overlayOldUri);
 						}
-						await sendNotification(live, "workspace/didRenameFiles", { files: serverPairs }, signal);
-					} catch (err) {
-						if (err instanceof ToolAbortError || signal?.aborted) {
-							throw err;
-						}
-						const msg = err instanceof Error ? err.message : String(err);
-						serverNotes.push(`  ${serverName}: ${msg}`);
 					}
-					continue;
+					await sendNotification(live, "workspace/didRenameFiles", { files: serverPairs }, signal);
+				} catch (err) {
+					if (err instanceof ToolAbortError || signal?.aborted) {
+						throw err;
+					}
+					const msg = err instanceof Error ? err.message : String(err);
+					serverNotes.push(`  ${serverName}: ${msg}`);
 				}
+			}
+			for (const [serverName, serverConfig] of servers) {
+				if (survivingConfigs.has(serverConfig)) continue;
 				const serverPairs = pairsForServer(serverConfig);
 				if (serverPairs.length === 0) continue;
 				try {

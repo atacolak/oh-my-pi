@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
 	isEnoent,
@@ -293,14 +294,17 @@ export async function releaseUncoveredWorkspaceRoots(
 }
 
 /**
- * Shut down language servers whose routed root was moved by `rename_file`.
- * Remaining session workspace roots still contain the old path string, so
- * `/remove-dir` retention would keep the vanished-root process alive.
+ * Shut down language servers whose routed root was moved or recursively
+ * deleted. `rename_file` and generic workspace edits both use this: remaining
+ * session workspace roots still contain the old path string, so `/remove-dir`
+ * retention would keep the vanished-root process alive.
  *
  * `movedRootIdentity` is the equivalent path captured before the filesystem
- * rename. A workspace symlink is keyed by its canonical target, and after the
- * alias moves `movedRoot` no longer resolves to that identity, so failure
- * cache lookup still needs the pre-move root.
+ * mutation. A workspace symlink is keyed by its canonical target, and after
+ * the alias moves `movedRoot` no longer resolves to that identity, so failure
+ * cache lookup still needs the pre-move root. When `owner` is omitted, every
+ * session's matching client is retired — workspace edits do not send
+ * `didRenameFiles` to overlapping owners.
  */
 export async function releaseMovedWorkspaceRoots(
 	sessionCwd: string,
@@ -309,7 +313,6 @@ export async function releaseMovedWorkspaceRoots(
 	signal?: AbortSignal,
 	movedRootIdentity = movedRoot,
 ): Promise<string[]> {
-	if (!owner) return [];
 	const roots = [path.resolve(movedRoot)];
 	const equivalent = path.resolve(movedRootIdentity);
 	if (!roots.includes(equivalent)) roots.push(equivalent);
@@ -318,18 +321,20 @@ export async function releaseMovedWorkspaceRoots(
 		clearWorkspaceInitializationFailures(roots, owner);
 		return stopped;
 	} catch (error) {
-		for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
-			const live = clients.get(key);
-			const pending = clientLocks.get(key);
-			const cwds = live
-				? clientWorkspaceCwds(key, live, owner)
-				: pending
-					? clientWorkspaceCwds(key, pending, owner)
-					: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
-			if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) {
-				continue;
+		if (owner) {
+			for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) {
+				const live = clients.get(key);
+				const pending = clientLocks.get(key);
+				const cwds = live
+					? clientWorkspaceCwds(key, live, owner)
+					: pending
+						? clientWorkspaceCwds(key, pending, owner)
+						: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
+				if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) {
+					continue;
+				}
+				releaseClientOwnerKey(key, owner);
 			}
-			releaseClientOwnerKey(key, owner);
 		}
 		clearWorkspaceInitializationFailures(roots, owner);
 		throw error;
@@ -814,10 +819,10 @@ async function handleApplyEditRequest(client: LspClient, message: LspJsonRpcRequ
 		);
 		return;
 	}
-
 	try {
-		await applyWorkspaceEditWithLsp(params.edit, client.cwd);
+		const { executed, capturedMovedRoots, cwd } = await applyAndReconcileWorkspaceEdit(params.edit, client.cwd);
 		await sendResponse(client, message.id, { applied: true }, "workspace/applyEdit");
+		await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd);
 	} catch (err) {
 		await sendResponse(client, message.id, { applied: false, failureReason: String(err) }, "workspace/applyEdit");
 	}
@@ -880,6 +885,60 @@ function openDocumentUrisForChange(client: LspClient, uri: string): string[] {
 function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boolean {
 	if (uriIsWithin(uri, deletedRoot)) return true;
 	return workspaceContainsPath(uriToFile(deletedRoot), uriToFile(uri));
+}
+
+/** Directory roots a workspace edit may move or delete, captured before apply. */
+async function captureMovedDirectoryRoots(edit: WorkspaceEdit): Promise<Array<{ root: string; identity: string }>> {
+	const captured: Array<{ root: string; identity: string }> = [];
+	const seen = new Set<string>();
+	for (const change of edit.documentChanges ?? []) {
+		if (!("kind" in change)) continue;
+		const sourceUri = change.kind === "rename" ? change.oldUri : change.kind === "delete" ? change.uri : undefined;
+		if (!sourceUri) continue;
+		const root = path.resolve(uriToFile(sourceUri));
+		if (seen.has(root)) continue;
+		try {
+			const st = await fs.lstat(root);
+			const isDirectory = st.isDirectory() || (st.isSymbolicLink() && (await fs.stat(root)).isDirectory());
+			if (!isDirectory) continue;
+		} catch {
+			continue;
+		}
+		seen.add(root);
+		captured.push({ root, identity: resolveEquivalentPath(root) });
+	}
+	return captured;
+}
+
+function executedMovedDirectoryRoots(
+	executed: ExecutedWorkspaceChange[],
+	captured: ReadonlyArray<{ root: string; identity: string }>,
+): Array<{ root: string; identity: string }> {
+	if (captured.length === 0 || executed.length === 0) return [];
+	const executedPaths = new Set<string>();
+	for (const change of executed) {
+		if (change.kind === "rename") executedPaths.add(path.resolve(uriToFile(change.oldUri)));
+		else if (change.kind === "delete") executedPaths.add(path.resolve(uriToFile(change.uri)));
+	}
+	return captured.filter(item => executedPaths.has(path.resolve(item.root)));
+}
+
+async function releaseExecutedMovedDirectoryRoots(
+	executed: ExecutedWorkspaceChange[],
+	captured: ReadonlyArray<{ root: string; identity: string }>,
+	sessionCwd: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	for (const item of executedMovedDirectoryRoots(executed, captured)) {
+		try {
+			await releaseMovedWorkspaceRoots(sessionCwd, item.root, undefined, signal, item.identity);
+		} catch (error) {
+			logger.warn("Failed to stop language servers for a renamed project root", {
+				movedRoot: item.root,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 }
 
 /** Reconcile open overlays and file watchers with the ops a workspace edit actually performed. */
@@ -948,15 +1007,32 @@ export async function reconcileExecutedChanges(
  * paths resolve against the first root. Overlay and watcher reconciliation covers every
  * ready client inside those roots, plus any ready client that owns an overlay or watched
  * path the edit actually touched, so a nested `workspace/applyEdit` still refreshes
- * sibling and session-root clients.
+ * sibling and session-root clients. Directory rename/delete ops then retire nested
+ * clients whose routed root vanished, matching `rename_file`.
  */
 export async function applyWorkspaceEditWithLsp(
 	edit: WorkspaceEdit,
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
 ): Promise<string[]> {
+	const { applied, executed, capturedMovedRoots, cwd } = await applyAndReconcileWorkspaceEdit(edit, workspace, signal);
+	await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd, signal);
+	return applied;
+}
+
+async function applyAndReconcileWorkspaceEdit(
+	edit: WorkspaceEdit,
+	workspace: string | readonly string[],
+	signal?: AbortSignal,
+): Promise<{
+	applied: string[];
+	executed: ExecutedWorkspaceChange[];
+	capturedMovedRoots: Array<{ root: string; identity: string }>;
+	cwd: string;
+}> {
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
 	const cwd = workspaceRoots[0] ?? path.resolve(".");
+	const capturedMovedRoots = await captureMovedDirectoryRoots(edit);
 	const executed: ExecutedWorkspaceChange[] = [];
 	let applied: string[];
 	try {
@@ -971,10 +1047,11 @@ export async function applyWorkspaceEditWithLsp(
 				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
 			});
 		}
+		await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd, signal);
 		throw err;
 	}
 	await reconcileExecutedChanges(executed, workspaceRoots, signal);
-	return applied;
+	return { applied, executed, capturedMovedRoots, cwd };
 }
 
 interface DynamicCapabilityRegistration {

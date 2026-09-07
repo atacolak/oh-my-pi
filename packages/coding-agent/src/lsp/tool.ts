@@ -124,6 +124,7 @@ import {
 import { runWorkspaceDiagnostics } from "./workspace-diagnostics";
 
 const MAX_RENAME_PAIRS = 1000;
+const MOVED_ROOT_NOTIFY_TIMEOUT_MS = 2_000;
 
 interface FileRenamePair {
 	oldUri: string;
@@ -943,10 +944,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					});
 				}
 			}
-			if (reconcileError) throw reconcileError;
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			const survivingConfigs = new Set<ServerConfig>();
+			const survivingNotifySignal =
+				reconcileError || signal?.aborted ? AbortSignal.timeout(MOVED_ROOT_NOTIFY_TIMEOUT_MS) : signal;
 			for (const surviving of survivingMovedClients.values()) {
 				const { live, serverPairs, serverName, serverConfig } = surviving;
 				survivingConfigs.add(serverConfig);
@@ -958,20 +960,21 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 								live,
 								"textDocument/didClose",
 								{ textDocument: { uri: overlayOldUri } },
-								signal,
+								survivingNotifySignal,
 							);
 							live.openFiles.delete(overlayOldUri);
 						}
 					}
-					await sendNotification(live, "workspace/didRenameFiles", { files: serverPairs }, signal);
+					await sendNotification(live, "workspace/didRenameFiles", { files: serverPairs }, survivingNotifySignal);
 				} catch (err) {
-					if (err instanceof ToolAbortError || signal?.aborted) {
+					if (!reconcileError && (err instanceof ToolAbortError || signal?.aborted)) {
 						throw err;
 					}
 					const msg = err instanceof Error ? err.message : String(err);
 					serverNotes.push(`  ${serverName}: ${msg}`);
 				}
 			}
+			if (reconcileError) throw reconcileError;
 			for (const [serverName, serverConfig] of servers) {
 				if (survivingConfigs.has(serverConfig)) continue;
 				const serverPairs = pairsForServer(serverConfig);

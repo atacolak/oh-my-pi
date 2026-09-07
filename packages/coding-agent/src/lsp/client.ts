@@ -936,7 +936,13 @@ async function handleApplyEditRequest(client: LspClient, message: LspJsonRpcRequ
 		// Retirement sends `shutdown` and waits for the reply. That reply can only
 		// be read after this handler returns to `startMessageReader()`, so do not
 		// await teardown here.
-		void releaseExecutedMovedDirectoryRoots(result.executed, result.capturedMovedRoots, result.cwd);
+		void releaseExecutedMovedDirectoryRoots(
+			result.executed,
+			result.capturedMovedRoots,
+			result.cwd,
+			undefined,
+			result.deferredOverwriteDestinationClients,
+		);
 	} catch (err) {
 		await sendResponse(client, message.id, { applied: false, failureReason: String(err) }, "workspace/applyEdit");
 	}
@@ -1001,10 +1007,17 @@ function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boole
 	return workspaceContainsPath(uriToFile(deletedRoot), uriToFile(uri));
 }
 
+type CapturedMovedDirectoryRoot = {
+	root: string;
+	identity: string;
+	leafSymlink: boolean;
+	overwriteDestination?: boolean;
+};
+
 /** Directory roots a workspace edit may move or delete, captured before apply. */
 async function captureDirectoryRoot(
 	uri: string,
-	captured: Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
+	captured: Array<CapturedMovedDirectoryRoot>,
 	seen: Set<string>,
 	overwriteDestination = false,
 ): Promise<void> {
@@ -1028,10 +1041,8 @@ async function captureDirectoryRoot(
 	}
 }
 
-async function captureMovedDirectoryRoots(
-	edit: WorkspaceEdit,
-): Promise<Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>> {
-	const captured: Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }> = [];
+async function captureMovedDirectoryRoots(edit: WorkspaceEdit): Promise<CapturedMovedDirectoryRoot[]> {
+	const captured: CapturedMovedDirectoryRoot[] = [];
 	const seen = new Set<string>();
 	for (const change of edit.documentChanges ?? []) {
 		if (!("kind" in change)) continue;
@@ -1053,8 +1064,8 @@ async function captureMovedDirectoryRoots(
 
 function executedMovedDirectoryRoots(
 	executed: ExecutedWorkspaceChange[],
-	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
-): Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }> {
+	captured: ReadonlyArray<CapturedMovedDirectoryRoot>,
+): CapturedMovedDirectoryRoot[] {
 	if (captured.length === 0 || executed.length === 0) return [];
 	const executedPaths = new Set<string>();
 	for (const change of executed) {
@@ -1066,40 +1077,59 @@ function executedMovedDirectoryRoots(
 	return captured.filter(item => executedPaths.has(path.resolve(item.root)));
 }
 
-async function releaseExecutedOverwriteDestinationRoots(
+/** Unpublish overwritten destination clients so another session cannot reuse
+ *  the displaced process, but keep the instance alive until the originating
+ *  applyEdit / code-action command finishes. */
+function unpublishExecutedOverwriteDestinationClients(
 	executed: ExecutedWorkspaceChange[],
-	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
-	sessionCwd: string,
-	signal?: AbortSignal,
-): Promise<void> {
+	captured: ReadonlyArray<CapturedMovedDirectoryRoot>,
+): LspClient[] {
+	const deferred: LspClient[] = [];
+	const seen = new Set<LspClient>();
 	for (const item of executedMovedDirectoryRoots(executed, captured)) {
 		if (!item.overwriteDestination) continue;
 		if (captured.some(other => other !== item && !other.overwriteDestination && other.identity === item.identity)) {
 			continue;
 		}
-		try {
-			await releaseMovedWorkspaceRoots(sessionCwd, item.root, undefined, signal, item.identity, item.leafSymlink);
-		} catch (error) {
-			logger.warn("Failed to stop language servers for an overwritten project root", {
-				movedRoot: item.root,
-				error: error instanceof Error ? error.message : String(error),
-			});
+		const roots = [path.resolve(item.root)];
+		const equivalent = path.resolve(item.identity);
+		if (!item.leafSymlink && !roots.includes(equivalent)) roots.push(equivalent);
+		for (const [key, client] of clients) {
+			if (seen.has(client)) continue;
+			const cwds = clientWorkspaceCwds(key, client);
+			if (!roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) continue;
+			if (!unpublishClient(key, client)) continue;
+			seen.add(client);
+			deferred.push(client);
 		}
 	}
+	return deferred;
 }
 
 export async function releaseExecutedMovedDirectoryRoots(
 	executed: ExecutedWorkspaceChange[],
-	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
+	captured: ReadonlyArray<CapturedMovedDirectoryRoot>,
 	sessionCwd: string,
 	signal?: AbortSignal,
+	deferredOverwriteDestinationClients: readonly LspClient[] = [],
 ): Promise<void> {
 	for (const item of executedMovedDirectoryRoots(executed, captured)) {
+		if (item.overwriteDestination) continue;
 		try {
 			await releaseMovedWorkspaceRoots(sessionCwd, item.root, undefined, signal, item.identity, item.leafSymlink);
 		} catch (error) {
 			logger.warn("Failed to stop language servers for a renamed project root", {
 				movedRoot: item.root,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	for (const client of deferredOverwriteDestinationClients) {
+		try {
+			await shutdownClientInstance(client);
+		} catch (error) {
+			logger.warn("Failed to stop language servers for an overwritten project root", {
+				movedRoot: client.cwd,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
@@ -1174,22 +1204,26 @@ export async function reconcileExecutedChanges(
  * path the edit actually touched, so a nested `workspace/applyEdit` still refreshes
  * sibling and session-root clients. Directory rename/delete ops then retire nested
  * clients whose routed root vanished, matching `rename_file`. Overwrite
- * destinations are retired after a committed apply and before overlay
- * reconciliation, so another session cannot reuse the displaced-root process.
- * Overlay reconciliation failures after a successful apply still return the
- * executed prefix so remaining moved-root retirement can run.
+ * destinations are unpublished after a committed apply and before overlay
+ * reconciliation, so another session cannot reuse the displaced-root process,
+ * while the originating client stays alive through a follow-up command or
+ * applyEdit response. Overlay reconciliation failures after a successful apply
+ * still return the executed prefix so remaining moved-root retirement can run.
  */
 export async function applyWorkspaceEditWithLsp(
 	edit: WorkspaceEdit,
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
 ): Promise<string[]> {
-	const { applied, executed, capturedMovedRoots, cwd, error } = await applyAndReconcileWorkspaceEdit(
-		edit,
-		workspace,
-		signal,
+	const { applied, executed, capturedMovedRoots, cwd, error, deferredOverwriteDestinationClients } =
+		await applyAndReconcileWorkspaceEdit(edit, workspace, signal);
+	await releaseExecutedMovedDirectoryRoots(
+		executed,
+		capturedMovedRoots,
+		cwd,
+		undefined,
+		deferredOverwriteDestinationClients,
 	);
-	await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd);
 	if (error) throw error;
 	return applied;
 }
@@ -1201,8 +1235,9 @@ export async function applyAndReconcileWorkspaceEdit(
 ): Promise<{
 	applied: string[];
 	executed: ExecutedWorkspaceChange[];
-	capturedMovedRoots: Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>;
+	capturedMovedRoots: CapturedMovedDirectoryRoot[];
 	cwd: string;
+	deferredOverwriteDestinationClients: LspClient[];
 	error?: unknown;
 }> {
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
@@ -1215,7 +1250,10 @@ export async function applyAndReconcileWorkspaceEdit(
 	} catch (err) {
 		// Best-effort: overlays for the mutated prefix must not stay stale, but
 		// reconciliation problems must not mask the original apply failure.
-		await releaseExecutedOverwriteDestinationRoots(executed, capturedMovedRoots, cwd, signal);
+		const deferredOverwriteDestinationClients = unpublishExecutedOverwriteDestinationClients(
+			executed,
+			capturedMovedRoots,
+		);
 		try {
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 		} catch (reconcileErr) {
@@ -1223,18 +1261,21 @@ export async function applyAndReconcileWorkspaceEdit(
 				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
 			});
 		}
-		return { applied, executed, capturedMovedRoots, cwd, error: err };
+		return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients, error: err };
 	}
-	await releaseExecutedOverwriteDestinationRoots(executed, capturedMovedRoots, cwd, signal);
+	const deferredOverwriteDestinationClients = unpublishExecutedOverwriteDestinationClients(
+		executed,
+		capturedMovedRoots,
+	);
 	try {
 		await reconcileExecutedChanges(executed, workspaceRoots, signal);
 	} catch (reconcileErr) {
 		logger.warn("LSP overlay reconciliation after workspace edit failed", {
 			error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
 		});
-		return { applied, executed, capturedMovedRoots, cwd, error: reconcileErr };
+		return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients, error: reconcileErr };
 	}
-	return { applied, executed, capturedMovedRoots, cwd };
+	return { applied, executed, capturedMovedRoots, cwd, deferredOverwriteDestinationClients };
 }
 
 interface DynamicCapabilityRegistration {

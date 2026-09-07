@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed code actions that overwrite the originating language server's project root shutting that process down before a follow-up command, so the command still runs against the live client.
+- Fixed workspace-edit retirement shutting down a replacement language server started at an overwritten destination after overlay reconciliation.
 - Fixed `rename_file` of a directory symlink dropping a remaining physical owner route for the same session, so that session still keeps the unchanged nested language-server process.
 - Fixed `lsp status` matching started clients by command only, so two configured servers that share a binary no longer report each other's processes or hide a nested identity.
 - Fixed `/move`, `/wt`, and interactive `!cd` leaving language-server owner routes on a previous workspace symlink after moving to an equivalent alias, so `lsp status` and later reload still match the retained client from the current workspace.

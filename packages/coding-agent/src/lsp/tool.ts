@@ -1657,6 +1657,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 										overwriteDestination?: boolean;
 									}>;
 									cwd: string;
+									deferredOverwriteDestinationClients: LspClient[];
 							  }
 							| undefined;
 						try {
@@ -1669,6 +1670,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 										executed: result.executed,
 										capturedMovedRoots: result.capturedMovedRoots,
 										cwd: result.cwd,
+										deferredOverwriteDestinationClients: result.deferredOverwriteDestinationClients,
 									};
 									if (result.error) throw result.error;
 									return result.applied;
@@ -1709,6 +1711,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 									pendingRootRetirement.executed,
 									pendingRootRetirement.capturedMovedRoots,
 									pendingRootRetirement.cwd,
+									undefined,
+									pendingRootRetirement.deferredOverwriteDestinationClients,
 								);
 							}
 						}

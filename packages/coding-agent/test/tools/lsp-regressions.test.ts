@@ -7673,6 +7673,105 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("keeps a code-action follow-up command after committed overlay reconciliation fails", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-code-action-reconcile-command-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const siblingRoot = path.join(tempDir.path(), "sibling");
+			fs.mkdirSync(nestedRoot);
+			fs.mkdirSync(siblingRoot);
+			const nestedFile = path.join(nestedRoot, "a.ts");
+			const siblingFile = path.join(siblingRoot, "b.ts");
+			await Bun.write(nestedFile, "export const a = 1;\n");
+			await Bun.write(siblingFile, 'import { a } from "../nested/a";\n');
+			await Bun.write(path.join(nestedRoot, "package.json"), "{}\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-code-action-lsp",
+				resolvedCommand: "nested-code-action-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: ["package.json"],
+				resolvedRoot: nestedRoot,
+			};
+			const siblingConfig: ServerConfig = {
+				command: "sibling-code-action-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: siblingRoot,
+			};
+			const siblingServer = installHandshakeLsp();
+			const siblingClient = await lspClient.getOrCreateClient(siblingConfig, tempDir.path(), 1_000);
+			await lspClient.ensureFileOpen(siblingClient, siblingFile);
+			await siblingServer.waitFor(message => message.method === "textDocument/didOpen");
+			const nestedServer = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "textDocument/codeAction") {
+					fake.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								title: "Rewrite sibling import",
+								edit: {
+									changes: {
+										[fileToUri(siblingFile)]: [
+											{
+												range: {
+													start: { line: 0, character: 9 },
+													end: { line: 0, character: 10 },
+												},
+												newText: "b",
+											},
+										],
+									},
+								},
+								command: { title: "Follow-up", command: "nested.followUp" },
+							},
+						],
+					});
+				} else if (message.method === "workspace/executeCommand") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const originalSendNotification = lspClient.sendNotification;
+			vi.spyOn(lspClient, "sendNotification").mockImplementation(async (client, method, params, signal) => {
+				if (method === "textDocument/didChange" && client.config.command === "sibling-code-action-lsp") {
+					throw new Error("didChange write failure");
+				}
+				return originalSendNotification(client, method, params, signal);
+			});
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig, sibling: siblingConfig },
+				definitions: { nested: nestedConfig, sibling: siblingConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("code-action-reconcile-command", {
+				action: "code_actions",
+				file: nestedFile,
+				line: 1,
+				query: "Rewrite sibling import",
+				apply: true,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "code_actions", success: true });
+			expect(result.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested.followUp"),
+			});
+			expect(fs.readFileSync(siblingFile, "utf8")).toBe('import { b } from "../nested/a";\n');
+			expect(nestedServer.received.map(message => message.method)).toContain("workspace/executeCommand");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not retire a physical nested client when a workspace edit moves a symlink alias", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-symlink-alias-");
 		try {

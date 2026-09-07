@@ -1672,7 +1672,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 										cwd: result.cwd,
 										deferredOverwriteDestinationClients: result.deferredOverwriteDestinationClients,
 									};
-									if (result.error) throw result.error;
+									if (
+										result.error &&
+										(!result.committed || result.error instanceof ToolAbortError || signal?.aborted)
+									) {
+										throw result.error;
+									}
 									return result.applied;
 								},
 								executeCommand: async commandItem => {

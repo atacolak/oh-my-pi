@@ -576,8 +576,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 
 			let sourceStat: fs.Stats;
+			let sourceLeaf: fs.Stats;
 			try {
-				sourceStat = await fs.promises.stat(source);
+				sourceLeaf = await fs.promises.lstat(source);
+				sourceStat = sourceLeaf.isSymbolicLink() ? await fs.promises.stat(source) : sourceLeaf;
 			} catch (err) {
 				// Only ENOENT means "missing". Reporting EACCES/ELOOP/EIO as a
 				// missing path sends the caller hunting the wrong problem — and
@@ -915,7 +917,14 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 			if (sourceStat.isDirectory()) {
 				try {
-					await releaseMovedWorkspaceRoots(this.session.cwd, source, this.#clientOwner, signal, movedRootIdentity);
+					await releaseMovedWorkspaceRoots(
+						this.session.cwd,
+						source,
+						this.#clientOwner,
+						signal,
+						movedRootIdentity,
+						sourceLeaf.isSymbolicLink(),
+					);
 				} catch (error) {
 					logger.warn("Failed to stop language servers for a renamed project root", {
 						movedRoot: source,
@@ -1599,7 +1608,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						let pendingRootRetirement:
 							| {
 									executed: ExecutedWorkspaceChange[];
-									capturedMovedRoots: Array<{ root: string; identity: string }>;
+									capturedMovedRoots: Array<{ root: string; identity: string; leafSymlink: boolean }>;
 									cwd: string;
 							  }
 							| undefined;

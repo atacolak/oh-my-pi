@@ -306,7 +306,10 @@ export async function releaseUncoveredWorkspaceRoots(
  * session's matching client is retired — workspace edits do not send
  * `didRenameFiles` to overlapping owners. A moved directory symlink is an
  * exception: only owners routed through that alias are released, so a session
- * using the unchanged physical target keeps its live client.
+ * using the unchanged physical target keeps its live client. Ordinary
+ * directories reached through a symlink parent still physically move, so
+ * they take the full retirement path even when lexical and canonical paths
+ * differ.
  */
 export async function releaseMovedWorkspaceRoots(
 	sessionCwd: string,
@@ -314,17 +317,17 @@ export async function releaseMovedWorkspaceRoots(
 	owner: LspClientOwner | undefined,
 	signal?: AbortSignal,
 	movedRootIdentity = movedRoot,
+	leafSymlink = false,
 ): Promise<string[]> {
 	const lexical = path.resolve(movedRoot);
 	const equivalent = path.resolve(movedRootIdentity);
-	const symlinkAlias = lexical !== equivalent;
-	if (!owner && symlinkAlias) {
+	if (!owner && leafSymlink) {
 		return await releaseMovedSymlinkAlias(lexical, signal);
 	}
 	const roots = [lexical];
-	if (!symlinkAlias && !roots.includes(equivalent)) roots.push(equivalent);
+	if (!leafSymlink && !roots.includes(equivalent)) roots.push(equivalent);
 	const failureRoots = roots.includes(equivalent) ? roots : [...roots, equivalent];
-	const contains = symlinkAlias ? isLexicallyWithin : workspaceContainsPath;
+	const contains = leafSymlink ? isLexicallyWithin : workspaceContainsPath;
 	try {
 		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, undefined, contains);
 		clearWorkspaceInitializationFailures(failureRoots, owner);
@@ -958,8 +961,10 @@ function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boole
 }
 
 /** Directory roots a workspace edit may move or delete, captured before apply. */
-async function captureMovedDirectoryRoots(edit: WorkspaceEdit): Promise<Array<{ root: string; identity: string }>> {
-	const captured: Array<{ root: string; identity: string }> = [];
+async function captureMovedDirectoryRoots(
+	edit: WorkspaceEdit,
+): Promise<Array<{ root: string; identity: string; leafSymlink: boolean }>> {
+	const captured: Array<{ root: string; identity: string; leafSymlink: boolean }> = [];
 	const seen = new Set<string>();
 	for (const change of edit.documentChanges ?? []) {
 		if (!("kind" in change)) continue;
@@ -969,21 +974,22 @@ async function captureMovedDirectoryRoots(edit: WorkspaceEdit): Promise<Array<{ 
 		if (seen.has(root)) continue;
 		try {
 			const st = await fs.lstat(root);
-			const isDirectory = st.isDirectory() || (st.isSymbolicLink() && (await fs.stat(root)).isDirectory());
+			const leafSymlink = st.isSymbolicLink();
+			const isDirectory = st.isDirectory() || (leafSymlink && (await fs.stat(root)).isDirectory());
 			if (!isDirectory) continue;
+			seen.add(root);
+			captured.push({ root, identity: resolveEquivalentPath(root), leafSymlink });
 		} catch {
 			continue;
 		}
-		seen.add(root);
-		captured.push({ root, identity: resolveEquivalentPath(root) });
 	}
 	return captured;
 }
 
 function executedMovedDirectoryRoots(
 	executed: ExecutedWorkspaceChange[],
-	captured: ReadonlyArray<{ root: string; identity: string }>,
-): Array<{ root: string; identity: string }> {
+	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean }>,
+): Array<{ root: string; identity: string; leafSymlink: boolean }> {
 	if (captured.length === 0 || executed.length === 0) return [];
 	const executedPaths = new Set<string>();
 	for (const change of executed) {
@@ -995,13 +1001,13 @@ function executedMovedDirectoryRoots(
 
 export async function releaseExecutedMovedDirectoryRoots(
 	executed: ExecutedWorkspaceChange[],
-	captured: ReadonlyArray<{ root: string; identity: string }>,
+	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean }>,
 	sessionCwd: string,
 	signal?: AbortSignal,
 ): Promise<void> {
 	for (const item of executedMovedDirectoryRoots(executed, captured)) {
 		try {
-			await releaseMovedWorkspaceRoots(sessionCwd, item.root, undefined, signal, item.identity);
+			await releaseMovedWorkspaceRoots(sessionCwd, item.root, undefined, signal, item.identity, item.leafSymlink);
 		} catch (error) {
 			logger.warn("Failed to stop language servers for a renamed project root", {
 				movedRoot: item.root,
@@ -1102,7 +1108,7 @@ export async function applyAndReconcileWorkspaceEdit(
 ): Promise<{
 	applied: string[];
 	executed: ExecutedWorkspaceChange[];
-	capturedMovedRoots: Array<{ root: string; identity: string }>;
+	capturedMovedRoots: Array<{ root: string; identity: string; leafSymlink: boolean }>;
 	cwd: string;
 	error?: unknown;
 }> {

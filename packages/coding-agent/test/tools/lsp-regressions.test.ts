@@ -6984,6 +6984,62 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("retires a physical nested client when a workspace edit moves a directory under a symlink parent", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-symlink-parent-");
+		try {
+			const realOuter = path.join(tempDir.path(), "real");
+			const aliasOuter = path.join(tempDir.path(), "alias");
+			const realNested = path.join(realOuter, "project");
+			const aliasNested = path.join(aliasOuter, "project");
+			const destRoot = path.join(tempDir.path(), "moved-project");
+			fs.mkdirSync(realNested, { recursive: true });
+			await Bun.write(path.join(realNested, "old.ts"), "export const value = 1;\n");
+			fs.symlinkSync(realOuter, aliasOuter);
+			const sharedConfig = (resolvedRoot: string): ServerConfig => ({
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot,
+			});
+			const server = installHandshakeLsp();
+			const aliasOwner = lspClient.createLspClientOwner();
+			const physicalOwner = lspClient.createLspClientOwner();
+			const aliasClient = await lspClient.getOrCreateClient(
+				sharedConfig(aliasNested),
+				tempDir.path(),
+				1_000,
+				undefined,
+				aliasOwner,
+			);
+			await lspClient.getOrCreateClient(sharedConfig(realNested), tempDir.path(), 1_000, undefined, physicalOwner);
+			expect(aliasClient.cwd).toBe(realNested);
+
+			const applied = await lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToLexicalUri(aliasNested),
+							newUri: fileToLexicalUri(destRoot),
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+
+			expect(applied.some(line => line.includes("Renamed"))).toBe(true);
+			expect(fs.existsSync(aliasNested)).toBe(false);
+			expect(fs.existsSync(realNested)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			expect(lspClient.getActiveClients(physicalOwner).some(active => active.cwd === realNested)).toBe(false);
+			expect(lspClient.getActiveClients(aliasOwner).some(active => active.cwd === realNested)).toBe(false);
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("retires a pending alias-only client when a workspace edit moves that symlink", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-pending-symlink-alias-");
 		const initialize = Promise.withResolvers<void>();

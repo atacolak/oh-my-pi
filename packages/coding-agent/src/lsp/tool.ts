@@ -18,6 +18,7 @@ import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
 import {
+	applyAndReconcileWorkspaceEdit,
 	applyWorkspaceEditWithLsp,
 	clearInitializationFailure,
 	clearWorkspaceInitializationFailures,
@@ -32,6 +33,7 @@ import {
 	ownerConfigGeneration,
 	reconcileExecutedChanges,
 	refreshFile,
+	releaseExecutedMovedDirectoryRoots,
 	releaseLspClientOwner,
 	releaseMovedWorkspaceRoots,
 	releaseRemovedWorkspaceRoots as releaseOwnedWorkspaceRoots,
@@ -1594,40 +1596,67 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							break;
 						}
 
-						const appliedAction = await applyCodeAction(selectedAction, {
-							resolveCodeAction: async actionItem =>
-								(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
-							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, workspaceRoots, signal),
-							executeCommand: async commandItem => {
-								await sendRequest(
-									client,
-									"workspace/executeCommand",
-									{
-										command: commandItem.command,
-										arguments: commandItem.arguments ?? [],
-									},
+						let pendingRootRetirement:
+							| {
+									executed: ExecutedWorkspaceChange[];
+									capturedMovedRoots: Array<{ root: string; identity: string }>;
+									cwd: string;
+							  }
+							| undefined;
+						try {
+							const appliedAction = await applyCodeAction(selectedAction, {
+								resolveCodeAction: async actionItem =>
+									(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
+								applyWorkspaceEdit: async edit => {
+									const result = await applyAndReconcileWorkspaceEdit(edit, workspaceRoots, signal);
+									pendingRootRetirement = {
+										executed: result.executed,
+										capturedMovedRoots: result.capturedMovedRoots,
+										cwd: result.cwd,
+									};
+									if (result.error) throw result.error;
+									return result.applied;
+								},
+								executeCommand: async commandItem => {
+									await sendRequest(
+										client,
+										"workspace/executeCommand",
+										{
+											command: commandItem.command,
+											arguments: commandItem.arguments ?? [],
+										},
+										signal,
+									);
+								},
+							});
+
+							if (!appliedAction) {
+								output = `Action "${selectedAction.title}" has no workspace edit or command to apply`;
+								break;
+							}
+
+							const summaryLines: string[] = [];
+							if (appliedAction.edits.length > 0) {
+								summaryLines.push("  Workspace edit:");
+								summaryLines.push(...appliedAction.edits.map(item => `    ${item}`));
+							}
+							if (appliedAction.executedCommands.length > 0) {
+								summaryLines.push("  Executed command(s):");
+								summaryLines.push(...appliedAction.executedCommands.map(commandName => `    ${commandName}`));
+							}
+
+							output = `Applied "${appliedAction.title}":\n${summaryLines.join("\n")}`;
+							break;
+						} finally {
+							if (pendingRootRetirement) {
+								await releaseExecutedMovedDirectoryRoots(
+									pendingRootRetirement.executed,
+									pendingRootRetirement.capturedMovedRoots,
+									pendingRootRetirement.cwd,
 									signal,
 								);
-							},
-						});
-
-						if (!appliedAction) {
-							output = `Action "${selectedAction.title}" has no workspace edit or command to apply`;
-							break;
+							}
 						}
-
-						const summaryLines: string[] = [];
-						if (appliedAction.edits.length > 0) {
-							summaryLines.push("  Workspace edit:");
-							summaryLines.push(...appliedAction.edits.map(item => `    ${item}`));
-						}
-						if (appliedAction.executedCommands.length > 0) {
-							summaryLines.push("  Executed command(s):");
-							summaryLines.push(...appliedAction.executedCommands.map(commandName => `    ${commandName}`));
-						}
-
-						output = `Applied "${appliedAction.title}":\n${summaryLines.join("\n")}`;
-						break;
 					}
 
 					const actionLines = result.map((actionItem, index) => `  ${formatCodeAction(actionItem, index)}`);

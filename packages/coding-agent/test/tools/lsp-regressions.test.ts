@@ -6848,6 +6848,187 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("defers moved-root retirement until after a code-action follow-up command", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-code-action-root-command-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const destRoot = path.join(tempDir.path(), "moved");
+			fs.mkdirSync(nestedRoot);
+			const sourceFile = path.join(nestedRoot, "old.ts");
+			await Bun.write(sourceFile, "export const value = 1;\n");
+			await Bun.write(path.join(nestedRoot, "package.json"), "{}\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				resolvedCommand: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: ["package.json"],
+				resolvedRoot: nestedRoot,
+			};
+			const server = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "textDocument/codeAction") {
+					fake.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								title: "Move nested project",
+								edit: {
+									documentChanges: [
+										{
+											kind: "rename",
+											oldUri: fileToUri(nestedRoot),
+											newUri: fileToUri(destRoot),
+										} satisfies RenameFile,
+									],
+								},
+								command: { title: "Follow-up", command: "nested.followUp" },
+							},
+						],
+					});
+				} else if (message.method === "workspace/executeCommand") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner);
+			expect(client.cwd).toBe(nestedRoot);
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig },
+				definitions: { nested: nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			const result = await tool.execute("code-action-root-command", {
+				action: "code_actions",
+				file: sourceFile,
+				line: 1,
+				query: "Move nested project",
+				apply: true,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "code_actions", success: true });
+			expect(result.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("nested.followUp"),
+			});
+			expect(fs.existsSync(nestedRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			const methods = server.received.map(message => message.method);
+			expect(methods).toContain("workspace/executeCommand");
+			expect(methods).toContain("shutdown");
+			expect(methods.indexOf("workspace/executeCommand")).toBeLessThan(methods.indexOf("shutdown"));
+			expect(lspClient.getActiveClients(owner).some(active => active.cwd === nestedRoot)).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not retire a physical nested client when a workspace edit moves a symlink alias", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-symlink-alias-");
+		try {
+			const realNested = path.join(tempDir.path(), "real-nested");
+			const aliasRoot = path.join(tempDir.path(), "alias-nested");
+			const destRoot = path.join(tempDir.path(), "moved-alias");
+			fs.mkdirSync(realNested);
+			await Bun.write(path.join(realNested, "old.ts"), "export const value = 1;\n");
+			fs.symlinkSync(realNested, aliasRoot);
+			const sharedConfig = (resolvedRoot: string): ServerConfig => ({
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot,
+			});
+			const server = installHandshakeLsp();
+			const aliasOwner = lspClient.createLspClientOwner();
+			const physicalOwner = lspClient.createLspClientOwner();
+			const aliasClient = await lspClient.getOrCreateClient(
+				sharedConfig(aliasRoot),
+				tempDir.path(),
+				1_000,
+				undefined,
+				aliasOwner,
+			);
+			await lspClient.getOrCreateClient(sharedConfig(realNested), tempDir.path(), 1_000, undefined, physicalOwner);
+			expect(aliasClient.cwd).toBe(realNested);
+
+			const applied = await lspClient.applyWorkspaceEditWithLsp(
+				{
+					documentChanges: [
+						{
+							kind: "rename",
+							oldUri: fileToLexicalUri(aliasRoot),
+							newUri: fileToLexicalUri(destRoot),
+						} satisfies RenameFile,
+					],
+				},
+				tempDir.path(),
+			);
+
+			expect(applied.some(line => line.includes("Renamed"))).toBe(true);
+			expect(fs.existsSync(aliasRoot)).toBe(false);
+			expect(fs.existsSync(realNested)).toBe(true);
+			expect(lspClient.getActiveClients(physicalOwner).some(active => active.cwd === realNested)).toBe(true);
+			expect(lspClient.getActiveClients(aliasOwner).some(active => active.cwd === realNested)).toBe(false);
+			expect(server.received.map(message => message.method)).not.toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not await shutdown on the reader after a server-initiated root delete", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-apply-edit-root-unawaited-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			fs.mkdirSync(nestedRoot);
+			await Bun.write(path.join(nestedRoot, "old.ts"), "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner);
+			expect(client.cwd).toBe(nestedRoot);
+
+			server.send({
+				jsonrpc: "2.0",
+				id: 9202,
+				method: "workspace/applyEdit",
+				params: {
+					edit: {
+						documentChanges: [
+							{
+								kind: "delete",
+								uri: fileToUri(nestedRoot),
+								options: { recursive: true },
+							} satisfies DeleteFile,
+						],
+					},
+				},
+			});
+
+			const applied = await server.waitFor(message => message.id === 9202 && message.method === undefined);
+			expect(applied.result).toEqual({ applied: true });
+			await server.waitFor(message => message.method === "shutdown");
+			expect(server.killed).toBe(false);
+			expect(lspClient.getActiveClients(owner).some(active => active.cwd === nestedRoot)).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("rename_file still notifies a nested client kept alive by an overlapping session", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-rename-root-shared-");
 		try {

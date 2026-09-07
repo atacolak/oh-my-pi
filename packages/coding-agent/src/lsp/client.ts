@@ -304,7 +304,9 @@ export async function releaseUncoveredWorkspaceRoots(
  * the alias moves `movedRoot` no longer resolves to that identity, so failure
  * cache lookup still needs the pre-move root. When `owner` is omitted, every
  * session's matching client is retired — workspace edits do not send
- * `didRenameFiles` to overlapping owners.
+ * `didRenameFiles` to overlapping owners. A moved directory symlink is an
+ * exception: only owners routed through that alias are released, so a session
+ * using the unchanged physical target keeps its live client.
  */
 export async function releaseMovedWorkspaceRoots(
 	sessionCwd: string,
@@ -313,11 +315,17 @@ export async function releaseMovedWorkspaceRoots(
 	signal?: AbortSignal,
 	movedRootIdentity = movedRoot,
 ): Promise<string[]> {
-	const roots = [path.resolve(movedRoot)];
+	const lexical = path.resolve(movedRoot);
 	const equivalent = path.resolve(movedRootIdentity);
-	if (!roots.includes(equivalent)) roots.push(equivalent);
+	const symlinkAlias = lexical !== equivalent;
+	if (!owner && symlinkAlias) {
+		return await releaseMovedSymlinkAlias(lexical, signal);
+	}
+	const roots = [lexical];
+	if (!symlinkAlias && !roots.includes(equivalent)) roots.push(equivalent);
+	const contains = symlinkAlias ? isLexicallyWithin : workspaceContainsPath;
 	try {
-		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner);
+		const stopped = await shutdownStaleClients(sessionCwd, [], signal, roots, owner, undefined, contains);
 		clearWorkspaceInitializationFailures(roots, owner);
 		return stopped;
 	} catch (error) {
@@ -330,7 +338,7 @@ export async function releaseMovedWorkspaceRoots(
 					: pending
 						? clientWorkspaceCwds(key, pending, owner)
 						: Array.from(ownerClientRoots.get(owner)?.get(key) ?? []);
-				if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd)))) {
+				if (cwds.length > 0 && !roots.some(root => cwds.some(cwd => contains(root, cwd)))) {
 					continue;
 				}
 				releaseClientOwnerKey(key, owner);
@@ -339,6 +347,52 @@ export async function releaseMovedWorkspaceRoots(
 		clearWorkspaceInitializationFailures(roots, owner);
 		throw error;
 	}
+}
+
+/** Drop owners routed through a vanished directory symlink without tearing down
+ *  sessions that still reach the same physical client through another path. */
+async function releaseMovedSymlinkAlias(movedRoot: string, signal?: AbortSignal): Promise<string[]> {
+	const staleKeys = new Set<string>();
+	const pruneOwner = (key: string, item: LspClientOwner): void => {
+		const routes = ownerClientRoots.get(item)?.get(key);
+		if (!routes) return;
+		let moved = false;
+		for (const route of Array.from(routes)) {
+			if (!isLexicallyWithin(movedRoot, route)) continue;
+			routes.delete(route);
+			moved = true;
+		}
+		if (!moved) return;
+		staleKeys.add(key);
+		if (routes.size === 0) releaseClientOwnerKey(key, item);
+	};
+	for (const [key, owners] of clientOwners) {
+		for (const item of Array.from(owners)) pruneOwner(key, item);
+	}
+	for (const [key, pending] of clientLocks) {
+		for (const item of Array.from(pending.owners)) pruneOwner(key, item);
+	}
+	const stopped: string[] = [];
+	for (const key of staleKeys) {
+		if (clientOwners.has(key) || (clientLocks.get(key)?.owners.size ?? 0) > 0) continue;
+		const live = clients.get(key);
+		if (live) {
+			if (await shutdownClientInstance(live)) stopped.push(live.config.command);
+			continue;
+		}
+		const pending = clientLocks.get(key);
+		if (!pending) continue;
+		try {
+			await untilAborted(signal, pending.promise);
+		} catch {
+			throwIfAborted(signal);
+		}
+		const started = clients.get(key);
+		if (started && !clientOwners.has(key) && (await shutdownClientInstance(started))) {
+			stopped.push(started.config.command);
+		}
+	}
+	return stopped;
 }
 
 /** Release all client identities associated with a disposed tool session. */
@@ -820,9 +874,21 @@ async function handleApplyEditRequest(client: LspClient, message: LspJsonRpcRequ
 		return;
 	}
 	try {
-		const { executed, capturedMovedRoots, cwd } = await applyAndReconcileWorkspaceEdit(params.edit, client.cwd);
-		await sendResponse(client, message.id, { applied: true }, "workspace/applyEdit");
-		await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd);
+		const result = await applyAndReconcileWorkspaceEdit(params.edit, client.cwd);
+		if (result.error) {
+			await sendResponse(
+				client,
+				message.id,
+				{ applied: false, failureReason: String(result.error) },
+				"workspace/applyEdit",
+			);
+		} else {
+			await sendResponse(client, message.id, { applied: true }, "workspace/applyEdit");
+		}
+		// Retirement sends `shutdown` and waits for the reply. That reply can only
+		// be read after this handler returns to `startMessageReader()`, so do not
+		// await teardown here.
+		void releaseExecutedMovedDirectoryRoots(result.executed, result.capturedMovedRoots, result.cwd);
 	} catch (err) {
 		await sendResponse(client, message.id, { applied: false, failureReason: String(err) }, "workspace/applyEdit");
 	}
@@ -923,7 +989,7 @@ function executedMovedDirectoryRoots(
 	return captured.filter(item => executedPaths.has(path.resolve(item.root)));
 }
 
-async function releaseExecutedMovedDirectoryRoots(
+export async function releaseExecutedMovedDirectoryRoots(
 	executed: ExecutedWorkspaceChange[],
 	captured: ReadonlyArray<{ root: string; identity: string }>,
 	sessionCwd: string,
@@ -1015,12 +1081,17 @@ export async function applyWorkspaceEditWithLsp(
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
 ): Promise<string[]> {
-	const { applied, executed, capturedMovedRoots, cwd } = await applyAndReconcileWorkspaceEdit(edit, workspace, signal);
+	const { applied, executed, capturedMovedRoots, cwd, error } = await applyAndReconcileWorkspaceEdit(
+		edit,
+		workspace,
+		signal,
+	);
 	await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd, signal);
+	if (error) throw error;
 	return applied;
 }
 
-async function applyAndReconcileWorkspaceEdit(
+export async function applyAndReconcileWorkspaceEdit(
 	edit: WorkspaceEdit,
 	workspace: string | readonly string[],
 	signal?: AbortSignal,
@@ -1029,12 +1100,13 @@ async function applyAndReconcileWorkspaceEdit(
 	executed: ExecutedWorkspaceChange[];
 	capturedMovedRoots: Array<{ root: string; identity: string }>;
 	cwd: string;
+	error?: unknown;
 }> {
 	const workspaceRoots = (typeof workspace === "string" ? [workspace] : workspace).map(root => path.resolve(root));
 	const cwd = workspaceRoots[0] ?? path.resolve(".");
 	const capturedMovedRoots = await captureMovedDirectoryRoots(edit);
 	const executed: ExecutedWorkspaceChange[] = [];
-	let applied: string[];
+	let applied: string[] = [];
 	try {
 		({ applied } = await applyWorkspaceEdit(edit, cwd, change => executed.push(change)));
 	} catch (err) {
@@ -1047,8 +1119,7 @@ async function applyAndReconcileWorkspaceEdit(
 				error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
 			});
 		}
-		await releaseExecutedMovedDirectoryRoots(executed, capturedMovedRoots, cwd, signal);
-		throw err;
+		return { applied, executed, capturedMovedRoots, cwd, error: err };
 	}
 	await reconcileExecutedChanges(executed, workspaceRoots, signal);
 	return { applied, executed, capturedMovedRoots, cwd };
@@ -1341,14 +1412,15 @@ export function shutdownStaleClients(
 	workspaceRoots: readonly string[] = [cwd],
 	owner?: LspClientOwner,
 	retainClient?: (clientCwd: string) => boolean,
+	contains: (root: string, cwd: string) => boolean = workspaceContainsPath,
 ): Promise<string[]> {
 	const fresh = new Set(configs.map(config => clientKey(config, config.resolvedRoot ?? cwd)));
 	const roots = workspaceRoots.map(root => path.resolve(root));
 	const isRelevant = (key: string, entry: { cwd: string; config: ServerConfig }) => {
 		const cwds = clientWorkspaceCwds(key, entry, owner);
 		return (
-			roots.some(root => cwds.some(cwd => workspaceContainsPath(root, cwd))) &&
-			!cwds.some(cwd => retainClient?.(cwd))
+			roots.some(root => cwds.some(clientCwd => contains(root, clientCwd))) &&
+			!cwds.some(clientCwd => retainClient?.(clientCwd))
 		);
 	};
 	const collectRelevantEntries = () => {
@@ -1546,8 +1618,7 @@ export function shutdownStaleClients(
 			for (const key of unownedStaleKeys) initFailures.delete(key);
 
 			const stale = Array.from(clients.entries()).filter(
-				([key, client]) =>
-					unownedStaleKeys.has(key) && roots.some(root => clientIsInsideWorkspace(key, client, root, owner)),
+				([key, client]) => unownedStaleKeys.has(key) && isRelevant(key, client),
 			);
 			const results = await Promise.all(stale.map(([, client]) => shutdownClientInstance(client)));
 			const failed = stale.filter((_entry, index) => results[index] !== true);

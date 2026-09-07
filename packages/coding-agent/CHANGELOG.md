@@ -5,6 +5,9 @@
 ### Fixed
 
 - Fixed code-action, rename, and server-initiated workspace edits leaving a nested language-server process initialized at a directory that was itself moved or recursively deleted, so a later operation under the destination no longer kept the vanished-root server running.
+- Fixed code actions that both move a nested project root and run a follow-up command shutting the language server down before that command, so the command still runs against the live client.
+- Fixed workspace edits that rename or delete a directory symlink shutting down another session's language server at the unchanged physical target.
+- Fixed server-initiated workspace edits that remove their own nested root waiting for a shutdown reply the message reader could not consume, so graceful teardown no longer times out and force-kills the process.
 - Fixed `shutdownAll()` resetting owner reload generations while captured language-server configs kept their pre-shutdown stamps, so a later `lsp reload *` no longer started obsolete command, args, or settings.
 - Fixed `/remove-dir` dropping the last owner route for a language-server client acquired only through an extra-root symlink of a remaining workspace, so `lsp status` and later reload still report that retained client from the canonical cwd.
 - Fixed `lsp status` interpolating unsanitized nested server labels, so a fallback command path no longer leaks the home directory or breaks TUI rendering.

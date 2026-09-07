@@ -66,6 +66,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
+import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
@@ -4344,6 +4345,48 @@ describe("lsp regressions", () => {
 				textDocument: { uri: fileToUri(additionalFile) },
 				contentChanges: [{ text: "export const extra = 2;\n" }],
 			});
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("native edit delete notifies additional-workspace clients", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-add-dir-native-edit-delete-");
+		try {
+			const primaryRoot = path.join(tempDir.path(), "primary");
+			const additionalRoot = path.join(tempDir.path(), "extra");
+			fs.mkdirSync(primaryRoot);
+			fs.mkdirSync(additionalRoot);
+			const additionalFile = path.join(additionalRoot, "extra.ts");
+			await Bun.write(additionalFile, "export const extra = 1;\n");
+			const notify = vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: primaryRoot,
+				additionalDirectories: [additionalRoot],
+				enableLsp: true,
+				hasUI: false,
+				settings: lspTestSettings,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				getArtifactsDir: () => null,
+				getSessionId: () => null,
+			} as ToolSession;
+
+			const result = await new EditTool(session, "patch").execute("delete-extra", {
+				path: additionalFile,
+				edits: [{ op: "delete" }],
+			});
+			expect(result.isError).toBeFalsy();
+			expect(notify).toHaveBeenCalled();
+			const roots = notify.mock.calls[0]?.[0];
+			expect(Array.isArray(roots) ? roots.map(root => path.resolve(root)) : [path.resolve(String(roots))]).toEqual([
+				path.resolve(primaryRoot),
+				path.resolve(additionalRoot),
+			]);
+			expect(notify.mock.calls[0]?.[1]).toEqual([
+				{ filePath: additionalFile, type: lspClient.FileChangeType.Deleted },
+			]);
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

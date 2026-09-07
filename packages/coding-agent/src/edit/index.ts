@@ -34,6 +34,7 @@ import {
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../lsp/client";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
+import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import type { ToolSession } from "../tools";
 import { routeWriteThroughBridge } from "../tools/acp-bridge";
 import { truncateForPrompt } from "../tools/approval";
@@ -578,7 +579,7 @@ export class EditTool implements AgentTool<TInput> {
 			await deleteFileWithFallback(request.path, Bun.file(request.path));
 			if (this.session.enableLsp ?? true) {
 				await notifyWorkspaceWatchedFiles(
-					this.session.cwd,
+					sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 					[{ filePath: request.path, type: FileChangeType.Deleted }],
 					signal,
 				);
@@ -608,7 +609,7 @@ export class EditTool implements AgentTool<TInput> {
 			await deleteFileWithFallback(request.path, Bun.file(request.path));
 			if (this.session.enableLsp ?? true) {
 				await notifyWorkspaceWatchedFiles(
-					this.session.cwd,
+					sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 					[
 						{ filePath: request.path, type: FileChangeType.Deleted },
 						{ filePath: request.moveTo, type: FileChangeType.Created },

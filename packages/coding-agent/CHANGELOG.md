@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed native edit move and delete notifying language servers from session cwd only, so an extra-root nested client still receives watched-file events.
 - Fixed workspace edits that overwrite a still-initializing destination leaving that client key permanently tombstoned, so a replacement language server can start for the new project.
 - Fixed interactive `!cd` skipping deferred language-server owner cleanup, so a later command still runs in the new directory and uncovered roots are released after the cwd change commits.
 - Fixed workspace edits that overwrite the originating language server's project root skipping overlay refresh on that unpublished client, so a follow-up command still sees the committed documents.

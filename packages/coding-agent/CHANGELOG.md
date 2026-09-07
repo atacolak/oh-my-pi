@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Fixed `/move` shutting down a still-covered language server after a rolled-back cwd change or equivalent workspace-alias move, so only extra-root identities absent from the new session catalog are retired.
+- Fixed `lsp reload *` crashing or re-reading language-server config for idle-timeout peeks, so a newly written `.omp/lsp.json` is observed once and missing cached config is treated as no timeout.
+- Fixed `lsp status` reporting a reused language server as not started after `reload *` changed only `fileTypes`, so the live client keeps the catalog's routing metadata instead of appearing twice.
+- Fixed `/move` keeping a previous session cwd in extra-root idle-timeout origins, so a nested client covered by a retained additional workspace uses the settled session timeout instead of the old cwd's shorter timeout.
+- Fixed `/move` leaving extra-root language servers running under the previous session's command, args, or settings when the new cwd's catalog differs, so the next operation under that extra root starts the current identity instead of leaking the old process.
+- Fixed code actions skipping `workspace/executeCommand` when overlay reconciliation fails after the filesystem edit already committed, so the originating server still runs its follow-up command.
+- Fixed language-server idle timeout lookup pinning the session catalog on first nested spawn, so a later `rename_file` still sees the current server config instead of an empty cached snapshot.
+- Fixed nested language-server clients ignoring a session-cwd idle timeout, so a nested process still shuts down after inactivity when only the session config sets `idleTimeoutMs`.
+- Fixed nested language-server idle timeouts leaking from unsuccessful probes or failed starts, and dropping after a shutdown that the process survived, so a later session is not reaped with another workspace's timeout and a surviving nested process still inherits the session idle timeout.
 - Fixed server-initiated workspace edits reporting `applied: false` after the filesystem mutation already committed when overlay reconciliation later failed, so the requesting language server is not told to retry an already-applied edit.
 - Fixed workspace edits that unpublish an overwrite-destination language server skipping watched-file notifications to that still-live client, so a follow-up command still sees files it did not have open.
 - Fixed edit language-server writethrough using construction-time cwd and omitting extra-root directories and session ownership, so `/move`, `!cd`, and `--add-dir` still bound nested format and diagnostics.

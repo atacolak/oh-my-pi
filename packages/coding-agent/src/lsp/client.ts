@@ -17,7 +17,7 @@ import {
 	workspaceRootForPath,
 } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
-import { getConfig } from "./config";
+import { configCache, loadConfig, type LspConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
 import { connectSharedLspTransport } from "./mux/daemon";
@@ -126,11 +126,15 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	const byKey = ownerClientRoots.get(owner);
 	byKey?.delete(key);
 	if (byKey?.size === 0) ownerClientRoots.delete(owner);
+	forgetIdleTimeoutOwner(key, owner);
 	return !clientOwners.has(key);
 }
 function dropClientOwnership(key: string): void {
 	const owners = clientOwners.get(key);
-	if (!owners) return;
+	if (!owners) {
+		dropIdleTimeoutOrigins(key);
+		return;
+	}
 	for (const owner of owners) {
 		const keys = ownerClientKeys.get(owner);
 		keys?.delete(key);
@@ -140,20 +144,51 @@ function dropClientOwnership(key: string): void {
 		if (byKey?.size === 0) ownerClientRoots.delete(owner);
 	}
 	clientOwners.delete(key);
+	dropIdleTimeoutOrigins(key);
 }
+
+const OWNERLESS_IDLE_ORIGIN: unique symbol = Symbol("ownerless-idle-origin");
+type IdleOriginOwner = LspClientOwner | typeof OWNERLESS_IDLE_ORIGIN;
 
 interface UnpublishedClientOwnership {
 	owners: LspClientOwner[];
 	roots: Map<LspClientOwner, string[]>;
+	idleOrigins: Map<IdleOriginOwner, string[]>;
 }
 
 const unpublishedClientOwnership = new WeakMap<LspClient, UnpublishedClientOwnership>();
+
+function snapshotIdleTimeoutOrigins(key: string): Map<IdleOriginOwner, string[]> {
+	const origins = clientIdleTimeoutOrigins.get(key);
+	if (!origins) return new Map();
+	return new Map(Array.from(origins, ([owner, cwds]) => [owner, Array.from(cwds)]));
+}
+
+function restoreIdleTimeoutOrigins(key: string, snapshot: Map<IdleOriginOwner, string[]>): void {
+	if (snapshot.size === 0) {
+		clientIdleTimeoutOrigins.delete(key);
+		return;
+	}
+	clientIdleTimeoutOrigins.set(key, new Map(Array.from(snapshot, ([owner, cwds]) => [owner, new Set(cwds)])));
+}
+
+function dropIdleTimeoutOrigins(key: string): void {
+	clientIdleTimeoutOrigins.delete(key);
+}
+
+function forgetIdleTimeoutOwner(key: string, owner: LspClientOwner): void {
+	const origins = clientIdleTimeoutOrigins.get(key);
+	if (!origins) return;
+	origins.delete(owner);
+	if (origins.size === 0) clientIdleTimeoutOrigins.delete(key);
+}
 
 function snapshotClientOwnership(key: string): UnpublishedClientOwnership {
 	const owners = Array.from(clientOwners.get(key) ?? []);
 	return {
 		owners,
 		roots: new Map(owners.map(owner => [owner, Array.from(ownerClientRoots.get(owner)?.get(key) ?? [])])),
+		idleOrigins: snapshotIdleTimeoutOrigins(key),
 	};
 }
 
@@ -291,6 +326,10 @@ function pruneUncoveredOwnerRoots(
  * workspaces do not contain lexically. `releaseRemovedWorkspaceRoots()`
  * keeps those clients running and rebinds owner routes onto a remaining
  * spelling; otherwise status and reload keep the vanished alias.
+ *
+ * Retained extra-root clients rebind idle-timeout origins to the settled
+ * workspace and retire identities absent from the new session catalog, so a
+ * previous cwd timeout or command/args/settings cannot leak onto the move.
  */
 export async function releaseUncoveredWorkspaceRoots(
 	previousWorkspaceRoots: readonly string[],
@@ -315,6 +354,8 @@ export async function releaseUncoveredWorkspaceRoots(
 			});
 		}
 	}
+	rebindIdleTimeoutOrigins(owner, remainingResolved);
+	await retireRetainedClientsAbsentFromSessionConfig(remainingCwd, remainingResolved, owner, signal);
 }
 
 /**
@@ -478,6 +519,8 @@ const READER_EXIT_GRACE_MS = 100;
 let idleTimeoutMs: number | null = null;
 let idleCheckInterval: NodeJS.Timeout | null = null;
 const IDLE_CHECK_INTERVAL_MS = 60 * 1000;
+/** Live-acquisition session/request cwds whose config may supply idleTimeoutMs after nested-root rewrite. */
+const clientIdleTimeoutOrigins = new Map<string, Map<IdleOriginOwner, Set<string>>>();
 
 // Broker-shared server mode (one language server per project shared by every
 // omp instance through the LSP mux daemon). Off by default so embedders and
@@ -492,12 +535,106 @@ export function setSharedLspEnabled(enabled: boolean): void {
 
 /**
  * Configure the global fallback idle timeout for LSP clients (used in tests/overrides).
- * When unset, each client evaluates against its workspace config (`getConfig(client.cwd).idleTimeoutMs`).
+ * When unset, each client evaluates against its spawn cwd and any originating
+ * session/request cwds recorded before nested-root rewrite.
  * @param ms - Timeout in milliseconds, or null/undefined to disable global override
  */
 export function setIdleTimeout(ms: number | null | undefined): void {
 	idleTimeoutMs = ms ?? null;
 	reconcileIdleChecker();
+}
+
+function rebindIdleTimeoutOrigins(owner: LspClientOwner, cwds: readonly string[]): void {
+	const rebound = new Set(cwds.map(cwd => path.resolve(cwd)));
+	for (const origins of clientIdleTimeoutOrigins.values()) {
+		if (!origins.has(owner)) continue;
+		origins.set(owner, new Set(rebound));
+	}
+	reconcileIdleChecker();
+}
+
+function peekCachedConfig(cwd: string): LspConfig | undefined {
+	return configCache.get(cwd) ?? configCache.get(path.resolve(cwd));
+}
+
+function sessionCatalogConfigs(cwd: string): ServerConfig[] {
+	const catalog = peekCachedConfig(cwd) ?? loadConfig(cwd);
+	if (!catalog) return [];
+	return Object.values(catalog.definitions ?? catalog.servers);
+}
+
+async function retireRetainedClientsAbsentFromSessionConfig(
+	remainingCwd: string,
+	remainingWorkspaceRoots: readonly string[],
+	owner: LspClientOwner,
+	signal?: AbortSignal,
+): Promise<void> {
+	const extraRemaining = remainingWorkspaceRoots.filter(
+		root => !(workspaceContainsPath(remainingCwd, root) && workspaceContainsPath(root, remainingCwd)),
+	);
+	if (extraRemaining.length === 0) return;
+	const catalog = sessionCatalogConfigs(remainingCwd);
+	const freshConfigs: ServerConfig[] = [];
+	const consider = (key: string, entry: { cwd: string; config: ServerConfig }): void => {
+		const owners = clientOwners.get(key);
+		if (!owners?.has(owner) && clientLocks.get(key)?.owners.has(owner) !== true) return;
+		const cwds = clientWorkspaceCwds(key, entry, owner);
+		if (!extraRemaining.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
+			return;
+		}
+		const match = catalog.find(definition => clientKey(definition, entry.cwd) === key);
+		if (match) freshConfigs.push({ ...match, resolvedRoot: entry.cwd });
+	};
+	for (const [key, client] of clients) consider(key, client);
+	for (const [key, pending] of clientLocks) consider(key, pending);
+	await shutdownStaleClients(remainingCwd, freshConfigs, signal, extraRemaining, owner, () => false);
+}
+
+function rememberIdleTimeoutOrigins(key: string, owner: LspClientOwner | undefined, ...cwds: string[]): void {
+	const originOwner: IdleOriginOwner = owner ?? OWNERLESS_IDLE_ORIGIN;
+	let origins = clientIdleTimeoutOrigins.get(key);
+	if (!origins) {
+		origins = new Map();
+		clientIdleTimeoutOrigins.set(key, origins);
+	}
+	let cwdsForOwner = origins.get(originOwner);
+	if (!cwdsForOwner) {
+		cwdsForOwner = new Set();
+		origins.set(originOwner, cwdsForOwner);
+	}
+	for (const cwd of cwds) cwdsForOwner.add(path.resolve(cwd));
+}
+
+function configuredIdleTimeoutMs(cwd: string): number | undefined {
+	const timeoutMs = peekCachedConfig(cwd)?.idleTimeoutMs;
+	return timeoutMs && timeoutMs > 0 ? timeoutMs : undefined;
+}
+
+function idleTimeoutOriginCwds(client: LspClient): string[] {
+	const cwds = new Set<string>([client.cwd]);
+	const origins = clientIdleTimeoutOrigins.get(client.name);
+	if (!origins) return Array.from(cwds);
+	const owners = clientOwners.get(client.name);
+	if (owners && owners.size > 0) {
+		for (const owner of owners) {
+			const ownerCwds = origins.get(owner);
+			if (ownerCwds) for (const cwd of ownerCwds) cwds.add(cwd);
+		}
+	}
+	const ownerless = origins.get(OWNERLESS_IDLE_ORIGIN);
+	if (ownerless) for (const cwd of ownerless) cwds.add(cwd);
+	return Array.from(cwds);
+}
+
+function idleTimeoutForClient(client: LspClient): number | undefined {
+	if (idleTimeoutMs && idleTimeoutMs > 0) return idleTimeoutMs;
+	let found: number | undefined;
+	for (const cwd of idleTimeoutOriginCwds(client)) {
+		const timeoutMs = configuredIdleTimeoutMs(cwd);
+		if (timeoutMs === undefined) continue;
+		found = found === undefined ? timeoutMs : Math.min(found, timeoutMs);
+	}
+	return found;
 }
 
 /**
@@ -521,13 +658,9 @@ export function isIdleClient(client: LspClient, now: number, timeoutMs: number):
 
 function hasConfiguredIdleTimeout(client?: LspClient): boolean {
 	if (idleTimeoutMs && idleTimeoutMs > 0) return true;
-	if (client) {
-		const timeoutMs = getConfig(client.cwd).idleTimeoutMs;
-		if (timeoutMs && timeoutMs > 0) return true;
-	}
+	if (client && idleTimeoutForClient(client)) return true;
 	for (const c of clients.values()) {
-		const timeoutMs = getConfig(c.cwd).idleTimeoutMs;
-		if (timeoutMs && timeoutMs > 0) return true;
+		if (idleTimeoutForClient(c)) return true;
 	}
 	return false;
 }
@@ -572,7 +705,7 @@ function maybeStopIdleChecker(): void {
 export async function checkIdleClients(): Promise<void> {
 	const now = Date.now();
 	for (const [key, client] of Array.from(clients.entries())) {
-		const timeoutMs = idleTimeoutMs ?? getConfig(client.cwd).idleTimeoutMs;
+		const timeoutMs = idleTimeoutForClient(client);
 		if (timeoutMs && timeoutMs > 0 && isIdleClient(client, now, timeoutMs)) {
 			await shutdownClient(key);
 		}
@@ -1709,6 +1842,15 @@ function clientKey(config: ServerConfig, cwd: string): string {
 	return `${canonicalSpawnCommand(config)}:${resolveEquivalentPath(cwd)}:${identity}`;
 }
 
+/**
+ * `clientKey()` omits routing-only fields such as `fileTypes` so a process is
+ * reused when only those change. Copy them onto the live client so status and
+ * later file matching follow the catalog that acquired this identity.
+ */
+function refreshReusableClientRouting(entry: { config: ServerConfig }, config: ServerConfig): void {
+	entry.config.fileTypes = config.fileTypes;
+}
+
 function clientServerRootKey(config: ServerConfig, cwd: string): string {
 	return `${canonicalSpawnCommand(config)}:${resolveEquivalentPath(cwd)}`;
 }
@@ -1754,6 +1896,13 @@ export function shutdownStaleClients(
 		return { relevantPending: nextPending, relevantClients: nextClients };
 	};
 	let { relevantPending, relevantClients } = collectRelevantEntries();
+	const refreshFreshRouting = (key: string, entry: { cwd: string; config: ServerConfig }): void => {
+		if (!fresh.has(key)) return;
+		const match = configs.find(definition => clientKey(definition, definition.resolvedRoot ?? cwd) === key);
+		if (match) refreshReusableClientRouting(entry, match);
+	};
+	for (const [key, pending] of relevantPending) refreshFreshRouting(key, pending);
+	for (const [key, client] of relevantClients) refreshFreshRouting(key, client);
 	const staleOwnedKeys = new Set([
 		...relevantPending.filter(([key]) => !fresh.has(key)).map(([key]) => key),
 		...relevantClients.filter(([key]) => !fresh.has(key)).map(([key]) => key),
@@ -2126,10 +2275,15 @@ export async function getOrCreateClient(
 	owner?: LspClientOwner,
 ): Promise<LspClient> {
 	stampOwnerConfigGeneration(config, owner);
+	const originCwd = path.resolve(cwd);
 	const routedRoot = config.resolvedRoot ?? cwd;
 	cwd = resolveEquivalentPath(routedRoot);
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
+	const rememberAcquiredIdleTimeout = (client?: LspClient): void => {
+		rememberIdleTimeoutOrigins(key, owner, originCwd, cwd);
+		if (client) maybeStartIdleChecker(client);
+	};
 	// Check if client already exists
 	const existingClient = clients.get(key);
 	if (
@@ -2139,7 +2293,8 @@ export async function getOrCreateClient(
 	) {
 		registerClientOwner(key, owner, routedRoot);
 		existingClient.lastActivity = Date.now();
-		maybeStartIdleChecker(existingClient);
+		refreshReusableClientRouting(existingClient, config);
+		rememberAcquiredIdleTimeout(existingClient);
 		return existingClient;
 	}
 
@@ -2149,7 +2304,10 @@ export async function getOrCreateClient(
 		registerClientOwner(key, owner, routedRoot);
 		if (owner) existingLock.owners.add(owner);
 		try {
-			return await existingLock.promise;
+			const client = await existingLock.promise;
+			refreshReusableClientRouting(client, config);
+			rememberAcquiredIdleTimeout(client);
+			return client;
 		} catch (error) {
 			releaseOwnerIfUnpublished(key, owner);
 			throw error;
@@ -2195,7 +2353,7 @@ export async function getOrCreateClient(
 		) {
 			registerClientOwner(key, owner, routedRoot);
 			clientAfterReload.lastActivity = Date.now();
-			maybeStartIdleChecker(clientAfterReload);
+			rememberAcquiredIdleTimeout(clientAfterReload);
 			return clientAfterReload;
 		}
 		const lockAfterReload = clientLocks.get(key);
@@ -2203,7 +2361,9 @@ export async function getOrCreateClient(
 			registerClientOwner(key, owner, routedRoot);
 			if (owner) lockAfterReload.owners.add(owner);
 			try {
-				return await lockAfterReload.promise;
+				const client = await lockAfterReload.promise;
+				rememberAcquiredIdleTimeout(client);
+				return client;
 			} catch (error) {
 				releaseOwnerIfUnpublished(key, owner);
 				throw error;
@@ -2359,7 +2519,7 @@ export async function getOrCreateClient(
 				throw new Error(`LSP configuration was superseded during initialization: ${config.command}`);
 			}
 			clients.set(key, client);
-			maybeStartIdleChecker(client);
+			rememberAcquiredIdleTimeout(client);
 			initFailures.delete(key);
 			return client;
 		} catch (err) {
@@ -2408,16 +2568,22 @@ export async function getActiveOrPendingClient(
 	signal?: AbortSignal,
 	owner?: LspClientOwner,
 ): Promise<LspClient | undefined> {
+	const originCwd = path.resolve(cwd);
 	const routedRoot = config.resolvedRoot ?? cwd;
 	stampOwnerConfigGeneration(config, owner);
 	cwd = resolveEquivalentPath(routedRoot);
 	throwIfAborted(signal);
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
+	const rememberAcquiredIdleTimeout = (acquired: LspClient): void => {
+		rememberIdleTimeoutOrigins(key, owner, originCwd, cwd);
+		maybeStartIdleChecker(acquired);
+	};
 	const client = clients.get(key);
 	if (client && canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)) {
 		registerClientOwner(key, owner, routedRoot);
 		client.lastActivity = Date.now();
+		rememberAcquiredIdleTimeout(client);
 		return client;
 	}
 
@@ -2426,7 +2592,9 @@ export async function getActiveOrPendingClient(
 	registerClientOwner(key, owner, routedRoot);
 	if (owner) pending.owners.add(owner);
 	try {
-		return await untilAborted(signal, pending.promise);
+		const acquired = await untilAborted(signal, pending.promise);
+		rememberAcquiredIdleTimeout(acquired);
+		return acquired;
 	} catch {
 		releaseOwnerIfUnpublished(key, owner);
 		throwIfAborted(signal);
@@ -2820,6 +2988,7 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 		unpublishedClientOwnership.delete(client);
 		if (!clients.has(client.name)) {
 			clients.set(client.name, client);
+			if (snapshot) restoreIdleTimeoutOrigins(client.name, snapshot.idleOrigins);
 			for (const owner of previousOwners) registerClientOwner(client.name, owner, previousOwnerRoots.get(owner));
 			maybeStartIdleChecker(client);
 		}

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `rename_file` skipping language-server retirement when overlay reconciliation fails after a nested project directory has already moved.
 - Fixed workspace edits that overwrite an existing nested project directory leaving that destination's language server published at the displaced inode.
 - Fixed workspace edits that successfully move or delete a nested project root skipping language-server retirement when overlay reconciliation later fails.
 - Fixed workspace edits that rename an ordinary nested directory through a symlink parent leaving another session's language server published at the vanished physical path.

@@ -914,14 +914,25 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				oldUri: fileToUri(source, workspaceRootForPath(source, sessionWorkspace) ?? workspaceRoots[0]),
 				newUri: fileToUri(dest, workspaceRootForPath(dest, sessionWorkspace) ?? workspaceRoots[0]),
 			});
-			await reconcileExecutedChanges(executed, workspaceRoots, signal);
+			let reconcileError: unknown;
+			try {
+				await reconcileExecutedChanges(executed, workspaceRoots, signal);
+			} catch (error) {
+				reconcileError = error;
+				logger.warn("LSP overlay reconciliation after rename failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 			if (sourceStat.isDirectory()) {
 				try {
+					// Retirement is post-commit cleanup. Overlay notify can abort the
+					// tool signal after the filesystem rename already happened; do not
+					// inherit that deadline or skip teardown when reconcile throws.
 					await releaseMovedWorkspaceRoots(
 						this.session.cwd,
 						source,
 						this.#clientOwner,
-						signal,
+						undefined,
 						movedRootIdentity,
 						sourceLeaf.isSymbolicLink(),
 					);
@@ -932,6 +943,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					});
 				}
 			}
+			if (reconcileError) throw reconcileError;
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			const survivingConfigs = new Set<ServerConfig>();

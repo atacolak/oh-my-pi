@@ -40,6 +40,7 @@ import {
 	type LspServerStatus,
 	ownerConfigGeneration,
 	reconcileExecutedChanges,
+	reconcileIdleChecker,
 	refreshFile,
 	releaseExecutedMovedDirectoryRoots,
 	releaseLspClientOwner,
@@ -52,7 +53,7 @@ import {
 	waitForProjectLoaded,
 } from "./client";
 import { getLinterClient } from "./clients";
-import { getServersForFile } from "./config";
+import { configCache, getConfig, getServersForFile } from "./config";
 import {
 	BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	formatLocationWithContext,
@@ -79,8 +80,6 @@ import {
 } from "./edits";
 import { detectLspmux } from "./lspmux";
 import {
-	configCache,
-	getConfig,
 	getLspServerForFile,
 	getLspServers,
 	getLspServersForFile,
@@ -1347,6 +1346,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// the process lifetime (#3546).
 			configCache.delete(this.session.cwd);
 			const refreshedConfig = getConfig(this.session.cwd);
+			reconcileIdleChecker();
 			const servers = getLspServers(refreshedConfig);
 			// Identity-aware client keys make a changed server resolve to a fresh
 			// client below, but the process spawned from the superseded config

@@ -17,6 +17,7 @@ import {
 	workspaceRootForPath,
 } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
+import { getConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
 import { connectSharedLspTransport } from "./mux/daemon";
@@ -474,17 +475,13 @@ export function setSharedLspEnabled(enabled: boolean): void {
 }
 
 /**
- * Configure the idle timeout for LSP clients.
- * @param ms - Timeout in milliseconds, or null/undefined to disable
+ * Configure the global fallback idle timeout for LSP clients (used in tests/overrides).
+ * When unset, each client evaluates against its workspace config (`getConfig(client.cwd).idleTimeoutMs`).
+ * @param ms - Timeout in milliseconds, or null/undefined to disable global override
  */
 export function setIdleTimeout(ms: number | null | undefined): void {
 	idleTimeoutMs = ms ?? null;
-
-	if (idleTimeoutMs && idleTimeoutMs > 0) {
-		startIdleChecker();
-	} else {
-		stopIdleChecker();
-	}
+	reconcileIdleChecker();
 }
 
 /**
@@ -506,16 +503,70 @@ export function isIdleClient(client: LspClient, now: number, timeoutMs: number):
 	return now - client.lastActivity > timeoutMs;
 }
 
+function hasConfiguredIdleTimeout(client?: LspClient): boolean {
+	if (idleTimeoutMs && idleTimeoutMs > 0) return true;
+	if (client) {
+		const timeoutMs = getConfig(client.cwd).idleTimeoutMs;
+		if (timeoutMs && timeoutMs > 0) return true;
+	}
+	for (const c of clients.values()) {
+		const timeoutMs = getConfig(c.cwd).idleTimeoutMs;
+		if (timeoutMs && timeoutMs > 0) return true;
+	}
+	return false;
+}
+
+function maybeStartIdleChecker(client?: LspClient): void {
+	if (hasConfiguredIdleTimeout(client)) {
+		startIdleChecker();
+	}
+}
+
+/**
+ * Whether the background idle checker interval is currently active.
+ * Exported for tests.
+ */
+export function isIdleCheckerRunning(): boolean {
+	return idleCheckInterval !== null;
+}
+
+/**
+ * Reconcile the background idle checker interval against currently configured timeouts.
+ * Starts the checker if any registered client or workspace has a positive timeout,
+ * or stops it if none do.
+ */
+export function reconcileIdleChecker(): void {
+	if (hasConfiguredIdleTimeout()) {
+		startIdleChecker();
+	} else {
+		stopIdleChecker();
+	}
+}
+
+function maybeStopIdleChecker(): void {
+	if (!hasConfiguredIdleTimeout()) {
+		stopIdleChecker();
+	}
+}
+
+/**
+ * Sweeps all registered LSP clients against their workspace idle timeout.
+ * Exported for tests.
+ */
+export async function checkIdleClients(): Promise<void> {
+	const now = Date.now();
+	for (const [key, client] of Array.from(clients.entries())) {
+		const timeoutMs = idleTimeoutMs ?? getConfig(client.cwd).idleTimeoutMs;
+		if (timeoutMs && timeoutMs > 0 && isIdleClient(client, now, timeoutMs)) {
+			await shutdownClient(key);
+		}
+	}
+}
+
 function startIdleChecker(): void {
 	if (idleCheckInterval) return;
 	idleCheckInterval = setInterval(() => {
-		if (!idleTimeoutMs) return;
-		const now = Date.now();
-		for (const [key, client] of Array.from(clients.entries())) {
-			if (isIdleClient(client, now, idleTimeoutMs)) {
-				void shutdownClient(key);
-			}
-		}
+		void checkIdleClients();
 	}, IDLE_CHECK_INTERVAL_MS);
 }
 
@@ -1973,6 +2024,7 @@ export async function getOrCreateClient(
 	) {
 		registerClientOwner(key, owner, routedRoot);
 		existingClient.lastActivity = Date.now();
+		maybeStartIdleChecker(existingClient);
 		return existingClient;
 	}
 
@@ -2028,6 +2080,7 @@ export async function getOrCreateClient(
 		) {
 			registerClientOwner(key, owner, routedRoot);
 			clientAfterReload.lastActivity = Date.now();
+			maybeStartIdleChecker(clientAfterReload);
 			return clientAfterReload;
 		}
 		const lockAfterReload = clientLocks.get(key);
@@ -2123,6 +2176,7 @@ export async function getOrCreateClient(
 				clients.delete(key);
 				dropClientOwnership(key);
 			}
+			maybeStopIdleChecker();
 			if (clientLocks.get(key)?.token === lockToken) clientLocks.delete(key);
 			client.resolveProjectLoaded();
 
@@ -2190,6 +2244,7 @@ export async function getOrCreateClient(
 				throw new Error(`LSP configuration was superseded during initialization: ${config.command}`);
 			}
 			clients.set(key, client);
+			maybeStartIdleChecker(client);
 			initFailures.delete(key);
 			return client;
 		} catch (err) {
@@ -2609,6 +2664,7 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 		clients.delete(client.name);
 		dropClientOwnership(client.name);
 	}
+	maybeStopIdleChecker();
 
 	const err = new Error("LSP client shutdown");
 	for (const pending of Array.from(client.pendingRequests.values())) {
@@ -2639,6 +2695,7 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 		if (!clients.has(client.name)) {
 			clients.set(client.name, client);
 			for (const owner of previousOwners) registerClientOwner(client.name, owner, previousOwnerRoots.get(owner));
+			maybeStartIdleChecker(client);
 		}
 		return false;
 	}

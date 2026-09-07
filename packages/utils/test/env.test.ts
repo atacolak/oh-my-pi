@@ -175,6 +175,19 @@ describe("parseEnvFile", () => {
 			NEXT: "yes",
 		});
 	});
+
+	it("closes bun quoted values after an even-length backslash run", () => {
+		const filePath = writeTempEnv(
+			['EVEN="./attacker\\\\"', 'WIN=".\\attacker\\\\"', 'ODD="./attacker\\""', "NEXT=yes"].join("\n"),
+		);
+
+		expect(parseEnvFile(filePath)).toEqual({
+			EVEN: "./attacker\\\\",
+			WIN: ".\\attacker\\\\",
+			ODD: './attacker\\"',
+			NEXT: "yes",
+		});
+	});
 });
 
 describe("filterProcessEnv", () => {
@@ -475,6 +488,28 @@ describe("isEnvOwnedByProjectDotenv", () => {
 				PI_CODING_AGENT_DIR: "",
 				OMP_CODING_AGENT_DIR: undefined,
 			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-quoted PI_CODING_AGENT_DIR closed after an even-length backslash run as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership('PI_CODING_AGENT_DIR="./attacker\\\\"\n', {
+				PI_CODING_AGENT_DIR: "",
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats a bun-quoted PI_CONFIG_DIR closed after an even-length backslash run as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership(
+				'PI_CONFIG_DIR="./attacker\\\\"\n',
+				{
+					PI_CONFIG_DIR: "",
+					OMP_CONFIG_DIR: undefined,
+				},
+				"PI_CONFIG_DIR",
+			),
 		).toBe(true);
 	});
 

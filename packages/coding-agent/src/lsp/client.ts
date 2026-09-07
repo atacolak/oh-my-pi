@@ -17,7 +17,7 @@ import {
 	workspaceRootForPath,
 } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
-import { getConfig } from "./config";
+import { configCache, loadConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
 import { connectSharedLspTransport } from "./mux/daemon";
@@ -554,7 +554,7 @@ function rememberIdleTimeoutOrigins(key: string, owner: LspClientOwner | undefin
 }
 
 function configuredIdleTimeoutMs(cwd: string): number | undefined {
-	const timeoutMs = getConfig(cwd).idleTimeoutMs;
+	const timeoutMs = (configCache.get(cwd) ?? configCache.get(path.resolve(cwd)) ?? loadConfig(cwd)).idleTimeoutMs;
 	return timeoutMs && timeoutMs > 0 ? timeoutMs : undefined;
 }
 

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed language-server idle timeout lookup pinning the session catalog on first nested spawn, so a later `rename_file` still sees the current server config instead of an empty cached snapshot.
 - Fixed nested language-server clients ignoring a session-cwd idle timeout, so a nested process still shuts down after inactivity when only the session config sets `idleTimeoutMs`.
 - Fixed nested language-server idle timeouts leaking from unsuccessful probes or failed starts, and dropping after a shutdown that the process survived, so a later session is not reaped with another workspace's timeout and a surviving nested process still inherits the session idle timeout.
 - Fixed server-initiated workspace edits reporting `applied: false` after the filesystem mutation already committed when overlay reconciliation later failed, so the requesting language server is not told to retry an already-applied edit.

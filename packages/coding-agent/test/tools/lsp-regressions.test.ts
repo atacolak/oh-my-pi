@@ -710,6 +710,28 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("does not pin the session catalog when peeking idle timeout during spawn", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-idle-peek-cache-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			fs.mkdirSync(nestedRoot);
+			const config: ServerConfig = {
+				command: "fake-lsp-idle-peek-cache",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			installHandshakeLsp();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			expect(configCache.has(tempDir.path())).toBe(false);
+			expect(configCache.has(path.resolve(tempDir.path()))).toBe(false);
+			expect(configCache.has(nestedRoot)).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not inherit idle timeout from an absent nested-client probe", async () => {
 		const sessionA = TempDir.createSync("@omp-lsp-idle-probe-a-");
 		const sessionB = TempDir.createSync("@omp-lsp-idle-probe-b-");

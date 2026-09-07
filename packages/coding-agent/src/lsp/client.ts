@@ -355,13 +355,20 @@ export async function releaseUncoveredWorkspaceRoots(
 		}
 	}
 	rebindIdleTimeoutOrigins(owner, remainingResolved);
-	await retireRetainedClientsAbsentFromSessionConfig(
-		remainingCwd,
-		remainingResolved,
-		previousWorkspaceRoots,
-		owner,
-		signal,
-	);
+	try {
+		await retireRetainedClientsAbsentFromSessionConfig(
+			remainingCwd,
+			remainingResolved,
+			previousWorkspaceRoots,
+			owner,
+			signal,
+		);
+	} catch (error) {
+		logger.warn("Failed to stop language servers whose identity left the session catalog", {
+			remainingCwd,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
 }
 
 /**

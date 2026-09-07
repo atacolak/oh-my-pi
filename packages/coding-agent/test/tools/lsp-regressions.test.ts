@@ -6695,6 +6695,75 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file still notifies a surviving symlink-root client after the alias moves", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-symlink-root-shared-");
+		const shared = TempDir.createSync("@omp-lsp-rename-symlink-root-shared-target-");
+		const linkedRoot = path.join(tempDir.path(), "packages", "foo");
+		fs.mkdirSync(path.dirname(linkedRoot), { recursive: true });
+		fs.symlinkSync(shared.path(), linkedRoot);
+		try {
+			const destRoot = path.join(tempDir.path(), "packages", "bar");
+			const sourceFile = path.join(linkedRoot, "old.ts");
+			await Bun.write(sourceFile, "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: linkedRoot,
+			};
+			const server = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "workspace/willRenameFiles") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const renamingOwner = lspClient.createLspClientOwner();
+			const overlappingOwner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(
+				nestedConfig,
+				tempDir.path(),
+				1_000,
+				undefined,
+				renamingOwner,
+			);
+			await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, overlappingOwner);
+			expect(client.cwd).toBe(path.resolve(shared.path()));
+			client.resolveProjectLoaded();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), renamingOwner);
+			const result = await tool.execute("rename-symlink-root-shared", {
+				action: "rename_file",
+				file: linkedRoot,
+				new_name: destRoot,
+				timeout: 5,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename_file", success: true });
+			expect(fs.existsSync(linkedRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			expect(server.received.map(message => message.method)).toContain("workspace/didRenameFiles");
+			expect(server.received.map(message => message.method)).not.toContain("shutdown");
+			expect(
+				lspClient.getActiveClients(overlappingOwner).some(active => active.cwd === path.resolve(shared.path())),
+			).toBe(true);
+			expect(
+				lspClient.getActiveClients(renamingOwner).some(active => active.cwd === path.resolve(shared.path())),
+			).toBe(false);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+			shared.removeSync();
+		}
+	});
+
 	it("workspace reload retries a nested identity whose pending init was superseded", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-reload-teardown-failure-");
 		try {

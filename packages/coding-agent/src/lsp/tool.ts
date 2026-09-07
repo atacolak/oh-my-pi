@@ -861,6 +861,23 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 			}
 
+			// Capture surviving moved-root clients before the filesystem rename.
+			// A symlink project root is keyed by its canonical target; after the
+			// alias moves, getActiveOrPendingClient can no longer reconstruct that
+			// identity and would skip workspace/didRenameFiles for a process kept
+			// alive by another session.
+			const survivingMovedClients: Record<string, { live: LspClient; serverPairs: FileRenamePair[] }> = {};
+			if (sourceStat.isDirectory()) {
+				for (const [serverName, serverConfig] of servers) {
+					if (!workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd)) continue;
+					const live = await getActiveOrPendingClient(serverConfig, this.session.cwd, signal);
+					if (!live) continue;
+					const serverPairs = pairsForServer(serverConfig);
+					if (serverPairs.length === 0) continue;
+					survivingMovedClients[serverName] = { live, serverPairs };
+				}
+			}
+
 			// Apply the reference edits and move as one unit: a failed move rolls
 			// the reference edits back so the source, destination, and every
 			// reference file are left unchanged.
@@ -884,13 +901,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			for (const [serverName, serverConfig] of servers) {
-				const movedRootClient =
-					sourceStat.isDirectory() && workspaceContainsPath(source, serverConfig.resolvedRoot ?? this.session.cwd);
-				if (movedRootClient) {
-					const live = await getActiveOrPendingClient(serverConfig, this.session.cwd, signal);
-					if (!live) continue;
-					const serverPairs = pairsForServer(serverConfig);
-					if (serverPairs.length === 0) continue;
+				const surviving = survivingMovedClients[serverName];
+				if (surviving) {
+					const { live, serverPairs } = surviving;
 					try {
 						for (const pair of serverPairs) {
 							const overlayOldUri = fileToUri(uriToFile(pair.oldUri), live.cwd);

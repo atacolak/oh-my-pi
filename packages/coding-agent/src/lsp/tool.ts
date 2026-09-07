@@ -606,7 +606,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			let sourceLeaf: fs.Stats;
 			try {
 				sourceLeaf = await fs.promises.lstat(source);
-				sourceStat = sourceLeaf.isSymbolicLink() ? await fs.promises.stat(source) : sourceLeaf;
+				sourceStat = await fs.promises.stat(source);
 			} catch (err) {
 				// Only ENOENT means "missing". Reporting EACCES/ELOOP/EIO as a
 				// missing path sends the caller hunting the wrong problem — and

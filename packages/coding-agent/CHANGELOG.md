@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `rename_file` reporting an unreadable source as a crash or missing path when `stat` failed after `lstat` succeeded.
 - Fixed workspace edits that overwrite a still-initializing nested project root leaving that pending language-server process attachable through overlay reconciliation.
 - Fixed workspace edits that overwrite a destination directory symlink shutting down another session's language server at the unchanged physical target.
 - Fixed deferred overwrite-destination shutdown dropping language-server owners before process exit was confirmed, so a surviving process could not be republished as ownerless or untracked.

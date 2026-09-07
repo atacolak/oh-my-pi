@@ -710,6 +710,120 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("does not inherit idle timeout from an absent nested-client probe", async () => {
+		const sessionA = TempDir.createSync("@omp-lsp-idle-probe-a-");
+		const sessionB = TempDir.createSync("@omp-lsp-idle-probe-b-");
+		const nestedRoot = path.join(sessionA.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const config: ServerConfig = {
+			command: "fake-lsp-idle-probe",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+			resolvedRoot: nestedRoot,
+		};
+		try {
+			configCache.set(sessionA.path(), { servers: { [config.command]: config }, idleTimeoutMs: 1_000 });
+			configCache.set(sessionB.path(), { servers: { [config.command]: config } });
+			configCache.set(nestedRoot, { servers: { [config.command]: config } });
+			const ownerA = lspClient.createLspClientOwner();
+			expect(await lspClient.getActiveOrPendingClient(config, sessionA.path(), undefined, ownerA)).toBeUndefined();
+
+			installHandshakeLsp();
+			const ownerB = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, sessionB.path(), 1_000, undefined, ownerB);
+			expect(client.cwd).toBe(nestedRoot);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+
+			client.lastActivity = Date.now() - 2_000;
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(c => c.name)).toContain("fake-lsp-idle-probe");
+		} finally {
+			configCache.delete(sessionA.path());
+			configCache.delete(sessionB.path());
+			configCache.delete(nestedRoot);
+			await lspClient.shutdownAll();
+			sessionA.removeSync();
+			sessionB.removeSync();
+		}
+	});
+
+	it("does not inherit idle timeout from a failed nested initialization", async () => {
+		const sessionA = TempDir.createSync("@omp-lsp-idle-fail-a-");
+		const sessionB = TempDir.createSync("@omp-lsp-idle-fail-b-");
+		const nestedRoot = path.join(sessionA.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const config: ServerConfig = {
+			command: "fake-lsp-idle-fail",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+			resolvedRoot: nestedRoot,
+		};
+		try {
+			configCache.set(sessionA.path(), { servers: { [config.command]: config }, idleTimeoutMs: 1_000 });
+			configCache.set(sessionB.path(), { servers: { [config.command]: config } });
+			configCache.set(nestedRoot, { servers: { [config.command]: config } });
+			installFakeLsp(() => {});
+			const ownerA = lspClient.createLspClientOwner();
+			await expect(lspClient.getOrCreateClient(config, sessionA.path(), 50, undefined, ownerA)).rejects.toThrow();
+
+			installHandshakeLsp();
+			const ownerB = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, sessionB.path(), 1_000, undefined, ownerB);
+			expect(client.cwd).toBe(nestedRoot);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+
+			client.lastActivity = Date.now() - 2_000;
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(c => c.name)).toContain("fake-lsp-idle-fail");
+		} finally {
+			configCache.delete(sessionA.path());
+			configCache.delete(sessionB.path());
+			configCache.delete(nestedRoot);
+			await lspClient.shutdownAll();
+			sessionA.removeSync();
+			sessionB.removeSync();
+		}
+	});
+
+	it("keeps inherited nested idle timeout when shutdownAll republishes a survivor", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-idle-survivor-nested-");
+		const nestedRoot = path.join(tempDir.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const config: ServerConfig = {
+			command: "fake-lsp-idle-survivor-nested",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+			resolvedRoot: nestedRoot,
+		};
+		try {
+			configCache.set(tempDir.path(), { servers: { [config.command]: config }, idleTimeoutMs: 5_000 });
+			configCache.set(nestedRoot, { servers: { [config.command]: config } });
+			installFakeLsp(
+				(message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const owner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, owner);
+			expect(client.cwd).toBe(nestedRoot);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+
+			await lspClient.shutdownAll();
+			expect(lspClient.getActiveClients(owner).map(entry => entry.name)).toContain("fake-lsp-idle-survivor-nested");
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+		} finally {
+			configCache.delete(tempDir.path());
+			configCache.delete(nestedRoot);
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
 	it("returns an already-starting client without creating a second client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-pending-client-");
 		const initialize = Promise.withResolvers<void>();

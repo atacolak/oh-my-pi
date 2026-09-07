@@ -984,7 +984,6 @@ export class Settings {
 	getConfigOverlayLayers(): RawSettings[] {
 		return this.#configOverlayLayers.map(layer => structuredClone(layer));
 	}
-
 	getPlansDirectory(): string {
 		return path.join(this.#agentDir, "plans");
 	}

@@ -1650,7 +1650,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						let pendingRootRetirement:
 							| {
 									executed: ExecutedWorkspaceChange[];
-									capturedMovedRoots: Array<{ root: string; identity: string; leafSymlink: boolean }>;
+									capturedMovedRoots: Array<{
+										root: string;
+										identity: string;
+										leafSymlink: boolean;
+										overwriteDestination?: boolean;
+									}>;
 									cwd: string;
 							  }
 							| undefined;

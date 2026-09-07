@@ -971,18 +971,25 @@ function openDocumentMatchesDeletedRoot(uri: string, deletedRoot: string): boole
 /** Directory roots a workspace edit may move or delete, captured before apply. */
 async function captureDirectoryRoot(
 	uri: string,
-	captured: Array<{ root: string; identity: string; leafSymlink: boolean }>,
+	captured: Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
 	seen: Set<string>,
+	overwriteDestination = false,
 ): Promise<void> {
 	const root = path.resolve(uriToFile(uri));
-	if (seen.has(root)) return;
+	if (seen.has(root)) {
+		if (overwriteDestination) {
+			const existing = captured.find(item => item.root === root);
+			if (existing) existing.overwriteDestination = true;
+		}
+		return;
+	}
 	try {
 		const st = await fs.lstat(root);
 		const leafSymlink = st.isSymbolicLink();
 		const isDirectory = st.isDirectory() || (leafSymlink && (await fs.stat(root)).isDirectory());
 		if (!isDirectory) return;
 		seen.add(root);
-		captured.push({ root, identity: resolveEquivalentPath(root), leafSymlink });
+		captured.push({ root, identity: resolveEquivalentPath(root), leafSymlink, overwriteDestination });
 	} catch {
 		// Missing paths are not live project roots.
 	}
@@ -990,8 +997,8 @@ async function captureDirectoryRoot(
 
 async function captureMovedDirectoryRoots(
 	edit: WorkspaceEdit,
-): Promise<Array<{ root: string; identity: string; leafSymlink: boolean }>> {
-	const captured: Array<{ root: string; identity: string; leafSymlink: boolean }> = [];
+): Promise<Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>> {
+	const captured: Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }> = [];
 	const seen = new Set<string>();
 	for (const change of edit.documentChanges ?? []) {
 		if (!("kind" in change)) continue;
@@ -1000,7 +1007,7 @@ async function captureMovedDirectoryRoots(
 			// overwrite:true displaces and deletes the destination inode
 			// before the source moves onto that path.
 			if (change.options?.overwrite) {
-				await captureDirectoryRoot(change.newUri, captured, seen);
+				await captureDirectoryRoot(change.newUri, captured, seen, true);
 			}
 			continue;
 		}
@@ -1013,8 +1020,8 @@ async function captureMovedDirectoryRoots(
 
 function executedMovedDirectoryRoots(
 	executed: ExecutedWorkspaceChange[],
-	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean }>,
-): Array<{ root: string; identity: string; leafSymlink: boolean }> {
+	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
+): Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }> {
 	if (captured.length === 0 || executed.length === 0) return [];
 	const executedPaths = new Set<string>();
 	for (const change of executed) {
@@ -1026,9 +1033,31 @@ function executedMovedDirectoryRoots(
 	return captured.filter(item => executedPaths.has(path.resolve(item.root)));
 }
 
+async function releaseExecutedOverwriteDestinationRoots(
+	executed: ExecutedWorkspaceChange[],
+	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
+	sessionCwd: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	for (const item of executedMovedDirectoryRoots(executed, captured)) {
+		if (!item.overwriteDestination) continue;
+		if (captured.some(other => other !== item && !other.overwriteDestination && other.identity === item.identity)) {
+			continue;
+		}
+		try {
+			await releaseMovedWorkspaceRoots(sessionCwd, item.root, undefined, signal, item.identity, item.leafSymlink);
+		} catch (error) {
+			logger.warn("Failed to stop language servers for an overwritten project root", {
+				movedRoot: item.root,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
 export async function releaseExecutedMovedDirectoryRoots(
 	executed: ExecutedWorkspaceChange[],
-	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean }>,
+	captured: ReadonlyArray<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>,
 	sessionCwd: string,
 	signal?: AbortSignal,
 ): Promise<void> {
@@ -1111,9 +1140,11 @@ export async function reconcileExecutedChanges(
  * ready client inside those roots, plus any ready client that owns an overlay or watched
  * path the edit actually touched, so a nested `workspace/applyEdit` still refreshes
  * sibling and session-root clients. Directory rename/delete ops then retire nested
- * clients whose routed root vanished, matching `rename_file`. Overlay reconciliation
- * failures after a successful apply still return the executed prefix so moved-root
- * retirement can run.
+ * clients whose routed root vanished, matching `rename_file`. Overwrite
+ * destinations are retired after a committed apply and before overlay
+ * reconciliation, so another session cannot reuse the displaced-root process.
+ * Overlay reconciliation failures after a successful apply still return the
+ * executed prefix so remaining moved-root retirement can run.
  */
 export async function applyWorkspaceEditWithLsp(
 	edit: WorkspaceEdit,
@@ -1137,7 +1168,7 @@ export async function applyAndReconcileWorkspaceEdit(
 ): Promise<{
 	applied: string[];
 	executed: ExecutedWorkspaceChange[];
-	capturedMovedRoots: Array<{ root: string; identity: string; leafSymlink: boolean }>;
+	capturedMovedRoots: Array<{ root: string; identity: string; leafSymlink: boolean; overwriteDestination?: boolean }>;
 	cwd: string;
 	error?: unknown;
 }> {
@@ -1151,6 +1182,7 @@ export async function applyAndReconcileWorkspaceEdit(
 	} catch (err) {
 		// Best-effort: overlays for the mutated prefix must not stay stale, but
 		// reconciliation problems must not mask the original apply failure.
+		await releaseExecutedOverwriteDestinationRoots(executed, capturedMovedRoots, cwd, signal);
 		try {
 			await reconcileExecutedChanges(executed, workspaceRoots, signal);
 		} catch (reconcileErr) {
@@ -1160,6 +1192,7 @@ export async function applyAndReconcileWorkspaceEdit(
 		}
 		return { applied, executed, capturedMovedRoots, cwd, error: err };
 	}
+	await releaseExecutedOverwriteDestinationRoots(executed, capturedMovedRoots, cwd, signal);
 	try {
 		await reconcileExecutedChanges(executed, workspaceRoots, signal);
 	} catch (reconcileErr) {

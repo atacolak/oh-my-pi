@@ -2,9 +2,6 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
 ### Added
 
 - Added `isEnvOwnedByProjectDotenv` to identify environment variables that came from the launch project's dotenv files rather than the parent shell.
@@ -15,10 +12,23 @@
 
 ### Fixed
 
+- Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
 - Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
 - Reused child-shell dotenv reconstruction so Bun's pre-dotenv `NODE_ENV` mode files are treated as project-owned.
 - Matched project-dotenv ownership of environment names case-insensitively on Windows.
 - Decoded Bun double-quoted dotenv `\n` and `\r` escapes when matching project-owned environment values.
+- Expanded Bun `${NAME:-default}` values when matching project-owned environment values, and failed closed on unrecognized `$` syntax.
+- Parsed Bun quoted dotenv values that span literal newlines when matching project-owned environment values.
+- Preserved trailing whitespace in Bun quoted dotenv values that span literal newlines when matching project-owned environment values.
+- Trusted an explicit `--profile` selection, including `--profile default`, over a project dotenv `OMP_PROFILE`/`PI_PROFILE` when determining environment ownership.
+- Closed Bun-quoted dotenv values after an even-length backslash run when matching project-owned environment variables.
+- Used the last case-insensitive dotenv assignment on Windows when matching project-owned environment variables.
+
+## [18.1.13] - 2026-09-07
+
+### Fixed
+
+- Fixed `filterChildShellEnv` applying the omp process's own launch-environment provenance (the pre-dotenv `NODE_ENV` and launcher-owned names read from `/proc/self/environ`) to caller-supplied environment objects; launch provenance now only applies when filtering the live `process.env`/`Bun.env`, and an explicit env resolves its dotenv mode from its own `NODE_ENV`.
 
 ## [18.1.11] - 2026-09-05
 

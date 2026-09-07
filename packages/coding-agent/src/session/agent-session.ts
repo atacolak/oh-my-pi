@@ -1206,7 +1206,6 @@ export class AgentSession {
 			this.hindsightLoadedMessageCount = undefined;
 		}
 		this.#syncHindsightDocumentId();
-		this.#lspClientOwner = config.lspClientOwner;
 		this.#modelRegistry = config.modelRegistry;
 		this.#extensionRoots =
 			config.extensionRoots ??
@@ -5424,6 +5423,11 @@ export class AgentSession {
 	/** Releases the local startup slot if `signal` still owns it. */
 	endLocalMemoryStartup(signal: AbortSignal): void {
 		this.#memory.endLocalMemoryStartup(signal);
+	}
+
+	/** Track a delayed memory-backend start so leave-path drains wait for it. */
+	trackMemoryBackendStart(start: Promise<unknown>): void {
+		this.#memory.trackBackendStart(start);
 	}
 
 	/** Applies the selected memory backend to runtime state, tools, and prompt. */
@@ -9856,6 +9860,11 @@ export class AgentSession {
 			// content is a large expanded body, not a user turn (issue #5374).
 			newLeafId = targetId;
 		}
+
+		// Drain while the outgoing branch is still the active transcript.
+		// extractMessages() reads getBranch(), so a later rebase cannot recover
+		// a below-cadence suffix after resetLeaf()/branch().
+		await this.#memory.drainHindsightPendingRetain();
 
 		// Switch leaf (with or without summary)
 		// Summary is attached at the navigation target position (newLeafId), not the old branch

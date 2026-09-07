@@ -1238,14 +1238,18 @@ export function shutdownStaleClients(
 			!cwds.some(cwd => retainClient?.(cwd))
 		);
 	};
-	const relevantPending = Array.from(clientLocks.entries()).filter(([key, pending]) => {
-		const owners = clientOwners.get(key);
-		return (!owner || !owners || owners.has(owner)) && isRelevant(key, pending);
-	});
-	const relevantClients = Array.from(clients.entries()).filter(([key, client]) => {
-		const owners = clientOwners.get(key);
-		return (!owner || !owners || owners.has(owner)) && isRelevant(key, client);
-	});
+	const collectRelevantEntries = () => {
+		const nextPending = Array.from(clientLocks.entries()).filter(([key, pending]) => {
+			const owners = clientOwners.get(key);
+			return (!owner || !owners || owners.has(owner)) && isRelevant(key, pending);
+		});
+		const nextClients = Array.from(clients.entries()).filter(([key, client]) => {
+			const owners = clientOwners.get(key);
+			return (!owner || !owners || owners.has(owner)) && isRelevant(key, client);
+		});
+		return { relevantPending: nextPending, relevantClients: nextClients };
+	};
+	let { relevantPending, relevantClients } = collectRelevantEntries();
 	const staleOwnedKeys = new Set([
 		...relevantPending.filter(([key]) => !fresh.has(key)).map(([key]) => key),
 		...relevantClients.filter(([key]) => !fresh.has(key)).map(([key]) => key),
@@ -1255,6 +1259,7 @@ export function shutdownStaleClients(
 	const previousCoveredRootGenerations = new Map<string, number | undefined>();
 	const previousConfigStamps = new Map<ServerConfig, number | undefined>();
 	let previousOwnerGeneration: number | undefined;
+	let thisReloadGeneration: number | undefined;
 	if (owner) {
 		for (const key of staleOwnedKeys) {
 			releasedOwnerRoots.set(key, Array.from(ownerClientRoots.get(owner)?.get(key) ?? []));
@@ -1268,6 +1273,7 @@ export function shutdownStaleClients(
 		if (invalidateUnusedIdentities || staleOwnedKeys.size > 0) {
 			previousOwnerGeneration = ownerReloadGeneration.get(owner);
 			const generation = (previousOwnerGeneration ?? 0) + 1;
+			thisReloadGeneration = generation;
 			ownerReloadGeneration.set(owner, generation);
 			let released = ownerReleasedKeyGenerations.get(owner);
 			if (!released) {
@@ -1301,8 +1307,8 @@ export function shutdownStaleClients(
 	const retainedOwnedKeys = owner
 		? new Set(Array.from(staleOwnedKeys).filter(key => !unownedStaleKeys.has(key)))
 		: new Set<string>();
-	const stalePending = relevantPending.filter(([key]) => unownedStaleKeys.has(key));
-	const staleClients = relevantClients.filter(([key]) => unownedStaleKeys.has(key));
+	let stalePending = relevantPending.filter(([key]) => unownedStaleKeys.has(key));
+	let staleClients = relevantClients.filter(([key]) => unownedStaleKeys.has(key));
 	// Barrier the roots this cleanup actually covers while teardown is in
 	// flight. `/remove-dir` passes the retained session cwd as `cwd` while
 	// `workspaceRoots` is the removed directory; including `cwd` here would
@@ -1326,10 +1332,21 @@ export function shutdownStaleClients(
 	for (const root of barrierRoots) rememberPreviousBarrier(clientReloadBarriers.get(root));
 	for (const leftoverKey of leftoverKeys) rememberPreviousBarrier(clientIdentityReloadBarriers.get(leftoverKey));
 	const cleanupHolder: { promise?: Promise<string[]> } = {};
+	const dropThisCleanupBarriers = (keepIdentityKeys?: ReadonlySet<string>): void => {
+		const cleanupPromise = cleanupHolder.promise;
+		for (const root of barrierRoots) {
+			if (clientReloadBarriers.get(root) === cleanupPromise) clientReloadBarriers.delete(root);
+		}
+		for (const leftoverKey of leftoverKeys) {
+			if (clientIdentityReloadBarriers.get(leftoverKey) !== cleanupPromise) continue;
+			if (keepIdentityKeys?.has(leftoverKey)) continue;
+			clientIdentityReloadBarriers.delete(leftoverKey);
+		}
+	};
 	const cleanup = (async (): Promise<string[]> => {
 		const restoreReleasedOwners = (): void => {
 			if (!owner) return;
-			for (const key of unownedStaleKeys) {
+			for (const key of staleOwnedKeys) {
 				if (clients.has(key) || clientLocks.has(key)) {
 					registerClientOwner(key, owner, releasedOwnerRoots.get(key));
 				}
@@ -1349,6 +1366,53 @@ export function shutdownStaleClients(
 					throwIfAborted(signal);
 					// A later explicit reload retries teardown after an earlier one
 					// failed; ordinary client creation remains blocked in between.
+				}
+			}
+			// An earlier overlapping reload can restore this owner after this
+			// cleanup snapshotted relevance. Re-evaluate before teardown so a
+			// cancelled predecessor cannot leave us attached to a superseded
+			// client while we start the replacement.
+			if (owner) {
+				({ relevantPending, relevantClients } = collectRelevantEntries());
+				for (const key of [
+					...relevantPending.filter(([ownedKey]) => !fresh.has(ownedKey)).map(([ownedKey]) => ownedKey),
+					...relevantClients.filter(([ownedKey]) => !fresh.has(ownedKey)).map(([ownedKey]) => ownedKey),
+				]) {
+					if (staleOwnedKeys.has(key)) continue;
+					staleOwnedKeys.add(key);
+					releasedOwnerRoots.set(key, Array.from(ownerClientRoots.get(owner)?.get(key) ?? []));
+					if (thisReloadGeneration !== undefined) {
+						let released = ownerReleasedKeyGenerations.get(owner);
+						if (!released) {
+							released = new Map();
+							ownerReleasedKeyGenerations.set(owner, released);
+						}
+						previousReleasedGenerations.set(key, released.get(key));
+						released.set(key, thisReloadGeneration);
+					}
+					if (releaseClientOwnerKey(key, owner)) unownedStaleKeys.add(key);
+					else retainedOwnedKeys.add(key);
+				}
+				stalePending = relevantPending.filter(([key]) => unownedStaleKeys.has(key));
+				staleClients = relevantClients.filter(([key]) => unownedStaleKeys.has(key));
+				const cleanupPromise = cleanupHolder.promise;
+				for (const [key, pending] of stalePending) {
+					for (const workspaceCwd of clientWorkspaceCwds(key, pending, owner)) barrierRoots.add(workspaceCwd);
+					leftoverKeys.add(clientServerRootKey(pending.config, pending.cwd));
+				}
+				for (const [key, client] of staleClients) {
+					for (const workspaceCwd of clientWorkspaceCwds(key, client, owner)) barrierRoots.add(workspaceCwd);
+					leftoverKeys.add(clientServerRootKey(client.config, client.cwd));
+				}
+				if (cleanupPromise) {
+					for (const root of barrierRoots) {
+						if (!clientReloadBarriers.has(root)) clientReloadBarriers.set(root, cleanupPromise);
+					}
+					for (const leftoverKey of leftoverKeys) {
+						if (!clientIdentityReloadBarriers.has(leftoverKey)) {
+							clientIdentityReloadBarriers.set(leftoverKey, cleanupPromise);
+						}
+					}
 				}
 			}
 			for (const key of fresh) invalidatedClientKeys.delete(key);
@@ -1387,17 +1451,10 @@ export function shutdownStaleClients(
 					...stalePending.filter(([key]) => !clients.has(key) && !clientLocks.has(key)),
 				];
 				for (const [key] of gone) invalidatedClientKeys.delete(key);
-				const cleanupPromise = cleanupHolder.promise;
-				for (const root of barrierRoots) {
-					if (clientReloadBarriers.get(root) === cleanupPromise) clientReloadBarriers.delete(root);
-				}
 				const failedLeftoverKeys = new Set(
 					failed.map(([, client]) => clientServerRootKey(client.config, client.cwd)),
 				);
-				for (const leftoverKey of leftoverKeys) {
-					if (clientIdentityReloadBarriers.get(leftoverKey) !== cleanupPromise) continue;
-					if (!failedLeftoverKeys.has(leftoverKey)) clientIdentityReloadBarriers.delete(leftoverKey);
-				}
+				dropThisCleanupBarriers(failedLeftoverKeys);
 				throw new Error(
 					"Failed to stop LSP server(s) with superseded configuration: " +
 						failed.map(([, client]) => client.config.command).join(", "),
@@ -1415,30 +1472,41 @@ export function shutdownStaleClients(
 				restoreReleasedOwners();
 				clearTemporaryNestedTombstones(stalePending);
 				clearTemporaryNestedTombstones(staleClients);
-				if (owner) {
-					if (previousOwnerGeneration === undefined) ownerReloadGeneration.delete(owner);
-					else ownerReloadGeneration.set(owner, previousOwnerGeneration);
+				if (owner && thisReloadGeneration !== undefined) {
+					const currentGeneration = ownerReloadGeneration.get(owner);
+					if (currentGeneration === thisReloadGeneration) {
+						if (previousOwnerGeneration === undefined) ownerReloadGeneration.delete(owner);
+						else ownerReloadGeneration.set(owner, previousOwnerGeneration);
+					}
 					const released = ownerReleasedKeyGenerations.get(owner);
 					if (released) {
 						for (const [key, previous] of previousReleasedGenerations) {
+							if (released.get(key) !== thisReloadGeneration) continue;
 							if (previous === undefined) released.delete(key);
 							else released.set(key, previous);
 						}
 						if (released.size === 0) ownerReleasedKeyGenerations.delete(owner);
 					}
 					for (const [config, previous] of previousConfigStamps) {
+						if (configReloadGenerations.get(config) !== thisReloadGeneration) continue;
 						if (previous === undefined) configReloadGenerations.delete(config);
 						else configReloadGenerations.set(config, previous);
 					}
 					const coveredRoots = ownerReloadRootGenerations.get(owner);
 					if (coveredRoots) {
 						for (const [root, previous] of previousCoveredRootGenerations) {
+							if (coveredRoots.get(root) !== thisReloadGeneration) continue;
 							if (previous === undefined) coveredRoots.delete(root);
 							else coveredRoots.set(root, previous);
 						}
 						if (coveredRoots.size === 0) ownerReloadRootGenerations.delete(owner);
 					}
 				}
+				// Cancellation rolls the owner and tombstones back, so this
+				// cleanup's rejected barriers must not remain. A later unused
+				// nested identity under the same workspace would otherwise
+				// collect the aborted promise and fail until another reload.
+				dropThisCleanupBarriers();
 			}
 			throw error;
 		}
@@ -1448,14 +1516,7 @@ export function shutdownStaleClients(
 	for (const leftoverKey of leftoverKeys) clientIdentityReloadBarriers.set(leftoverKey, cleanup);
 	void cleanup.then(
 		() => {
-			for (const root of barrierRoots) {
-				if (clientReloadBarriers.get(root) === cleanup) clientReloadBarriers.delete(root);
-			}
-			for (const leftoverKey of leftoverKeys) {
-				if (clientIdentityReloadBarriers.get(leftoverKey) === cleanup) {
-					clientIdentityReloadBarriers.delete(leftoverKey);
-				}
-			}
+			dropThisCleanupBarriers();
 		},
 		() => {},
 	);

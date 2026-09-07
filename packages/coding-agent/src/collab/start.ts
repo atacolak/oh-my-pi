@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { getActiveProfile, isProfileSelectedFromArgv } from "@oh-my-pi/pi-utils/dirs";
 import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
@@ -192,7 +193,11 @@ function collabLayerValue(layer: unknown, path: CollabSettingPath): unknown {
 }
 
 function redirectedGlobalConfig(): boolean {
-	return PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => env.isEnvOwnedByProjectDotenv(name));
+	const ignoreAgentDir = Boolean(isProfileSelectedFromArgv() && getActiveProfile());
+	return PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => {
+		if (ignoreAgentDir && (name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR")) return false;
+		return env.isEnvOwnedByProjectDotenv(name);
+	});
 }
 
 function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, path: P): SettingValue<P> {

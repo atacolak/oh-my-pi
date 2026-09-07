@@ -26,6 +26,7 @@ import { resolveLocalRoot } from "../internal-urls";
 import { cachedVaultRoots, isVaultEnabled } from "../internal-urls/vault-protocol";
 import {
 	createLspWritethrough,
+	fallbackLspClientOwner,
 	type FileDiagnosticsResult,
 	flushLspWritethroughBatch,
 	type WritethroughCallback,
@@ -193,9 +194,12 @@ function createEditWritethrough(session: ToolSession): WritethroughCallback {
 	const enableFormat = enableLsp && session.settings.get("lsp.formatOnWrite");
 	const deduplicate = enableDiagnostics && session.settings.get("lsp.diagnosticsDeduplicate");
 	return enableLsp
-		? createLspWritethrough(session.cwd, {
+		? createLspWritethrough(() => session.cwd, {
 				enableFormat,
 				enableDiagnostics,
+				additionalDirectories: () => session.additionalDirectories,
+				cwd: () => session.cwd,
+				owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 				transformDiagnostics: deduplicate
 					? (filePath, result) => getDiagnosticsLedger(session).reduce(filePath, result)
 					: undefined,

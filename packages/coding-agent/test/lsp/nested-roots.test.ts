@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
@@ -1098,6 +1099,142 @@ describe("nested LSP project roots", () => {
 		} finally {
 			original.removeSync();
 			moved.removeSync();
+		}
+	});
+
+	it("routes edits through directories added after edit-tool construction", async () => {
+		const primary = TempDir.createSync("@omp-lsp-add-dir-edit-primary-");
+		const additional = TempDir.createSync("@omp-lsp-add-dir-edit-extra-");
+		try {
+			const nested = writePythonProject(additional.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const extraDirs: string[] = [];
+			const session = {
+				cwd: primary.path(),
+				get additionalDirectories() {
+					return extraDirs.length > 0 ? extraDirs : undefined;
+				},
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnEdit": true,
+					"edit.enforceSeenLines": false,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+			const tool = new EditTool(session, "replace");
+			extraDirs.push(additional.path());
+			const getServers = vi.spyOn(lspConfig, "getServersForFile");
+
+			const result = await tool.execute("add-dir-edit", {
+				path: nested.filePath,
+				old_string: "    return 1",
+				new_string: "    return 2",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(getServers.mock.calls.some(call => call[2]?.includes(additional.path()))).toBe(true);
+		} finally {
+			primary.removeSync();
+			additional.removeSync();
+		}
+	});
+
+	it("routes edits through a cwd changed after edit-tool construction", async () => {
+		const original = TempDir.createSync("@omp-lsp-move-cwd-edit-original-");
+		const moved = TempDir.createSync("@omp-lsp-move-cwd-edit-moved-");
+		try {
+			const nested = writePythonProject(moved.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => mockLspClient(config, cwd));
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: original.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnEdit": true,
+					"edit.enforceSeenLines": false,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+			const tool = new EditTool(session, "replace");
+			session.cwd = moved.path();
+			const getServers = vi.spyOn(lspConfig, "getServersForFile");
+
+			const result = await tool.execute("move-cwd-edit", {
+				path: nested.filePath,
+				old_string: "    return 1",
+				new_string: "    return 2",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(getServers.mock.calls.some(call => call[2]?.includes(moved.path()))).toBe(true);
+			expect(
+				getServers.mock.calls.every(call => !call[2]?.includes(original.path()) || call[2]?.includes(moved.path())),
+			).toBe(true);
+		} finally {
+			original.removeSync();
+			moved.removeSync();
+		}
+	});
+
+	it("registers a lazy session owner on edit-through client creation", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-lazy-owner-edit-");
+		try {
+			const { filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const owner = lspClient.createLspClientOwner();
+			const createdOwners: unknown[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(
+				async (config, cwd, _timeout, _signal, clientOwner) => {
+					createdOwners.push(clientOwner);
+					return mockLspClient(config, cwd);
+				},
+			);
+			vi.spyOn(lspClient, "syncContent").mockResolvedValue();
+			vi.spyOn(lspClient, "notifySaved").mockResolvedValue();
+			vi.spyOn(lspClient, "notifyWorkspaceWatchedFiles").mockResolvedValue();
+			const session = {
+				cwd: tempDir.path(),
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				getLspClientOwner: () => owner,
+				settings: Settings.isolated({
+					"lsp.formatOnWrite": false,
+					"lsp.diagnosticsOnEdit": true,
+					"edit.enforceSeenLines": false,
+				}),
+				enableLsp: true,
+			} as ToolSession;
+
+			const result = await new EditTool(session, "replace").execute("lazy-owner-edit", {
+				path: filePath,
+				old_string: "    return 1",
+				new_string: "    return 2",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(createdOwners).toContain(owner);
+		} finally {
+			tempDir.removeSync();
 		}
 	});
 

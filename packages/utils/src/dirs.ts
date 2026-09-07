@@ -526,7 +526,7 @@ export function __resetDirsFromEnvForTests(): void {
 /** Activate a named profile. Passing undefined or "default" returns to the default profile. */
 export function setProfile(profile: string | undefined, options?: { fromArgv?: boolean }): void {
 	const next = normalizeProfileName(profile);
-	profileSelectedFromArgv = Boolean(options?.fromArgv && next);
+	profileSelectedFromArgv = Boolean(options?.fromArgv);
 	if (next && !activeProfile) {
 		// First activation of a named profile in this process: snapshot the
 		// current PI_CODING_AGENT_DIR so a later reset can restore the user's

@@ -106,6 +106,20 @@ describe("global --profile flag", () => {
 		expect(getAgentDir()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
 	});
 
+	it("records an explicit default profile as argv-selected", async () => {
+		const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		setProfile(undefined);
+		process.env.OMP_PROFILE = "work";
+		delete process.env.PI_PROFILE;
+
+		await runCli(["--profile=default", "--version"]);
+
+		expect(process.exitCode).toBe(0);
+		expect(writeSpy).toHaveBeenCalled();
+		expect(getActiveProfile()).toBeUndefined();
+		expect(isProfileSelectedFromArgv()).toBe(true);
+	});
+
 	it("activates a profile inherited from OMP_PROFILE at run time", async () => {
 		const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 		setProfile(undefined);

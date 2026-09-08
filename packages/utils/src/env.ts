@@ -1,7 +1,14 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, getConfigRootDir, getProjectDir, isProfileSelectedFromArgv, refreshDirsFromEnv } from "./dirs";
+import {
+	getAgentDir,
+	getConfigRootDir,
+	getProjectDir,
+	isProfileSelectedFromArgv,
+	normalizeProfileName,
+	refreshDirsFromEnv,
+} from "./dirs";
 
 export * from "./worker-host";
 
@@ -123,6 +130,15 @@ function readProcessEnv(name: string): string | undefined {
 	if (process.platform !== "win32") return process.env[name];
 	const key = matchingEnvName(Object.keys(process.env), name);
 	return key === undefined ? undefined : process.env[key];
+}
+
+function isDefaultProfileValue(value: string | undefined): boolean {
+	if (value === undefined) return false;
+	try {
+		return normalizeProfileName(value) === undefined;
+	} catch {
+		return false;
+	}
 }
 
 const projectEnvNamesLoadedByOmp = new Set<string>();
@@ -464,7 +480,9 @@ const launchProjectDotenv = (() => {
  * even-length backslash run. Unrecognized `$` syntax fails closed. An
  * explicit `--profile` selection, including `--profile default`, is not
  * treated as project-owned even when dotenv also declared `OMP_PROFILE`/
- * `PI_PROFILE`.
+ * `PI_PROFILE`. A declared profile selector that normalizes to the default
+ * profile is treated as project-owned even when profile activation deleted
+ * the profile environment variables.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;
@@ -475,7 +493,21 @@ export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if (launch.has && launch.value !== "") return false;
 	if (launchEnvValues && !launch.has) return true;
 	const current = readProcessEnv(name);
-	if (current === undefined) return false;
+	if (current === undefined) {
+		if (name === "OMP_PROFILE" || name === "PI_PROFILE") {
+			const raw = launchProjectDotenv.launchEnv[dotenvName];
+			const rawFallback = launchProjectDotenv.fallbackLaunchEnv?.[dotenvName];
+			return Boolean(
+				isDefaultProfileValue(raw) ||
+				isDefaultProfileValue(launchProjectDotenv.expandedLaunchEnv[dotenvName]) ||
+				isDefaultProfileValue(rawFallback) ||
+				isDefaultProfileValue(launchProjectDotenv.expandedFallbackLaunchEnv?.[dotenvName]) ||
+				raw?.includes("$") ||
+				rawFallback?.includes("$"),
+			);
+		}
+		return false;
+	}
 	if (
 		current === launchProjectDotenv.launchEnv[dotenvName] ||
 		current === launchProjectDotenv.expandedLaunchEnv[dotenvName] ||

@@ -607,6 +607,103 @@ describe("isEnvOwnedByProjectDotenv", () => {
 		expect(JSON.parse(stdout)).toEqual({ omp: true, pi: true });
 	});
 
+	it("treats a dotenv-selected default profile as project-owned without a launch snapshot", async () => {
+		const cwd = path.dirname(writeTempEnv("OMP_PROFILE=default\n"));
+		const dirsModulePath = path.join(import.meta.dir, "..", "src", "dirs.ts");
+		const script = [
+			'Object.defineProperty(process, "platform", { value: "darwin" });',
+			`const { setProfile } = await import(${JSON.stringify(dirsModulePath)});`,
+			"setProfile(undefined);",
+			`const { isEnvOwnedByProjectDotenv } = await import(${JSON.stringify(envModulePath)});`,
+			"process.stdout.write(JSON.stringify({",
+			'  omp: isEnvOwnedByProjectDotenv("OMP_PROFILE"),',
+			'  pi: isEnvOwnedByProjectDotenv("PI_PROFILE"),',
+			"}));",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				OMP_PROFILE: undefined,
+				PI_PROFILE: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ omp: true, pi: true });
+	});
+
+	it("treats a dotenv PI_PROFILE default as project-owned without a launch snapshot", async () => {
+		const cwd = path.dirname(writeTempEnv("PI_PROFILE=default\n"));
+		const dirsModulePath = path.join(import.meta.dir, "..", "src", "dirs.ts");
+		const script = [
+			'Object.defineProperty(process, "platform", { value: "darwin" });',
+			`const { setProfile } = await import(${JSON.stringify(dirsModulePath)});`,
+			"setProfile(undefined);",
+			`const { isEnvOwnedByProjectDotenv } = await import(${JSON.stringify(envModulePath)});`,
+			"process.stdout.write(JSON.stringify({",
+			'  omp: isEnvOwnedByProjectDotenv("OMP_PROFILE"),',
+			'  pi: isEnvOwnedByProjectDotenv("PI_PROFILE"),',
+			"}));",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				OMP_PROFILE: undefined,
+				PI_PROFILE: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ omp: false, pi: true });
+	});
+
+	it("trusts parent env profile over dotenv default profile without a launch snapshot", async () => {
+		const cwd = path.dirname(writeTempEnv("OMP_PROFILE=default\n"));
+		const dirsModulePath = path.join(import.meta.dir, "..", "src", "dirs.ts");
+		const script = [
+			'Object.defineProperty(process, "platform", { value: "darwin" });',
+			'process.env.OMP_PROFILE = "work";',
+			`const { setProfile } = await import(${JSON.stringify(dirsModulePath)});`,
+			'setProfile("work");',
+			`const { isEnvOwnedByProjectDotenv } = await import(${JSON.stringify(envModulePath)});`,
+			"process.stdout.write(JSON.stringify({",
+			'  omp: isEnvOwnedByProjectDotenv("OMP_PROFILE"),',
+			'  pi: isEnvOwnedByProjectDotenv("PI_PROFILE"),',
+			"}));",
+		].join("\n");
+		const proc = Bun.spawn([process.execPath, "--no-install", "--eval", script], {
+			cwd,
+			env: {
+				...process.env,
+				OMP_PROFILE: "work",
+				PI_PROFILE: undefined,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toEqual({ omp: false, pi: false });
+	});
+
 	it("treats a .env.development redirect as project-owned when dotenv sets NODE_ENV", async () => {
 		const cwd = path.dirname(writeTempEnv("NODE_ENV=production\n"));
 		fs.writeFileSync(path.join(cwd, ".env.development"), "PI_CODING_AGENT_DIR=./attacker-dir\n");

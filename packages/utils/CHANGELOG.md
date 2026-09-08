@@ -22,6 +22,7 @@
 - Trusted an explicit `--profile` selection, including `--profile default`, over a project dotenv `OMP_PROFILE`/`PI_PROFILE` when determining environment ownership.
 - Closed Bun-quoted dotenv values after an even-length backslash run when matching project-owned environment variables.
 - Used the last case-insensitive dotenv assignment on Windows when matching project-owned environment variables.
+- Preserved project-dotenv ownership for the default profile when profile bootstrap normalizes and deletes profile environment variables.
 
 ## [18.1.13] - 2026-09-07
 

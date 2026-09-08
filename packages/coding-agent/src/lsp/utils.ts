@@ -112,8 +112,13 @@ export class EquivalentUriMap<Value> extends Map<string, Value> {
 
 	#key(uri: string): string {
 		if (!uri.startsWith("file://")) return uri;
-		const filePath = workspaceEntryPath(uriToFile(uri), this.#workspaceRoot);
-		return process.platform === "win32" ? filePath.toLowerCase() : filePath;
+		const entry = workspaceEntryPath(uriToFile(uri), this.#workspaceRoot);
+		// `workspaceEntryPath` keeps in-workspace aliases for didOpen, but servers
+		// often publish diagnostics on the real target. Fold both spellings to the
+		// same physical identity so `waitForDiagnostics` still matches, including
+		// leaf file symlinks whose document URI stays inside the workspace.
+		const identity = resolveEquivalentPath(entry);
+		return process.platform === "win32" ? identity.toLowerCase() : identity;
 	}
 
 	override delete(uri: string): boolean {

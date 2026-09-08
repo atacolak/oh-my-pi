@@ -5775,6 +5775,64 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("restores per-owner routing when shutdown cannot stop a shared client", async () => {
+		const extra = TempDir.createSync("@omp-lsp-shared-routing-survivor-extra-");
+		const nestedRoot = path.join(extra.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const sessionA = TempDir.createSync("@omp-lsp-shared-routing-survivor-a-");
+		const sessionB = TempDir.createSync("@omp-lsp-shared-routing-survivor-b-");
+		const shared = {
+			command: "shared-routing-survivor-lsp",
+			rootMarkers: [] as string[],
+			resolvedRoot: nestedRoot,
+		};
+		const configA: ServerConfig = { ...shared, fileTypes: [".ts"] };
+		const configB: ServerConfig = { ...shared, fileTypes: [".js"] };
+		try {
+			configCache.set(sessionA.path(), { servers: { extra: configA }, definitions: { extra: configA } });
+			configCache.set(sessionB.path(), { servers: { extra: configB }, definitions: { extra: configB } });
+			installFakeLsp(
+				(message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const ownerA = lspClient.createLspClientOwner();
+			const ownerB = lspClient.createLspClientOwner();
+			const first = await lspClient.getOrCreateClient(configA, sessionA.path(), 1_000, undefined, ownerA);
+			const second = await lspClient.getOrCreateClient(configB, sessionB.path(), 1_000, undefined, ownerB);
+			expect(second).toBe(first);
+
+			expect(await lspClient.shutdownClientInstance(first)).toBe(false);
+			expect(lspClient.getActiveClients(ownerA).map(client => client.fileTypes)).toEqual([[".ts"]]);
+			expect(lspClient.getActiveClients(ownerB).map(client => client.fileTypes)).toEqual([[".js"]]);
+			expect(lspClient.getActiveClients(ownerA).map(client => client.name)).toEqual(["shared-routing-survivor-lsp"]);
+			expect(lspClient.getActiveClients(ownerB).map(client => client.name)).toEqual(["shared-routing-survivor-lsp"]);
+
+			const statusB = await new LspTool(
+				{
+					cwd: sessionB.path(),
+					additionalDirectories: [extra.path()],
+					settings: lspTestSettings,
+				} as ToolSession,
+				ownerB,
+			).execute("status-survivor-b", { action: "status" });
+			expect(textResult(statusB)).toMatch(/Language servers: extra @ .* \(ready\)/);
+			expect(textResult(statusB)).not.toMatch(/extra \(configured, not started\)/);
+		} finally {
+			configCache.delete(sessionA.path());
+			configCache.delete(sessionB.path());
+			await lspClient.shutdownAll();
+			sessionA.removeSync();
+			sessionB.removeSync();
+			extra.removeSync();
+		}
+	}, 15_000);
+
 	it("workspace reload replaces a client whose process or initialization config changed", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-identity-");
 		try {

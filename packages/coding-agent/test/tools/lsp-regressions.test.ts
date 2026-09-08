@@ -5263,6 +5263,59 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("retires retained extra-root clients when the new catalog selects a different marker root", async () => {
+		const sessionA = TempDir.createSync("@omp-lsp-move-marker-a-");
+		const sessionB = TempDir.createSync("@omp-lsp-move-marker-b-");
+		const extra = TempDir.createSync("@omp-lsp-move-marker-extra-");
+		const nestedRoot = path.join(extra.path(), "pkg");
+		fs.mkdirSync(nestedRoot);
+		fs.writeFileSync(path.join(nestedRoot, "package.json"), "{}\n");
+		fs.writeFileSync(path.join(extra.path(), ".xyz-project"), "\n");
+		const oldConfig: ServerConfig = {
+			command: "marker-extra-lsp",
+			fileTypes: [".ts"],
+			rootMarkers: ["package.json"],
+			resolvedRoot: nestedRoot,
+		};
+		const newConfig: ServerConfig = {
+			...oldConfig,
+			rootMarkers: [".xyz-project"],
+			resolvedRoot: extra.path(),
+		};
+		try {
+			configCache.set(sessionA.path(), { servers: { extra: oldConfig }, definitions: { extra: oldConfig } });
+			configCache.set(sessionB.path(), { servers: { extra: newConfig }, definitions: { extra: newConfig } });
+			configCache.set(extra.path(), { servers: { extra: oldConfig }, definitions: { extra: oldConfig } });
+			configCache.set(nestedRoot, { servers: { extra: oldConfig }, definitions: { extra: oldConfig } });
+			const server = installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			await lspClient.getOrCreateClient(oldConfig, sessionA.path(), 1_000, undefined, owner);
+
+			await lspClient.releaseUncoveredWorkspaceRoots(
+				[sessionA.path(), extra.path()],
+				[sessionB.path(), extra.path()],
+				owner,
+			);
+
+			expect(server.received.map(message => message.method)).toContain("shutdown");
+			expect(lspClient.getActiveClients(owner).map(entry => entry.name)).not.toContain("marker-extra-lsp");
+
+			const replacement = installHandshakeLsp();
+			const started = await lspClient.getOrCreateClient(newConfig, sessionB.path(), 1_000, undefined, owner);
+			expect(started.cwd).toBe(path.resolve(extra.path()));
+			expect(replacement.received.map(message => message.method)).toContain("initialize");
+		} finally {
+			configCache.delete(sessionA.path());
+			configCache.delete(sessionB.path());
+			configCache.delete(extra.path());
+			configCache.delete(nestedRoot);
+			await lspClient.shutdownAll();
+			sessionA.removeSync();
+			sessionB.removeSync();
+			extra.removeSync();
+		}
+	});
+
 	it("retires extra-root clients when that extra root becomes cwd", async () => {
 		const sessionA = TempDir.createSync("@omp-lsp-move-promote-a-");
 		const sessionB = TempDir.createSync("@omp-lsp-move-promote-b-");

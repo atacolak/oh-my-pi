@@ -22,6 +22,7 @@
 - Rejected collab auto-start from a global config.yml whose config directory was redirected by a project dotenv `PI_CONFIG_DIR`.
 - Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
 - Honored a project `collab.autoStart: false` even when a higher overlay tried to re-enable hosting.
+- Honored a project `collab.autoStart: false` even when a later project settings file tried to re-enable hosting.
 - Honored a lower-precedence overlay `collab.autoStart: false` even when a later overlay tried to re-enable hosting.
 - Refused to attach a collab host that closed fatally before start completed.
 - Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
@@ -38,6 +39,7 @@
 - Distrusted collab auto-start when a project dotenv closes a quoted agent or config directory after an even-length backslash run.
 - Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
 - Trusted collab auto-start from a profile selected by `--profile`, including `--profile default`, even when a project dotenv also declared `OMP_PROFILE` or `PI_PROFILE`.
+- Trusted collab auto-start from a named profile selected by a trusted parent `OMP_PROFILE` even when a project dotenv redirected `PI_CODING_AGENT_DIR`.
 - Trusted collab auto-start from an argv-selected named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
 
 ## [18.1.14] - 2026-09-07

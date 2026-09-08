@@ -464,6 +464,38 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("trusts auto-start from a parent-env named profile after a project agent dir redirect", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const projectDir = path.join(dir, "project");
+		const agentDir = path.join(dir, "profiles", "work", "agent");
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			"collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n",
+		);
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const ctx = context({}, settings);
+		const start = spyOn(CollabHost.prototype, "start").mockResolvedValue();
+		const owned = spyOn(env, "isEnvOwnedByProjectDotenv").mockImplementation(
+			(name: string) => name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR",
+		);
+		const fromArgv = spyOn(dirs, "isProfileSelectedFromArgv").mockReturnValue(false);
+		const profile = spyOn(dirs, "getActiveProfile").mockReturnValue("work");
+		try {
+			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			await expect(autoStartCollab(ctx)).resolves.toBe(true);
+			expect(start).toHaveBeenCalled();
+			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
+		} finally {
+			await ctx.collabHost?.stop("test done");
+			owned.mockRestore();
+			fromArgv.mockRestore();
+			profile.mockRestore();
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("still refuses a project agent dir redirect under an argv-selected default profile", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const projectDir = path.join(dir, "project");
@@ -614,6 +646,34 @@ describe("collab auto-start", () => {
 		try {
 			expect(settings.get("collab.autoStart")).toBe(true);
 			expect(settings.getProvenance("collab.autoStart")).toBe("overlay");
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(start).not.toHaveBeenCalled();
+			expect(ctx.collabHost).toBeUndefined();
+		} finally {
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("honors a lower project auto-start opt-out under a later project re-enablement", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const agentDir = path.join(dir, "agent");
+		const projectDir = path.join(dir, "project");
+		await fs.mkdir(path.join(projectDir, ".omp"), { recursive: true });
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			"collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n",
+		);
+		await Bun.write(path.join(projectDir, ".omp", "settings.json"), JSON.stringify({ collab: { autoStart: false } }));
+		await Bun.write(path.join(projectDir, ".omp", "config.yml"), "collab:\n  autoStart: true\n");
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const ctx = context({}, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		try {
+			expect(settings.get("collab.autoStart")).toBe(true);
+			expect(settings.getProvenance("collab.autoStart")).toBe("project");
+			expect(settings.getProjectSettingsLayers().length).toBeGreaterThanOrEqual(2);
 			await expect(autoStartCollab(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(ctx.collabHost).toBeUndefined();

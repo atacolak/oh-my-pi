@@ -132,6 +132,7 @@ type MainYamlReadResult = {
 type ProjectSettingsReadResult = {
 	settings: RawSettings;
 	fileSettings: RawSettings;
+	layers: RawSettings[];
 	shellPathSource: string | undefined;
 };
 
@@ -488,6 +489,8 @@ export class Settings {
 	#quarantinedYamlTargets = new Map<string, string>();
 	/** Extra config.yml-style overlays passed by CLI */
 	#configOverlay: RawSettings = {};
+	/** Individual project settings files before they are merged. */
+	#projectSettingsLayers: RawSettings[] = [];
 	/** Individual `--config`/`PI_CONFIG_FILES` overlays before they are merged. */
 	#configOverlayLayers: RawSettings[] = [];
 	/** Project settings file that most recently supplied shellPath. */
@@ -818,7 +821,10 @@ export class Settings {
 		cloned.#configPath = this.#configPath;
 		cloned.#global = structuredClone(this.#global);
 		cloned.#project = this.#persist ? await cloned.#loadProjectSettings() : structuredClone(this.#project);
-		if (!this.#persist) cloned.#projectShellPathSource = this.#projectShellPathSource;
+		if (!this.#persist) {
+			cloned.#projectShellPathSource = this.#projectShellPathSource;
+			cloned.#projectSettingsLayers = this.#projectSettingsLayers.map(layer => structuredClone(layer));
+		}
 		cloned.#configFiles = [...this.#configFiles];
 		cloned.#configOverlay = structuredClone(this.#configOverlay);
 		cloned.#configOverlayLayers = this.#configOverlayLayers.map(layer => structuredClone(layer));
@@ -880,6 +886,7 @@ export class Settings {
 			this.#global = globalResult.value.settings ?? {};
 			this.#project = projectResult.value.settings;
 			this.#projectFileSettings = projectResult.value.fileSettings;
+			this.#projectSettingsLayers = projectResult.value.layers;
 			this.#projectShellPathSource = projectResult.value.shellPathSource;
 			this.#configOverlay = overlayResult.value.settings;
 			this.#configOverlayLayers = overlayResult.value.layers;
@@ -973,6 +980,15 @@ export class Settings {
 	 */
 	getProjectSettings(): RawSettings {
 		return structuredClone(this.#project);
+	}
+
+	/**
+	 * Individual project settings files, deep-cloned and ordered from lowest to
+	 * highest precedence. Companion to {@link getProjectSettings} so callers can
+	 * inspect a value that a later project file collapsed out of the merged view.
+	 */
+	getProjectSettingsLayers(): RawSettings[] {
+		return this.#projectSettingsLayers.map(layer => structuredClone(layer));
 	}
 
 	/**
@@ -1835,11 +1851,14 @@ export class Settings {
 	async #readProjectSettings(quarantineInvalid: boolean): Promise<ProjectSettingsReadResult> {
 		let shellPathSource: string | undefined;
 		let merged: RawSettings = {};
+		const layers: RawSettings[] = [];
 		try {
 			const result = await loadCapability(settingsCapability.id, { cwd: this.#cwd });
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level === "project") {
-					merged = this.#deepMerge(merged, dropSettingsGroupShadows(item.data as RawSettings, item.path));
+					const layer = dropSettingsGroupShadows(item.data as RawSettings, item.path);
+					layers.push(structuredClone(layer));
+					merged = this.#deepMerge(merged, layer);
 					if (Object.hasOwn(item.data, "shellPath")) shellPathSource = item.path;
 				}
 			}
@@ -1860,6 +1879,7 @@ export class Settings {
 		return {
 			settings: this.#migrateRawSettings(merged, quarantineInvalid),
 			fileSettings: structuredClone(nativeProject),
+			layers,
 			shellPathSource,
 		};
 	}
@@ -1867,6 +1887,7 @@ export class Settings {
 	async #loadProjectSettings(): Promise<RawSettings> {
 		const result = await this.#readProjectSettings(true);
 		this.#projectFileSettings = result.fileSettings;
+		this.#projectSettingsLayers = result.layers;
 		this.#projectShellPathSource = result.shellPathSource;
 		return result.settings;
 	}

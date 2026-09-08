@@ -37,6 +37,8 @@
 - Trusted collab auto-start from a profile selected by `--profile`, including `--profile default`, even when a project dotenv also declared `OMP_PROFILE` or `PI_PROFILE`.
 - Distrusted collab auto-start when a project dotenv closes a quoted agent or config directory after an even-length backslash run.
 - Trusted collab auto-start from an argv-selected named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
+- Trusted collab auto-start from a parent-env named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
+- Honored a lower project `collab.autoStart: false` even when a later project file tried to re-enable hosting.
 - Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
 
 ## [18.1.14] - 2026-09-07

@@ -995,6 +995,175 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("workspace symbol search uses an already-started nested client when cwd has no server", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-nested-workspace-symbols-");
+		try {
+			const { projectRoot, filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "basedpyright-langserver" ? "/usr/bin/basedpyright-langserver" : null,
+			);
+			const roots: string[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => {
+				roots.push(config.resolvedRoot ?? cwd);
+				return mockLspClient(config, cwd);
+			});
+			vi.spyOn(lspClient, "ensureFileOpen").mockResolvedValue();
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_client, method) => {
+				if (method === "workspace/symbol") {
+					return [
+						{
+							name: "nestedExample",
+							kind: 12,
+							location: {
+								uri: `file://${filePath}`,
+								range: {
+									start: { line: 0, character: 4 },
+									end: { line: 0, character: 11 },
+								},
+							},
+						},
+					];
+				}
+				return { contents: { kind: "markdown", value: "nested-root-hover" } };
+			});
+			vi.spyOn(lspClient, "getActiveClients").mockImplementation(() =>
+				roots.includes(projectRoot)
+					? [
+							{
+								name: "basedpyright-langserver",
+								status: "ready",
+								fileTypes: ["py"],
+								cwd: projectRoot,
+								resolvedRoot: projectRoot,
+								resolvedCommand: "/usr/bin/basedpyright-langserver",
+							},
+						]
+					: [],
+			);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const missing = await tool.execute("nested-workspace-symbols-before", {
+				action: "symbols",
+				file: "*",
+				query: "nestedExample",
+			});
+			const missingText = missing.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			expect(missingText).toBe("No language server found for this action");
+
+			await tool.execute("nested-hover-before-symbols", {
+				action: "hover",
+				file: filePath,
+				line: 1,
+				symbol: "example",
+			});
+			const result = await tool.execute("nested-workspace-symbols", {
+				action: "symbols",
+				file: "*",
+				query: "nestedExample",
+			});
+			const text = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			expect(text).toContain("nestedExample");
+			expect(roots.filter(root => root === projectRoot).length).toBeGreaterThan(1);
+			expect(discoverStartupLspServers(tempDir.path()).map(s => s.name)).not.toContain("basedpyright");
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("workspace symbol search keeps cwd servers and already-started nested clients", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-cwd-and-nested-workspace-symbols-");
+		try {
+			fs.writeFileSync(path.join(tempDir.path(), "package.json"), "{}\n");
+			const { projectRoot, filePath } = writePythonProject(tempDir.path(), "python", "example.py");
+			vi.spyOn(piUtils, "$which").mockImplementation(command => {
+				if (command === "basedpyright-langserver") return "/usr/bin/basedpyright-langserver";
+				if (command === "typescript-language-server") return "/usr/bin/typescript-language-server";
+				return null;
+			});
+			const roots: string[] = [];
+			vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async (config, cwd) => {
+				roots.push(config.resolvedRoot ?? cwd);
+				return mockLspClient(config, cwd);
+			});
+			vi.spyOn(lspClient, "ensureFileOpen").mockResolvedValue();
+			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (client, method) => {
+				if (method === "workspace/symbol") {
+					const root = client.config.resolvedRoot ?? client.cwd;
+					if (root === projectRoot) {
+						return [
+							{
+								name: "nestedExample",
+								kind: 12,
+								location: {
+									uri: `file://${filePath}`,
+									range: {
+										start: { line: 0, character: 4 },
+										end: { line: 0, character: 11 },
+									},
+								},
+							},
+						];
+					}
+					return [
+						{
+							name: "cwdExample",
+							kind: 13,
+							location: {
+								uri: `file://${path.join(tempDir.path(), "index.ts")}`,
+								range: {
+									start: { line: 0, character: 13 },
+									end: { line: 0, character: 18 },
+								},
+							},
+						},
+					];
+				}
+				return { contents: { kind: "markdown", value: "nested-root-hover" } };
+			});
+			vi.spyOn(lspClient, "getActiveClients").mockImplementation(() => [
+				{
+					name: "basedpyright-langserver",
+					status: "ready",
+					fileTypes: ["py"],
+					cwd: projectRoot,
+					resolvedRoot: projectRoot,
+					resolvedCommand: "/usr/bin/basedpyright-langserver",
+				},
+			]);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			await tool.execute("nested-hover-for-cwd-symbols", {
+				action: "hover",
+				file: filePath,
+				line: 1,
+				symbol: "example",
+			});
+			const result = await tool.execute("cwd-and-nested-workspace-symbols", {
+				action: "symbols",
+				file: "*",
+				query: "Example",
+			});
+			const text = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			expect(text).toContain("nestedExample");
+			expect(text).toContain("cwdExample");
+			expect(roots).toContain(projectRoot);
+			expect(roots).toContain(tempDir.path());
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("routes nested edit/write diagnostics through the nested project root", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-nested-write-");
 		try {

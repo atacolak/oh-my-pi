@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `lsp` workspace symbol search ignoring already-started nested language servers when the session cwd has no root marker, so `symbols` with `file=*` still queries those clients instead of reporting no server.
 - Fixed `lsp status` reporting a reused language server as not started after `reload *` changed only the command spelling to the same resolved binary, so status matches the catalog identity instead of listing the live process twice.
 - Fixed overlapping sessions that share one extra-root language server overwriting each other's `fileTypes` on the live client, so `lsp status` still matches the catalog that acquired that process.
 - Fixed `/move` keeping a nested extra-root language server when the new cwd catalog only changed `rootMarkers`, so the next file operation starts the marker-selected replacement instead of leaking the old process.

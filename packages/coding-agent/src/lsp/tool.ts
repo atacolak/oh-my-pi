@@ -54,7 +54,7 @@ import {
 	waitForProjectLoaded,
 } from "./client";
 import { getLinterClient } from "./clients";
-import { configCache, getConfig, getServersForFile } from "./config";
+import { configCache, getConfig, getServersForFile, type LspConfig } from "./config";
 import {
 	BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	formatLocationWithContext,
@@ -205,6 +205,73 @@ function statusClientMatchesDefinition(client: LspServerStatus, serverConfig: Se
 		(client.languageId ?? null) === (serverConfig.languageId ?? null) &&
 		stableStringifyJson(client.fileTypes) === stableStringifyJson(serverConfig.fileTypes)
 	);
+}
+
+function workspaceSymbolClientIdentity(config: ServerConfig, cwd: string): string {
+	return stableStringifyJson([
+		canonicalSpawnCommand(config),
+		config.args ?? [],
+		config.initOptions ?? null,
+		config.settings ?? null,
+		config.languageId ?? null,
+		config.resolvedRoot ?? cwd,
+	]);
+}
+
+function serverConfigFromActiveClient(client: LspServerStatus): ServerConfig {
+	const root = statusClientRoot(client);
+	return {
+		command: client.name,
+		resolvedCommand: client.resolvedCommand,
+		args: client.args,
+		fileTypes: client.fileTypes,
+		initOptions: client.initOptions,
+		settings: client.settings,
+		languageId: client.languageId,
+		resolvedRoot: root,
+		rootMarkers: [],
+	};
+}
+
+/**
+ * Workspace/symbol has no concrete file, so cwd-rooted `config.servers` misses
+ * nested clients started by an earlier file operation. Fold those in without
+ * spawning undiscovered nested projects.
+ */
+function workspaceSymbolSearchServers(
+	config: LspConfig,
+	owner: LspClientOwner | undefined,
+	sessionCwd: string,
+	workspaceRoots: string[],
+): Array<[string, ServerConfig]> {
+	const catalog = config.definitions ?? config.servers;
+	const sessionWorkspace = { cwd: workspaceRoots[0], directories: workspaceRoots };
+	const targets: Array<[string, ServerConfig]> = [];
+	const seen = new Set<string>();
+
+	const add = (name: string, serverConfig: ServerConfig, cwd: string): void => {
+		if (serverConfig.createClient || serverConfig.isLinter) return;
+		const identity = workspaceSymbolClientIdentity(serverConfig, cwd);
+		if (seen.has(identity)) return;
+		seen.add(identity);
+		targets.push([name, serverConfig]);
+	};
+
+	for (const [name, serverConfig] of getLspServers(config)) {
+		add(name, serverConfig, sessionCwd);
+	}
+
+	for (const client of getActiveClients(owner)) {
+		const root = statusClientRoot(client);
+		if (!root || !workspaceRootForPath(root, sessionWorkspace)) continue;
+		const nestedConfig = serverConfigFromActiveClient(client);
+		const catalogName =
+			Object.entries(catalog).find(([, serverConfig]) => statusClientMatchesDefinition(client, serverConfig))?.[0] ??
+			client.name;
+		add(catalogName, nestedConfig, root);
+	}
+
+	return targets;
 }
 
 /** Filesystem error detail safe for model/TUI output: never echo raw paths. */
@@ -1241,7 +1308,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					details: { action, success: false, request: params },
 				};
 			}
-			const servers = getLspServers(config);
+			const servers = workspaceSymbolSearchServers(config, this.#clientOwner, this.session.cwd, workspaceRoots);
 			for (const [, serverConfig] of servers) stampOwnerConfigGeneration(serverConfig, this.#clientOwner);
 			if (servers.length === 0) {
 				return {

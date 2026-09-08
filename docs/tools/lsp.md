@@ -264,7 +264,7 @@ Uses the same location normalization and output shape as `definition`, but sends
   - Caches config per cwd in `configCache`; workspace `reload` invalidates the entry.
   - Caches LSP clients per `command:cwd`, with `pendingRequests`, `diagnostics`, `openFiles`, `serverCapabilities`, and project-load state. The transport may represent a shared mux link rather than an owned process.
   - Caches custom linter clients by `serverName:cwd`.
-  - Updates client `lastActivity`; optional idle-timeout cleanup is driven by `setIdleTimeout()`.
+  - Updates client `lastActivity`; optional idle-timeout cleanup is driven by workspace `idleTimeoutMs` or `setIdleTimeout()`.
 - Background work / cancellation
   - Every request has an abortable timeout signal.
   - Aborting an in-flight LSP request sends `$/cancelRequest`.

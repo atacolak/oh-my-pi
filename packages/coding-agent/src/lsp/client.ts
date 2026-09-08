@@ -687,18 +687,24 @@ function configuredIdleTimeoutMs(cwd: string): number | undefined {
 }
 
 function idleTimeoutOriginCwds(client: LspClient): string[] {
-	const cwds = new Set<string>([client.cwd]);
 	const origins = clientIdleTimeoutOrigins.get(client.name);
-	if (!origins) return Array.from(cwds);
 	const owners = clientOwners.get(client.name);
+	const cwds = new Set<string>();
 	if (owners && owners.size > 0) {
 		for (const owner of owners) {
-			const ownerCwds = origins.get(owner);
+			const ownerCwds = origins?.get(owner);
 			if (ownerCwds) for (const cwd of ownerCwds) cwds.add(cwd);
 		}
 	}
-	const ownerless = origins.get(OWNERLESS_IDLE_ORIGIN);
+	const ownerless = origins?.get(OWNERLESS_IDLE_ORIGIN);
 	if (ownerless) for (const cwd of ownerless) cwds.add(cwd);
+	// Spawn cwd is an origin only for ownerless processes (or an explicit
+	// ownerless stamp). Remaining owners use the session/request cwds they
+	// recorded; a released nested owner must not leave its spawn-root
+	// timeout on a sibling that never configured one.
+	if (!owners || owners.size === 0 || ownerless) {
+		cwds.add(client.cwd);
+	}
 	return Array.from(cwds);
 }
 
@@ -2373,7 +2379,7 @@ export async function getOrCreateClient(
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	const rememberAcquiredIdleTimeout = (client?: LspClient): void => {
-		rememberIdleTimeoutOrigins(key, owner, originCwd, cwd);
+		rememberIdleTimeoutOrigins(key, owner, originCwd);
 		if (client) maybeStartIdleChecker(client);
 	};
 	// Check if client already exists
@@ -2671,7 +2677,7 @@ export async function getActiveOrPendingClient(
 	const key = clientKey(config, cwd);
 	const reloadBarriers = collectReloadBarriers(config, cwd);
 	const rememberAcquiredIdleTimeout = (acquired: LspClient): void => {
-		rememberIdleTimeoutOrigins(key, owner, originCwd, cwd);
+		rememberIdleTimeoutOrigins(key, owner, originCwd);
 		maybeStartIdleChecker(acquired);
 	};
 	const client = clients.get(key);

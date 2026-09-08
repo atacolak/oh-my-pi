@@ -31,6 +31,7 @@ import {
 	clearInitializationFailure,
 	clearWorkspaceInitializationFailures,
 	ensureFileOpen,
+	canonicalSpawnCommand,
 	fallbackLspClientOwner,
 	getActiveClients,
 	getActiveOrPendingClient,
@@ -196,7 +197,8 @@ function statusClientRoot(client: LspServerStatus): string | undefined {
 /** True when a live client is the same identity as a catalog definition. */
 function statusClientMatchesDefinition(client: LspServerStatus, serverConfig: ServerConfig): boolean {
 	return (
-		client.name === serverConfig.command &&
+		canonicalSpawnCommand({ command: client.name, resolvedCommand: client.resolvedCommand }) ===
+			canonicalSpawnCommand(serverConfig) &&
 		stableStringifyJson(client.args ?? []) === stableStringifyJson(serverConfig.args ?? []) &&
 		stableStringifyJson(client.initOptions ?? null) === stableStringifyJson(serverConfig.initOptions ?? null) &&
 		stableStringifyJson(client.settings ?? null) === stableStringifyJson(serverConfig.settings ?? null) &&

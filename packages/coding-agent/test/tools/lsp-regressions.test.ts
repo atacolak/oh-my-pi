@@ -5606,6 +5606,48 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload matches a reused client after command spelling changes", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-command-status-");
+		try {
+			installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const resolvedCommand = path.join(tempDir.path(), "bin", "fake-lsp");
+			fs.mkdirSync(path.dirname(resolvedCommand));
+			fs.writeFileSync(resolvedCommand, "#!/bin/sh\nexit 0\n");
+			fs.chmodSync(resolvedCommand, 0o755);
+			const oldConfig: ServerConfig = {
+				command: "fake-lsp",
+				resolvedCommand,
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			const started = await lspClient.getOrCreateClient(oldConfig, tempDir.path(), 1_000, undefined, owner);
+			const newConfig: ServerConfig = {
+				command: resolvedCommand,
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": newConfig },
+				definitions: { "fake-lsp": newConfig },
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			await tool.execute("reload-command-spelling", { action: "reload", file: "*" });
+			const status = await tool.execute("status-command-spelling", { action: "status" });
+			const output = textResult(status);
+			expect(output).toContain("Language servers: fake-lsp (ready)");
+			expect(output).not.toMatch(/fake-lsp \(configured, not started\)/);
+			expect(output).not.toMatch(/fake-lsp @/);
+			expect(started.config.command).toBe(resolvedCommand);
+			expect(lspClient.getActiveClients(owner).map(client => client.name)).toEqual([resolvedCommand]);
+			expect(started).toBe(await lspClient.getOrCreateClient(newConfig, tempDir.path(), 1_000, undefined, owner));
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("keeps per-owner fileTypes when overlapping sessions share a client", async () => {
 		const extra = TempDir.createSync("@omp-lsp-shared-filetypes-extra-");
 		const nestedRoot = path.join(extra.path(), "nested");

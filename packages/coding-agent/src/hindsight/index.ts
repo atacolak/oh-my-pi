@@ -3,6 +3,7 @@ export * from "./bank";
 export * from "./client";
 export * from "./config";
 export * from "./content";
+export * from "./knowledge-pages";
 export * from "./mental-models";
 export * from "./state";
 export * from "./transcript";

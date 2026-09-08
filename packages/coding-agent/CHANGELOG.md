@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `rename_file` skipping `workspace/didRenameFiles` for parent or sibling language servers when overlay reconciliation fails after a nested directory move, so those remaining servers still receive the rename before the error is surfaced.
 - Fixed shutdown restoring a session that was disposed while a shared language-server process was still tearing down, so a force-kill survivor is no longer kept alive by that unreachable owner.
 - Fixed releasing the last nested owner that configured `idleTimeoutMs` leaving the language-server idle checker running on a shared process with no remaining timeout, so SDK and embedded sessions can still exit after that owner is disposed.
 - Fixed overlapping sessions keeping a released nested owner's spawn-root idle timeout on a shared language-server process, so a later idle sweep uses remaining owners' session timeouts instead of shutting down a sibling that never configured one.
@@ -140,6 +141,7 @@
 - Fixed writes after `/add-dir` skipping nested language-server formatting and diagnostics because the write tool kept construction-time workspace roots.
 - Fixed the public LSP factory ignoring `enableLsp=false`, so SDK advisor sessions that disable LSP no longer receive the tool.
 - Fixed language servers in nested projects (for example `python/pyproject.toml` under a monorepo root) staying inactive until omp was started inside that subdirectory; concrete file operations now discover the nearest matching root lazily without recursively scanning the workspace at startup ([#1648](https://github.com/can1357/oh-my-pi/issues/1648)).
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed

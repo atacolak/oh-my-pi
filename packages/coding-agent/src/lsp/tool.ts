@@ -1078,7 +1078,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					serverNotes.push(`  ${serverName}: ${msg}`);
 				}
 			}
-			if (reconcileError) throw reconcileError;
 			for (const [serverName, serverConfig] of servers) {
 				if (survivingConfigs.has(serverConfig)) continue;
 				const serverPairs = pairsForServer(serverConfig);
@@ -1088,7 +1087,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						serverConfig,
 						this.session.cwd,
 						undefined,
-						signal,
+						survivingNotifySignal,
 						this.#clientOwner,
 					);
 					for (const pair of serverPairs) {
@@ -1098,20 +1097,26 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 								client,
 								"textDocument/didClose",
 								{ textDocument: { uri: overlayOldUri } },
-								signal,
+								survivingNotifySignal,
 							);
 							client.openFiles.delete(overlayOldUri);
 						}
 					}
-					await sendNotification(client, "workspace/didRenameFiles", { files: serverPairs }, signal);
+					await sendNotification(
+						client,
+						"workspace/didRenameFiles",
+						{ files: serverPairs },
+						survivingNotifySignal,
+					);
 				} catch (err) {
-					if (err instanceof ToolAbortError || signal?.aborted) {
+					if (!reconcileError && (err instanceof ToolAbortError || signal?.aborted)) {
 						throw err;
 					}
 					const msg = err instanceof Error ? err.message : String(err);
 					serverNotes.push(`  ${serverName}: ${msg}`);
 				}
 			}
+			if (reconcileError) throw reconcileError;
 
 			if (serverNotes.length > 0) {
 				summary.push("  Server notes:");

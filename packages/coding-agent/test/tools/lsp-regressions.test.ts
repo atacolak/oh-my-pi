@@ -7957,6 +7957,90 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file still notifies a parent-root client when overlay reconciliation fails", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-root-parent-reconcile-fail-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const destRoot = path.join(tempDir.path(), "moved");
+			fs.mkdirSync(nestedRoot);
+			const sourceFile = path.join(nestedRoot, "old.ts");
+			await Bun.write(sourceFile, "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const parentConfig: ServerConfig = {
+				command: "parent-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const nestedServer = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "workspace/willRenameFiles") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			const nestedClient = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner);
+			const parentServer = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "workspace/willRenameFiles") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const parentClient = await lspClient.getOrCreateClient(parentConfig, tempDir.path(), 1_000, undefined, owner);
+			expect(nestedClient.cwd).toBe(nestedRoot);
+			expect(parentClient.cwd).toBe(tempDir.path());
+			nestedClient.resolveProjectLoaded();
+			parentClient.resolveProjectLoaded();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig, parent: parentConfig },
+				idleTimeoutMs: undefined,
+			});
+			const controller = new AbortController();
+			vi.spyOn(lspClient, "reconcileExecutedChanges").mockImplementation(async () => {
+				controller.abort(new Error("overlay notify timed out"));
+				throw controller.signal.reason instanceof Error
+					? controller.signal.reason
+					: new Error("overlay notify timed out");
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			await expect(
+				tool.execute(
+					"rename-root-parent-reconcile-fail",
+					{
+						action: "rename_file",
+						file: nestedRoot,
+						new_name: destRoot,
+						timeout: 5,
+					},
+					controller.signal,
+				),
+			).rejects.toThrow(/overlay notify timed out/);
+
+			expect(fs.existsSync(nestedRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			expect(parentServer.received.map(message => message.method)).toContain("workspace/didRenameFiles");
+			expect(nestedServer.received.map(message => message.method)).toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace edits retire a nested client whose project root was renamed", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-root-retire-");
 		try {

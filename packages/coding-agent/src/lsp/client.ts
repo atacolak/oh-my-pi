@@ -185,6 +185,7 @@ type IdleOriginOwner = LspClientOwner | typeof OWNERLESS_IDLE_ORIGIN;
 interface UnpublishedClientOwnership {
 	owners: LspClientOwner[];
 	roots: Map<LspClientOwner, string[]>;
+	routing: Map<LspClientOwner, { command: string; fileTypes: string[] }>;
 	idleOrigins: Map<IdleOriginOwner, string[]>;
 }
 
@@ -220,8 +221,23 @@ function snapshotClientOwnership(key: string): UnpublishedClientOwnership {
 	return {
 		owners,
 		roots: new Map(owners.map(owner => [owner, Array.from(ownerClientRoots.get(owner)?.get(key) ?? [])])),
+		routing: new Map(
+			owners.flatMap(owner => {
+				const routing = ownerClientRouting.get(owner)?.get(key);
+				return routing ? [[owner, { command: routing.command, fileTypes: [...routing.fileTypes] }] as const] : [];
+			}),
+		),
 		idleOrigins: snapshotIdleTimeoutOrigins(key),
 	};
+}
+
+function restoreClientOwnership(key: string, snapshot: UnpublishedClientOwnership): void {
+	restoreIdleTimeoutOrigins(key, snapshot.idleOrigins);
+	for (const owner of snapshot.owners) {
+		registerClientOwner(key, owner, snapshot.roots.get(owner));
+		const routing = snapshot.routing.get(owner);
+		if (routing) setOwnerClientRouting(owner, key, routing);
+	}
 }
 
 function unpublishClient(key: string, client: LspClient): boolean {
@@ -3053,8 +3069,6 @@ async function waitForExit(client: LspClient, timeoutMs: number): Promise<boolea
 export async function shutdownClientInstance(client: LspClient): Promise<boolean> {
 	const unpublished = clients.get(client.name) === client;
 	const snapshot = unpublished ? snapshotClientOwnership(client.name) : unpublishedClientOwnership.get(client);
-	const previousOwners = snapshot?.owners ?? [];
-	const previousOwnerRoots = snapshot?.roots ?? new Map();
 	if (unpublished) {
 		if (snapshot) unpublishedClientOwnership.set(client, snapshot);
 		clients.delete(client.name);
@@ -3091,8 +3105,7 @@ export async function shutdownClientInstance(client: LspClient): Promise<boolean
 		unpublishedClientOwnership.delete(client);
 		if (!clients.has(client.name)) {
 			clients.set(client.name, client);
-			if (snapshot) restoreIdleTimeoutOrigins(client.name, snapshot.idleOrigins);
-			for (const owner of previousOwners) registerClientOwner(client.name, owner, previousOwnerRoots.get(owner));
+			if (snapshot) restoreClientOwnership(client.name, snapshot);
 			maybeStartIdleChecker(client);
 		}
 		return false;

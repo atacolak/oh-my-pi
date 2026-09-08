@@ -194,6 +194,15 @@ function statusClientRoot(client: LspServerStatus): string | undefined {
 	return client.resolvedRoot ?? client.cwd;
 }
 
+/**
+ * `loadConfig()` keeps unresolved catalog entries in `definitions` and the
+ * PATH/project-local binary only on `servers`. Status matching must use that
+ * resolved cwd entry so a live client is not listed as not started.
+ */
+function statusMatchCatalog(config: LspConfig): Record<string, ServerConfig> {
+	return { ...config.definitions, ...config.servers };
+}
+
 /** True when a live client is the same identity as a catalog definition. */
 function statusClientMatchesDefinition(client: LspServerStatus, serverConfig: ServerConfig): boolean {
 	return (
@@ -244,7 +253,7 @@ function workspaceSymbolSearchServers(
 	sessionCwd: string,
 	workspaceRoots: string[],
 ): Array<[string, ServerConfig]> {
-	const catalog = config.definitions ?? config.servers;
+	const catalog = statusMatchCatalog(config);
 	const sessionWorkspace = { cwd: workspaceRoots[0], directories: workspaceRoots };
 	const targets: Array<[string, ServerConfig]> = [];
 	const seen = new Set<string>();
@@ -375,7 +384,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				return !root || Boolean(workspaceRootForPath(root, sessionWorkspace));
 			});
 			const startedByConfigName = new Map<string, LspServerStatus[]>();
-			const catalog = config.definitions ?? config.servers;
+			const catalog = statusMatchCatalog(config);
 			const assignedClients = new Set<LspServerStatus>();
 			for (const name of configuredNames) {
 				const serverConfig = catalog[name];

@@ -5606,6 +5606,44 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("status matches a started client against the resolved cwd catalog entry", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-status-resolved-command-");
+		try {
+			installHandshakeLsp();
+			const owner = lspClient.createLspClientOwner();
+			const resolvedCommand = path.join(tempDir.path(), "bin", "fake-lsp");
+			fs.mkdirSync(path.dirname(resolvedCommand));
+			fs.writeFileSync(resolvedCommand, "#!/bin/sh\nexit 0\n");
+			fs.chmodSync(resolvedCommand, 0o755);
+			const startedConfig: ServerConfig = {
+				command: "fake-lsp",
+				resolvedCommand,
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			await lspClient.getOrCreateClient(startedConfig, tempDir.path(), 1_000, undefined, owner);
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": startedConfig },
+				definitions: {
+					"fake-lsp": {
+						command: "fake-lsp",
+						fileTypes: [".ts"],
+						rootMarkers: [],
+					},
+				},
+				idleTimeoutMs: undefined,
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			const output = textResult(await tool.execute("status-resolved-command", { action: "status" }));
+			expect(output).toContain("Language servers: fake-lsp (ready)");
+			expect(output).not.toMatch(/fake-lsp \(configured, not started\)/);
+			expect(output).not.toMatch(/fake-lsp @/);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload matches a reused client after command spelling changes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-command-status-");
 		try {

@@ -29,6 +29,7 @@
 - Distrusted collab auto-start when a project dotenv overwrites an empty launcher `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
 - Distrusted collab auto-start when a project `.env` sets `NODE_ENV` and the agent or config directory redirect lives in `.env.development`.
 - Rejected collab auto-start from a profile selected by a project dotenv `OMP_PROFILE` or `PI_PROFILE`.
+- Trusted collab auto-start from a parent `OMP_PROFILE` even when project dotenv set the ignored `PI_PROFILE` fallback.
 - Stopped collab hosting on interactive shutdown before awaiting live-mode teardown.
 - Shortened collab and MCP status home paths even when the home directory contains spaces.
 - Closed the collab relay socket when host start is cancelled after the handshake opens.

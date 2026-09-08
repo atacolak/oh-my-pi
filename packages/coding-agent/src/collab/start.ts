@@ -183,16 +183,23 @@ const PROJECT_DOTENV_GLOBAL_DIR_KEYS = [
 	"PI_PROFILE",
 ] as const;
 
+function isEffectiveOmpProfile(): boolean {
+	return Boolean(process.env.OMP_PROFILE);
+}
+
 function isTrustedNamedProfile(): boolean {
 	if (!getActiveProfile()) return false;
 	if (isProfileSelectedFromArgv()) return true;
-	return !env.isEnvOwnedByProjectDotenv("OMP_PROFILE") && !env.isEnvOwnedByProjectDotenv("PI_PROFILE");
+	if (isEffectiveOmpProfile()) return !env.isEnvOwnedByProjectDotenv("OMP_PROFILE");
+	return !env.isEnvOwnedByProjectDotenv("PI_PROFILE");
 }
 
 function isProjectDotenvGlobalUntrusted(): boolean {
 	const ignoreAgentDir = isTrustedNamedProfile();
+	const skipFallbackPiProfile = isEffectiveOmpProfile();
 	return PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => {
 		if (ignoreAgentDir && (name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR")) return false;
+		if (skipFallbackPiProfile && name === "PI_PROFILE") return false;
 		return env.isEnvOwnedByProjectDotenv(name);
 	});
 }

@@ -464,6 +464,42 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("trusts auto-start from a parent OMP_PROFILE even when project dotenv owns PI_PROFILE", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const projectDir = path.join(dir, "project");
+		const agentDir = path.join(dir, "profiles", "work", "agent");
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			"collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n",
+		);
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const ctx = context({}, settings);
+		const start = spyOn(CollabHost.prototype, "start").mockResolvedValue();
+		const owned = spyOn(env, "isEnvOwnedByProjectDotenv").mockImplementation(
+			(name: string) => name === "PI_PROFILE" || name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR",
+		);
+		const fromArgv = spyOn(dirs, "isProfileSelectedFromArgv").mockReturnValue(false);
+		const profile = spyOn(dirs, "getActiveProfile").mockReturnValue("work");
+		const previousOmpProfile = process.env.OMP_PROFILE;
+		process.env.OMP_PROFILE = "work";
+		try {
+			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			await expect(autoStartCollab(ctx)).resolves.toBe(true);
+			expect(start).toHaveBeenCalled();
+			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
+		} finally {
+			if (previousOmpProfile === undefined) delete process.env.OMP_PROFILE;
+			else process.env.OMP_PROFILE = previousOmpProfile;
+			await ctx.collabHost?.stop("test done");
+			owned.mockRestore();
+			fromArgv.mockRestore();
+			profile.mockRestore();
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("trusts auto-start from a parent-env named profile after a project agent dir redirect", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const projectDir = path.join(dir, "project");

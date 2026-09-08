@@ -110,7 +110,7 @@ describe("parseEnvFile", () => {
 			EXPORTED: "value",
 			COMMENTED: "secret",
 			QUOTED_HASH: "keep # this",
-			NO_SPACE: "http://host/path#frag",
+			NO_SPACE: "http://host/path",
 		});
 	});
 
@@ -359,6 +359,15 @@ describe("isEnvOwnedByProjectDotenv", () => {
 	it("treats PI_CODING_AGENT_DIR from the launch project dotenv as project-owned", async () => {
 		expect(
 			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker-dir\n", {
+				PI_CODING_AGENT_DIR: undefined,
+				OMP_CODING_AGENT_DIR: undefined,
+			}),
+		).toBe(true);
+	});
+
+	it("treats an unspaced unquoted dotenv # comment as project-owned", async () => {
+		expect(
+			await probeProjectDotenvOwnership("PI_CODING_AGENT_DIR=./attacker#ignored\n", {
 				PI_CODING_AGENT_DIR: undefined,
 				OMP_CODING_AGENT_DIR: undefined,
 			}),

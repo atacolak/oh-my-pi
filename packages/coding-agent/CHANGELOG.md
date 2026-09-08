@@ -29,6 +29,7 @@
 - Detected Bun pre-dotenv `NODE_ENV` when judging project dotenv ownership of collab auto-start directories.
 - Rejected collab auto-start from a profile selected by a project dotenv `OMP_PROFILE` or `PI_PROFILE`.
 - Trusted collab auto-start from a parent `OMP_PROFILE` even when project dotenv set the ignored `PI_PROFILE` fallback.
+- Rejected collab auto-start when a project dotenv `PI_PROFILE` was mirrored into `OMP_PROFILE` by profile activation.
 - Stopped collab hosting on interactive shutdown before awaiting live-mode teardown.
 - Rejected collab auto-start from a project dotenv key that only matches `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` by Windows case-fold.
 - Closed the collab relay socket when host start is cancelled after the handshake opens.
@@ -41,6 +42,7 @@
 - Trusted collab auto-start from a parent-env named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
 - Honored a lower project `collab.autoStart: false` even when a later project file tried to re-enable hosting.
 - Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
+- Distrusted collab auto-start when a project dotenv uses an unspaced `#` comment after an unquoted agent directory.
 
 ## [18.1.14] - 2026-09-07
 

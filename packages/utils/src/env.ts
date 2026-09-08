@@ -222,7 +222,7 @@ export function filterChildShellEnv(
 /**
  * Parse a dotenv assignment starting at `lines[start]` with Bun-compatible
  * semantics: an optional `export` prefix, full-line `#` comments, inline `#`
- * comments after whitespace on unquoted values, and single/double/backtick
+ * comments on unquoted values (with or without preceding whitespace), and single/double/backtick
  * quoting. Quoted values may span literal newlines until an unescaped closer;
  * leftover text after that closer (other than a `#` comment) rejects the
  * quoted span so the first line is parsed unquoted, matching Bun. Trailing
@@ -259,7 +259,7 @@ function parseEnvAssignment(
 		}
 	}
 	const unquoted = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
-	const commentIndex = unquoted.search(/[ \t]#/);
+	const commentIndex = unquoted.indexOf("#");
 	return {
 		key,
 		value: (commentIndex === -1 ? unquoted : unquoted.slice(0, commentIndex)).trimEnd(),

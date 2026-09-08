@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getActiveProfile, isProfileSelectedFromArgv } from "@oh-my-pi/pi-utils/dirs";
+import { getActiveProfile, isProfileSelectedFromArgv, isProfileSelectedFromOmpEnv } from "@oh-my-pi/pi-utils/dirs";
 import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
@@ -193,7 +193,7 @@ function collabLayerValue(layer: unknown, path: CollabSettingPath): unknown {
 }
 
 function isEffectiveOmpProfile(): boolean {
-	return Boolean(process.env.OMP_PROFILE);
+	return isProfileSelectedFromOmpEnv();
 }
 
 function isTrustedNamedProfile(): boolean {

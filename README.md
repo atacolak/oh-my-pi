@@ -7,7 +7,7 @@
 > - **Role discovery:** `--agent-cwd` selects the agent-definition project without changing `--cwd`
 > - **Hidden roles:** `hide: true` keeps explicit automation identities out of ambient task rosters
 > - **Resume:** session header `rootAgent` restores `--agent` on continue/fork; conflicting `--agent` is refused, missing privileged roles fail closed
-> - **Upstream base:** [OMP 18.1.14 (`daf07999c2`)](https://github.com/can1357/oh-my-pi/tree/daf07999c2fee9b22edc7bf8fea1fb6272e0df5e)
+> - **Upstream base:** [OMP 18.1.15 (`a33cc26824`)](https://github.com/can1357/oh-my-pi/tree/a33cc26824e3c91edd9fa42d681f10dceb4ac2f0)
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

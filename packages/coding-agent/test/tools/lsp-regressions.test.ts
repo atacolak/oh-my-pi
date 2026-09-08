@@ -5606,6 +5606,62 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("keeps per-owner fileTypes when overlapping sessions share a client", async () => {
+		const extra = TempDir.createSync("@omp-lsp-shared-filetypes-extra-");
+		const nestedRoot = path.join(extra.path(), "nested");
+		fs.mkdirSync(nestedRoot);
+		const sessionA = TempDir.createSync("@omp-lsp-shared-filetypes-a-");
+		const sessionB = TempDir.createSync("@omp-lsp-shared-filetypes-b-");
+		const shared = {
+			command: "shared-filetypes-lsp",
+			rootMarkers: [] as string[],
+			resolvedRoot: nestedRoot,
+		};
+		const configA: ServerConfig = { ...shared, fileTypes: [".ts"] };
+		const configB: ServerConfig = { ...shared, fileTypes: [".js"] };
+		try {
+			configCache.set(sessionA.path(), { servers: { extra: configA }, definitions: { extra: configA } });
+			configCache.set(sessionB.path(), { servers: { extra: configB }, definitions: { extra: configB } });
+			installHandshakeLsp();
+			const ownerA = lspClient.createLspClientOwner();
+			const ownerB = lspClient.createLspClientOwner();
+			const first = await lspClient.getOrCreateClient(configA, sessionA.path(), 1_000, undefined, ownerA);
+			const second = await lspClient.getOrCreateClient(configB, sessionB.path(), 1_000, undefined, ownerB);
+			expect(second).toBe(first);
+			expect(first.config.fileTypes).toEqual([".ts"]);
+			expect(lspClient.getActiveClients(ownerA).map(client => client.fileTypes)).toEqual([[".ts"]]);
+			expect(lspClient.getActiveClients(ownerB).map(client => client.fileTypes)).toEqual([[".js"]]);
+
+			const statusA = await new LspTool(
+				{
+					cwd: sessionA.path(),
+					additionalDirectories: [extra.path()],
+					settings: lspTestSettings,
+				} as ToolSession,
+				ownerA,
+			).execute("status-a", { action: "status" });
+			const statusB = await new LspTool(
+				{
+					cwd: sessionB.path(),
+					additionalDirectories: [extra.path()],
+					settings: lspTestSettings,
+				} as ToolSession,
+				ownerB,
+			).execute("status-b", { action: "status" });
+			expect(textResult(statusA)).toMatch(/Language servers: extra @ .* \(ready\)/);
+			expect(textResult(statusA)).not.toMatch(/extra \(configured, not started\)/);
+			expect(textResult(statusB)).toMatch(/Language servers: extra @ .* \(ready\)/);
+			expect(textResult(statusB)).not.toMatch(/extra \(configured, not started\)/);
+		} finally {
+			configCache.delete(sessionA.path());
+			configCache.delete(sessionB.path());
+			await lspClient.shutdownAll();
+			sessionA.removeSync();
+			sessionB.removeSync();
+			extra.removeSync();
+		}
+	});
+
 	it("workspace reload replaces a client whose process or initialization config changed", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-identity-");
 		try {

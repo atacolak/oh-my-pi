@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed shutdown restoring a session that was disposed while a shared language-server process was still tearing down, so a force-kill survivor is no longer kept alive by that unreachable owner.
 - Fixed releasing the last nested owner that configured `idleTimeoutMs` leaving the language-server idle checker running on a shared process with no remaining timeout, so SDK and embedded sessions can still exit after that owner is disposed.
 - Fixed overlapping sessions keeping a released nested owner's spawn-root idle timeout on a shared language-server process, so a later idle sweep uses remaining owners' session timeouts instead of shutting down a sibling that never configured one.
 - Fixed `lsp status` restoring per-owner command and `fileTypes` routing when shutdown cannot confirm a shared client exited, so a force-kill survivor is still reported as started under each remaining owner's catalog.

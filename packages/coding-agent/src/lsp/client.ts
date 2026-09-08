@@ -65,6 +65,8 @@ export function createLspClientOwner(): LspClientOwner {
 	return Symbol("lsp-client-owner");
 }
 
+const releasedLspClientOwners = new WeakSet<LspClientOwner>();
+
 const sessionFallbackOwners = new WeakMap<object, LspClientOwner>();
 
 /** Reuse one fallback owner for public ToolSession callers that omit both ownership fields. */
@@ -233,8 +235,14 @@ function snapshotClientOwnership(key: string): UnpublishedClientOwnership {
 }
 
 function restoreClientOwnership(key: string, snapshot: UnpublishedClientOwnership): void {
-	restoreIdleTimeoutOrigins(key, snapshot.idleOrigins);
-	for (const owner of snapshot.owners) {
+	const owners = snapshot.owners.filter(owner => !releasedLspClientOwners.has(owner));
+	const idleOrigins = new Map(
+		Array.from(snapshot.idleOrigins).filter(
+			([origin]) => origin === OWNERLESS_IDLE_ORIGIN || !releasedLspClientOwners.has(origin),
+		),
+	);
+	restoreIdleTimeoutOrigins(key, idleOrigins);
+	for (const owner of owners) {
 		registerClientOwner(key, owner, snapshot.roots.get(owner));
 		const routing = snapshot.routing.get(owner);
 		if (routing) setOwnerClientRouting(owner, key, routing);
@@ -564,6 +572,7 @@ async function releaseMovedSymlinkAlias(
 
 /** Release all client identities associated with a disposed tool session. */
 export function releaseLspClientOwner(owner: LspClientOwner): void {
+	releasedLspClientOwners.add(owner);
 	for (const key of Array.from(ownerClientKeys.get(owner) ?? [])) releaseClientOwnerKey(key, owner);
 	ownerReloadGeneration.delete(owner);
 	ownerReleasedKeyGenerations.delete(owner);

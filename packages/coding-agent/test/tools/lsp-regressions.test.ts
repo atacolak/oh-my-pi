@@ -9876,6 +9876,58 @@ describe("lsp regressions", () => {
 		}
 	}, 15_000);
 
+	it("does not restore a session disposed while shutdown cannot confirm exit", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dispose-during-shutdown-");
+		try {
+			const config: ServerConfig = {
+				command: "dispose-during-shutdown-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const server = installFakeLsp(
+				(message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const disposedOwner = lspClient.createLspClientOwner();
+			const liveOwner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, disposedOwner);
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, liveOwner);
+
+			const shuttingDown = lspClient.shutdownClientInstance(client);
+			await server.waitFor(message => message.method === "shutdown");
+			lspClient.releaseLspClientOwner(disposedOwner);
+			expect(await shuttingDown).toBe(false);
+
+			expect(lspClient.getActiveClients(disposedOwner).map(entry => entry.name)).not.toContain(
+				"dispose-during-shutdown-lsp",
+			);
+			expect(lspClient.getActiveClients(liveOwner).map(entry => entry.name)).toContain(
+				"dispose-during-shutdown-lsp",
+			);
+
+			await expect(
+				lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], liveOwner),
+			).rejects.toThrow(/Failed to stop LSP server/);
+			expect(server.received.filter(message => message.method === "shutdown")).toHaveLength(2);
+			expect(lspClient.getActiveClients(disposedOwner).map(entry => entry.name)).not.toContain(
+				"dispose-during-shutdown-lsp",
+			);
+			expect(lspClient.getActiveClients(liveOwner).map(entry => entry.name)).toContain(
+				"dispose-during-shutdown-lsp",
+			);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
 	it("does not drop a replacement client's owners when an earlier instance later exits", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-replacement-owner-");
 		try {

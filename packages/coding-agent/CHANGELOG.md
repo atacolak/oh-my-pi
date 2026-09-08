@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `/move` keeping a nested extra-root language server when the new cwd catalog only changed `rootMarkers`, so the next file operation starts the marker-selected replacement instead of leaking the old process.
 - Fixed `/move` applying every remaining workspace's idle timeout to retained extra-root clients, so a shorter timeout cached on an additional root cannot reap a still-active session's servers.
 - Fixed `/move` restarting a retained extra-root language server whose catalog entry still used a bare command, so a lazily discovered nested process is kept when that command resolves to the same binary.
 - Fixed `/move` failing after the cwd change already committed when a stale extra-root language server refused to exit, so the command still reports success and refreshes from the new directory.

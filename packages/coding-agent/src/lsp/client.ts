@@ -17,7 +17,7 @@ import {
 	workspaceRootForPath,
 } from "../session/session-workspace";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
-import { configCache, loadConfig, resolveCommand, type LspConfig } from "./config";
+import { configCache, findServerRoot, loadConfig, resolveCommand, type LspConfig } from "./config";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
 import { connectSharedLspTransport } from "./mux/daemon";
@@ -609,9 +609,12 @@ async function retireRetainedClientsAbsentFromSessionConfig(
 		if (!catalogRoots.some(root => cwds.some(clientCwd => workspaceContainsPath(root, clientCwd)))) {
 			return;
 		}
-		const match = catalog.find(
-			definition => clientKey(withResolvedCatalogCommand(definition, entry.cwd), entry.cwd) === key,
-		);
+		const match = catalog.find(definition => {
+			const resolved = withResolvedCatalogCommand(definition, entry.cwd);
+			const selectedRoot = selectedRootForCatalogDefinition(resolved, entry.cwd, remainingWorkspaceRoots);
+			if (!selectedRoot || !isEquivalentWorkspaceRoot(selectedRoot, entry.cwd)) return false;
+			return clientKey({ ...resolved, resolvedRoot: selectedRoot }, selectedRoot) === key;
+		});
 		if (match) {
 			freshConfigs.push({ ...withResolvedCatalogCommand(match, entry.cwd), resolvedRoot: entry.cwd });
 		}
@@ -619,6 +622,16 @@ async function retireRetainedClientsAbsentFromSessionConfig(
 	for (const [key, client] of clients) consider(key, client);
 	for (const [key, pending] of clientLocks) consider(key, pending);
 	await shutdownStaleClients(remainingCwd, freshConfigs, signal, catalogRoots, owner, () => false);
+}
+
+function selectedRootForCatalogDefinition(
+	definition: ServerConfig,
+	clientCwd: string,
+	workspaceRoots: readonly string[],
+): string | null {
+	const markers = definition.rootMarkers;
+	if (markers.length === 0 || markers.includes(".")) return clientCwd;
+	return findServerRoot(path.join(clientCwd, "file"), markers, workspaceRoots);
 }
 
 function rememberIdleTimeoutOrigins(key: string, owner: LspClientOwner | undefined, ...cwds: string[]): void {

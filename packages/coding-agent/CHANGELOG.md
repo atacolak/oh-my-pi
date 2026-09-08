@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `lsp status` reporting a reused language server as not started after `reload *` changed only the command spelling to the same resolved binary, so status matches the catalog identity instead of listing the live process twice.
 - Fixed overlapping sessions that share one extra-root language server overwriting each other's `fileTypes` on the live client, so `lsp status` still matches the catalog that acquired that process.
 - Fixed `/move` keeping a nested extra-root language server when the new cwd catalog only changed `rootMarkers`, so the next file operation starts the marker-selected replacement instead of leaking the old process.
 - Fixed `/move` applying every remaining workspace's idle timeout to retained extra-root clients, so a shorter timeout cached on an additional root cannot reap a still-active session's servers.

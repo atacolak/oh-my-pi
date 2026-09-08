@@ -55,7 +55,7 @@ export type LspClientOwner = symbol;
 const clientOwners = new Map<string, Set<LspClientOwner>>();
 const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
 const ownerClientRoots = new Map<LspClientOwner, Map<string, Set<string>>>();
-const ownerClientRouting = new Map<LspClientOwner, Map<string, { fileTypes: string[] }>>();
+const ownerClientRouting = new Map<LspClientOwner, Map<string, { command: string; fileTypes: string[] }>>();
 const ownerReloadGeneration = new Map<LspClientOwner, number>();
 const configReloadGenerations = new Map<LspClientOwner, WeakMap<ServerConfig, number>>();
 const ownerReleasedKeyGenerations = new Map<LspClientOwner, Map<string, number>>();
@@ -117,13 +117,17 @@ function registerClientOwner(
 	for (const root of roots) addOwnerRoutedRoot(key, owner, root);
 }
 
-function setOwnerClientRouting(owner: LspClientOwner, key: string, fileTypes: string[]): void {
+function setOwnerClientRouting(
+	owner: LspClientOwner,
+	key: string,
+	routing: { command: string; fileTypes: string[] },
+): void {
 	let byKey = ownerClientRouting.get(owner);
 	if (!byKey) {
 		byKey = new Map();
 		ownerClientRouting.set(owner, byKey);
 	}
-	byKey.set(key, { fileTypes: [...fileTypes] });
+	byKey.set(key, { command: routing.command, fileTypes: [...routing.fileTypes] });
 }
 
 function forgetOwnerClientRouting(owner: LspClientOwner, key: string): void {
@@ -135,6 +139,11 @@ function forgetOwnerClientRouting(owner: LspClientOwner, key: string): void {
 function ownerClientFileTypes(owner: LspClientOwner | undefined, key: string, fallback: string[]): string[] {
 	if (!owner) return fallback;
 	return ownerClientRouting.get(owner)?.get(key)?.fileTypes ?? fallback;
+}
+
+function ownerClientCommand(owner: LspClientOwner | undefined, key: string, fallback: string): string {
+	if (!owner) return fallback;
+	return ownerClientRouting.get(owner)?.get(key)?.command ?? fallback;
 }
 
 function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
@@ -1869,7 +1878,7 @@ const EXIT_TIMEOUT_MS = 1_000;
  * through a symlink workspace must not mint a second client beside the same
  * physical binary addressed by its real path. Bare PATH names stay as names.
  */
-function canonicalSpawnCommand(config: ServerConfig): string {
+export function canonicalSpawnCommand(config: Pick<ServerConfig, "command" | "resolvedCommand">): string {
 	const spawnCommand = config.resolvedCommand ?? config.command;
 	return spawnCommand.includes("/") || spawnCommand.includes("\\") || path.isAbsolute(spawnCommand)
 		? resolveEquivalentPath(spawnCommand)
@@ -1910,10 +1919,11 @@ function clientKey(config: ServerConfig, cwd: string): string {
 }
 
 /**
- * `clientKey()` omits routing-only fields such as `fileTypes` so a process is
- * reused when only those change. Store them per owner so overlapping sessions
- * with different catalogs keep their own status matching, and copy onto the
- * live client only when no sibling owner already published routing metadata.
+ * `clientKey()` omits routing-only fields such as `fileTypes` and the raw
+ * `command` spelling so a process is reused when only those change. Store them
+ * per owner so overlapping sessions with different catalogs keep their own
+ * status matching, and copy onto the live client only when no sibling owner
+ * already published routing metadata.
  */
 function refreshReusableClientRouting(
 	key: string,
@@ -1921,12 +1931,16 @@ function refreshReusableClientRouting(
 	config: ServerConfig,
 	owner?: LspClientOwner,
 ): void {
-	if (owner) setOwnerClientRouting(owner, key, config.fileTypes);
+	if (owner) setOwnerClientRouting(owner, key, { command: config.command, fileTypes: config.fileTypes });
 	const siblings = clientOwners.get(key);
 	if (owner && siblings && Array.from(siblings).some(item => item !== owner)) {
 		return;
 	}
 	entry.config.fileTypes = config.fileTypes;
+	entry.config.command = config.command;
+	if (config.resolvedCommand !== undefined) {
+		entry.config.resolvedCommand = config.resolvedCommand;
+	}
 }
 
 function clientServerRootKey(config: ServerConfig, cwd: string): string {
@@ -2637,7 +2651,7 @@ export async function getOrCreateClient(
 		}
 	})();
 	registerClientOwner(key, owner, routedRoot);
-	if (owner) setOwnerClientRouting(owner, key, config.fileTypes);
+	if (owner) setOwnerClientRouting(owner, key, { command: config.command, fileTypes: config.fileTypes });
 	clientLocks.set(key, { promise: clientPromise, cwd, config, token: lockToken, owners: pendingOwners });
 	return clientPromise;
 }
@@ -3274,6 +3288,7 @@ export interface LspServerStatus {
 	cwd?: string;
 	/** Routed project root before client-cwd canonicalization. */
 	resolvedRoot?: string;
+	resolvedCommand?: string;
 	args?: string[];
 	initOptions?: Record<string, unknown>;
 	settings?: Record<string, unknown>;
@@ -3288,13 +3303,14 @@ export function getActiveClients(owner?: LspClientOwner): LspServerStatus[] {
 	return Array.from(clients.entries())
 		.filter(([key]) => !owner || clientOwners.get(key)?.has(owner) === true)
 		.map(([key, client]) => ({
-			name: client.config.command,
+			name: ownerClientCommand(owner, key, client.config.command),
 			status: client.status,
 			fileTypes: ownerClientFileTypes(owner, key, client.config.fileTypes),
 			cwd: client.cwd,
 			resolvedRoot:
 				(owner ? ownerClientRoots.get(owner)?.get(key)?.values().next().value : undefined) ??
 				client.config.resolvedRoot,
+			resolvedCommand: client.config.resolvedCommand,
 			args: client.config.args,
 			initOptions: client.config.initOptions,
 			settings: client.config.settings,

@@ -500,6 +500,49 @@ describe("collab auto-start", () => {
 		}
 	});
 
+	it("refuses auto-start when setProfile synthesizes OMP_PROFILE from project PI_PROFILE", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const projectDir = path.join(dir, "project");
+		const agentDir = path.join(dir, "profiles", "evil", "agent");
+		const target = path.join(dir, "sensitive");
+		await fs.mkdir(agentDir, { recursive: true });
+		await Bun.write(
+			path.join(agentDir, "config.yml"),
+			`collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n  writeLinkPath: ${target}\n`,
+		);
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const warnings: string[] = [];
+		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
+		const start = spyOn(CollabHost.prototype, "start");
+		const owned = spyOn(env, "isEnvOwnedByProjectDotenv").mockImplementation(
+			(name: string) => name === "PI_PROFILE" || name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR",
+		);
+		const previousOmpProfile = process.env.OMP_PROFILE;
+		const previousPiProfile = process.env.PI_PROFILE;
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		delete process.env.OMP_PROFILE;
+		process.env.PI_PROFILE = "evil";
+		dirs.setProfile(dirs.resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
+		try {
+			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			await expect(autoStartCollab(ctx)).resolves.toBe(false);
+			expect(start).not.toHaveBeenCalled();
+			expect(await Bun.file(target).exists()).toBe(false);
+			expect(warnings.join(" ")).toContain("outside project settings");
+		} finally {
+			if (previousOmpProfile === undefined) delete process.env.OMP_PROFILE;
+			else process.env.OMP_PROFILE = previousOmpProfile;
+			if (previousPiProfile === undefined) delete process.env.PI_PROFILE;
+			else process.env.PI_PROFILE = previousPiProfile;
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+			dirs.__resetDirsFromEnvForTests();
+			owned.mockRestore();
+			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("trusts auto-start from a parent-env named profile after a project agent dir redirect", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
 		const projectDir = path.join(dir, "project");

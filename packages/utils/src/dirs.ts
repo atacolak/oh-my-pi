@@ -38,6 +38,13 @@ export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const PROFILE_ENV_KEYS = ["OMP_PROFILE", "PI_PROFILE"] as const;
 let profileSelectedFromArgv = false;
+let profileSelectorSource: "argv" | "omp" | "pi" | undefined = readProfileSelectorSource();
+
+function readProfileSelectorSource(): "omp" | "pi" | undefined {
+	if (process.env.OMP_PROFILE !== undefined) return "omp";
+	if (process.env.PI_PROFILE !== undefined) return "pi";
+	return undefined;
+}
 
 /**
  * Names Windows treats as reserved device aliases. Matches the basename
@@ -519,6 +526,7 @@ export function __resetProfileSnapshotForTests(): void {
 export function __resetDirsFromEnvForTests(): void {
 	activeProfile = readProfileFromEnvSafe();
 	profileSelectedFromArgv = false;
+	profileSelectorSource = readProfileSelectorSource();
 	__resetProfileSnapshotForTests();
 	refreshDirsFromEnv();
 }
@@ -527,6 +535,7 @@ export function __resetDirsFromEnvForTests(): void {
 export function setProfile(profile: string | undefined, options?: { fromArgv?: boolean }): void {
 	const next = normalizeProfileName(profile);
 	profileSelectedFromArgv = Boolean(options?.fromArgv);
+	profileSelectorSource = options?.fromArgv ? "argv" : readProfileSelectorSource();
 	if (next && !activeProfile) {
 		// First activation of a named profile in this process: snapshot the
 		// current PI_CODING_AGENT_DIR so a later reset can restore the user's
@@ -561,6 +570,18 @@ export function setProfile(profile: string | undefined, options?: { fromArgv?: b
 /** True when the active profile was selected by `--profile` rather than env. */
 export function isProfileSelectedFromArgv(): boolean {
 	return profileSelectedFromArgv;
+}
+
+/**
+ * True when the active named profile was selected by `OMP_PROFILE` before
+ * {@link setProfile} mirrored the name into both profile variables.
+ * A project-owned `PI_PROFILE` that was copied into `OMP_PROFILE` is not
+ * treated as an independent parent `OMP_PROFILE`.
+ */
+export function isProfileSelectedFromOmpEnv(): boolean {
+	if (profileSelectorSource === "pi") return false;
+	if (profileSelectorSource === "omp") return true;
+	return Boolean(process.env.OMP_PROFILE);
 }
 
 /** Get the active named profile. Undefined means the default profile. */

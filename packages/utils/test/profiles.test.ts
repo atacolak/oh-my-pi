@@ -14,6 +14,7 @@ import {
 	getSessionsDir,
 	getStatsDbPath,
 	isProfileSelectedFromArgv,
+	isProfileSelectedFromOmpEnv,
 	normalizeProfileName,
 	resolveProfileEnv,
 	setAgentDir,
@@ -144,6 +145,19 @@ describe("profile directories", () => {
 
 		setProfile("default", { fromArgv: true });
 		expect(isProfileSelectedFromArgv()).toBe(true);
+	});
+
+	it("does not treat setProfile's OMP_PROFILE mirror as an independent selector", () => {
+		delete process.env.OMP_PROFILE;
+		process.env.PI_PROFILE = "evil";
+		setProfile(resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
+		expect(process.env.OMP_PROFILE === "evil").toBe(true);
+		expect(isProfileSelectedFromOmpEnv()).toBe(false);
+
+		process.env.OMP_PROFILE = "work";
+		process.env.PI_PROFILE = "ignored";
+		setProfile(resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
+		expect(isProfileSelectedFromOmpEnv()).toBe(true);
 	});
 
 	it("treats the default profile as regular mode", () => {

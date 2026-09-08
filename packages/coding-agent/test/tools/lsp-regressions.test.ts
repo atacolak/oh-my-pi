@@ -864,6 +864,40 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("stops the idle checker after releasing the last timeout owner of a shared client", async () => {
+		const nested = TempDir.createSync("@omp-lsp-idle-last-timeout-nested-");
+		const outer = TempDir.createSync("@omp-lsp-idle-last-timeout-outer-");
+		const config: ServerConfig = {
+			command: "fake-lsp-idle-last-timeout-owner",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+			resolvedRoot: nested.path(),
+		};
+		try {
+			configCache.set(nested.path(), { servers: { [config.command]: config }, idleTimeoutMs: 1_000 });
+			configCache.set(outer.path(), { servers: { [config.command]: config } });
+			installHandshakeLsp();
+			const ownerA = lspClient.createLspClientOwner();
+			const ownerB = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, nested.path(), 1_000, undefined, ownerA);
+			const shared = await lspClient.getOrCreateClient(config, outer.path(), 1_000, undefined, ownerB);
+			expect(shared).toBe(client);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+
+			lspClient.releaseLspClientOwner(ownerA);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+			expect(lspClient.getActiveClients(ownerB).map(entry => entry.name)).toContain(
+				"fake-lsp-idle-last-timeout-owner",
+			);
+		} finally {
+			configCache.delete(nested.path());
+			configCache.delete(outer.path());
+			await lspClient.shutdownAll();
+			nested.removeSync();
+			outer.removeSync();
+		}
+	});
+
 	it("keeps inherited nested idle timeout when shutdownAll republishes a survivor", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-idle-survivor-nested-");
 		const nestedRoot = path.join(tempDir.path(), "nested");

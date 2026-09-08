@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed `lsp status` matching live clients against unresolved catalog `definitions` instead of the PATH-resolved `servers` overlay, so a started server is reported as ready instead of configured-not-started.
+- Fixed releasing the last nested owner that configured `idleTimeoutMs` leaving the language-server idle checker running on a shared process with no remaining timeout, so SDK and embedded sessions can still exit after that owner is disposed.
 - Fixed overlapping sessions keeping a released nested owner's spawn-root idle timeout on a shared language-server process, so a later idle sweep uses remaining owners' session timeouts instead of shutting down a sibling that never configured one.
 - Fixed `lsp status` restoring per-owner command and `fileTypes` routing when shutdown cannot confirm a shared client exited, so a force-kill survivor is still reported as started under each remaining owner's catalog.
 - Fixed `lsp` workspace symbol search ignoring already-started nested language servers when the session cwd has no root marker, so `symbols` with `file=*` still queries those clients instead of reporting no server.

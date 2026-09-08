@@ -158,6 +158,7 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	if (byKey?.size === 0) ownerClientRoots.delete(owner);
 	forgetOwnerClientRouting(owner, key);
 	forgetIdleTimeoutOwner(key, owner);
+	reconcileIdleChecker();
 	return !clientOwners.has(key);
 }
 function dropClientOwnership(key: string): void {

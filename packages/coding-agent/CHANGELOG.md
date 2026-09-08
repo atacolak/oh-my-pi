@@ -39,6 +39,7 @@
 - Distrusted collab auto-start when a project dotenv uses a quoted multiline `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
 - Distrusted collab auto-start when a project dotenv uses a quoted multiline agent or config directory whose first line includes trailing whitespace.
 - Distrusted collab auto-start when a project dotenv closes a quoted agent or config directory after an even-length backslash run.
+- Distrusted collab auto-start when a project dotenv uses an unspaced unquoted `#` comment in agent or config directory values.
 - Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
 - Trusted collab auto-start from a profile selected by `--profile`, including `--profile default`, even when a project dotenv also declared `OMP_PROFILE` or `PI_PROFILE`.
 - Trusted collab auto-start from a named profile selected by a trusted parent `OMP_PROFILE` even when a project dotenv redirected `PI_CODING_AGENT_DIR`.

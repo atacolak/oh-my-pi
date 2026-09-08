@@ -55,6 +55,7 @@ export type LspClientOwner = symbol;
 const clientOwners = new Map<string, Set<LspClientOwner>>();
 const ownerClientKeys = new Map<LspClientOwner, Set<string>>();
 const ownerClientRoots = new Map<LspClientOwner, Map<string, Set<string>>>();
+const ownerClientRouting = new Map<LspClientOwner, Map<string, { fileTypes: string[] }>>();
 const ownerReloadGeneration = new Map<LspClientOwner, number>();
 const configReloadGenerations = new Map<LspClientOwner, WeakMap<ServerConfig, number>>();
 const ownerReleasedKeyGenerations = new Map<LspClientOwner, Map<string, number>>();
@@ -116,6 +117,26 @@ function registerClientOwner(
 	for (const root of roots) addOwnerRoutedRoot(key, owner, root);
 }
 
+function setOwnerClientRouting(owner: LspClientOwner, key: string, fileTypes: string[]): void {
+	let byKey = ownerClientRouting.get(owner);
+	if (!byKey) {
+		byKey = new Map();
+		ownerClientRouting.set(owner, byKey);
+	}
+	byKey.set(key, { fileTypes: [...fileTypes] });
+}
+
+function forgetOwnerClientRouting(owner: LspClientOwner, key: string): void {
+	const byKey = ownerClientRouting.get(owner);
+	byKey?.delete(key);
+	if (byKey?.size === 0) ownerClientRouting.delete(owner);
+}
+
+function ownerClientFileTypes(owner: LspClientOwner | undefined, key: string, fallback: string[]): string[] {
+	if (!owner) return fallback;
+	return ownerClientRouting.get(owner)?.get(key)?.fileTypes ?? fallback;
+}
+
 function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	const owners = clientOwners.get(key);
 	owners?.delete(owner);
@@ -126,6 +147,7 @@ function releaseClientOwnerKey(key: string, owner: LspClientOwner): boolean {
 	const byKey = ownerClientRoots.get(owner);
 	byKey?.delete(key);
 	if (byKey?.size === 0) ownerClientRoots.delete(owner);
+	forgetOwnerClientRouting(owner, key);
 	forgetIdleTimeoutOwner(key, owner);
 	return !clientOwners.has(key);
 }
@@ -142,6 +164,7 @@ function dropClientOwnership(key: string): void {
 		const byKey = ownerClientRoots.get(owner);
 		byKey?.delete(key);
 		if (byKey?.size === 0) ownerClientRoots.delete(owner);
+		forgetOwnerClientRouting(owner, key);
 	}
 	clientOwners.delete(key);
 	dropIdleTimeoutOrigins(key);
@@ -1888,10 +1911,21 @@ function clientKey(config: ServerConfig, cwd: string): string {
 
 /**
  * `clientKey()` omits routing-only fields such as `fileTypes` so a process is
- * reused when only those change. Copy them onto the live client so status and
- * later file matching follow the catalog that acquired this identity.
+ * reused when only those change. Store them per owner so overlapping sessions
+ * with different catalogs keep their own status matching, and copy onto the
+ * live client only when no sibling owner already published routing metadata.
  */
-function refreshReusableClientRouting(entry: { config: ServerConfig }, config: ServerConfig): void {
+function refreshReusableClientRouting(
+	key: string,
+	entry: { config: ServerConfig },
+	config: ServerConfig,
+	owner?: LspClientOwner,
+): void {
+	if (owner) setOwnerClientRouting(owner, key, config.fileTypes);
+	const siblings = clientOwners.get(key);
+	if (owner && siblings && Array.from(siblings).some(item => item !== owner)) {
+		return;
+	}
 	entry.config.fileTypes = config.fileTypes;
 }
 
@@ -1943,7 +1977,7 @@ export function shutdownStaleClients(
 	const refreshFreshRouting = (key: string, entry: { cwd: string; config: ServerConfig }): void => {
 		if (!fresh.has(key)) return;
 		const match = configs.find(definition => clientKey(definition, definition.resolvedRoot ?? cwd) === key);
-		if (match) refreshReusableClientRouting(entry, match);
+		if (match) refreshReusableClientRouting(key, entry, match, owner);
 	};
 	for (const [key, pending] of relevantPending) refreshFreshRouting(key, pending);
 	for (const [key, client] of relevantClients) refreshFreshRouting(key, client);
@@ -2337,7 +2371,7 @@ export async function getOrCreateClient(
 	) {
 		registerClientOwner(key, owner, routedRoot);
 		existingClient.lastActivity = Date.now();
-		refreshReusableClientRouting(existingClient, config);
+		refreshReusableClientRouting(key, existingClient, config, owner);
 		rememberAcquiredIdleTimeout(existingClient);
 		return existingClient;
 	}
@@ -2349,7 +2383,7 @@ export async function getOrCreateClient(
 		if (owner) existingLock.owners.add(owner);
 		try {
 			const client = await existingLock.promise;
-			refreshReusableClientRouting(client, config);
+			refreshReusableClientRouting(key, client, config, owner);
 			rememberAcquiredIdleTimeout(client);
 			return client;
 		} catch (error) {
@@ -2397,6 +2431,7 @@ export async function getOrCreateClient(
 		) {
 			registerClientOwner(key, owner, routedRoot);
 			clientAfterReload.lastActivity = Date.now();
+			refreshReusableClientRouting(key, clientAfterReload, config, owner);
 			rememberAcquiredIdleTimeout(clientAfterReload);
 			return clientAfterReload;
 		}
@@ -2406,6 +2441,7 @@ export async function getOrCreateClient(
 			if (owner) lockAfterReload.owners.add(owner);
 			try {
 				const client = await lockAfterReload.promise;
+				refreshReusableClientRouting(key, client, config, owner);
 				rememberAcquiredIdleTimeout(client);
 				return client;
 			} catch (error) {
@@ -2601,6 +2637,7 @@ export async function getOrCreateClient(
 		}
 	})();
 	registerClientOwner(key, owner, routedRoot);
+	if (owner) setOwnerClientRouting(owner, key, config.fileTypes);
 	clientLocks.set(key, { promise: clientPromise, cwd, config, token: lockToken, owners: pendingOwners });
 	return clientPromise;
 }
@@ -2627,6 +2664,7 @@ export async function getActiveOrPendingClient(
 	if (client && canReuseClientDuringReload(key, owner, reloadBarriers, config, cwd)) {
 		registerClientOwner(key, owner, routedRoot);
 		client.lastActivity = Date.now();
+		refreshReusableClientRouting(key, client, config, owner);
 		rememberAcquiredIdleTimeout(client);
 		return client;
 	}
@@ -2637,6 +2675,7 @@ export async function getActiveOrPendingClient(
 	if (owner) pending.owners.add(owner);
 	try {
 		const acquired = await untilAborted(signal, pending.promise);
+		refreshReusableClientRouting(key, acquired, config, owner);
 		rememberAcquiredIdleTimeout(acquired);
 		return acquired;
 	} catch {
@@ -3251,7 +3290,7 @@ export function getActiveClients(owner?: LspClientOwner): LspServerStatus[] {
 		.map(([key, client]) => ({
 			name: client.config.command,
 			status: client.status,
-			fileTypes: client.config.fileTypes,
+			fileTypes: ownerClientFileTypes(owner, key, client.config.fileTypes),
 			cwd: client.cwd,
 			resolvedRoot:
 				(owner ? ownerClientRoots.get(owner)?.get(key)?.values().next().value : undefined) ??

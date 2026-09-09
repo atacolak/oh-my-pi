@@ -13,7 +13,6 @@
 
 - `withFileLock` now honors an optional `AbortSignal` and cancels lock-acquisition retries immediately.
 
-### Fixed
 
 - Treated empty launcher environment variables overwritten by project dotenv files as project-owned.
 - Reused child-shell dotenv reconstruction so Bun's pre-dotenv `NODE_ENV` mode files are treated as project-owned.

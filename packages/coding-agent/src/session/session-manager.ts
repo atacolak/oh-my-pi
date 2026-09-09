@@ -1125,7 +1125,9 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: options?.parentSession,
 			providerPromptCacheKey: options?.providerPromptCacheKey,
+			rootAgent: options?.rootAgent,
 		};
+
 		const workspace = normalizeSessionWorkspace({
 			cwd: this.#cwd,
 			directories: options?.additionalDirectories ?? [],
@@ -1526,7 +1528,9 @@ export class SessionManager {
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
 			parentSession: parentSessionId,
 			providerPromptCacheKey: this.#header.providerPromptCacheKey ?? parentSessionId,
+			rootAgent: this.#header.rootAgent,
 		};
+
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
 		this.#titleUpdatedAt = timestamp;
@@ -2650,6 +2654,15 @@ export class SessionManager {
 		return this.#header;
 	}
 
+	async setRootAgent(name: string): Promise<void> {
+		if (!this.#header) return;
+		const trimmed = name.trim();
+		if (!trimmed || this.#header.rootAgent === trimmed) return;
+		this.#header.rootAgent = trimmed;
+		this.#rewriteRequired = true;
+		await this.#rewriteAtomically();
+	}
+
 	/** All session entries (excludes header). Returns a shallow copy. */
 	getEntries(): SessionEntry[] {
 		return [...this.#entries];
@@ -2758,8 +2771,8 @@ export class SessionManager {
 			titleSource: this.#titleSource,
 			parentSession: this.#persist ? sourceSessionFile : undefined,
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
+			rootAgent: this.#header?.rootAgent,
 		};
-
 		const labels: LabelEntry[] = [];
 		let parentId = entriesToKeep[entriesToKeep.length - 1]?.id ?? null;
 		for (const carried of labelsToCarry) {

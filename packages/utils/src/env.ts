@@ -1,7 +1,14 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, getConfigRootDir, getProjectDir, isProfileSelectedFromArgv, refreshDirsFromEnv } from "./dirs";
+import {
+	getAgentDir,
+	getConfigRootDir,
+	getProjectDir,
+	isProfileSelectedFromArgv,
+	normalizeProfileName,
+	refreshDirsFromEnv,
+} from "./dirs";
 
 export * from "./worker-host";
 
@@ -125,6 +132,15 @@ function readProcessEnv(name: string): string | undefined {
 	return key === undefined ? undefined : process.env[key];
 }
 
+function isDefaultProfileValue(value: string | undefined): boolean {
+	if (value === undefined) return false;
+	try {
+		return normalizeProfileName(value) === undefined;
+	} catch {
+		return false;
+	}
+}
+
 const projectEnvNamesLoadedByOmp = new Set<string>();
 
 function expandDotenvValues(values: Record<string, string>, env: Record<string, string>): Record<string, string> {
@@ -206,7 +222,7 @@ export function filterChildShellEnv(
 /**
  * Parse a dotenv assignment starting at `lines[start]` with Bun-compatible
  * semantics: an optional `export` prefix, full-line `#` comments, inline `#`
- * comments after whitespace on unquoted values, and single/double/backtick
+ * comments on unquoted values (with or without preceding whitespace), and single/double/backtick
  * quoting. Quoted values may span literal newlines until an unescaped closer;
  * leftover text after that closer (other than a `#` comment) rejects the
  * quoted span so the first line is parsed unquoted, matching Bun. Trailing
@@ -243,7 +259,7 @@ function parseEnvAssignment(
 		}
 	}
 	const unquoted = trimmed.slice(eqIndex + 1).replace(/^[ \t]+/, "");
-	const commentIndex = unquoted.search(/[ \t]#/);
+	const commentIndex = unquoted.indexOf("#");
 	return {
 		key,
 		value: (commentIndex === -1 ? unquoted : unquoted.slice(0, commentIndex)).trimEnd(),
@@ -464,7 +480,9 @@ const launchProjectDotenv = (() => {
  * even-length backslash run. Unrecognized `$` syntax fails closed. An
  * explicit `--profile` selection, including `--profile default`, is not
  * treated as project-owned even when dotenv also declared `OMP_PROFILE`/
- * `PI_PROFILE`.
+ * `PI_PROFILE`. A declared profile selector that normalizes to the default
+ * profile is treated as project-owned even when profile activation deleted
+ * the profile environment variables.
  */
 export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if ((name === "OMP_PROFILE" || name === "PI_PROFILE") && isProfileSelectedFromArgv()) return false;
@@ -475,7 +493,21 @@ export function isEnvOwnedByProjectDotenv(name: string): boolean {
 	if (launch.has && launch.value !== "") return false;
 	if (launchEnvValues && !launch.has) return true;
 	const current = readProcessEnv(name);
-	if (current === undefined) return false;
+	if (current === undefined) {
+		if (name === "OMP_PROFILE" || name === "PI_PROFILE") {
+			const raw = launchProjectDotenv.launchEnv[dotenvName];
+			const rawFallback = launchProjectDotenv.fallbackLaunchEnv?.[dotenvName];
+			return Boolean(
+				isDefaultProfileValue(raw) ||
+				isDefaultProfileValue(launchProjectDotenv.expandedLaunchEnv[dotenvName]) ||
+				isDefaultProfileValue(rawFallback) ||
+				isDefaultProfileValue(launchProjectDotenv.expandedFallbackLaunchEnv?.[dotenvName]) ||
+				raw?.includes("$") ||
+				rawFallback?.includes("$"),
+			);
+		}
+		return false;
+	}
 	if (
 		current === launchProjectDotenv.launchEnv[dotenvName] ||
 		current === launchProjectDotenv.expandedLaunchEnv[dotenvName] ||

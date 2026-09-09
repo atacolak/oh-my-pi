@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getActiveProfile, isProfileSelectedFromArgv } from "@oh-my-pi/pi-utils/dirs";
+import { getActiveProfile, isProfileSelectedFromArgv, isProfileSelectedFromOmpEnv } from "@oh-my-pi/pi-utils/dirs";
 import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
@@ -192,10 +192,23 @@ function collabLayerValue(layer: unknown, path: CollabSettingPath): unknown {
 	return current;
 }
 
+function isEffectiveOmpProfile(): boolean {
+	return isProfileSelectedFromOmpEnv();
+}
+
+function isTrustedNamedProfile(): boolean {
+	if (!getActiveProfile()) return false;
+	if (isProfileSelectedFromArgv()) return true;
+	if (isEffectiveOmpProfile()) return !env.isEnvOwnedByProjectDotenv("OMP_PROFILE");
+	return !env.isEnvOwnedByProjectDotenv("PI_PROFILE");
+}
+
 function redirectedGlobalConfig(): boolean {
-	const ignoreAgentDir = Boolean(isProfileSelectedFromArgv() && getActiveProfile());
+	const ignoreAgentDir = isTrustedNamedProfile();
+	const skipFallbackPiProfile = isEffectiveOmpProfile();
 	return PROJECT_DOTENV_GLOBAL_DIR_KEYS.some(name => {
 		if (ignoreAgentDir && (name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR")) return false;
+		if (skipFallbackPiProfile && name === "PI_PROFILE") return false;
 		return env.isEnvOwnedByProjectDotenv(name);
 	});
 }
@@ -206,7 +219,9 @@ function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, p
 	const effective = settings.get(path);
 	if (path === "collab.autoStart") {
 		if (effective === false) return false as SettingValue<P>;
-		if (collabLayerValue(settings.getProjectSettings(), path) === false) return false as SettingValue<P>;
+		if (settings.getProjectSettingsLayers().some(layer => collabLayerValue(layer, path) === false)) {
+			return false as SettingValue<P>;
+		}
 		if (settings.getConfigOverlayLayers().some(layer => collabLayerValue(layer, path) === false)) {
 			return false as SettingValue<P>;
 		}

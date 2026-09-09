@@ -864,6 +864,40 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("stops the idle checker after releasing the last timeout owner of a shared client", async () => {
+		const nested = TempDir.createSync("@omp-lsp-idle-last-timeout-nested-");
+		const outer = TempDir.createSync("@omp-lsp-idle-last-timeout-outer-");
+		const config: ServerConfig = {
+			command: "fake-lsp-idle-last-timeout-owner",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+			resolvedRoot: nested.path(),
+		};
+		try {
+			configCache.set(nested.path(), { servers: { [config.command]: config }, idleTimeoutMs: 1_000 });
+			configCache.set(outer.path(), { servers: { [config.command]: config } });
+			installHandshakeLsp();
+			const ownerA = lspClient.createLspClientOwner();
+			const ownerB = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, nested.path(), 1_000, undefined, ownerA);
+			const shared = await lspClient.getOrCreateClient(config, outer.path(), 1_000, undefined, ownerB);
+			expect(shared).toBe(client);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+
+			lspClient.releaseLspClientOwner(ownerA);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+			expect(lspClient.getActiveClients(ownerB).map(entry => entry.name)).toContain(
+				"fake-lsp-idle-last-timeout-owner",
+			);
+		} finally {
+			configCache.delete(nested.path());
+			configCache.delete(outer.path());
+			await lspClient.shutdownAll();
+			nested.removeSync();
+			outer.removeSync();
+		}
+	});
+
 	it("keeps inherited nested idle timeout when shutdownAll republishes a survivor", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-idle-survivor-nested-");
 		const nestedRoot = path.join(tempDir.path(), "nested");
@@ -7923,6 +7957,90 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file still notifies a parent-root client when overlay reconciliation fails", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-root-parent-reconcile-fail-");
+		try {
+			const nestedRoot = path.join(tempDir.path(), "nested");
+			const destRoot = path.join(tempDir.path(), "moved");
+			fs.mkdirSync(nestedRoot);
+			const sourceFile = path.join(nestedRoot, "old.ts");
+			await Bun.write(sourceFile, "export const value = 1;\n");
+			const nestedConfig: ServerConfig = {
+				command: "nested-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: nestedRoot,
+			};
+			const parentConfig: ServerConfig = {
+				command: "parent-root-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const nestedServer = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "workspace/willRenameFiles") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const owner = lspClient.createLspClientOwner();
+			const nestedClient = await lspClient.getOrCreateClient(nestedConfig, tempDir.path(), 1_000, undefined, owner);
+			const parentServer = installFakeLsp((message, fake) => {
+				if (message.method === "initialize") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "workspace/willRenameFiles") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					fake.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					fake.exit(0);
+				}
+			});
+			const parentClient = await lspClient.getOrCreateClient(parentConfig, tempDir.path(), 1_000, undefined, owner);
+			expect(nestedClient.cwd).toBe(nestedRoot);
+			expect(parentClient.cwd).toBe(tempDir.path());
+			nestedClient.resolveProjectLoaded();
+			parentClient.resolveProjectLoaded();
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { nested: nestedConfig, parent: parentConfig },
+				idleTimeoutMs: undefined,
+			});
+			const controller = new AbortController();
+			vi.spyOn(lspClient, "reconcileExecutedChanges").mockImplementation(async () => {
+				controller.abort(new Error("overlay notify timed out"));
+				throw controller.signal.reason instanceof Error
+					? controller.signal.reason
+					: new Error("overlay notify timed out");
+			});
+			const tool = new LspTool(makeLspSession(tempDir.path()), owner);
+			await expect(
+				tool.execute(
+					"rename-root-parent-reconcile-fail",
+					{
+						action: "rename_file",
+						file: nestedRoot,
+						new_name: destRoot,
+						timeout: 5,
+					},
+					controller.signal,
+				),
+			).rejects.toThrow(/overlay notify timed out/);
+
+			expect(fs.existsSync(nestedRoot)).toBe(false);
+			expect(fs.existsSync(path.join(destRoot, "old.ts"))).toBe(true);
+			expect(parentServer.received.map(message => message.method)).toContain("workspace/didRenameFiles");
+			expect(nestedServer.received.map(message => message.method)).toContain("shutdown");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace edits retire a nested client whose project root was renamed", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-root-retire-");
 		try {
@@ -9842,6 +9960,58 @@ describe("lsp regressions", () => {
 		}
 	}, 15_000);
 
+	it("does not restore a session disposed while shutdown cannot confirm exit", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-dispose-during-shutdown-");
+		try {
+			const config: ServerConfig = {
+				command: "dispose-during-shutdown-lsp",
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				resolvedRoot: tempDir.path(),
+			};
+			const server = installFakeLsp(
+				(message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					}
+				},
+				{ killResolvesExit: false },
+			);
+			const disposedOwner = lspClient.createLspClientOwner();
+			const liveOwner = lspClient.createLspClientOwner();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, disposedOwner);
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000, undefined, liveOwner);
+
+			const shuttingDown = lspClient.shutdownClientInstance(client);
+			await server.waitFor(message => message.method === "shutdown");
+			lspClient.releaseLspClientOwner(disposedOwner);
+			expect(await shuttingDown).toBe(false);
+
+			expect(lspClient.getActiveClients(disposedOwner).map(entry => entry.name)).not.toContain(
+				"dispose-during-shutdown-lsp",
+			);
+			expect(lspClient.getActiveClients(liveOwner).map(entry => entry.name)).toContain(
+				"dispose-during-shutdown-lsp",
+			);
+
+			await expect(
+				lspClient.shutdownStaleClients(tempDir.path(), [], undefined, [tempDir.path()], liveOwner),
+			).rejects.toThrow(/Failed to stop LSP server/);
+			expect(server.received.filter(message => message.method === "shutdown")).toHaveLength(2);
+			expect(lspClient.getActiveClients(disposedOwner).map(entry => entry.name)).not.toContain(
+				"dispose-during-shutdown-lsp",
+			);
+			expect(lspClient.getActiveClients(liveOwner).map(entry => entry.name)).toContain(
+				"dispose-during-shutdown-lsp",
+			);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
 	it("does not drop a replacement client's owners when an earlier instance later exits", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-replacement-owner-");
 		try {
@@ -10811,6 +10981,16 @@ describe("lsp regressions", () => {
 				tempDir.removeSync();
 			}
 		});
+	});
+});
+
+describe("clangd CUDA defaults", () => {
+	it("registers CUDA sources and headers", () => {
+		const config = { servers: DEFAULTS as unknown as Record<string, ServerConfig> };
+		for (const file of ["kernel.cu", "kernel.cuh"]) {
+			const names = getServersForFile(config, file).map(([name]) => name);
+			expect(names).toContain("clangd");
+		}
 	});
 });
 

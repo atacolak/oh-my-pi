@@ -1005,7 +1005,6 @@ export class Settings {
 			cloned.#projectShellPathSource = this.#projectShellPathSource;
 			cloned.#projectWithoutNativeShellPathSource = this.#projectWithoutNativeShellPathSource;
 			cloned.#projectSettingsLayers = this.#projectSettingsLayers.map(layer => structuredClone(layer));
-
 		}
 		cloned.#configFiles = [...this.#configFiles];
 		cloned.#configOverlay = structuredClone(this.#configOverlay);

@@ -19,7 +19,12 @@ import {
 	shortenPath,
 	truncateDiffByHunk,
 } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
-import { getKeybindings, setKeybindings, type KeybindingsManager as TuiKeybindingsManager } from "@oh-my-pi/pi-tui";
+import {
+	DEFAULT_TAB_WIDTH,
+	getKeybindings,
+	setKeybindings,
+	type KeybindingsManager as TuiKeybindingsManager,
+} from "@oh-my-pi/pi-tui";
 
 describe("feed model badges", () => {
 	let uiTheme: Theme;

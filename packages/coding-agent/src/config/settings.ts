@@ -22,6 +22,7 @@ import {
 	getAgentDbPath,
 	getAgentDir,
 	getLastChangelogVersionPath,
+	getProjectAgentDir,
 	getProjectDir,
 	isEnoent,
 	logger,
@@ -138,7 +139,6 @@ type ProjectSettingsReadResult = {
 	withoutNative: RawSettings;
 	configExists: boolean;
 	layers: RawSettings[];
-
 	shellPathSource: string | undefined;
 	withoutNativeShellPathSource: string | undefined;
 };
@@ -1070,7 +1070,6 @@ export class Settings {
 			this.#projectWithoutNative = projectResult.value.withoutNative;
 			this.#projectConfigExists = projectResult.value.configExists;
 			this.#projectSettingsLayers = projectResult.value.layers;
-
 			this.#projectShellPathSource = projectResult.value.shellPathSource;
 			this.#projectWithoutNativeShellPathSource = projectResult.value.withoutNativeShellPathSource;
 			this.#configOverlay = overlayResult.value.settings;
@@ -1680,7 +1679,7 @@ export class Settings {
 		if (!this.#persist) return;
 		if (mutations.has(key)) return;
 		mutations.set(key, {
-			generation: this.#readYamlGeneration(path.join(this.#cwd, ".omp", "config.yml")),
+			generation: this.#readYamlGeneration(path.join(getProjectAgentDir(this.#cwd), "config.yml")),
 			baseValue: structuredClone(baseValue),
 		});
 	}
@@ -2057,9 +2056,12 @@ export class Settings {
 	}
 
 	async #readProjectSettings(quarantineInvalid: boolean): Promise<ProjectSettingsReadResult> {
+		const projectConfigDir = getProjectAgentDir(this.#cwd);
+		const projectConfigPath = path.join(projectConfigDir, "config.yml");
+		invalidateCapabilityFsCache(projectConfigPath);
+		invalidateCapabilityFsCache(path.join(projectConfigDir, "settings.json"));
 		let shellPathSource: string | undefined;
 		let withoutNativeShellPathSource: string | undefined;
-		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
 		let withoutNative: RawSettings = {};
 		const layers: RawSettings[] = [];
 		try {
@@ -2115,7 +2117,6 @@ export class Settings {
 		this.#projectWithoutNative = result.withoutNative;
 		this.#projectConfigExists = result.configExists;
 		this.#projectSettingsLayers = result.layers;
-
 		this.#projectShellPathSource = result.shellPathSource;
 		this.#projectWithoutNativeShellPathSource = result.withoutNativeShellPathSource;
 		return result.settings;
@@ -3362,7 +3363,7 @@ export class Settings {
 		)
 			return;
 
-		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
+		const projectConfigPath = path.join(getProjectAgentDir(this.#cwd), "config.yml");
 		const modifiedPaths = [...this.#modifiedProject];
 		const modifiedModelRoles = [...this.#modifiedProjectModelRoles];
 		const modifiedPathMutations = new Map(this.#modifiedProjectPathMutations);
@@ -3599,7 +3600,7 @@ export class Settings {
 
 	#syncProjectShellPathSource(): void {
 		if (Object.hasOwn(this.#projectFileSettings, "shellPath")) {
-			this.#projectShellPathSource = path.join(this.#cwd, ".omp", "config.yml");
+			this.#projectShellPathSource = path.join(getProjectAgentDir(this.#cwd), "config.yml");
 			return;
 		}
 		this.#projectShellPathSource = Object.hasOwn(this.#project, "shellPath")

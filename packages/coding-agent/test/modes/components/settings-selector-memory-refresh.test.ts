@@ -216,13 +216,14 @@ describe("SettingsSelectorComponent memory tab", () => {
 		focusMemoryTab(comp);
 
 		comp.handleInput("\n");
-		expect(comp.render(120).join("\n")).toContain("Esc to go back");
-
+		expect(comp.render(160).join("\n")).toContain("Esc to go back");
 		comp.handleInput("\x1b");
-		const afterBack = comp.render(120).join("\n");
+
+		const afterBack = comp.render(160).join("\n");
 		expect(cancelCount).toBe(0);
 		expect(afterBack).toContain("Memory Backend");
-		expect(afterBack).toContain("Esc to close");
+		expect(afterBack).toContain("Alt+S to switch scope");
+		expect(afterBack).toContain("Esc to");
 		expect(afterBack).not.toContain("Esc to go back");
 
 		comp.handleInput("\x1b");

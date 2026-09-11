@@ -214,7 +214,7 @@ describe("selector setting side effects", () => {
 		expect(Settings.instance.get("defaultThinkingLevel")).toBe(Effort.Medium);
 	});
 
-	it("applies queue-mode changes without re-persisting them globally", () => {
+	it("applies queue-mode changes with persist=true from selector", () => {
 		const setSteeringMode = vi.fn();
 		const setFollowUpMode = vi.fn();
 		const setInterruptMode = vi.fn();
@@ -229,9 +229,9 @@ describe("selector setting side effects", () => {
 		controller.handleSettingChange("followUpMode", "one-at-a-time");
 		controller.handleSettingChange("interruptMode", "wait");
 
-		expect(setSteeringMode).toHaveBeenCalledWith("one-at-a-time", false);
-		expect(setFollowUpMode).toHaveBeenCalledWith("one-at-a-time", false);
-		expect(setInterruptMode).toHaveBeenCalledWith("wait", false);
+		expect(setSteeringMode).toHaveBeenCalledWith("one-at-a-time", true);
+		expect(setFollowUpMode).toHaveBeenCalledWith("one-at-a-time", true);
+		expect(setInterruptMode).toHaveBeenCalledWith("wait", true);
 		expect(Settings.instance.get("steeringMode")).toBe("all");
 		expect(Settings.instance.get("followUpMode")).toBe("all");
 		expect(Settings.instance.get("interruptMode")).toBe("immediate");
@@ -251,6 +251,22 @@ describe("selector setting side effects", () => {
 
 		expect(setAdvisorEnabled).toHaveBeenCalledWith(false);
 		expect(invalidate).toHaveBeenCalledTimes(1);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("re-enables live advisor runtime to rebuild when advisor.maxNotesPerUpdate changes in /settings", () => {
+		const setAdvisorEnabled = vi.fn();
+		const isAdvisorEnabled = vi.fn().mockReturnValue(true);
+		const requestRender = vi.fn();
+		const controller = new SelectorController({
+			session: { setAdvisorEnabled, isAdvisorEnabled },
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("advisor.maxNotesPerUpdate", 3);
+
+		expect(isAdvisorEnabled).toHaveBeenCalledTimes(1);
+		expect(setAdvisorEnabled).toHaveBeenCalledWith(true);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 

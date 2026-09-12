@@ -110,12 +110,14 @@ const CONDITIONS: Record<string, (scope?: SettingsScope) => boolean> = {
 	macOS: () => process.platform === "darwin",
 	hasImageProtocol: () => !!TERMINAL.imageProtocol,
 	advisorEnabled: scope => readSetting("advisor.enabled", scope) === true,
+	vimModeEnabled: scope => readSetting("tui.vimMode", scope) === true,
 	hindsightActive: scope => readSetting("memory.backend", scope) === "hindsight",
 	mnemopiActive: scope => readSetting("memory.backend", scope) === "mnemopi",
 	autolearnActive: scope => readSetting("autolearn.enabled", scope) === true,
 	autoThinkingActive: scope => readSetting("defaultThinkingLevel", scope) === "auto",
 	usageAwareFallbackEnabled: scope => readSetting("retry.usageAwareFallback", scope) === true,
 	planModeEnabled: scope => readSetting("plan.enabled", scope) === true,
+	planAutosaveEnabled: scope => Boolean(readSetting("plan.enabled", scope) && readSetting("plan.autosave", scope)),
 	unexpectedStopSmart: scope => readSetting("features.unexpectedStopDetection", scope) === "smart",
 };
 

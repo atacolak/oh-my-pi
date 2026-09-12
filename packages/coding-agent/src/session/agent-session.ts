@@ -338,7 +338,12 @@ import {
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { ModelControls, type ModelControlsHost } from "./model-controls";
-import { isPrewalkPlanNudge, PrewalkCoordinator, type PrewalkCoordinatorHost } from "./prewalk";
+import {
+	isPrewalkPlanNudge,
+	PrewalkCoordinator,
+	type PrewalkCoordinatorHost,
+	type PrewalkRestartResult,
+} from "./prewalk";
 import {
 	isAdvisorCard,
 	isDisplayableQueuedMessage,
@@ -1230,6 +1235,16 @@ export class AgentSession {
 		return this.#prewalk.arm(target, thinkingLevel);
 	}
 
+	/** Restore a planning model and re-arm prewalk without partially applying a rejected restart. */
+	restartPrewalk(
+		source: Model,
+		sourceThinkingLevel: ConfiguredThinkingLevel | undefined,
+		target: Model,
+		targetThinkingLevel: ConfiguredThinkingLevel | undefined,
+	): Promise<PrewalkRestartResult> {
+		return this.#prewalk.restart(source, sourceThinkingLevel, target, targetThinkingLevel);
+	}
+
 	/** Validate the active plan artifact and shape an `xd://propose` result for review-mode hosts. */
 	async preparePlanForReview(title: string): Promise<AgentToolResult<PlanApprovalDetails>> {
 		const state = this.getPlanModeState();
@@ -1331,6 +1346,7 @@ export class AgentSession {
 		const prewalkHost: PrewalkCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
+			settings: this.settings,
 			model: () => this.model,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),

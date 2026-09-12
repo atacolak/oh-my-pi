@@ -593,6 +593,14 @@ export class SelectorController {
 				this.ctx.ui.requestRender();
 				break;
 
+			case "tui.vimMode":
+			case "tui.vimModeDisplay":
+				this.ctx.applyVimModeSetting();
+				break;
+			case "display.pinnedAgents":
+				this.ctx.applyPinnedAgentsSetting();
+				break;
+
 			// Settings with UI side effects
 			case "display.hideToolActivity": {
 				const hidden = value as boolean;
@@ -1829,6 +1837,9 @@ export class SelectorController {
 				historyMatcher,
 				loadAllSessions: () => SessionManager.listAll(),
 				pinnedIds,
+				// Live getter so detach/newSession stays accurate; tolerant of partial
+				// contexts and in-memory sessions (undefined file means no marker).
+				currentSessionPath: () => this.ctx.sessionManager.getSessionFile?.() ?? undefined,
 			};
 		}
 

@@ -88,10 +88,7 @@ describe("SelectorController prompt-affecting settings", () => {
 				followUpMode: "all",
 				interruptMode: "wait",
 			});
-			const onDisk = await Bun.file(configPath).text();
-			expect(onDisk).not.toContain("steeringMode: all");
-			expect(onDisk).not.toContain("followUpMode: all");
-			expect(onDisk).not.toContain("interruptMode: wait");
+			expect(await Bun.file(configPath).exists()).toBe(false);
 		});
 	});
 });

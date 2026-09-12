@@ -836,9 +836,20 @@ export function shortenPath(filePath: unknown, homeDir?: string): string {
 	return filePath;
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Shorten any home-prefixed segments inside free text, preserving surrounding
  *  punctuation so error strings with embedded paths stay readable. */
 export function shortenEmbeddedPaths(text: string): string {
+	const home = os.homedir();
+	if (home) {
+		const windowsStyle = /^[A-Za-z]:[\\/]/.test(home) || home.startsWith("\\\\");
+		const homePattern = escapeRegExp(home).replaceAll(/\\\\|\//g, String.raw`[\\/]`);
+		text = text.replace(new RegExp(`${homePattern}(?=$|[\\\\/])`, windowsStyle ? "gi" : "g"), "~");
+		text = text.replaceAll("~\\", "~/");
+	}
 	return text
 		.split(" ")
 		.map(segment => {
@@ -849,6 +860,16 @@ export function shortenEmbeddedPaths(text: string): string {
 			return `${leading}${shortenPath(segment.slice(leading.length, end))}${trailing}`;
 		})
 		.join(" ");
+}
+
+/** Collapse layout/control characters, shorten home paths, and truncate status errors. */
+export function sanitizeStatusText(value: string, maxWidth: number, empty = "(unnamed)"): string {
+	const text = shortenEmbeddedPaths(
+		replaceTabs(sanitizeText(value))
+			.replace(/[\r\n]+/g, " ")
+			.trim(),
+	);
+	return truncateToWidth(text.length > 0 ? text : empty, maxWidth);
 }
 
 export function formatToolWorkingDirectory(workdir: string | undefined, projectDir: string): string | undefined {

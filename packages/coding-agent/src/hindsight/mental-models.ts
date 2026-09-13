@@ -8,10 +8,12 @@
  * This module:
  *   1. **Seeds** a small, curated set of mental models on first session boot
  *      for a given bank (idempotent: never modifies an existing model).
- *   2. **Loads** the seeded + any operator-curated models into a cached
+ *   2. **Loads** the seeded + any operator-curated *hot* models into a cached
  *      `<mental_models>` block that the backend splices into developer
  *      instructions on every prompt rebuild — bypassing per-turn recall HTTP
- *      cost for stable knowledge.
+ *      cost for stable knowledge. Knowledge Page backing models are excluded
+ *      from this unconditional render; they remain ordinary Hindsight mental
+ *      models for server-side reflect and explicit page retrieval.
  *   3. **Renders** content blocks with anti-feedback wrappers so the LLM
  *      treats them as background knowledge, not as commands (mirrors the
  *      `<memories>` warning).
@@ -43,12 +45,14 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { BankScope } from "./bank";
 import type {
 	HindsightApi,
+	KnowledgeTreeResponse,
 	MentalModelListResponse,
 	MentalModelMode,
 	MentalModelSummary,
 	MentalModelTrigger,
 } from "./client";
 import type { HindsightScoping } from "./config";
+import { knowledgePageBackingModelIds } from "./knowledge-pages";
 import seedsData from "./seeds.json" with { type: "json" };
 
 interface RawSeed {
@@ -202,15 +206,21 @@ export const MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT = 16_000;
  * `<mental_models>` block ready to be appended to developer instructions.
  *
  * Returns `undefined` when the server has no models yet, when the API call
- * fails, or when every model still has empty content (e.g. the background
- * reflect for a freshly-seeded model hasn't completed yet).
+ * fails, when the knowledge-base tree cannot be established, or when every
+ * remaining model still has empty content (e.g. the background reflect for a
+ * freshly-seeded model hasn't completed yet).
+ *
+ * The rendered block is a deliberately hot subset: Knowledge Page backing
+ * models are excluded from unconditional prompt injection even when they match
+ * the active tags. Those models remain eligible for Hindsight's own scoped
+ * reflect retrieval and for explicit page retrieval.
  *
  * The rendered block is bounded by `budgetChars` (default
  * MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT). When `visibleTags` is supplied,
- * tagged models must match at least one active tag; untagged models remain
- * visible in every scope. Per-model content is truncated before assembly; if
- * assembly still exceeds the budget, trailing models are dropped. A budget
- * overflow leaves a `…` marker so the LLM can tell the snapshot is truncated.
+ * every tag on a tagged model must be active; untagged models remain visible
+ * in every scope. Per-model content is truncated before assembly; if assembly
+ * still exceeds the budget, trailing models are dropped. A budget overflow
+ * leaves a `…` marker so the LLM can tell the snapshot is truncated.
  */
 export async function loadMentalModelsBlock(
 	client: HindsightApi,
@@ -219,15 +229,27 @@ export async function loadMentalModelsBlock(
 	visibleTags?: readonly string[],
 ): Promise<string | undefined> {
 	let response: MentalModelListResponse;
+	let tree: KnowledgeTreeResponse;
 	try {
-		response = await client.listMentalModels(bankId, { detail: "content" });
+		[response, tree] = await Promise.all([
+			client.listMentalModels(bankId, { detail: "content" }),
+			client.getKnowledgeBaseTree(bankId),
+		]);
 	} catch (err) {
-		logger.debug("Hindsight: loadMentalModelsBlock list failed", { bankId, error: String(err) });
+		logger.debug("Hindsight: loadMentalModelsBlock inventory failed", {
+			bankId,
+			error: String(err),
+		});
 		return undefined;
 	}
 
+	const pageModelIds = knowledgePageBackingModelIds(tree.roots ?? []);
 	const models = (response.items ?? []).filter(
-		m => modelVisibleForTags(m, visibleTags) && typeof m.content === "string" && m.content.trim().length > 0,
+		m =>
+			!pageModelIds.has(m.id) &&
+			modelVisibleForTags(m, visibleTags) &&
+			typeof m.content === "string" &&
+			m.content.trim().length > 0,
 	);
 	if (models.length === 0) return undefined;
 
@@ -240,7 +262,7 @@ function modelVisibleForTags(model: MentalModelSummary, visibleTags?: readonly s
 	if (!visibleTags || visibleTags.length === 0) return true;
 	const tags = model.tags ?? [];
 	if (tags.length === 0) return true;
-	return tags.some(tag => visibleTags.includes(tag));
+	return tags.every(tag => visibleTags.includes(tag));
 }
 
 const PREAMBLE =

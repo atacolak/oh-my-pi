@@ -25,6 +25,9 @@
 - Preserved project-dotenv ownership for the default profile when profile bootstrap normalizes and deletes profile environment variables.
 - Treated Bun unspaced `#` comments on unquoted dotenv values as comments when matching project-owned environment variables.
 - Did not treat `setProfile`'s mirrored `OMP_PROFILE` as an independent parent selector when the name came from `PI_PROFILE`.
+### Fixed
+
+- Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
 
 ## [18.1.19] - 2026-09-12
 

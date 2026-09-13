@@ -190,8 +190,6 @@ describe("bash shortcut command", () => {
 			expect(state.workspaceCwd).toBe(sourceDir);
 			expect(state.artifactCwd).toBe(sourceDir);
 			expect(state.completedBtwVisible).toBe(false);
-			expect(ctx.session.moveSession).toHaveBeenNthCalledWith(1, childDir);
-			expect(ctx.session.moveSession).toHaveBeenNthCalledWith(2, sourceDir);
 			expect(state.executedCwds).toEqual([sourceDir, childDir, sourceDir]);
 			expect(ctx.session.moveSession).toHaveBeenNthCalledWith(1, childDir, undefined, {
 				deferWorkspaceCleanup: true,

@@ -59,6 +59,7 @@ import { reset as resetCapabilities } from "../capability";
 import { restartArgv } from "../cli/flag-tables";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
+import { stopCollabHost } from "../collab/start";
 import { formatKeyHint, KeybindingsManager } from "../config/keybindings";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
@@ -847,7 +848,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	skillCommands: Map<string, Skill> = new Map();
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
 	collabHost?: CollabHost;
+	collabHostStart?: Promise<CollabHost>;
+	collabHostAbort?: AbortController;
 	collabGuest?: CollabGuestLink;
+	collabGuestStart?: Promise<CollabGuestLink>;
 
 	#pendingCommandOutput: Component[] = [];
 	#pendingCommandOutputSessionId: string | undefined;
@@ -1340,6 +1344,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			getDraftText: () => this.#inputController.getDraftText(),
 			beginDispose: () => this.session.beginDispose(),
 			saveDraft: text => this.sessionManager.saveDraft(text),
+			stopCollab: async () => {
+				await stopCollabHost(this, "session shutdown");
+			},
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
 				await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason });
@@ -1519,7 +1526,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		});
 
-		// Initialize hooks with TUI-based UI context
 		await logger.time("InteractiveMode.init:hooks", () => this.initHooksAndCustomTools());
 
 		// Restore mode from session (e.g. plan mode on resume)
@@ -5437,14 +5443,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
 
-		// Surface progress before any asynchronous cleanup, including live commands
-		// and BTW history writes, so the user sees a reason for the pause.
+		// Surface progress before any asynchronous cleanup, including collab host
+		// stop, live commands, and BTW history writes, so the user sees a reason
+		// for the pause.
 		this.showStatus("Closing session…");
 
 		const stillClosingTimer = setTimeout(() => {
 			this.showStatus("Still closing… (flushing memory backend / network)");
 		}, STILL_CLOSING_DELAY_MS);
 		try {
+			try {
+				await stopCollabHost(this, "session shutdown");
+			} catch (err) {
+				logger.warn("Failed to stop collab host during teardown", { error: String(err) });
+			}
 			await this.#liveCommandController.stop();
 			await this.#btwController.dispose();
 			this.#omfgController.dispose();

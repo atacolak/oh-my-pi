@@ -35,7 +35,6 @@
 - Hindsight `/tree` now resyncs the post-clear document overlay so a pre-reset leaf cannot overwrite the drained post-clear document.
 - Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
 - Fixed Hindsight live retainStrategy refresh from adopting unrelated endpoint, token, or timeout settings that never rebuilt the client.
-### Fixed
 
 - Fixed `/settings` leaving the project-effective appearance after adopting a theme or status-line edit while previewing another scope.
 - Fixed `/settings` keeping the previous scope's theme after Alt+S onto an unloadable Dark/Light mapping.
@@ -88,8 +87,6 @@
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
 - Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output. Project `.omp/config.yml` may enable hosting for that cwd.
 
-### Fixed
-
 - Delayed collab auto-hosting until interactive startup reconciliation, setup, and the initial transcript are ready.
 - Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
 - Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
@@ -125,7 +122,6 @@
 - Honored a lower project `collab.autoStart: false` even when a later project file tried to re-enable hosting.
 - Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
 - Distrusted collab auto-start when a project dotenv uses an unspaced `#` comment after an unquoted agent directory.
-### Fixed
 
 - Fixed `lsp status` matching live clients against unresolved catalog `definitions` instead of the PATH-resolved `servers` overlay, so a started server is reported as ready instead of configured-not-started.
 - Fixed language-server diagnostics published on a file's real path missing the document opened through an in-workspace symlink, so `waitForDiagnostics` still matches that physical file instead of timing out as clean.
@@ -675,8 +671,9 @@
 - Fixed extension and user asides being stranded, delivered to the wrong session, or incorrectly interrupting or restarting turns during session changes and image processing.
 - Fixed parent steering messages arriving during a subagent's final result from preventing that result from being committed.
 - Fixed messages typed while an edit or write tool was streaming from discarding the completed tool call and triggering unnecessary regeneration.
+- Fixed self-hosted Firecrawl URLs with origin-only base URLs from gaining an extra slash.
+- Fixed omp commit auto-staging from including macOS Unicode-normalization duplicates or files ignored by nested .gitignore rules.
 
-[Showing lines 1-300 of 1956. Use :301 to continue]
 ## [18.1.5] - 2026-09-03
 
 ### Added

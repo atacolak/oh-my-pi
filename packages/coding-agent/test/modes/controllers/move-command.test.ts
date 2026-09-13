@@ -19,6 +19,7 @@ function createMoveContext(sourceDir: string, settingsFlush?: () => Promise<void
 		state.cwd = cwd;
 		state.movedTo = cwd;
 	});
+	const commitMovedWorkspaceRoots = vi.fn(async () => {});
 	const sessionDir = `${sourceDir}/.sessions`;
 	const captureState = vi.fn(() => ({ cwd: state.cwd, sessionDir, movedTo: state.movedTo }));
 	const restoreState = vi.fn((snapshot: { cwd: string }) => {
@@ -36,7 +37,7 @@ function createMoveContext(sourceDir: string, settingsFlush?: () => Promise<void
 		return moved;
 	});
 	const ctx = {
-		session: { isStreaming: false, moveSession },
+		session: { isStreaming: false, moveSession, commitMovedWorkspaceRoots },
 		sessionManager: {
 			getCwd: () => state.cwd,
 			captureState,
@@ -191,6 +192,8 @@ describe("CommandController /move", () => {
 			expect(state.completedBtwVisible).toBe(false);
 			expect(ctx.sessionManager.dropSession).not.toHaveBeenCalled();
 			expect(ctx.applyCwdChange).toHaveBeenCalledWith(targetDir);
+			expect(ctx.session.moveSession).toHaveBeenCalledWith(targetDir, undefined, { deferWorkspaceCleanup: true });
+			expect(ctx.session.commitMovedWorkspaceRoots).toHaveBeenCalledTimes(1);
 			expect(ctx.updateEditorBorderColor).toHaveBeenCalled();
 			expect(ctx.reloadTodos).toHaveBeenCalled();
 			expect(ctx.ui.requestRender).toHaveBeenCalledWith();
@@ -218,6 +221,7 @@ describe("CommandController /move", () => {
 			await controller.handleMoveCommand(targetDir);
 
 			expect(ctx.session.moveSession).toHaveBeenCalledTimes(1);
+			expect(ctx.session.commitMovedWorkspaceRoots).toHaveBeenCalledTimes(1);
 			expect(rollbackMove).toHaveBeenCalledWith(captureState.mock.results[0]?.value);
 			expect(state.cwd).toBe(sourceDir);
 			expect(state.completedBtwVisible).toBe(true);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+
 ## [18.1.19] - 2026-09-12
 
 ### Added

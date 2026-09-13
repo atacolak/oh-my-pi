@@ -35,6 +35,7 @@
 - Hindsight `/tree` now resyncs the post-clear document overlay so a pre-reset leaf cannot overwrite the drained post-clear document.
 - Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
 - Fixed Hindsight live retainStrategy refresh from adopting unrelated endpoint, token, or timeout settings that never rebuilt the client.
+
 - Fixed `/settings` leaving the project-effective appearance after adopting a theme or status-line edit while previewing another scope.
 - Fixed `/settings` keeping the previous scope's theme after Alt+S onto an unloadable Dark/Light mapping.
 - Fixed `/settings` leaving a hovered theme after canceling an unloadable Dark/Light Theme submenu.
@@ -84,10 +85,43 @@
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
-- Added `--agent <name>` to start a root session from a discovered agent definition (user `~/.omp/agent/agents`, project `.omp/agents`, extension, or bundled). The agent's tools, thinking level, model, body, and autoload skills apply unless `--tools` / `--thinking` / `--model` / `--system-prompt` override them. Unknown names fail with a usage error listing available agents.
-- Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
-- Resume and fork now restore a session's original `--agent` identity from the session header. A conflicting `--agent` is refused, and a persisted privileged role that is missing from discovery fails closed.
-- Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
+- Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output. Project `.omp/config.yml` may enable hosting for that cwd.
+
+- Delayed collab auto-hosting until interactive startup reconciliation, setup, and the initial transcript are ready.
+- Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
+- Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
+- Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
+- Sanitized collab auto-start and write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
+- Avoided deleting a collab write-link file that this start never published, including a destination replaced after publication.
+- Stopped an already-attached collab host immediately on `/collab stop` and shutdown instead of waiting out write-link publication.
+- Stopped collab hosting on signal teardown before waiting for draft persistence.
+- Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
+- Ignored overlay-sourced collab relay and web URLs during auto-start so a config overlay cannot retarget a trusted host.
+- Rejected collab auto-start from a global config.yml whose agent or config directory was redirected by a project dotenv.
+- Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
+- Honored a project `collab.autoStart: false` even when a higher overlay tried to re-enable hosting.
+- Honored a lower-precedence overlay `collab.autoStart: false` even when a later overlay tried to re-enable hosting.
+- Refused to attach a collab host that closed fatally before start completed.
+- Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
+- Distrusted collab auto-start when a project dotenv overwrites an empty launcher `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
+- Shortened collab and MCP status home paths even when the home directory contains spaces.
+- Detected Bun pre-dotenv `NODE_ENV` when judging project dotenv ownership of collab auto-start directories.
+- Rejected collab auto-start from a profile selected by a project dotenv `OMP_PROFILE` or `PI_PROFILE`.
+- Trusted collab auto-start from a parent `OMP_PROFILE` even when project dotenv set the ignored `PI_PROFILE` fallback.
+- Rejected collab auto-start when a project dotenv `PI_PROFILE` was mirrored into `OMP_PROFILE` by profile activation.
+- Stopped collab hosting on interactive shutdown before awaiting live-mode teardown.
+- Rejected collab auto-start from a project dotenv key that only matches `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` by Windows case-fold.
+- Closed the collab relay socket when host start is cancelled after the handshake opens.
+- Distrusted collab auto-start when a project dotenv uses Bun-decoded escaped newlines in `PI_CODING_AGENT_DIR`.
+- Distrusted collab auto-start when a project dotenv uses Bun `${NAME:-default}` expansion or quoted multiline values in `PI_CODING_AGENT_DIR`.
+- Distrusted collab auto-start when a project dotenv quoted multiline `PI_CODING_AGENT_DIR` keeps trailing whitespace on the first line.
+- Trusted collab auto-start from a profile selected by `--profile`, including `--profile default`, even when a project dotenv also declared `OMP_PROFILE` or `PI_PROFILE`.
+- Distrusted collab auto-start when a project dotenv closes a quoted agent or config directory after an even-length backslash run.
+- Trusted collab auto-start from an argv-selected named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
+- Trusted collab auto-start from a parent-env named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
+- Honored a lower project `collab.autoStart: false` even when a later project file tried to re-enable hosting.
+- Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
+- Distrusted collab auto-start when a project dotenv uses an unspaced `#` comment after an unquoted agent directory.
 
 - Fixed `lsp status` matching live clients against unresolved catalog `definitions` instead of the PATH-resolved `servers` overlay, so a started server is reported as ready instead of configured-not-started.
 - Fixed language-server diagnostics published on a file's real path missing the document opened through an in-workspace symlink, so `waitForDiagnostics` still matches that physical file instead of timing out as clean.
@@ -227,43 +261,36 @@
 - Fixed writes after `/add-dir` skipping nested language-server formatting and diagnostics because the write tool kept construction-time workspace roots.
 - Fixed the public LSP factory ignoring `enableLsp=false`, so SDK advisor sessions that disable LSP no longer receive the tool.
 - Fixed language servers in nested projects (for example `python/pyproject.toml` under a monorepo root) staying inactive until omp was started inside that subdirectory; concrete file operations now discover the nearest matching root lazily without recursively scanning the workspace at startup ([#1648](https://github.com/can1357/oh-my-pi/issues/1648)).
-- Added opt-in interactive collab auto-hosting with configurable relay safety and write-link file output. Project `.omp/config.yml` may enable hosting for that cwd.
+- Added `--agent <name>` to start a root session from a discovered agent definition (user `~/.omp/agent/agents`, project `.omp/agents`, extension, or bundled). The agent's tools, thinking level, model, body, and autoload skills apply unless `--tools` / `--thinking` / `--model` / `--system-prompt` override them. Unknown names fail with a usage error listing available agents.
+- Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
+- Resume and fork now restore a session's original `--agent` identity from the session header. A conflicting `--agent` is refused, and a persisted privileged role that is missing from discovery fails closed.
+- Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
 
-- Delayed collab auto-hosting until interactive startup reconciliation, setup, and the initial transcript are ready.
-- Made `/collab stop` cancel an in-flight host handshake instead of reporting that hosting has not started.
-- Stopped collab auto-hosting on interactive shutdown, including in-flight host handshakes.
-- Treated a collab host that dropped during write-link publication as a failed start instead of reporting a live session.
-- Sanitized collab auto-start and write-link errors so they no longer leak home paths or inject raw layout characters into the transcript.
-- Avoided deleting a collab write-link file that this start never published, including a destination replaced after publication.
-- Stopped an already-attached collab host immediately on `/collab stop` and shutdown instead of waiting out write-link publication.
-- Stopped collab hosting on signal teardown before waiting for draft persistence.
-- Rejected collab auto-start and write-link paths from config overlays, including dotenv-injected `PI_CONFIG_FILES`.
-- Ignored overlay-sourced collab relay and web URLs during auto-start so a config overlay cannot retarget a trusted host.
-- Rejected collab auto-start from a global config.yml whose agent or config directory was redirected by a project dotenv.
-- Honored project and overlay `collab.autoStart: false` over a trusted global enablement.
-- Honored a project `collab.autoStart: false` even when a higher overlay tried to re-enable hosting.
-- Honored a lower-precedence overlay `collab.autoStart: false` even when a later overlay tried to re-enable hosting.
-- Refused to attach a collab host that closed fatally before start completed.
-- Made `/collab stop` abort a contended write-link lock wait instead of blocking through lock retries.
-- Distrusted collab auto-start when a project dotenv overwrites an empty launcher `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR`.
-- Shortened collab and MCP status home paths even when the home directory contains spaces.
-- Detected Bun pre-dotenv `NODE_ENV` when judging project dotenv ownership of collab auto-start directories.
-- Rejected collab auto-start from a profile selected by a project dotenv `OMP_PROFILE` or `PI_PROFILE`.
-- Trusted collab auto-start from a parent `OMP_PROFILE` even when project dotenv set the ignored `PI_PROFILE` fallback.
-- Rejected collab auto-start when a project dotenv `PI_PROFILE` was mirrored into `OMP_PROFILE` by profile activation.
-- Stopped collab hosting on interactive shutdown before awaiting live-mode teardown.
-- Rejected collab auto-start from a project dotenv key that only matches `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` by Windows case-fold.
-- Closed the collab relay socket when host start is cancelled after the handshake opens.
-- Distrusted collab auto-start when a project dotenv uses Bun-decoded escaped newlines in `PI_CODING_AGENT_DIR`.
-- Distrusted collab auto-start when a project dotenv uses Bun `${NAME:-default}` expansion or quoted multiline values in `PI_CODING_AGENT_DIR`.
-- Distrusted collab auto-start when a project dotenv quoted multiline `PI_CODING_AGENT_DIR` keeps trailing whitespace on the first line.
-- Trusted collab auto-start from a profile selected by `--profile`, including `--profile default`, even when a project dotenv also declared `OMP_PROFILE` or `PI_PROFILE`.
-- Distrusted collab auto-start when a project dotenv closes a quoted agent or config directory after an even-length backslash run.
-- Trusted collab auto-start from an argv-selected named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
-- Trusted collab auto-start from a parent-env named profile even when a project dotenv declared `PI_CODING_AGENT_DIR`.
-- Honored a lower project `collab.autoStart: false` even when a later project file tried to re-enable hosting.
-- Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
-- Distrusted collab auto-start when a project dotenv uses an unspaced `#` comment after an unquoted agent directory.
+## [18.1.20] - 2026-09-13
+
+### Added
+
+- Added `collab.autoStart` (`off` | `view` | `control`): every local interactive session hosts itself as it starts and rotates its room on `/new`, `/resume`, fork, or branch, so a phone or dashboard can reach any running session without running `/collab` first ([#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm) and [@sorphwer](https://github.com/sorphwer)).
+- Added `omp collab list [--json]` and `/collab list` to enumerate every live local Collab host (instance, generation, session, cwd, model, participants, relay/attention state, access) without exposing links, plus `omp collab link <instanceId|pid> [--view]` to fetch one generation-bound browser URL from a private per-room Unix socket/named pipe registry; room keys, write tokens, and URLs never touch disk ([#6099](https://github.com/can1357/oh-my-pi/issues/6099); [#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm) and [@sorphwer](https://github.com/sorphwer)).
+
+### Changed
+
+- Documented that native JS/TS hook factories must live in `.omp/hooks/pre/` or `.omp/hooks/post/` (not directly in `.omp/hooks/`), and cross-linked the hooks and extension-loading docs ([#11942](https://github.com/can1357/oh-my-pi/issues/11942)).
+
+### Fixed
+
+- The hidden notice announcing a mid-session tool-availability change now states that it lists only what changed, so an additions-only notice no longer reads as the complete tool set and the model keeps using tools that are still callable ([#11824](https://github.com/can1357/oh-my-pi/issues/11824) by [@camjac251](https://github.com/camjac251)).
+- TTSR stream buffers now reset at every assistant message boundary, not only at turn start, so a `scope: text` or tool-argument rule can no longer fire on a later message because of text streamed by an earlier response in the same turn ([#11957](https://github.com/can1357/oh-my-pi/pull/11957) by [@srobroek](https://github.com/srobroek)).
+- Eval `completion()` calls now use configured retry fallback chains when their role model fails ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Eval `completion()` fallback chains now also apply to unqualified role models, walk into a failed fallback's own model chain, stop at `retry.maxRetries`, and resolve session-sticky credentials with the session id ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Eval `completion()` fallbacks now keep depth-first chain order, inherit the failed candidate's effort for bare nested entries, and skip keyless candidates without spending `retry.maxRetries` budget ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Eval `completion()` fallbacks reached at different efforts now each walk their shared descendants instead of truncating the later effort's path ([#11989](https://github.com/can1357/oh-my-pi/issues/11989)).
+- Fixed ranged grep rejecting existing files with glob characters in their names ([#11977](https://github.com/can1357/oh-my-pi/issues/11977)).
+- Notified Collab guests when admitted prompts are discarded, including room retirement during a session change ([#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm)).
+- Preserved pending Collab dialog answers across session-switch rollback without accepting them after commit, stop, or writer departure ([#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm)).
+- Fixed prompts awaiting setup crossing a fork, branch, or tree-navigation commit, multi-question extension dialogs moving later questions to a replacement Collab room, and stale rooms blocking `/collab` or `/join` after a failed session change ([#11908](https://github.com/can1357/oh-my-pi/pull/11908) by [@alphastorm](https://github.com/alphastorm)).
+- Fixed background task cards missing their final completion or failure after an early result or live-session focus replay.
+- Ranged reads on Windows no longer intermittently open the selector-suffixed path when filesystem probes return transient errors ([#11284](https://github.com/can1357/oh-my-pi/issues/11284)).
 
 ## [18.1.19] - 2026-09-12
 
@@ -288,6 +315,8 @@
 
 ### Fixed
 
+- Fixed automatic custom-tool loading trying to execute package metadata and declarative files, including metadata shadowing an executable tool with the same name ([#11864](https://github.com/can1357/oh-my-pi/pull/11864) by [@moodiness](https://github.com/moodiness)).
+- Fixed successful Python kernel shutdowns being reported as unconfirmed and leaving spawned child processes running ([#11865](https://github.com/can1357/oh-my-pi/pull/11865) by [@moodiness](https://github.com/moodiness)).
 - Fixed completed tool cards reverting to pending after refocusing live sessions, and tool output collapsing behind finished reasoning segments ([#11868](https://github.com/can1357/oh-my-pi/pull/11868) by [@serverinspector](https://github.com/serverinspector)).
 - Invalid `WATCHDOG.yml` entries now produce startup/editor warnings while healthy advisors remain available ([#11882](https://github.com/can1357/oh-my-pi/pull/11882) by [@olegpulatov](https://github.com/olegpulatov)).
 - Claude Code session imports now preserve typed user text stored alongside tool results ([#11854](https://github.com/can1357/oh-my-pi/issues/11854)).

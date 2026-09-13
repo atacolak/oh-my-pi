@@ -2507,6 +2507,17 @@ export class Settings {
 			todoObj.eager = todoObj.eager ? "always" : "default";
 		}
 
+		// collab.autoStart: boolean -> enum (off | view | control).
+		// `true` reproduced the previous unattended-hosting enablement, which is now
+		// `control`; `false` maps to `off` so project/overlay opt-outs still suppress.
+		const collabObj = isRecord(raw.collab) ? (raw.collab as Record<string, unknown>) : undefined;
+		if (collabObj && typeof collabObj.autoStart === "boolean") {
+			collabObj.autoStart = collabObj.autoStart ? "control" : "off";
+		}
+		if (typeof raw["collab.autoStart"] === "boolean") {
+			raw["collab.autoStart"] = raw["collab.autoStart"] ? "control" : "off";
+		}
+
 		// features.unexpectedStopDetection (boolean) -> enum none|mechanical|smart.
 		// `true` reproduced the previous small-model-classified behavior, which is
 		// now "smart"; `false` maps to "none" so explicitly disabled configs remain

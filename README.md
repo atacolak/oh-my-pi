@@ -3,7 +3,7 @@
 >
 > Daily composition of selected local capabilities on current upstream main.
 >
-> - **Upstream base:** [OMP 18.1.19 (`e4dd2ec3`)](https://github.com/can1357/oh-my-pi/tree/e4dd2ec3b487f216c569281e2cdb7ec476a81f2e)
+> - **Upstream base:** [OMP 18.1.20 (`1bd60c6f`)](https://github.com/can1357/oh-my-pi/tree/1bd60c6fbd0e800a75fd09b1e4804af5a5e6d63b)
 > - **Capabilities:**
 >   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — retention + locked `scope:personal` / `scope:coding` + `project:<repo>` seam
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings

@@ -58,8 +58,8 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
 import { restartArgv } from "../cli/flag-tables";
 import type { CollabGuestLink } from "../collab/guest";
+import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
-import { stopCollabHost } from "../collab/start";
 import { formatKeyHint, KeybindingsManager } from "../config/keybindings";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
@@ -847,11 +847,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	fileSlashCommands: Set<string> = new Set();
 	skillCommands: Map<string, Skill> = new Map();
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
+	/** Owns hosting: manual `/collab`, `collab.autoStart`, and room rotation on session switch. */
+	readonly collabController: CollabController;
+	/** Owned room; use {@link collabController}.host for current-session reuse and links. */
 	collabHost?: CollabHost;
-	collabHostStart?: Promise<CollabHost>;
-	collabHostAbort?: AbortController;
 	collabGuest?: CollabGuestLink;
-	collabGuestStart?: Promise<CollabGuestLink>;
 
 	#pendingCommandOutput: Component[] = [];
 	#pendingCommandOutputSessionId: string | undefined;
@@ -1260,6 +1260,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
+		this.collabController = new CollabController(this);
 		this.session.setTitleGenerationStart?.(() => this.#inputController.notifyTitleGenerationStart());
 		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();
@@ -1345,7 +1346,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			beginDispose: () => this.session.beginDispose(),
 			saveDraft: text => this.sessionManager.saveDraft(text),
 			stopCollab: async () => {
-				await stopCollabHost(this, "session shutdown");
+				await this.collabController.shutdown("session shutdown");
 			},
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
@@ -1526,6 +1527,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		});
 
+		// Host the session before extension hooks run: a dialog raised from a
+		// `session_start` hook is then retained for the first writer that joins.
+		// The relay connection proceeds in the background and never blocks init.
+		// The owning caller keeps guest mutations gated through its full outer
+		// startup; early dialog answers do not require that readiness signal.
+		if (options.autoStartCollab === true) this.collabController.autoStart();
+
+		// Initialize hooks with TUI-based UI context
 		await logger.time("InteractiveMode.init:hooks", () => this.initHooksAndCustomTools());
 
 		// Restore mode from session (e.g. plan mode on resume)
@@ -5452,11 +5461,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showStatus("Still closing… (flushing memory backend / network)");
 		}, STILL_CLOSING_DELAY_MS);
 		try {
-			try {
-				await stopCollabHost(this, "session shutdown");
-			} catch (err) {
-				logger.warn("Failed to stop collab host during teardown", { error: String(err) });
-			}
+			// Guests get goodbye and the registry entry disappears before the
+			// session is disposed, under the same still-closing progress notice.
+			await this.collabController.shutdown("host exited");
 			await this.#liveCommandController.stop();
 			await this.#btwController.dispose();
 			this.#omfgController.dispose();

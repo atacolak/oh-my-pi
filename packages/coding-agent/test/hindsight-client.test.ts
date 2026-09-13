@@ -58,3 +58,61 @@ describe("HindsightApi timestamp serialization", () => {
 		expect(firstTimestamp(bodies[0] ?? "{}")).toBe("2026-06-12T19:17:00+08:00");
 	});
 });
+
+describe("HindsightApi knowledge-base reads", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	function mockFetch(status: number, body: unknown, capture: { url?: string; method?: string } = {}) {
+		const fetchMock: typeof globalThis.fetch = Object.assign(
+			async (input: string | URL | Request, init?: RequestInit | BunFetchRequestInit): Promise<Response> => {
+				capture.url = String(input);
+				capture.method = String(init?.method ?? "GET");
+				return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+		return capture;
+	}
+
+	it("GETs the knowledge-base tree", async () => {
+		const capture = mockFetch(200, { roots: [] });
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		await client.getKnowledgeBaseTree("test");
+		expect(capture.method).toBe("GET");
+		expect(capture.url).toBe("http://hindsight.local/v1/default/banks/test/knowledge-base/tree");
+	});
+
+	it("GETs knowledge-base search with query and limit", async () => {
+		const capture = mockFetch(200, { results: [], total: 0 });
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		await client.searchKnowledgeBase("test", "architecture", { limit: 50 });
+		expect(capture.method).toBe("GET");
+		expect(capture.url).toBe(
+			"http://hindsight.local/v1/default/banks/test/knowledge-base/search?q=architecture&limit=50",
+		);
+	});
+
+	it("GETs a knowledge page by id", async () => {
+		const capture = mockFetch(200, {
+			id: "kp-1",
+			name: "Architecture",
+			type: "knowledge-page",
+			tags: [],
+			body: "",
+			markdown: "",
+		});
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		await client.getKnowledgePage("test", "kp-1");
+		expect(capture.method).toBe("GET");
+		expect(capture.url).toBe("http://hindsight.local/v1/default/banks/test/knowledge-base/pages/kp-1");
+	});
+
+	it("returns null for a 404 knowledge page read", async () => {
+		mockFetch(404, { detail: "not found" });
+		const client = new HindsightApi({ baseUrl: "http://hindsight.local" });
+		await expect(client.getKnowledgePage("test", "missing")).resolves.toBeNull();
+	});
+});

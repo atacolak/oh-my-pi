@@ -91,9 +91,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		// (true), so Enter writes false even though project remains true.
 		selector.handleInput("\x1bs");
 		expect(selector.render(120).join("\n")).toContain("Settings · global");
-		for (const char of "ask tool interactive") selector.handleInput(char);
+		selector.handleInput("Enable the ask tool");
 		selector.handleInput("\n");
-
 		expect(settings.getGlobalValue("ask.enabled")).toBe(false);
 		expect(settings.get("ask.enabled")).toBe(true);
 		expect(changes).toEqual([]);
@@ -110,7 +109,7 @@ describe("SettingsSelectorComponent persistence scope", () => {
 		const selector = createSelector();
 		// Locate the Ask row via search, then Esc lands on its tab with the row
 		// selected so Delete can remove the project override in list mode.
-		for (const char of "ask tool interactive") selector.handleInput(char);
+		selector.handleInput("Enable the ask tool");
 		selector.handleInput("\x1b");
 		selector.handleInput("\x1b[3~");
 

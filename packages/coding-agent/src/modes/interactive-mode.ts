@@ -5385,11 +5385,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
 	async #teardown(): Promise<void> {
-		try {
-			await stopCollabHost(this, "session shutdown");
-		} catch (err) {
-			logger.warn("Failed to stop collab host during teardown", { error: String(err) });
-		}
 		// An in-flight loop condition (or a deferred auto-submit timer) must not
 		// outlive session disposal: an unaborted `sleep 30`-style condition can
 		// resolve mid-teardown and drive `#passesLoopCondition` into invoking the
@@ -5397,14 +5392,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
 
-		// Surface progress before any asynchronous cleanup, including live commands
-		// and BTW history writes, so the user sees a reason for the pause.
+		// Surface progress before any asynchronous cleanup, including collab host
+		// stop, live commands, and BTW history writes, so the user sees a reason
+		// for the pause.
 		this.showStatus("Closing session…");
 
 		const stillClosingTimer = setTimeout(() => {
 			this.showStatus("Still closing… (flushing memory backend / network)");
 		}, STILL_CLOSING_DELAY_MS);
 		try {
+			try {
+				await stopCollabHost(this, "session shutdown");
+			} catch (err) {
+				logger.warn("Failed to stop collab host during teardown", { error: String(err) });
+			}
 			await this.#liveCommandController.stop();
 			await this.#btwController.dispose();
 			this.#omfgController.dispose();

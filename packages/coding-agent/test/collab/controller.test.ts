@@ -87,7 +87,15 @@ function makeControllerContext(over: Partial<Pick<ControllerContextState, "autoS
 		"collab.webUrl": WEB_URL,
 	});
 	const ctx = {
-		settings: { get: (key: string) => settingValues()[key] ?? "" },
+		settings: {
+			get: (key: string) => settingValues()[key] ?? "",
+			getProvenance: () => "runtime" as const,
+			isConfigured: (key: string) => key in settingValues(),
+			getProjectSettingsLayers: () => [],
+			getConfigOverlayLayers: () => [],
+			getProjectSettings: () => ({}),
+			getGlobalSettings: () => ({}),
+		},
 		sessionManager: {
 			getSessionId: () => state.sessionId,
 			getCwd: () => "/tmp/collab-controller-test",
@@ -142,6 +150,8 @@ function makeControllerContext(over: Partial<Pick<ControllerContextState, "autoS
 			state.showStatus.push(message);
 			state.firstStatus.resolve(message);
 		},
+		showWarning: () => {},
+		showError: () => {},
 		collabHost: undefined,
 	};
 	return { ctx: ctx as unknown as InteractiveModeContext, state };

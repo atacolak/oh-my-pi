@@ -864,6 +864,16 @@ export function shortenEmbeddedPaths(text: string, homeDir = os.homedir()): stri
 		.join(" ");
 }
 
+/** Collapse layout/control characters, shorten home paths, and truncate status errors. */
+export function sanitizeStatusText(value: string, maxWidth: number, empty = "(unnamed)"): string {
+	const text = shortenEmbeddedPaths(
+		replaceTabs(sanitizeText(value))
+			.replace(/[\r\n]+/g, " ")
+			.trim(),
+	);
+	return truncateToWidth(text.length > 0 ? text : empty, maxWidth);
+}
+
 /** Sanitize warning text before showing it in TUI, including embedded home paths. */
 export function sanitizeDisplayWarning(text: string): string {
 	return shortenEmbeddedPaths(

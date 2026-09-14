@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import type { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
+import { CollabController } from "@oh-my-pi/pi-coding-agent/collab/controller";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { BtwController } from "@oh-my-pi/pi-coding-agent/modes/controllers/btw-controller";
@@ -167,11 +167,9 @@ describe("InteractiveMode long shutdown status", () => {
 			await liveGate.promise;
 			order.push("liveStop:done");
 		});
-		mode.collabHost = {
-			stop: async () => {
-				order.push("collabStop");
-			},
-		} as unknown as CollabHost;
+		vi.spyOn(CollabController.prototype, "shutdown").mockImplementation(async () => {
+			order.push("collabStop");
+		});
 
 		const shutdown = mode.shutdown();
 		await flushMicrotasks();

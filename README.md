@@ -3,7 +3,7 @@
 >
 > Daily composition of selected local capabilities on current upstream main.
 >
-> - **Upstream base:** [OMP 18.1.20 (`1bd60c6f`)](https://github.com/can1357/oh-my-pi/tree/1bd60c6fbd0e800a75fd09b1e4804af5a5e6d63b)
+> - **Upstream base:** [OMP 18.1.21 (`a2501722`)](https://github.com/can1357/oh-my-pi/tree/a2501722aa05670eeab327ea1325e3fde55e51a9)
 > - **Capabilities:**
 >   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — retention + locked `scope:personal` / `scope:coding` + `project:<repo>` seam
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped settings
@@ -11,6 +11,8 @@
 >   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root `--agent`, separate `--agent-cwd`, and hidden automation roles
 >   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — lazy nested LSP project roots
 >   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting (project `.omp/config.yml` allowed)
+>   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — skip test/spec files as extension entry points
+>   - [`cap/followup-draft`](https://github.com/atacolak/oh-my-pi/tree/cap/followup-draft) — default `followUpMode=all`; keep composer on inbound user messages
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 

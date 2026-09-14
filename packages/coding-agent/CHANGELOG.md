@@ -690,8 +690,9 @@
 - Fixed extension and user asides being stranded, delivered to the wrong session, or incorrectly interrupting or restarting turns during session changes and image processing.
 - Fixed parent steering messages arriving during a subagent's final result from preventing that result from being committed.
 - Fixed messages typed while an edit or write tool was streaming from discarding the completed tool call and triggering unnecessary regeneration.
+- Fixed self-hosted Firecrawl URLs with origin-only base URLs from gaining an extra slash.
+- Fixed omp commit auto-staging from including macOS Unicode-normalization duplicates or files ignored by nested .gitignore rules.
 
-[Showing lines 1-300 of 1956. Use :301 to continue]
 ## [18.1.5] - 2026-09-03
 
 ### Added

@@ -1,4 +1,4 @@
-import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
+import type { AppViewportScrollRegion, Component, HistoryBatch } from "@oh-my-pi/pi-tui";
 import { Container } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import { isToolActivityComponent } from "./tool-activity";
@@ -141,7 +141,7 @@ export interface TranscriptViewportSpan {
 }
 
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
-export class TranscriptContainer extends Container {
+export class TranscriptContainer extends Container implements AppViewportScrollRegion {
 	#entries: TranscriptEntry[] = [];
 	#frontier = 0;
 	#nextBatchId = 1;
@@ -238,6 +238,14 @@ export class TranscriptContainer extends Container {
 		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
 		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
 		return true;
+	}
+
+	getAppViewportScrollRegionStart(): number | undefined {
+		return 0;
+	}
+
+	getAppViewportScrollRegionEnd(): number | undefined {
+		return undefined;
 	}
 
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */

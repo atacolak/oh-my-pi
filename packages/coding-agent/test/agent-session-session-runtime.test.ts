@@ -542,6 +542,7 @@ describe("AgentSession adopted session-runtime changes", () => {
 			modelRegistry: new ModelRegistry(authStorage),
 		});
 
+		settings.set("followUpMode", "one-at-a-time");
 		session.setFollowUpMode("all", false);
 		expect(session.followUpMode).toBe("all");
 		expect(settings.get("followUpMode")).toBe("one-at-a-time");

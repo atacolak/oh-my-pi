@@ -5,6 +5,16 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+## [18.1.21] - 2026-09-14
+
+### Added
+
+- Added `getBrowserProfilesDir()` (`~/.omp/browser-profiles`; XDG: `$XDG_STATE_HOME/omp/browser-profiles`) for profiles of Chromium browsers spawned by the browser tool.
+
+### Fixed
+
+- Timed out stalled Chrome-for-Testing metadata requests after 30 seconds when looking up download metadata
+- Concurrent browser installations share one download without replacing a running browser, and stalled downloads time out with partial files cleaned up for retry.
 
 ## [18.1.19] - 2026-09-12
 

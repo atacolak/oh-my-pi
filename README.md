@@ -1,3 +1,16 @@
+> [!NOTE]
+> ## `cap/followup-draft` — followUpMode default all + inbound draft protect
+>
+> Fork-local: default followUpMode to `all` so after-yield follow-ups inject
+> in the same next turn, and never clear the TUI composer on inbound
+> extension/HCOM user messages.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Status:** fork-local (no upstream PR)
+> - **Upstream base:** [OMP 18.1.21 (`a2501722`)](https://github.com/can1357/oh-my-pi/tree/a2501722aa05670eeab327ea1325e3fde55e51a9)
+>
+> Not stacked on other capabilities; merged into `runtime` independently.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

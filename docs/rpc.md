@@ -568,7 +568,7 @@ If omitted during streaming, prompt fails.
 From `packages/agent/src/agent.ts` defaults:
 
 - `steeringMode`: `"one-at-a-time"`
-- `followUpMode`: `"one-at-a-time"`
+- `followUpMode`: `"all"`
 - `interruptMode`: `"immediate"`
 
 ### Mode semantics

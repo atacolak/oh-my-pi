@@ -853,6 +853,10 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 	// Process direct files
 	for (const match of directFiles) {
 		if (match.path.includes("/")) continue;
+		// Test/spec files are not extension entry points even when they live in an
+		// extensions directory; loading them executes suite code at launch.
+		const stem = match.path.slice(0, match.path.lastIndexOf("."));
+		if (stem.endsWith(".test") || stem.endsWith(".spec")) continue;
 		discovered.add(path.join(dir, match.path));
 	}
 	// Track which subdirectories have package.json manifests with declared extensions

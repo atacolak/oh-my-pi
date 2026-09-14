@@ -129,7 +129,7 @@ import {
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions, stripXdUrlPrefix } from "./internal-urls";
-import { setSharedLspEnabled } from "./lsp/client";
+import { createLspClientOwner, releaseLspClientOwner, setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import {
 	deduplicateMCPToolsByName,
@@ -1800,6 +1800,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// mutation (any tool) bumped it in the meantime.
 		const fileMutationVersions = new Map<string, number>();
 		const disposeCallbacks = new Set<() => void>();
+		const lspClientOwner = createLspClientOwner();
+		disposeCallbacks.add(() => releaseLspClientOwner(lspClientOwner));
 		const activeToolNames = new Set<string>();
 		const toolRegistry = new Map<string, Tool & Pick<ToolDefinition, "defaultInactive">>();
 		const setActiveToolNames = (names: Iterable<string>): void => {
@@ -1822,6 +1824,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				return sessionManager.getAdditionalDirectories();
 			},
 			enableLsp,
+			lspClientOwner,
 			lspReadOnly,
 			enableIrc: restrictToolNames ? false : options.enableIrc,
 			restrictToolNames,
@@ -3832,6 +3835,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			modelRegistry,
 			rebindModelAfterDiscovery: options.model === undefined || options.rebindModelAfterDiscovery === true,
 			toolRegistry,
+			lspClientOwner,
 			reconcileBrowserMcpFilter: mcpManager
 				? async enabled => {
 						await mcpManager.reconcileBrowserFilter(enabled);
@@ -4161,7 +4165,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (lspServers.length > 0) {
 				void (async () => {
 					try {
-						const result = await logger.time("warmupLspServers", warmupLspServers, cwd);
+						const result = await logger.time(
+							"warmupLspServers",
+							warmupLspServers,
+							cwd,
+							undefined,
+							lspClientOwner,
+						);
 						const serversByName = new Map(result.servers.map(server => [server.name, server] as const));
 						for (const server of lspServers ?? []) {
 							const next = serversByName.get(server.name);

@@ -94,15 +94,17 @@ describe("EventController message_start (user role)", () => {
 		expect(addMessageToChat).toHaveBeenCalledWith(message);
 		// Pending list always refreshes so the dequeued entry disappears.
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
-		// Signature is consumed so a future external message with the same shape still clears.
+		// Signature is consumed so a future external message with the same shape is
+		// not matched to this local submission again. The composer is never cleared
+		// on message_start, so consumption no longer affects the draft.
 		expect(ctx.locallySubmittedUserSignatures.has(signature)).toBe(false);
 	});
 
 	it("preserves the in-progress draft for a user message from an extension", async () => {
-		// Regression: an inbound extension message (e.g. HCOM `sendUserMessage`) is a
-		// real, non-synthetic user message this session never submitted locally.
-		// "Not local" must not mean "clear the editor": the operator's in-progress
-		// draft (text and pasted images) has to survive the delivery.
+		// Regression: a user message this session never submitted locally is a real,
+		// non-synthetic prompt (an extension delivering `sendUserMessage`, e.g. HCOM).
+		// "Not local" must not mean "reset the editor": the draft being typed — text
+		// and pasted images — has to survive the delivery.
 		const message = createUserMessage("inbound from an extension");
 		const draftImage: ImageContent = { type: "image", data: "AAAA", mimeType: "image/png" };
 		const { ctx, editor, setText, addMessageToChat, updatePendingMessagesDisplay } = createContext({
@@ -118,7 +120,7 @@ describe("EventController message_start (user role)", () => {
 		expect(editor.pendingImages).toEqual([draftImage]);
 		// The inbound message still reaches the transcript.
 		expect(addMessageToChat).toHaveBeenCalledWith(message);
-		// Pending list still refreshes.
+		// The pending list still refreshes.
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 	});
 

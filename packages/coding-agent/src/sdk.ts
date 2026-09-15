@@ -4393,7 +4393,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					logger.warn("Autoload skill not found", { name });
 					continue;
 				}
-				const { message } = await buildSkillPromptMessage(skill, "", "autoload");
+				const { message } = await buildSkillPromptMessage(skill, { args: "" }, "autoload");
 				await session.sendCustomMessage(
 					{
 						customType: SKILL_PROMPT_MESSAGE_TYPE,

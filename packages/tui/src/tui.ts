@@ -3597,9 +3597,13 @@ export class TUI extends Container {
 
 	#enterAppViewport(): void {
 		if (this.#appViewportActive) return;
+		this.#noteAltBufferToggle();
+		this.#imageBudget.beginAltScreenLifecycle();
 		this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${APP_VIEWPORT_MOUSE_TRACKING_ON}`);
 		setAltScreenActive(true);
 		this.terminal.hideCursor();
+		this.#forgetHardwareCursorState();
+		this.#recordHardwareCursorHidden();
 		this.#appViewportActive = true;
 		this.#appViewportMouseTrackingActive = true;
 		this.#appViewportPreviousLines = [];
@@ -3693,7 +3697,7 @@ export class TUI extends Container {
 			this.terminal.write(wantMouseTracking ? APP_VIEWPORT_MOUSE_TRACKING_ON : APP_VIEWPORT_MOUSE_TRACKING_OFF);
 			this.#appViewportMouseTrackingActive = wantMouseTracking;
 		}
-		this.#imageBudget.beginPass();
+		this.#imageBudget.beginPass(false, true);
 		const contentWidth = Math.max(1, width - 1);
 		const rawFrame = this.#appViewportSourceLines(contentWidth);
 		if (this.#imageBudget.endPass()) {

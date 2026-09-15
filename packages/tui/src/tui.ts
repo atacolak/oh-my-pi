@@ -871,6 +871,7 @@ export class TUI extends Container {
 	#appViewportBackend = Bun.env.PI_TUI_RENDER_BACKEND === "app-viewport";
 	#appViewportActive = false;
 	#appViewportPreviousLines: string[] = [];
+	#appViewportPreparedRows: PreparedLine[] = [];
 	#appViewportPreviousWidth = 0;
 	#appViewportScrollRegionEnd: number | undefined;
 	#appViewportScrollTop = 0;
@@ -1916,6 +1917,7 @@ export class TUI extends Container {
 			this.#appViewportActive = false;
 			this.#appViewportMouseTrackingActive = false;
 			this.#appViewportPreviousLines = [];
+			this.#appViewportPreparedRows = [];
 			this.#appViewportPreviousWidth = 0;
 		}
 		this.#cancelPostmortemRestore?.();
@@ -3496,6 +3498,7 @@ export class TUI extends Container {
 		this.#appViewportActive = true;
 		this.#appViewportMouseTrackingActive = true;
 		this.#appViewportPreviousLines = [];
+		this.#appViewportPreparedRows = [];
 		this.#appViewportPreviousWidth = 0;
 	}
 
@@ -3588,15 +3591,18 @@ export class TUI extends Container {
 		this.#imageBudget.beginPass();
 		const contentWidth = Math.max(1, width - 1);
 		const rawFrame = this.#appViewportSourceLines(contentWidth);
-		if (this.#imageBudget.endPass()) this.#appViewportPreviousLines = [];
+		if (this.#imageBudget.endPass()) {
+			this.#appViewportPreviousLines = [];
+			this.#appViewportPreparedRows = [];
+		}
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
 
-		const frame = this.#prepareLinesArray(rawFrame, contentWidth);
-		const cursorMarkers = this.#extractCursorMarkers(frame);
+		const cursorMarkers = this.#extractCursorMarkers(rawFrame);
 		const cursorPos = cursorMarkers.length > 0 ? cursorMarkers[0]! : null;
+		const source = this.#prepareLinesArray(rawFrame, contentWidth);
 		const imageTransmits = this.#imageBudget.takeTransmits();
 		if (imageTransmits.length > 0) this.terminal.write(imageTransmits.join(""));
-		this.#emitAppViewportFrame(frame, width, height, cursorPos);
+		this.#emitAppViewportFrame(source.lines, width, height, cursorPos);
 		this.#hasEverRendered = true;
 	}
 
@@ -3612,17 +3618,29 @@ export class TUI extends Container {
 			fitted = this.#compositeOverlaysIntoWindow(fitted, width, height);
 			const overlayMarkers = this.#extractCursorMarkers(fitted);
 			if (overlayMarkers.length > 0) fittedCursorPos = overlayMarkers[0]!;
-			fitted = this.#prepareLinesArray(fitted, width);
 		}
-		if (this.#appViewportPreviousWidth === width && this.#appViewportPreviousLines.length === height) {
+		const prepared = this.#prepareLinesArray(fitted, width, this.#appViewportPreparedRows, height);
+		const force = this.#forceViewportRepaintOnNextRender;
+		this.#forceViewportRepaintOnNextRender = false;
+		if (!force && this.#appViewportPreviousWidth === width && this.#appViewportPreviousLines.length === height) {
 			let same = true;
 			for (let r = 0; r < height; r++) {
-				if (fitted[r] !== this.#appViewportPreviousLines[r]) {
+				const previous = this.#appViewportPreparedRows[r];
+				const current = prepared.rows[r]!;
+				if (
+					prepared.lines[r] !== this.#appViewportPreviousLines[r] ||
+					previous === undefined ||
+					previous.width !== current.width ||
+					previous.widthEpoch !== current.widthEpoch ||
+					previous.imageProtocol !== current.imageProtocol
+				) {
 					same = false;
 					break;
 				}
 			}
 			if (same) {
+				this.#appViewportPreviousLines = prepared.lines;
+				this.#appViewportPreparedRows = prepared.rows;
 				this.#writeAppViewportCursor(fittedCursorPos, height);
 				return;
 			}
@@ -3630,7 +3648,14 @@ export class TUI extends Container {
 		let buffer = `${this.#paintBeginSequence}\x1b[H`;
 		for (let r = 0; r < height; r++) {
 			if (r > 0) buffer += "\r\n";
-			buffer += this.#lineRewriteSequence(fitted[r] ?? "", width, r);
+			buffer += this.#lineRewriteSequence(
+				prepared.rows[r]!,
+				width,
+				r,
+				-1,
+				-1,
+				this.#osc66SpacerGlyphWidth(prepared.lines, r),
+			);
 		}
 		const target = this.#targetHardwareCursorState(fittedCursorPos, height);
 		if (target) {
@@ -3642,10 +3667,11 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
-		this.#appViewportPreviousLines = fitted;
+		this.#appViewportPreviousLines = prepared.lines;
+		this.#appViewportPreparedRows = prepared.rows;
 		this.#appViewportPreviousWidth = width;
 		this.#debugPaint = {
-			lines: fitted,
+			lines: prepared.lines,
 			windowTop: 0,
 			altScreen: true,
 			...(target === null ? {} : { cursor: { x: target.col, y: target.row, visible: target.visible } }),
@@ -3685,6 +3711,7 @@ export class TUI extends Container {
 	}
 
 	#buildAppViewportLines(lines: string[], width: number, height: number): string[] {
+		// oxlint-disable-next-line unicorn/no-new-array -- render-frame length preallocation
 		const fitted: string[] = new Array(Math.max(0, height)).fill("");
 		const scrollEnd = this.#appViewportScrollRegionEnd ?? lines.length;
 		const boundedScrollEnd = Math.max(0, Math.min(scrollEnd, lines.length));

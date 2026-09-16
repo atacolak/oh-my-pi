@@ -224,6 +224,45 @@ describe("passive todo phases", () => {
 		expect(isContinuingPhase({ kind: "future-value" })).toBe(true);
 		expect(isTodoPhase({ name: "Broken", kind: 1, tasks: [] })).toBe(false);
 	});
+
+	it("marks passive phases in model summary and transcript output", async () => {
+		const tool = new TodoTool(createSession());
+		const result = await tool.execute("init", {
+			op: "init",
+			list: [
+				{ phase: "Reference", kind: "passive", items: ["retain report"] },
+				{ phase: "Work", items: ["ship change"] },
+			],
+		});
+		const summary = result.content.find(part => part.type === "text");
+		if (summary?.type !== "text") throw new Error("expected summary");
+		expect(summary.text).toContain("Reference (passive):");
+		const rendered = Bun.stripANSI(
+			todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(120).join("\n"),
+		);
+		expect(rendered).toContain("Reference (passive)");
+	});
+
+	it("marks passive phases in the collapsed one-line phase summary", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("init", {
+			op: "init",
+			list: [
+				{ phase: "Reference", kind: "passive", items: ["retain report"] },
+				{ phase: "Execution", items: ["ship change"] },
+			],
+		});
+		// Completing the continuing work leaves the passive phase untouched by the
+		// update, so the renderer collapses it to its one-line summary.
+		const result = await tool.execute("done", { op: "done", task: "ship change" });
+		const rendered = Bun.stripANSI(
+			todoToolRenderer
+				.renderResult(result, { expanded: false, isPartial: false }, theme, { op: "done", task: "ship change" })
+				.render(120)
+				.join("\n"),
+		);
+		expect(rendered).toContain("Reference (passive)");
+	});
 });
 
 it("renders completed tasks as checked before revealing strikethrough", async () => {
@@ -401,6 +440,21 @@ describe("TodoTool operations", () => {
 		expect(parsedA?.status).toBe("blocked");
 		// The blocker reason must survive the round-trip, not just the status.
 		expect(parsedA?.blocker).toBe("x");
+	});
+
+	it("round-trips passive phase metadata without changing continuing headings", () => {
+		const phases: TodoPhase[] = [
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			{ name: "Work", tasks: [{ content: "ship change", status: "in_progress" }] },
+		];
+		const md = phasesToMarkdown(phases);
+		expect(md).toContain("# Reference <!-- kind: passive -->");
+		expect(md).toContain("\n# Work\n");
+		const parsed = markdownToPhases(md);
+		expect(parsed.errors).toEqual([]);
+		expect(parsed.phases[0]?.kind).toBe("passive");
+		expect(parsed.phases[0]?.tasks[0]?.status).toBe("pending");
+		expect(parsed.phases[1]?.kind).toBeUndefined();
 	});
 
 	it("parses checklist items with backslash-escaped brackets from /todo edit", () => {

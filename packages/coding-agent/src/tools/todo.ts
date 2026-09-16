@@ -771,7 +771,11 @@ export function phasesToMarkdown(phases: TodoPhase[]): string {
 	const out: string[] = [];
 	for (let i = 0; i < phases.length; i++) {
 		if (i > 0) out.push("");
-		out.push(`# ${phases[i].name}`);
+		// Passive is the only kind worth persisting (absent means continuing), so
+		// the marker rides in a trailing HTML comment: invisible in rendered
+		// markdown and unambiguous to parse back, exactly like the blocker note.
+		const kindNote = phases[i].kind === "passive" ? " <!-- kind: passive -->" : "";
+		out.push(`# ${phases[i].name}${kindNote}`);
 		for (const task of phases[i].tasks) {
 			// A blocked task's reason rides in a trailing HTML comment: invisible in
 			// rendered markdown, unambiguous to parse back (task content can't
@@ -811,7 +815,13 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 
 		const headingMatch = /^#{1,6}\s+(.+?)\s*$/.exec(trimmed);
 		if (headingMatch) {
-			currentPhase = { name: headingMatch[1].trim(), tasks: [] };
+			// Recover a phase's kind from its trailing HTML comment (see
+			// phasesToMarkdown). A comment that is not the kind marker stays part of
+			// the literal phase name, matching the pre-existing parser.
+			const phaseAttribute = /^(.*?)\s*<!--\s*kind:\s*(continuing|passive)\s*-->\s*$/.exec(headingMatch[1]);
+			const name = (phaseAttribute?.[1] ?? headingMatch[1]).trim();
+			const kind = phaseAttribute?.[2] as TodoPhaseKind | undefined;
+			currentPhase = { name, ...(kind !== undefined ? { kind } : {}), tasks: [] };
 			phases.push(currentPhase);
 			continue;
 		}
@@ -850,6 +860,15 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	return { phases, errors };
 }
 
+/**
+ * Display-only phase name: `Reference (passive)`. Passive is the sole kind the
+ * model or the human needs to see spelled out; absent/continuing stays bare so
+ * the default surface is byte-identical to before kinds existed.
+ */
+function phaseLabel(phase: Pick<TodoPhase, "name" | "kind">): string {
+	return phase.kind === "passive" ? `${phase.name} (passive)` : phase.name;
+}
+
 function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
 	if (tasks.length === 0) {
@@ -859,7 +878,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 
 	const remainingByPhase = phases
 		.map(phase => ({
-			name: phase.name,
+			name: phaseLabel(phase),
 			tasks: phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress"),
 		}))
 		.filter(phase => phase.tasks.length > 0);
@@ -898,14 +917,14 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
 	);
 	lines.push(
-		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
+		`Active phase ${currentIdx + 1}/${phases.length} "${phaseLabel(current)}" (${done}/${current.tasks.length})${
 			workedAhead
 				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
 				: "."
 		}`,
 	);
 	for (const phase of phases) {
-		lines.push(`  ${phase.name}:`);
+		lines.push(`  ${phaseLabel(phase)}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
 			const tag =
@@ -1115,8 +1134,9 @@ function forDisplay(text: string): string {
  * the name may carry provider or session text holding control sequences. The
  * raw `phase.name` stays the lookup key everywhere else.
  */
-export function formatPhaseDisplayName(name: string, oneBasedIndex: number): string {
-	return `${phaseRomanNumeral(oneBasedIndex)}. ${forDisplay(name)}`;
+export function formatPhaseDisplayName(name: string, oneBasedIndex: number, kind?: TodoPhaseKind): string {
+	const label = kind === "passive" ? `${forDisplay(name)} (passive)` : forDisplay(name);
+	return `${phaseRomanNumeral(oneBasedIndex)}. ${label}`;
 }
 
 export const TODO_STRIKE_HOLD_FRAMES = 2;
@@ -1234,7 +1254,7 @@ function formatPhaseProgress(phase: TodoPhase, uiTheme: Theme): string {
 
 /** One-line summary for a collapsed (untouched) phase: dim header + progress. */
 function formatPhaseSummary(phase: TodoPhase, oneBasedIndex: number, uiTheme: Theme): string {
-	const name = uiTheme.fg("dim", chalk.bold(formatPhaseDisplayName(phase.name, oneBasedIndex)));
+	const name = uiTheme.fg("dim", chalk.bold(formatPhaseDisplayName(phase.name, oneBasedIndex, phase.kind)));
 	return `${name}${formatPhaseProgress(phase, uiTheme)}`;
 }
 
@@ -1357,7 +1377,7 @@ export const todoToolRenderer = {
 					// viewport below hides closed rows, so without it the phase the
 					// agent is actually working in is the one phase with no visible
 					// completion signal at all.
-					const name = uiTheme.fg("accent", chalk.bold(formatPhaseDisplayName(phase.name, p + 1)));
+					const name = uiTheme.fg("accent", chalk.bold(formatPhaseDisplayName(phase.name, p + 1, phase.kind)));
 					bodyLines.push(`${name}${formatPhaseProgress(phase, uiTheme)}`);
 				}
 				const completionKeys = completionKeysByPhase.get(phase.name) ?? EMPTY_COMPLETION_KEYS;

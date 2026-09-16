@@ -30,7 +30,6 @@ import {
 	applyWorkspaceEditWithLsp,
 	clearInitializationFailure,
 	clearWorkspaceInitializationFailures,
-	ensureFileOpen,
 	canonicalSpawnCommand,
 	fallbackLspClientOwner,
 	getActiveClients,

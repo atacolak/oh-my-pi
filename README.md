@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR(s):** [#9833](https://github.com/can1357/oh-my-pi/pull/9833) — opt-in auto-start hosting and write-link file
-> - **Upstream base:** [OMP 18.1.22 (`23a5b9ae`)](https://github.com/can1357/oh-my-pi/tree/23a5b9ae38864d3f785dc6cbc96eb6d674a1d32d)
+> - **Upstream base:** [OMP 18.2.1 (`acf943d3`)](https://github.com/can1357/oh-my-pi/tree/acf943d3c8dc1ed135b42aa33fef4d9d2ff61c9a)
 >
 > PR heads stay independently reviewable without this banner.
 

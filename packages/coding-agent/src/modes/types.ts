@@ -90,6 +90,8 @@ export type TodoItem = {
 export type TodoPhase = {
 	name: string;
 	tasks: TodoItem[];
+	/** Mirrors the tool-level phase kind; absent means "continuing". */
+	kind?: "continuing" | "passive";
 };
 
 export interface InteractiveModeInitOptions {

@@ -132,8 +132,11 @@ describe("cursor todo persistence", () => {
 	});
 
 	it("keeps existing phase grouping for tasks the session already knows", () => {
+		// The flat Cursor protocol carries no phase metadata, so a regrouped
+		// snapshot must neither drop a known local kind nor invent one for the
+		// phases it creates itself.
 		const h = newHarness([
-			{ name: "Foundation", tasks: [{ content: "scaffold", status: "pending" }] },
+			{ name: "Foundation", kind: "passive", tasks: [{ content: "scaffold", status: "pending" }] },
 			{ name: "Auth", tasks: [{ content: "oauth", status: "pending" }] },
 		]);
 		h.handlers.todoSync(
@@ -149,7 +152,7 @@ describe("cursor todo persistence", () => {
 		);
 
 		expect(h.reload()).toEqual([
-			{ name: "Foundation", tasks: [{ content: "scaffold", status: "completed" }] },
+			{ name: "Foundation", kind: "passive", tasks: [{ content: "scaffold", status: "completed" }] },
 			{ name: "Auth", tasks: [{ content: "oauth", status: "in_progress" }] },
 			{ name: "Tasks", tasks: [{ content: "unknown", status: "pending" }] },
 		]);

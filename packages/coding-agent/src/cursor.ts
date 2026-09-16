@@ -894,11 +894,14 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			}
 
 			// Preserve the local phase order; phases new to this snapshot append.
+			// A known phase keeps its local kind: the flat snapshot has no phase
+			// metadata, so dropping the field would silently re-arm automation on a
+			// phase the user (or the producer) had made passive.
 			const next: TodoPhase[] = [];
 			for (const phase of existing) {
 				const tasks = grouped.get(phase.name);
 				if (!tasks) continue;
-				next.push({ name: phase.name, tasks });
+				next.push({ name: phase.name, ...(phase.kind !== undefined ? { kind: phase.kind } : {}), tasks });
 				grouped.delete(phase.name);
 			}
 			for (const [name, tasks] of grouped) next.push({ name, tasks });

@@ -96,6 +96,7 @@ class ProtocolParsingTests(unittest.TestCase):
                     {
                         "id": "phase-1",
                         "name": "Todos",
+                        "kind": "passive",
                         "tasks": [
                             {
                                 "id": "task-1",
@@ -127,6 +128,7 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertEqual(state.follow_up_mode, "all")
         self.assertEqual(state.model.id if state.model else None, "claude-sonnet-4-5")
         self.assertEqual(state.todo_phases[0].tasks[0].status, "in_progress")
+        self.assertEqual(state.todo_phases[0].kind, "passive")
         # Legacy bare-string systemPrompt is accepted and wrapped to a tuple.
         self.assertEqual(state.system_prompt, ("You are useful.",))
         self.assertEqual(state.dump_tools[0].name, "read")
@@ -357,6 +359,50 @@ class ProtocolParsingTests(unittest.TestCase):
         task = state.todo_phases[0].tasks[0]
         self.assertEqual(task.status, "blocked")
         self.assertEqual(task.blocker, "waiting on maintainer go-ahead")
+
+    def test_parse_session_state_defaults_missing_todo_phase_kind(self) -> None:
+        legacy = parse_session_state(
+            {
+                "sessionId": "session-123",
+                "steeringMode": "one-at-a-time",
+                "followUpMode": "all",
+                "interruptMode": "immediate",
+                "todoPhases": [
+                    {
+                        "id": "phase-1",
+                        "name": "Todos",
+                        "tasks": [
+                            {
+                                "id": "task-1",
+                                "content": "Map tools",
+                                "status": "pending",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertIsNone(legacy.todo_phases[0].kind)
+
+    def test_parse_session_state_rejects_unknown_todo_phase_kind(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_session_state(
+                {
+                    "sessionId": "session-123",
+                    "steeringMode": "one-at-a-time",
+                    "followUpMode": "all",
+                    "interruptMode": "immediate",
+                    "todoPhases": [
+                        {
+                            "id": "phase-1",
+                            "name": "Todos",
+                            "kind": "background",
+                            "tasks": [],
+                        }
+                    ],
+                }
+            )
 
     def test_assistant_text_excludes_thinking_by_default(self) -> None:
         message = {

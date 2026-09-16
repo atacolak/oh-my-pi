@@ -149,6 +149,21 @@ describe("/mcp auth commands", () => {
 	});
 
 	test("stores definition-only OAuth credentials under the expanded URL key", async () => {
+		await Bun.write(
+			configPath,
+			`${JSON.stringify(
+				{
+					mcpServers: {
+						"MaaS Slack": {
+							type: "http",
+							url: RAW_SERVER_URL,
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
 		const authStorage = freshAuthStorage();
 		await authStorage.reload();
 		const connectToServer = vi.spyOn(mcpClient, "connectToServer").mockRejectedValue(AUTH_ERROR);
@@ -159,7 +174,7 @@ describe("/mcp auth commands", () => {
 		});
 		const { controller, showError, prepareConfig } = createController(authStorage);
 
-		await controller.handle("/mcp reauth envserver");
+		await controller.handle("/mcp reauth MaaS Slack");
 
 		expect(showError).not.toHaveBeenCalled();
 		expect(prepareConfig).toHaveBeenCalledWith(
@@ -179,7 +194,7 @@ describe("/mcp auth commands", () => {
 		expect(authStorage.get(oauthFlow.mcpOAuthCredentialId(RAW_SERVER_URL))).toBeUndefined();
 
 		const saved = JSON.parse(await Bun.file(configPath).text()) as TestConfigFile;
-		const savedServer = saved.mcpServers?.envserver;
+		const savedServer = saved.mcpServers?.["MaaS Slack"];
 		const savedUrl = savedServer?.type === "http" || savedServer?.type === "sse" ? savedServer.url : undefined;
 		expect(savedUrl).toBe(RAW_SERVER_URL);
 		expect(savedServer?.auth).toBeUndefined();

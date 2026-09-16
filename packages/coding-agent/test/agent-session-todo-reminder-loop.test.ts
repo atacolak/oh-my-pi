@@ -102,8 +102,7 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 			const { content } = entry.message;
 			if (!Array.isArray(content)) return false;
 			return content.some(
-				(item): item is TextContent =>
-					item.type === "text" && item.text.includes("You stopped with 2 incomplete todo item(s):"),
+				(item): item is TextContent => item.type === "text" && item.text.includes("You stopped with"),
 			);
 		});
 	}
@@ -263,5 +262,32 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 
 		// 1/3 fires, agent does work, 2/3 fires, agent acks → suppressed, no 3/3.
 		expect(reminderAttempts).toEqual([1, 2]);
+	});
+
+	it("does not stop-remind for passive work and omits passive work from mixed reminders", async () => {
+		vi.spyOn(session.agent, "continue").mockResolvedValue();
+		session.setTodoPhases([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+		]);
+		emitTextOnlyStop();
+		await session.waitForIdle();
+		expect(reminderAttempts).toEqual([]);
+		expect(todoReminderTranscriptEntry()).toBeUndefined();
+
+		session.setTodoPhases([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			{ name: "Work", tasks: [{ content: "ship change", status: "pending" }] },
+		]);
+		emitToolResult("edit");
+		emitTextOnlyStop();
+		await session.waitForIdle();
+		const entry = todoReminderTranscriptEntry();
+		if (entry?.type !== "message" || !Array.isArray(entry.message.content)) throw new Error("expected reminder");
+		const text = entry.message.content
+			.filter((part): part is TextContent => part.type === "text")
+			.map(part => part.text)
+			.join("\n");
+		expect(text).toContain("ship change");
+		expect(text).not.toContain("retain report");
 	});
 });

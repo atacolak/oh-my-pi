@@ -96,14 +96,19 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		});
 	}
 
-	function todoReminderTranscriptEntry() {
+	/**
+	 * The reminder message the stop-time ladder appends. `incompleteCount` is how
+	 * many continuing tasks that ladder counted, so a fixture that changes what
+	 * the ladder considers open fails here instead of matching any
+	 * "You stopped with" text.
+	 */
+	function todoReminderTranscriptEntry(incompleteCount = 2) {
+		const expected = `You stopped with ${incompleteCount} incomplete todo item(s):`;
 		return sessionManager.getBranch().find(entry => {
 			if (entry.type !== "message" || entry.message.role !== "developer") return false;
 			const { content } = entry.message;
 			if (!Array.isArray(content)) return false;
-			return content.some(
-				(item): item is TextContent => item.type === "text" && item.text.includes("You stopped with"),
-			);
+			return content.some((item): item is TextContent => item.type === "text" && item.text.includes(expected));
 		});
 	}
 
@@ -264,8 +269,8 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		expect(reminderAttempts).toEqual([1, 2]);
 	});
 
-	it("does not stop-remind for passive work and omits passive work from mixed reminders", async () => {
-		vi.spyOn(session.agent, "continue").mockResolvedValue();
+	it("does not stop-remind or continue for passive work and omits passive work from mixed reminders", async () => {
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		session.setTodoPhases([
 			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
 		]);
@@ -273,6 +278,9 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		await session.waitForIdle();
 		expect(reminderAttempts).toEqual([]);
 		expect(todoReminderTranscriptEntry()).toBeUndefined();
+		// A passive-only list is not "work in flight": the stop-time ladder must
+		// not schedule a self-continuation for it.
+		expect(continueSpy).not.toHaveBeenCalled();
 
 		session.setTodoPhases([
 			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
@@ -281,7 +289,11 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		emitToolResult("edit");
 		emitTextOnlyStop();
 		await session.waitForIdle();
-		const entry = todoReminderTranscriptEntry();
+		// The mixed half reuses that spy: exactly the one continuation the
+		// continuing task's reminder earned, and exactly one reminder for it.
+		expect(continueSpy).toHaveBeenCalledTimes(1);
+		expect(reminderAttempts).toEqual([1]);
+		const entry = todoReminderTranscriptEntry(1);
 		if (entry?.type !== "message" || !Array.isArray(entry.message.content)) throw new Error("expected reminder");
 		const text = entry.message.content
 			.filter((part): part is TextContent => part.type === "text")

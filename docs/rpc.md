@@ -270,13 +270,24 @@ is re-armed.
   "todoPhases": [
     {
       "id": "phase-1",
-      "name": "Todos",
-      "kind": "passive",
+      "name": "Work",
       "tasks": [
         {
           "id": "task-1",
           "content": "Map the tool surface",
           "status": "in_progress"
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Reference",
+      "kind": "passive",
+      "tasks": [
+        {
+          "id": "task-2",
+          "content": "Retain the review report",
+          "status": "pending"
         }
       ]
     }
@@ -296,6 +307,8 @@ is re-armed.
   }
 }
 ```
+
+`todoPhases[]` entries normally omit `kind`: an absent `kind` is the default and means the phase is continuing. Only a phase that opted out of todo automation carries `"kind": "passive"`, and the list may mix both as the example does.
 
 ### `set_fast_mode` payload
 

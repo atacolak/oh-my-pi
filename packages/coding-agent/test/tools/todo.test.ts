@@ -150,11 +150,28 @@ describe("passive todo phases", () => {
 			],
 		});
 
+		// Promotion: the passive phase is listed first, yet only the continuing
+		// phase's first task auto-starts.
 		expect(result.details?.phases).toEqual([
 			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
 			{ name: "Execution", tasks: [{ content: "ship change", status: "in_progress" }] },
 		]);
-		expect(nextActionableTask(result.details?.phases ?? [])?.content).toBe("ship change");
+
+		// Selection: `start` still records a passive task as in progress — the list
+		// is the operator's declared state — so the phase order now offers a
+		// passive in-progress task BEFORE the continuing one. A selection that
+		// ignored the kind would answer "retain report" here.
+		const started = await tool.execute("start-passive", { op: "start", task: "retain report" });
+		const startedPhases = started.details?.phases ?? [];
+		expect(startedPhases[0]?.tasks[0]?.status).toBe("in_progress");
+		expect(nextActionableTask(startedPhases)?.content).toBe("ship change");
+
+		// Same fixture with all continuing work finished: the pending/in-progress
+		// fallback must still skip the passive task rather than fall back to it.
+		const finished = await tool.execute("done-continuing", { op: "done", task: "ship change" });
+		const finishedPhases = finished.details?.phases ?? [];
+		expect(finishedPhases[1]?.tasks[0]?.status).toBe("completed");
+		expect(nextActionableTask(finishedPhases)).toBeUndefined();
 	});
 
 	it("leaves an explicitly-started passive task outside the continuing pointer", async () => {

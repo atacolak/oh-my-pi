@@ -41,6 +41,7 @@ import {
 	type LspServerStatus,
 	ownerConfigGeneration,
 	reconcileExecutedChanges,
+	reconcileFileFromDisk,
 	reconcileIdleChecker,
 	refreshFile,
 	releaseExecutedMovedDirectoryRoots,
@@ -1265,7 +1266,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					this.#clientOwner,
 				);
 				if (resolvedTarget) {
-					await ensureFileOpen(client, resolvedTarget, signal);
+					await reconcileFileFromDisk(client, resolvedTarget, signal);
 				}
 				const result = await sendRequest(client, method, requestParams, signal);
 				const formatted =
@@ -1500,8 +1501,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			const rustWorkspaceWait =
 				needsProjectIndex && isRustAnalyzerServer && targetFile !== null && hasRustWorkspaceAncestor(targetFile);
 
+			let reconciledFromDisk = false;
 			if (targetFile) {
-				await ensureFileOpen(client, targetFile, signal);
+				reconciledFromDisk = await reconcileFileFromDisk(client, targetFile, signal);
 			}
 			if (rustWorkspaceWait) {
 				await waitForProjectLoaded(client, signal);
@@ -1687,7 +1689,30 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				case "code_actions": {
-					const diagnostics = client.diagnostics.get(uri)?.diagnostics ?? [];
+					let diagnostics = client.diagnostics.get(uri)?.diagnostics ?? [];
+					// A reconcile dropped the stale diagnostics and pushed a didChange;
+					// the server re-publishes (or a pull answers) asynchronously, so read
+					// the map now and quick-fix providers see an empty context.diagnostics.
+					// Wait for diagnostics matching the reconciled document version first.
+					// Non-diagnostic actions (refactors, source actions) still return if the
+					// wait cannot complete, so a diagnostics failure never breaks code_actions.
+					if (reconciledFromDisk) {
+						try {
+							diagnostics = await waitForDiagnostics(client, uri, {
+								timeoutMs: Math.min(
+									isProjectAwareLspServer(serverConfig)
+										? PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS
+										: SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS,
+									timeoutSec * 1000,
+								),
+								signal,
+								expectedDocumentVersion: client.openFiles.get(uri)?.version,
+							});
+						} catch (err) {
+							if (err instanceof ToolAbortError || signal?.aborted) throw err;
+							diagnostics = client.diagnostics.get(uri)?.diagnostics ?? [];
+						}
+					}
 					const context: CodeActionContext = {
 						diagnostics,
 						only: !apply && query ? [query] : undefined,

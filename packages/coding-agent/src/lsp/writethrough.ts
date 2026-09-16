@@ -3,7 +3,14 @@ import { isEnoent, logger, once, untilAborted } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
 import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import { isPermissionDeniedError, writeFileWithFallback } from "../tools/file-write-fallback";
-import { FileChangeType, type LspClientOwner, notifyWorkspaceWatchedFiles, stampOwnerConfigGeneration } from "./client";
+import {
+	beginPendingDiskWrite,
+	endPendingDiskWrite,
+	FileChangeType,
+	type LspClientOwner,
+	notifyWorkspaceWatchedFiles,
+	stampOwnerConfigGeneration,
+} from "./client";
 import { getConfig, getServersForFile } from "./config";
 import {
 	captureDiagnosticVersions,
@@ -385,6 +392,10 @@ async function runLspWritethrough(
 	let timedOut = false;
 	let synced = false;
 	let operationSignal: AbortSignal | undefined;
+	// The overlay leads disk from the first sync below until the write commits;
+	// bar disk-reconciliation for the file so a concurrent semantic query cannot
+	// revert the server to pre-write content.
+	beginPendingDiskWrite(dst);
 	try {
 		const timeoutSignal = AbortSignal.timeout(5_000);
 		timeoutSignal.addEventListener(
@@ -495,6 +506,8 @@ async function runLspWritethrough(
 		// announce it on the caller's signal — the dead `operationSignal` would
 		// abort the notify before it ever reaches the server.
 		await notifyWriteCommitted();
+	} finally {
+		endPendingDiskWrite(dst);
 	}
 
 	if (synced && enableDiagnostics) {

@@ -29,14 +29,24 @@ export interface TodoItem {
 	blocker?: string;
 }
 
+export type TodoPhaseKind = "continuing" | "passive";
+
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+	/** Absent means "continuing". Only the exact string "passive" makes a phase passive. */
+	kind?: TodoPhaseKind;
 }
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
-	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) return false;
+	if (
+		!isRecord(value) ||
+		typeof value.name !== "string" ||
+		(value.kind !== undefined && typeof value.kind !== "string") ||
+		!Array.isArray(value.tasks)
+	)
+		return false;
 	return value.tasks.every(
 		task =>
 			isRecord(task) &&
@@ -84,8 +94,11 @@ const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unbl
 	"operation to apply",
 );
 
+const TodoPhaseKindSchema = type('"continuing" | "passive"').describe("phase continuation behavior");
+
 const InitListEntry = type({
 	phase: type("string").describe("phase name"),
+	"kind?": TodoPhaseKindSchema,
 	items: type("string").describe("task content").array().atLeastLength(1).describe("tasks for this phase"),
 });
 
@@ -94,6 +107,7 @@ const todoSchema = type({
 	"list?": InitListEntry.array().describe("phased task list (init)"),
 	"task?": type("string").describe("task content"),
 	"phase?": type("string").describe("phase name"),
+	"kind?": TodoPhaseKindSchema,
 	// No `atLeastLength(1)` here: `items` is only meaningful for `init`/`append`,
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
@@ -129,7 +143,11 @@ function cloneTask(task: TodoItem): TodoItem {
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
-	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+	return phases.map(phase => ({
+		name: phase.name,
+		...(phase.kind !== undefined ? { kind: phase.kind } : {}),
+		tasks: phase.tasks.map(cloneTask),
+	}));
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -158,7 +176,7 @@ function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): 
 }
 
 function normalizeInProgressTask(phases: TodoPhase[]): void {
-	const orderedTasks = phases.flatMap(phase => phase.tasks);
+	const orderedTasks = continuingPhases(phases).flatMap(phase => phase.tasks);
 	if (orderedTasks.length === 0) return;
 
 	const inProgressTasks = orderedTasks.filter(task => task.status === "in_progress");
@@ -177,7 +195,7 @@ function normalizeInProgressTask(phases: TodoPhase[]): void {
 /** Return the active todo task, preferring an in-progress item over the first pending item. */
 export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined {
 	let firstPending: TodoItem | undefined;
-	for (const phase of phases) {
+	for (const phase of continuingPhases(phases)) {
 		for (const task of phase.tasks) {
 			if (task.status === "in_progress") return task;
 			if (!firstPending && task.status === "pending") firstPending = task;
@@ -333,6 +351,21 @@ export function todoMatchesAnyDescription(content: string, descriptions: readonl
  *  auto-clear can never disagree about what "done" hides. */
 export function isClosedTodo<T extends { status: TodoStatus }>(task: T): boolean {
 	return task.status === "completed" || task.status === "abandoned";
+}
+
+/**
+ * A phase whose tasks participate in todo automation. Only the exact string
+ * `"passive"` opts out; an absent or unrecognized kind is continuing, so a
+ * phase written by a newer build degrades to today's behavior instead of
+ * vanishing from automation.
+ */
+export function isContinuingPhase(phase: { kind?: string }): boolean {
+	return phase.kind !== "passive";
+}
+
+/** The automation projection: the phases todo automation is allowed to act on. */
+export function continuingPhases<T extends { kind?: string }>(phases: readonly T[]): T[] {
+	return phases.filter(isContinuingPhase);
 }
 
 /**
@@ -492,7 +525,7 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	const list =
 		entry.list ??
 		(entry.items && entry.items.length > 0
-			? [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, items: entry.items }]
+			? [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, kind: entry.kind, items: entry.items }]
 			: undefined);
 	if (!list) {
 		errors.push("Missing list for init operation");
@@ -516,6 +549,7 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	}
 	return list.map(listEntry => ({
 		name: listEntry.phase,
+		...(listEntry.kind !== undefined ? { kind: listEntry.kind } : {}),
 		tasks: listEntry.items.map<TodoItem>(content => ({ content, status: "pending" })),
 	}));
 }
@@ -545,8 +579,10 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 
 	let phase = findPhaseByName(phases, entry.phase);
 	if (!phase) {
-		phase = { name: entry.phase, tasks: [] };
+		phase = { name: entry.phase, ...(entry.kind !== undefined ? { kind: entry.kind } : {}), tasks: [] };
 		phases.push(phase);
+	} else if (entry.kind !== undefined) {
+		phase.kind = entry.kind;
 	}
 
 	for (const content of entry.items) {
@@ -581,10 +617,15 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		case "start": {
 			const hit = resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
-			for (const phase of phases) {
-				for (const candidate of phase.tasks) {
-					if (candidate.status === "in_progress" && candidate !== hit.task) {
-						candidate.status = "pending";
+			// Starting a passive task changes only that task: it is outside the
+			// automatic pointer, so it neither steals the continuing in_progress
+			// task nor is demoted by a later start in a continuing phase.
+			if (isContinuingPhase(hit.phase)) {
+				for (const phase of continuingPhases(phases)) {
+					for (const candidate of phase.tasks) {
+						if (candidate.status === "in_progress" && candidate !== hit.task) {
+							candidate.status = "pending";
+						}
 					}
 				}
 			}

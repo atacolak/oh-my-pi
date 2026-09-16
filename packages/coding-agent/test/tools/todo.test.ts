@@ -4,8 +4,12 @@ import { type } from "@oh-my-pi/omptype";
 import { toolWireSchema } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
+	getLatestTodoPhasesFromEntries,
+	isContinuingPhase,
+	isTodoPhase,
 	markdownToPhases,
 	nextActionableTask,
 	phasesToMarkdown,
@@ -18,6 +22,7 @@ import {
 	TodoTool,
 	todoMatchesAnyDescription,
 	todoToolRenderer,
+	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools";
 import type { Component } from "@oh-my-pi/pi-tui";
 
@@ -131,6 +136,93 @@ describe("nextActionableTask", () => {
 		]);
 
 		expect(task?.content).toBe("first pending");
+	});
+});
+
+describe("passive todo phases", () => {
+	it("keeps absent kind continuing and skips passive phases for promotion and selection", async () => {
+		const tool = new TodoTool(createSession());
+		const result = await tool.execute("call-passive", {
+			op: "init",
+			list: [
+				{ phase: "Reference", kind: "passive", items: ["retain report"] },
+				{ phase: "Execution", items: ["ship change"] },
+			],
+		});
+
+		expect(result.details?.phases).toEqual([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			{ name: "Execution", tasks: [{ content: "ship change", status: "in_progress" }] },
+		]);
+		expect(nextActionableTask(result.details?.phases ?? [])?.content).toBe("ship change");
+	});
+
+	it("leaves an explicitly-started passive task outside the continuing pointer", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("init", {
+			op: "init",
+			list: [
+				{ phase: "Reference", kind: "passive", items: ["retain report"] },
+				{ phase: "Execution", items: ["ship change", "verify change"] },
+			],
+		});
+		const passiveStarted = await tool.execute("start-passive", { op: "start", task: "retain report" });
+		expect(passiveStarted.details?.phases[0]?.tasks[0]?.status).toBe("in_progress");
+		expect(passiveStarted.details?.phases[1]?.tasks[0]?.status).toBe("in_progress");
+
+		const continuingStarted = await tool.execute("start-continuing", { op: "start", task: "verify change" });
+		expect(continuingStarted.details?.phases[0]?.tasks[0]?.status).toBe("in_progress");
+		expect(continuingStarted.details?.phases[1]?.tasks.map(task => task.status)).toEqual(["pending", "in_progress"]);
+	});
+
+	it("accepts generic kind inputs and rejects an invalid tool literal", async () => {
+		const flat = await new TodoTool(createSession()).execute("flat", {
+			op: "init",
+			phase: "Reference",
+			kind: "passive",
+			items: ["retain report"],
+		});
+		expect(flat.details?.phases[0]).toMatchObject({ name: "Reference", kind: "passive" });
+		expect(flat.details?.phases[0]?.tasks[0]?.status).toBe("pending");
+
+		const tool = new TodoTool(createSession([{ name: "Work", tasks: [] }]));
+		const appended = await tool.execute("append", {
+			op: "append",
+			phase: "Work",
+			kind: "passive",
+			items: ["keep note"],
+		});
+		expect(appended.details?.phases[0]?.kind).toBe("passive");
+		const invalid = await tool.execute("bad-kind", {
+			op: "append",
+			phase: "Work",
+			kind: "background",
+			items: ["bad"],
+		} as never);
+		expect(invalid.isError).toBe(true);
+		expect(invalid.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Invalid todo arguments") });
+	});
+
+	it("rehydrates kind from the latest session branch snapshot", () => {
+		const entries = [{
+			type: "custom",
+			id: "todo-edit",
+			parentId: null,
+			timestamp: new Date(0).toISOString(),
+			customType: USER_TODO_EDIT_CUSTOM_TYPE,
+			data: { phases: [{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] }] },
+		}] as SessionEntry[];
+		expect(getLatestTodoPhasesFromEntries(entries)).toEqual([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+		]);
+	});
+
+	it("validates persisted kinds compatibly", () => {
+		expect(isTodoPhase({ name: "Old", tasks: [] })).toBe(true);
+		expect(isTodoPhase({ name: "Passive", kind: "passive", tasks: [] })).toBe(true);
+		expect(isTodoPhase({ name: "Future", kind: "future-value", tasks: [] })).toBe(true);
+		expect(isContinuingPhase({ kind: "future-value" })).toBe(true);
+		expect(isTodoPhase({ name: "Broken", kind: 1, tasks: [] })).toBe(false);
 	});
 });
 

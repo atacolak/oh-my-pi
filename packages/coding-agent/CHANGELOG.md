@@ -5,6 +5,7 @@
 ### Added
 
 - Added `tui.titleSpinner` (`braille` | `dots` | `line`, default `braille`) to pick the terminal-title working-state spinner glyphs alongside the existing `tui.titleState` on/off toggle.
+- Todo phases can now be marked `passive`: they remain durable and visible to the model, transcript, RPC clients, and TUI while staying out of automatic task promotion, next-action selection, stop-time completion reminders, and mid-run Todo nudges. Existing phases remain continuing by default.
 
 ## [18.2.1] - 2026-09-15
 

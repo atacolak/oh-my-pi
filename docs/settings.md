@@ -785,6 +785,10 @@ searxng:
 
 Provider credentials and custom model definitions are configured separately — see [Providers](./providers.md) and [Models](./models.md).
 
+### Todo settings
+
+`todo.enabled` (default `true`) controls tool availability. `todo.reminders` (default `true`) and `todo.remindersMax` (default `3`) apply only to continuing phases; passive phases never contribute to stop reminders or the mid-run Todo nudge. `todo.eager` (default `default`) controls initial list creation and does not choose a phase kind. Phase kind is per-list API state, not a setting; omitting it preserves the continuing behavior used before passive phases existed.
+
 ### Other groups
 
 Every schema path not individually tabulated in this catalog is explicitly deferred to `omp config list`. Additional groups include:

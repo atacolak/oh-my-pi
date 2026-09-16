@@ -361,6 +361,9 @@ async function rebuildPrimaryStateOnScopeChange(session: AgentSession): Promise<
 				retainStrategy: config.retainStrategy,
 				retainUpdateMode: config.retainUpdateMode,
 			};
+			// Live strategy/mode refresh must not rebuild the client or adopt
+			// unrelated endpoint, token, or timeout edits from the same tick.
+			return false;
 		}
 		if (hindsightConfigsEqual(current.config, config)) return false;
 	}

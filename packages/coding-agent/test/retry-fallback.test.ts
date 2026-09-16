@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import {
 	expandDefaultRetryFallbackChains,
 	findRetryFallbackCandidates,
+	type RetryFallbackChains,
 	type RetryFallbackResolutionContext,
+	type RetryFallbackSelector,
 	resolveRetryFallbackChainKey,
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
 
@@ -211,5 +214,95 @@ describe("retry fallback selector resolution", () => {
 			[high]: ["openai/gpt-4o-mini:high"],
 		});
 		expect(resolveRetryFallbackChainKey(exactHigh, high, model)).toBe(high);
+	});
+});
+
+/**
+ * The operator's live `retry.fallbackChains` and `modelRoles`, reduced to what
+ * {@link expandDefaultRetryFallbackChains} hands the resolver at startup.
+ * `cpa`/`cursor` are proxy providers the bundled catalog does not ship, so the
+ * lookup resolves any well-formed provider/id — as the real registry does for
+ * these selectors.
+ */
+const LIVE_CONFIGURED_CHAINS: RetryFallbackChains = {
+	plan: ["cpa/kimi-k3-fast", "cpa/kimi-k3-slow"],
+	smol: ["cpa/gemini-3.7-flash-high"],
+	default: ["cursor/cursor-grok-4.6", "cpa/deepseek-flash"],
+};
+
+const LIVE_MODEL_ROLES: Record<string, string> = {
+	slow: "cpa/gpt-5.6-sol:high",
+	tiny: "cpa/gemini-3.1-flash-lite",
+	plan: "cursor/kimi-k3-high:high",
+	vision: "cpa/deepseek-v4-flash-vision-exp:high",
+	default: "cpa/grok-4.6:high",
+	builder: "cpa/deepseek-flash:auto",
+	smol: "cpa/gemini-3.8-flash-high:high",
+};
+
+const DEFAULT_CHAIN_CANDIDATES: RetryFallbackSelector[] = [
+	{ raw: "cursor/cursor-grok-4.6", provider: "cursor", id: "cursor-grok-4.6", thinkingLevel: undefined },
+	{ raw: "cpa/deepseek-flash", provider: "cpa", id: "deepseek-flash", thinkingLevel: undefined },
+];
+
+function createLiveContext(configuredChains: RetryFallbackChains = LIVE_CONFIGURED_CHAINS): RetryFallbackResolutionContext {
+	return {
+		chains: expandDefaultRetryFallbackChains(configuredChains, Object.keys(LIVE_MODEL_ROLES)),
+		getModelRole: role => LIVE_MODEL_ROLES[role],
+		modelLookup: {
+			find: (provider, id) => ({ provider, id }) as unknown as Model,
+			hasProvider: () => true,
+		},
+	};
+}
+
+describe("retry fallback chain keys for a model no role owns", () => {
+	it("falls back to the default chain", () => {
+		const context = createLiveContext();
+		const currentSelector = "cerebras/zai-glm-4.7";
+		expect(resolveRetryFallbackChainKey(context, currentSelector)).toBe("default");
+		expect(findRetryFallbackCandidates(context, "default", currentSelector)).toEqual(DEFAULT_CHAIN_CANDIDATES);
+	});
+
+	it("keeps every model-owned selector on its own chain", () => {
+		const context = createLiveContext();
+		const cases: [string, string, RetryFallbackSelector[]][] = [
+			["cpa/grok-4.6:high", "default", DEFAULT_CHAIN_CANDIDATES],
+			[
+				"cpa/gemini-3.8-flash-high:high",
+				"smol",
+				[{ raw: "cpa/gemini-3.7-flash-high", provider: "cpa", id: "gemini-3.7-flash-high", thinkingLevel: undefined }],
+			],
+			["cpa/deepseek-flash:auto", "builder", DEFAULT_CHAIN_CANDIDATES],
+		];
+		for (const [currentSelector, chainKey, candidates] of cases) {
+			expect(resolveRetryFallbackChainKey(context, currentSelector)).toBe(chainKey);
+			expect(findRetryFallbackCandidates(context, chainKey, currentSelector)).toEqual(candidates);
+		}
+	});
+
+	it("keeps an explicitly emptied role chain empty instead of borrowing the default chain", () => {
+		const context = createLiveContext({ ...LIVE_CONFIGURED_CHAINS, plan: [] });
+		const currentSelector = "cursor/kimi-k3-high:high";
+		expect(resolveRetryFallbackChainKey(context, currentSelector)).toBe("plan");
+		expect(findRetryFallbackCandidates(context, "plan", currentSelector)).toEqual([]);
+		expect(resolveRetryFallbackChainKey(context, currentSelector, undefined, "plan")).toBe("plan");
+		expect(
+			findRetryFallbackCandidates(context, "plan", currentSelector, undefined, { allowMissingPrimary: true }),
+		).toEqual([]);
+	});
+
+	it("does not attach a default chain that degenerates to the default role's own primary", () => {
+		// `default`'s entries dedupe back to the primary `modelRoles.default`
+		// already assigns, so the chain owns no model but the default role's own.
+		const context = createLiveContext({ ...LIVE_CONFIGURED_CHAINS, default: [LIVE_MODEL_ROLES.default] });
+		const currentSelector = "cerebras/zai-glm-4.7";
+		expect(findRetryFallbackCandidates(context, "default", currentSelector)).toEqual([]);
+		expect(resolveRetryFallbackChainKey(context, currentSelector)).toBeUndefined();
+	});
+
+	it("resolves no chain when no default chain is configured", () => {
+		const context = createLiveContext({ plan: LIVE_CONFIGURED_CHAINS.plan, smol: LIVE_CONFIGURED_CHAINS.smol });
+		expect(resolveRetryFallbackChainKey(context, "cerebras/zai-glm-4.7")).toBeUndefined();
 	});
 });

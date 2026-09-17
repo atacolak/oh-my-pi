@@ -43,6 +43,7 @@
 - Honored a lower project `collab.autoStart: false` even when a later project file tried to re-enable hosting.
 - Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
 - Distrusted collab auto-start when a project dotenv uses an unspaced `#` comment after an unquoted agent directory.
+
 ## [18.2.3] - 2026-09-17
 
 ### Breaking Changes

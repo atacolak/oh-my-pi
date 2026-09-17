@@ -33,14 +33,13 @@ import {
 	type ExecutedWorkspaceChange,
 	sortAndValidateTextEdits,
 } from "@oh-my-pi/pi-coding-agent/lsp/edits";
-import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
+import { renderCall, renderResult } from "@oh-my-pi/pi-tui/tools/lsp";
 import {
 	type CodeAction,
 	type CreateFile,
 	type DeleteFile,
 	type Diagnostic,
 	type LspClient,
-	type LspToolDetails,
 	lspSchema,
 	type RenameFile,
 	type ServerConfig,
@@ -49,6 +48,7 @@ import {
 	type WorkspaceEdit,
 } from "@oh-my-pi/pi-coding-agent/lsp/types";
 import * as lspUtils from "@oh-my-pi/pi-coding-agent/lsp/utils";
+import { type LspToolDetails } from "@oh-my-pi/pi-tui/tools/lsp";
 import {
 	applyCodeAction,
 	collectGlobMatches,
@@ -62,7 +62,7 @@ import {
 	resolveSymbolColumn,
 	uriToFile,
 } from "@oh-my-pi/pi-coding-agent/lsp/utils";
-import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
@@ -72,8 +72,8 @@ import * as piUtils from "@oh-my-pi/pi-utils";
 import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import DEFAULTS from "../../src/lsp/defaults.json" with { type: "json" };
-import { renderResult as renderLocalResult } from "../../src/lsp/render";
-import { getLanguageFromPath } from "../../src/utils/lang-from-path";
+import { renderResult as renderLocalResult } from "@oh-my-pi/pi-tui/tools/lsp";
+import { getLanguageFromPath } from "@oh-my-pi/pi-tui/lang-from-path";
 
 const lspTestSettings = Settings.isolated();
 

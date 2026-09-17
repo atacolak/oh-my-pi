@@ -16,14 +16,15 @@ import {
 	stableStringifyJson,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
-import { type Theme, theme } from "../modes/theme/theme";
+import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import { sessionWorkspaceDirectories, workspaceContainsPath, workspaceRootForPath } from "../session/session-workspace";
 import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
-import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
-import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
+import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
 import {
 	applyAndReconcileWorkspaceEdit,
@@ -99,14 +100,13 @@ import {
 	type Location,
 	type LocationLink,
 	type LspClient,
-	type LspParams,
-	type LspToolDetails,
 	lspSchema,
 	type ServerConfig,
 	type SymbolInformation,
 	type TextEdit,
 	type WorkspaceEdit,
 } from "./types";
+import { type LspParams, type LspToolDetails } from "@oh-my-pi/pi-tui/tools/lsp";
 import {
 	applyCodeAction,
 	dedupeWorkspaceSymbols,
@@ -119,7 +119,6 @@ import {
 	formatDiagnostic,
 	formatDiagnosticsSummary,
 	formatDocumentSymbol,
-	formatGroupedDiagnosticMessages,
 	formatLocation,
 	formatSymbolInformation,
 	formatWorkspaceEdit,
@@ -129,6 +128,7 @@ import {
 	symbolKindToIcon,
 	uriToFile,
 } from "./utils";
+import { formatGroupedDiagnosticMessages } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { runWorkspaceDiagnostics } from "./workspace-diagnostics";
 
 const MAX_RENAME_PAIRS = 1000;

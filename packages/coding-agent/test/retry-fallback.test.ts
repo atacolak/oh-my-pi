@@ -245,7 +245,9 @@ const DEFAULT_CHAIN_CANDIDATES: RetryFallbackSelector[] = [
 	{ raw: "cpa/deepseek-flash", provider: "cpa", id: "deepseek-flash", thinkingLevel: undefined },
 ];
 
-function createLiveContext(configuredChains: RetryFallbackChains = LIVE_CONFIGURED_CHAINS): RetryFallbackResolutionContext {
+function createLiveContext(
+	configuredChains: RetryFallbackChains = LIVE_CONFIGURED_CHAINS,
+): RetryFallbackResolutionContext {
 	return {
 		chains: expandDefaultRetryFallbackChains(configuredChains, Object.keys(LIVE_MODEL_ROLES)),
 		getModelRole: role => LIVE_MODEL_ROLES[role],
@@ -271,7 +273,14 @@ describe("retry fallback chain keys for a model no role owns", () => {
 			[
 				"cpa/gemini-3.8-flash-high:high",
 				"smol",
-				[{ raw: "cpa/gemini-3.7-flash-high", provider: "cpa", id: "gemini-3.7-flash-high", thinkingLevel: undefined }],
+				[
+					{
+						raw: "cpa/gemini-3.7-flash-high",
+						provider: "cpa",
+						id: "gemini-3.7-flash-high",
+						thinkingLevel: undefined,
+					},
+				],
 			],
 			["cpa/deepseek-flash:auto", "builder", DEFAULT_CHAIN_CANDIDATES],
 		];

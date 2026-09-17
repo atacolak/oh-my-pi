@@ -5,7 +5,7 @@ import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
 import { expandTilde } from "../tools/path-utils";
-import { sanitizeStatusText, TRUNCATE_LENGTHS } from "../tools/render-utils";
+import { sanitizeStatusText, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
 import { DEFAULT_RELAY_URL } from "./protocol";
 import type { CollabAccess } from "./registry";

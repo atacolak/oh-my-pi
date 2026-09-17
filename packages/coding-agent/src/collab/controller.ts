@@ -297,5 +297,38 @@ export class CollabController {
 			.then(async () => {
 				await stopping;
 				if (this.#shutdown || stopEpoch !== this.#stopEpoch || this.host || this.#ctx.collabGuest) return;
+				const launch = this.#trustedAutoStartLaunch();
+				if (launch) await this.#launchReporting(launch.access, stopEpoch, launch);
+			})
+			.catch(err => this.#reportFailure(err));
+	}
 
-[Showing lines 1-300 of 336. Use :301 to continue]
+	#trustedAutoStartLaunch(): TrustedAutoStartLaunch | undefined {
+		return resolveTrustedAutoStartLaunch(this.#ctx.settings, message => this.#ctx.showWarning(message));
+	}
+
+	async #maybeWriteLink(
+		host: CollabHost,
+		trusted: TrustedAutoStartLaunch | undefined,
+		stopEpoch: number,
+	): Promise<void> {
+		const rawPath = trusted?.writeLinkPath?.trim();
+		if (!rawPath) return;
+		const target = resolveCollabLinkPath(rawPath, this.#ctx.sessionManager.getCwd());
+		const abort = new AbortController();
+		this.#writeAbort = abort;
+		try {
+			await writeCollabLink(target, host.link, abort.signal);
+		} catch (error) {
+			if (abort.signal.aborted || stopEpoch !== this.#stopEpoch || this.#shutdown) {
+				throw new CollabHostStoppedError("collab controller stopped");
+			}
+			this.#ctx.showError(`Failed to write collab link file: ${sanitizeCollabError(error)}`);
+		} finally {
+			if (this.#writeAbort === abort) this.#writeAbort = undefined;
+		}
+		if (abort.signal.aborted || stopEpoch !== this.#stopEpoch || this.#shutdown) {
+			throw new CollabHostStoppedError("collab controller stopped");
+		}
+	}
+}

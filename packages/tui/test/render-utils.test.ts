@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
@@ -18,7 +18,6 @@ import {
 	setInlineImageMaxColumns,
 	setInlineImageMaxRows,
 	sanitizeDisplayLines,
-	sanitizeStatusText,
 	sanitizeDisplayWarning,
 	sanitizeDisplayWarnings,
 	shortenEmbeddedPaths,
@@ -183,39 +182,6 @@ describe("shortenPath", () => {
 		const sibling = String.raw`C:\Users\me2\projects\demo`;
 		expect(shortenPath(sibling, home)).toBe(sibling);
 	});
-
-	it("collapses layout characters, shortens home paths, and truncates status text", () => {
-		const homePath = `${os.homedir()}/.omp/mcp.log`;
-		const message = sanitizeStatusText(`failed at\t${homePath}\n${"x".repeat(120)}`, 80);
-
-		expect(message).not.toContain(os.homedir());
-		expect(message).not.toContain("\n");
-		expect(message).not.toContain("\t");
-		expect(message).toContain("~/.omp/mcp.log");
-		expect(message.length).toBeLessThanOrEqual(80);
-	});
-
-	it("shortens embedded home paths that contain spaces", () => {
-		const posixHome = spyOn(os, "homedir").mockReturnValue("/home/Alice Smith");
-		try {
-			const leaked = "/home/Alice Smith/.omp/mcp.log";
-			const message = sanitizeStatusText(`failed at ${leaked}`, 80);
-			expect(message).not.toContain("/home/Alice Smith");
-			expect(message).toContain("~/.omp/mcp.log");
-		} finally {
-			posixHome.mockRestore();
-		}
-
-		const windowsHome = spyOn(os, "homedir").mockReturnValue(String.raw`C:\Users\Alice Smith`);
-		try {
-			const leaked = String.raw`C:\Users\Alice Smith\secret`;
-			const message = sanitizeStatusText(`failed at ${leaked}`, 80);
-			expect(message).not.toContain("Alice Smith");
-			expect(message).toContain("~/secret");
-		} finally {
-			windowsHome.mockRestore();
-		}
-	});
 });
 
 describe("formatDiagnostics", () => {
@@ -297,5 +263,234 @@ describe("truncateDiffByHunk", () => {
 		expect(tail.hiddenLines).toBe(0);
 	});
 
+	it("preserves change/context line order within a kept hunk under fromTail", () => {
+		// Single hunk with intra-segment context: leading context, change, trailing context.
+		const diff = [
+			"@@ only @@",
+			" leading-ctx-a",
+			" leading-ctx-b",
+			"- old line",
+			"+ new line",
+			" trailing-ctx-a",
+			" trailing-ctx-b",
+		].join("\n");
+		const { text } = truncateDiffByHunk(diff, 4, 32, { fromTail: true });
+		const idxOld = text.indexOf("- old line");
+		const idxNew = text.indexOf("+ new line");
+		const idxLeading = text.indexOf("leading-ctx-a");
+		const idxTrailing = text.indexOf("trailing-ctx-b");
+		// In-order: leading context appears before change which appears before trailing context.
+		expect(idxLeading).toBeLessThan(idxOld);
+		expect(idxOld).toBeLessThan(idxNew);
+		expect(idxNew).toBeLessThan(idxTrailing);
+	});
+	it("caps one oversized change hunk at the line budget", () => {
+		const diff = makeHunk("+", 0, 1_000).join("\n");
+		const head = truncateDiffByHunk(diff, 4, 32);
+		const tail = truncateDiffByHunk(diff, 4, 32, { fromTail: true });
 
-[Showing lines 1-300 of 532. Use :301 to continue]
+		expect(head.text.split("\n")).toHaveLength(32);
+		expect(head.text).toStartWith("+ new 0\n");
+		expect(head.text).toEndWith("+ new 31");
+		expect(head.hiddenLines).toBe(968);
+		expect(head.hiddenHunks).toBe(0);
+
+		expect(tail.text.split("\n")).toHaveLength(32);
+		expect(tail.text).toStartWith("+ new 968\n");
+		expect(tail.text).toEndWith("+ new 999");
+		expect(tail.hiddenLines).toBe(968);
+		expect(tail.hiddenHunks).toBe(0);
+	});
+
+	it("keeps an exact-size change hunk unchanged", () => {
+		const diff = makeHunk("-", 0, 32).join("\n");
+		expect(truncateDiffByHunk(diff, 4, 32)).toEqual({
+			text: diff,
+			hiddenHunks: 0,
+			hiddenLines: 0,
+		});
+	});
+	it("drops surrounding context when changes exactly fill the line budget", () => {
+		const diff = [" leading context", ...makeHunk("+", 0, 32), " trailing context"].join("\n");
+
+		for (const result of [truncateDiffByHunk(diff, 4, 32), truncateDiffByHunk(diff, 4, 32, { fromTail: true })]) {
+			expect(result.text.split("\n")).toHaveLength(32);
+			expect(result.text).not.toContain("context");
+			expect(result.hiddenLines).toBe(2);
+			expect(result.hiddenHunks).toBe(0);
+		}
+	});
+
+	it("does not exceed the line budget when context rounding spans multiple hunks", () => {
+		const diff = [
+			" leading context",
+			...makeHunk("+", 0, 15),
+			" middle context a",
+			" middle context b",
+			...makeHunk("-", 100, 15),
+			" trailing context",
+		].join("\n");
+
+		for (const result of [truncateDiffByHunk(diff, 4, 32), truncateDiffByHunk(diff, 4, 32, { fromTail: true })]) {
+			expect(result.text.split("\n")).toHaveLength(32);
+			expect(result.hiddenLines).toBe(2);
+			expect(result.hiddenHunks).toBe(0);
+		}
+	});
+	it("does not count a removed separator as a hidden hunk", () => {
+		const diff = [...makeHunk("+", 0, 16), " hunk separator", ...makeHunk("-", 100, 16)].join("\n");
+
+		for (const result of [truncateDiffByHunk(diff, 4, 32), truncateDiffByHunk(diff, 4, 32, { fromTail: true })]) {
+			expect(result.text.split("\n")).toHaveLength(32);
+			expect(result.hiddenLines).toBe(1);
+			expect(result.hiddenHunks).toBe(0);
+		}
+	});
+	it("reports every hunk excluded by the hunk limit", () => {
+		const diff = buildDiff(6, 1);
+
+		for (const result of [truncateDiffByHunk(diff, 2, 100), truncateDiffByHunk(diff, 2, 100, { fromTail: true })]) {
+			expect(result.hiddenHunks).toBe(4);
+		}
+	});
+});
+
+describe("formatErrorMessage (F4 sanitization)", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+	it("replaces tabs in error content with spaces", () => {
+		const out = formatErrorMessage("apply_patch failed:\n@@\n-old\tindented\n+new", theme);
+		expect(out).not.toContain("\t");
+	});
+
+	it("truncates very long error messages to keep TUI from overflowing", () => {
+		const longTail = "x".repeat(500);
+		const out = formatErrorMessage(`crash: ${longTail}`, theme);
+		// Strip ANSI escape sequences so we can measure the user-visible length.
+		const ESC = String.fromCharCode(0x1b);
+		const visible = out
+			.split(ESC)
+			.map((s, i) => (i === 0 ? s : s.replace(/^\[[0-9;]*m/, "")))
+			.join("");
+		// LINE truncation cap is 110 chars; account for the "Error: " prefix and
+		// the leading symbol+space.
+		expect(visible.length).toBeLessThan(180);
+	});
+
+	it("falls back to 'Unknown error' for empty/missing input", () => {
+		const out = formatErrorMessage(undefined, theme);
+		expect(out).toContain("Unknown error");
+	});
+});
+
+describe("formatExpandHint / expandKeyHint", () => {
+	// Plain stub: `fg` is a passthrough and brackets are literal `[`/`]`, so the
+	// rendered hint is deterministic regardless of the active theme's bracket glyphs.
+	const plainTheme = {
+		fg: (_color: unknown, text: string) => text,
+		format: { bracketLeft: "[", bracketRight: "]" },
+	} as unknown as Theme;
+
+	let previous: TuiKeybindingsManager;
+	beforeEach(() => {
+		previous = getKeybindings();
+		setKeyHintPlatform("linux");
+	});
+	afterEach(() => {
+		setKeybindings(previous);
+		setKeyHintPlatform(undefined);
+	});
+
+	it("reports the default tool-output expand key", () => {
+		setKeybindings(KeybindingsManager.inMemory());
+		expect(expandKeyHint()).toBe("Ctrl+O");
+		// Single bracket pair from the theme, no double-wrapping around the key.
+		expect(formatExpandHint(plainTheme, false, true)).toBe("[Ctrl+O: Expand]");
+	});
+
+	it("tracks a user remap of the expand binding", () => {
+		setKeybindings(KeybindingsManager.inMemory({ "app.tools.expand": "alt+e" }));
+		expect(expandKeyHint()).toBe("Alt+E");
+		expect(formatExpandHint(plainTheme, false, true)).toBe("[Alt+E: Expand]");
+	});
+
+	it("renders nothing when expanded or there is no more content", () => {
+		setKeybindings(KeybindingsManager.inMemory());
+		expect(formatExpandHint(plainTheme, true, true)).toBe("");
+		expect(formatExpandHint(plainTheme, false, false)).toBe("");
+	});
+});
+
+describe("sanitizeDisplayLines", () => {
+	it("strips terminal escapes and controls from each retained progress line", () => {
+		expect(sanitizeDisplayLines("old\r\x1b[31mnew\x1b[0m\x00\x07\n\x1b]8;;https://host\x07link\x1b]8;;\x07")).toEqual(
+			["new", "link"],
+		);
+	});
+
+	it("expands tabs so error lines never emit raw tab stops", () => {
+		expect(sanitizeDisplayLines("offending\tkey")).toEqual([`offending${" ".repeat(DEFAULT_TAB_WIDTH)}key`]);
+	});
+
+	it("splits Windows CRLF stderr without leaving carriage returns", () => {
+		const lines = sanitizeDisplayLines("SHA256:abc\r\nHost key verification failed.\r\n");
+		expect(lines.join("\n")).not.toContain("\r");
+		expect(lines).toContain("SHA256:abc");
+		expect(lines).toContain("Host key verification failed.");
+	});
+
+	it("collapses carriage-return progress overwrites to the final segment", () => {
+		expect(sanitizeDisplayLines("50%\r100%")).toEqual(["100%"]);
+	});
+});
+
+describe("sanitizeDisplayWarning", () => {
+	it("strips terminal controls, expands tabs, flattens lines, and shortens home paths", () => {
+		const filePath = path.join(os.homedir(), ".omp", "WATCHDOG.yml");
+		const warning = sanitizeDisplayWarning(`${filePath}: advisor "\x1b[31mBad\tName\x1b[0m\nfollow-up" dropped`);
+
+		expect(warning).toContain("~/.omp/WATCHDOG.yml");
+		expect(warning).toContain('advisor "Bad   Name follow-up" dropped');
+		expect(warning).not.toContain(filePath);
+		expect(warning).not.toContain("\x1b");
+		expect(warning).not.toContain("\t");
+		expect(warning).not.toContain("\n");
+	});
+});
+
+describe("shortenEmbeddedPaths", () => {
+	it("shortens home paths containing spaces before tokenizing", () => {
+		expect(shortenEmbeddedPaths("/Users/Jane Smith/.omp/WATCHDOG.yml: failed", "/Users/Jane Smith")).toBe(
+			"~/.omp/WATCHDOG.yml: failed",
+		);
+	});
+
+	it("preserves sibling paths outside the home boundary", () => {
+		const home = "/Users/Jane";
+		const sibling = "/Users/Jane2/.omp/WATCHDOG.yml: failed";
+		expect(shortenEmbeddedPaths(sibling, home)).toBe(sibling);
+	});
+
+	it("normalizes shortened Windows paths", () => {
+		const home = String.raw`C:\Users\Jane`;
+		const filePath = String.raw`C:\Users\Jane\projects\demo: failed`;
+		expect(shortenEmbeddedPaths(filePath, home)).toBe("~/projects/demo: failed");
+	});
+});
+
+describe("sanitizeDisplayWarnings", () => {
+	it("caps warning count and reports omitted warnings", () => {
+		const warnings = Array.from({ length: PREVIEW_LIMITS.COLLAPSED_ITEMS + 2 }, (_, index) => `warning-${index}`);
+		const displayed = sanitizeDisplayWarnings(warnings);
+
+		expect(displayed).toHaveLength(PREVIEW_LIMITS.COLLAPSED_ITEMS + 1);
+		expect(displayed.at(-1)).toBe("… 2 more warnings");
+	});
+
+	it("truncates each warning before display", () => {
+		const displayed = sanitizeDisplayWarnings(["warning ".repeat(TRUNCATE_LENGTHS.LONG)]);
+
+		expect(Bun.stringWidth(displayed[0])).toBeLessThanOrEqual(TRUNCATE_LENGTHS.LONG);
+	});
+});

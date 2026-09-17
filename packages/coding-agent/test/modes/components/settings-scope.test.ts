@@ -8,7 +8,9 @@ import {
 	settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
+import { createSettingsHost } from "@oh-my-pi/pi-coding-agent/config/settings-ui";
+import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/settings-host";
+import { SettingsSelectorComponent } from "@oh-my-pi/pi-tui/overlays/settings-selector";
 import {
 	getColorBlindMode,
 	getCurrentThemeName,
@@ -18,7 +20,7 @@ import {
 	setTheme,
 	stopThemeWatcher,
 	theme,
-} from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+} from "@oh-my-pi/pi-tui/theme";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
@@ -68,7 +70,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -150,7 +153,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: hostileDir,
+				settings: createSettingsHost(hostileDir),
+				plugins: createPluginSettingsHost(hostileDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -176,7 +180,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -198,7 +203,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -233,7 +239,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -282,7 +289,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -335,7 +343,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -368,7 +377,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -399,7 +409,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -427,7 +438,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -470,7 +482,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -514,7 +527,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -552,7 +566,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium", "alabaster"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -594,7 +609,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium", "alabaster"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -630,7 +646,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -661,7 +678,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium", "alabaster"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -699,7 +717,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: [],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -731,7 +750,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: [],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -762,7 +782,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: [],
 				providers: ["anthropic"],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -795,7 +816,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: [],
 				providers: ["anthropic", "openai"],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -829,7 +851,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: [],
 				providers: ["anthropic", "openai"],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -947,7 +970,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium", "alabaster"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),
@@ -988,7 +1012,8 @@ describe("SettingsSelectorComponent persistence scope", () => {
 				thinkingLevel: undefined,
 				availableThemes: ["dark-one", "titanium", "alabaster"],
 				providers: [],
-				cwd: projectDir,
+				settings: createSettingsHost(projectDir),
+				plugins: createPluginSettingsHost(projectDir),
 			},
 			{
 				onChange: (settingPath, value) => changes.push({ path: settingPath, value }),

@@ -6,7 +6,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
-import * as theme from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import * as theme from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -193,14 +193,16 @@ describe("SelectorController settings overlay close", () => {
 		await Settings.init({ cwd: projectDir, agentDir });
 		const previewed: Array<{ name: string; symbolPreset?: string; colorBlindMode?: boolean }> = [];
 		vi.spyOn(theme, "getAvailableThemes").mockResolvedValue(["dark-one", "titanium"]);
-		vi.spyOn(theme, "previewTheme").mockImplementation(async (name, event) => {
-			previewed.push({
-				name,
-				symbolPreset: event?.symbolPreset,
-				colorBlindMode: event?.colorBlindMode,
-			});
-			return { success: true };
-		});
+		vi.spyOn(theme, "previewTheme").mockImplementation(
+			async (name: string, event?: { symbolPreset?: string; colorBlindMode?: boolean }) => {
+				previewed.push({
+					name,
+					symbolPreset: event?.symbolPreset,
+					colorBlindMode: event?.colorBlindMode,
+				});
+				return { success: true };
+			},
+		);
 
 		const editor = { id: "editor", getTopBorderAvailableWidth: () => 80 };
 		const overlay = { hide: vi.fn(), setHidden: vi.fn(), isHidden: () => false };

@@ -1,8 +1,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { SettingsSelectorComponent } from "@oh-my-pi/pi-tui/overlays/settings-selector";
+import { createSettingsHost } from "@oh-my-pi/pi-coding-agent/config/settings-ui";
+import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/settings-host";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { SEARCH_PROVIDER_CHOICES } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
@@ -49,7 +51,8 @@ function createSelector(): SettingsSelectorComponent {
 			thinkingLevel: undefined,
 			availableThemes: ["dark"],
 			providers: [],
-			cwd: process.cwd(),
+			settings: createSettingsHost(),
+			plugins: createPluginSettingsHost(process.cwd()),
 		},
 		{
 			onChange: () => {},
@@ -239,7 +242,8 @@ describe("multiselect settings (array-of-enum)", () => {
 					thinkingLevel: undefined,
 					availableThemes: ["dark"],
 					providers: [],
-					cwd: projectDir,
+					settings: createSettingsHost(projectDir),
+					plugins: createPluginSettingsHost(projectDir),
 				},
 				{
 					onChange: () => {},
@@ -282,7 +286,8 @@ describe("multiselect settings (array-of-enum)", () => {
 					thinkingLevel: undefined,
 					availableThemes: ["dark"],
 					providers: [],
-					cwd: projectDir,
+					settings: createSettingsHost(projectDir),
+					plugins: createPluginSettingsHost(projectDir),
 				},
 				{
 					onChange: () => {},
@@ -333,7 +338,8 @@ describe("multiselect settings (array-of-enum)", () => {
 					thinkingLevel: undefined,
 					availableThemes: ["dark"],
 					providers: [],
-					cwd: projectDir,
+					settings: createSettingsHost(projectDir),
+					plugins: createPluginSettingsHost(projectDir),
 				},
 				{
 					onChange: () => {},
@@ -377,7 +383,8 @@ describe("multiselect settings (array-of-enum)", () => {
 					thinkingLevel: undefined,
 					availableThemes: ["dark"],
 					providers: [],
-					cwd: projectDir,
+					settings: createSettingsHost(projectDir),
+					plugins: createPluginSettingsHost(projectDir),
 				},
 				{
 					onChange: () => {},
@@ -424,7 +431,8 @@ describe("multiselect settings (array-of-enum)", () => {
 					thinkingLevel: undefined,
 					availableThemes: ["dark"],
 					providers: [],
-					cwd: projectDir,
+					settings: createSettingsHost(projectDir),
+					plugins: createPluginSettingsHost(projectDir),
 				},
 				{
 					onChange: () => {},
@@ -482,7 +490,8 @@ describe("multiselect settings (array-of-enum)", () => {
 					thinkingLevel: undefined,
 					availableThemes: ["dark"],
 					providers: [],
-					cwd: projectDir,
+					settings: createSettingsHost(projectDir),
+					plugins: createPluginSettingsHost(projectDir),
 				},
 				{
 					onChange: () => {},

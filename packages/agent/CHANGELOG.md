@@ -5,6 +5,11 @@
 ### Fixed
 
 - `Agent` now defaults `followUpMode` to `all`, so every follow-up queued at a yield boundary is delivered in the same next turn instead of one per turn. Pass `followUpMode: "one-at-a-time"` to keep the previous behavior.
+## [18.2.5] - 2026-09-17
+
+### Fixed
+
+- Improved agent performance by reducing redundant tool-schema processing during repeated model calls and optimizing streamed tool-call argument parsing.
 
 ## [18.2.1] - 2026-09-15
 

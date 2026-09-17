@@ -25,6 +25,14 @@
 - Preserved project-dotenv ownership for the default profile when profile bootstrap normalizes and deletes profile environment variables.
 - Treated Bun unspaced `#` comments on unquoted dotenv values as comments when matching project-owned environment variables.
 - Did not treat `setProfile`'s mirrored `OMP_PROFILE` as an independent parent selector when the name came from `PI_PROFILE`.
+## [18.2.3] - 2026-09-17
+
+### Fixed
+
+- Optimized model configuration command execution by deduplicating requests and adding failure backoff
+- Prevented unnecessary credential command execution when runtime API keys are configured
+- Retained `readLines()` results no longer change when later chunks reuse the internal buffer.
+- Long sleeps honor elapsed time and re-arm after premature timer wakes without overflowing native timer delays.
 
 ## [18.2.2] - 2026-09-16
 

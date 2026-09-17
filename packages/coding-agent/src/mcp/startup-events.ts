@@ -1,4 +1,4 @@
-import { sanitizeStatusText, shortenPath, TRUNCATE_LENGTHS } from "../tools/render-utils";
+import { sanitizeStatusText, shortenPath, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 
 export const MCP_CONNECTION_STATUS_EVENT_CHANNEL = "mcp:connection-status";
 

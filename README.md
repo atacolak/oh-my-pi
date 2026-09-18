@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR(s):** [#9833](https://github.com/can1357/oh-my-pi/pull/9833) — opt-in auto-start hosting and write-link file
-> - **Upstream base:** [OMP 18.2.5 (`37273117`)](https://github.com/can1357/oh-my-pi/tree/37273117021129e96bd05d8277b140ec3fd61990)
+> - **Upstream base:** [OMP 18.2.6 (`78b75312`)](https://github.com/can1357/oh-my-pi/tree/78b753124d11f8dd3ae73e2524125890ff7c977e)
 >
 > PR heads stay independently reviewable without this banner.
 
@@ -299,4 +299,4 @@ Core tools live in the same namespace as `read` and `bash`. Pin the active set w
 
 **Desktop & web**
 
-[Showing lines 1-300 of 710. Use :301 to continue]
+[Showing lines 1-300 of 302. Use :301 to continue]

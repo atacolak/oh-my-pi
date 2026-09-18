@@ -13,6 +13,8 @@ export interface FileLockOptions {
 	retries?: number;
 	/** Delay between acquisition attempts. */
 	retryDelayMs?: number;
+	/** Cancel remaining acquisition retries when this signal aborts. */
+	signal?: AbortSignal;
 }
 
 /** An exclusive OS-backed lease. Releasing an already released handle is safe. */
@@ -20,7 +22,7 @@ export interface FileLockHandle {
 	release(): void;
 }
 
-const DEFAULT_OPTIONS: Required<FileLockOptions> = {
+const DEFAULT_OPTIONS = {
 	retries: 50,
 	retryDelayMs: 100,
 };
@@ -34,15 +36,39 @@ function tryAcquireLock(lockPath: string): NativeFileLock | null {
 	return lock.acquired ? lock : null;
 }
 
+function abortError(signal?: AbortSignal): Error {
+	if (signal?.reason instanceof Error) return signal.reason;
+	const error = new Error("Lock acquisition aborted");
+	error.name = "AbortError";
+	return error;
+}
+
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (!signal) {
+		await Bun.sleep(ms);
+		return;
+	}
+	if (signal.aborted) throw abortError(signal);
+	const abort = Promise.withResolvers<never>();
+	const onAbort = (): void => abort.reject(abortError(signal));
+	signal.addEventListener("abort", onAbort, { once: true });
+	try {
+		await Promise.race([Bun.sleep(ms), abort.promise]);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
+}
+
 /** Acquire an exclusive lease; callers must release it when their operation ends. */
 export async function acquireFileLock(filePath: string, options: FileLockOptions = {}): Promise<FileLockHandle> {
 	const opts = { ...DEFAULT_OPTIONS, ...options };
 	const lockPath = getLockPath(filePath);
+	if (opts.signal?.aborted) throw abortError(opts.signal);
 
 	for (let attempt = 0; attempt < opts.retries; attempt++) {
 		const lock = tryAcquireLock(lockPath);
 		if (lock) return lock;
-		if (attempt + 1 < opts.retries) await Bun.sleep(opts.retryDelayMs);
+		if (attempt + 1 < opts.retries) await sleep(opts.retryDelayMs, opts.signal);
 	}
 
 	throw new Error(`Failed to acquire lock for ${filePath} after ${opts.retries} attempts`);

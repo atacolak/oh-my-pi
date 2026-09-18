@@ -10,6 +10,7 @@ import {
 	getActiveProfile,
 	getAgentDbPath,
 	getAgentDir,
+	isProfileSelectedFromArgv,
 	setAgentDir,
 	setProfile,
 	VERSION,
@@ -101,7 +102,22 @@ describe("global --profile flag", () => {
 		expect(process.exitCode).toBe(0);
 		expect(writeSpy).toHaveBeenCalled();
 		expect(getActiveProfile()).toBe("work");
+		expect(isProfileSelectedFromArgv()).toBe(true);
 		expect(getAgentDir()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
+	});
+
+	it("records an explicit default profile as argv-selected", async () => {
+		const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		setProfile(undefined);
+		process.env.OMP_PROFILE = "work";
+		delete process.env.PI_PROFILE;
+
+		await runCli(["--profile=default", "--version"]);
+
+		expect(process.exitCode).toBe(0);
+		expect(writeSpy).toHaveBeenCalled();
+		expect(getActiveProfile()).toBeUndefined();
+		expect(isProfileSelectedFromArgv()).toBe(true);
 	});
 
 	it("activates a profile inherited from OMP_PROFILE at run time", async () => {
@@ -116,6 +132,7 @@ describe("global --profile flag", () => {
 		expect(writeSpy).toHaveBeenCalled();
 		expect(getActiveProfile()).toBe("work");
 		expect(getAgentDir()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent"));
+		expect(isProfileSelectedFromArgv()).toBe(false);
 		expect(getAgentDbPath()).toBe(path.join(os.homedir(), configDir, "profiles", "work", "agent", "agent.db"));
 	});
 

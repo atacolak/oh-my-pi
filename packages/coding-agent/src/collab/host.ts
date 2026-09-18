@@ -302,6 +302,11 @@ export class CollabHost {
 		return this.#webViewLink;
 	}
 
+	/** True after a terminal stop or fatal relay close. */
+	get isStopped(): boolean {
+		return this.#stopped;
+	}
+
 	get participants(): CollabParticipant[] {
 		const list: CollabParticipant[] = [{ name: collabDisplayName(this.#ctx), role: "host" }];
 		for (const peer of this.#peers.values()) {

@@ -13,6 +13,8 @@ import {
 	getPythonGatewayDir,
 	getSessionsDir,
 	getStatsDbPath,
+	isProfileSelectedFromArgv,
+	isProfileSelectedFromOmpEnv,
 	normalizeProfileName,
 	resolveProfileEnv,
 	setAgentDir,
@@ -129,6 +131,33 @@ describe("profile directories", () => {
 		expect(getAgentDbPath()).toBe(path.join(agent, "agent.db"));
 		expect(getSessionsDir()).toBe(path.join(agent, "sessions"));
 		expect(getStatsDbPath()).toBe(path.join(root, "stats.db"));
+	});
+
+	it("records whether the active profile came from --profile", () => {
+		setProfile("work", { fromArgv: true });
+		expect(isProfileSelectedFromArgv()).toBe(true);
+
+		setProfile("office");
+		expect(isProfileSelectedFromArgv()).toBe(false);
+
+		setProfile("default");
+		expect(isProfileSelectedFromArgv()).toBe(false);
+
+		setProfile("default", { fromArgv: true });
+		expect(isProfileSelectedFromArgv()).toBe(true);
+	});
+
+	it("does not treat setProfile's OMP_PROFILE mirror as an independent selector", () => {
+		delete process.env.OMP_PROFILE;
+		process.env.PI_PROFILE = "evil";
+		setProfile(resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
+		expect(process.env.OMP_PROFILE === "evil").toBe(true);
+		expect(isProfileSelectedFromOmpEnv()).toBe(false);
+
+		process.env.OMP_PROFILE = "work";
+		process.env.PI_PROFILE = "ignored";
+		setProfile(resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
+		expect(isProfileSelectedFromOmpEnv()).toBe(true);
 	});
 
 	it("treats the default profile as regular mode", () => {

@@ -1432,6 +1432,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			getDraftText: () => this.#inputController.getDraftText(),
 			beginDispose: () => this.session.beginDispose(),
 			saveDraft: text => this.sessionManager.saveDraft(text),
+			stopCollab: async () => {
+				await this.collabController.shutdown("session shutdown");
+			},
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
 				await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason });
@@ -5684,8 +5687,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
 
-		// Surface progress before any asynchronous cleanup, including live commands
-		// and BTW history writes, so the user sees a reason for the pause.
+		// Surface progress before any asynchronous cleanup, including collab host
+		// stop, live commands, and BTW history writes, so the user sees a reason
+		// for the pause.
 		this.showStatus("Closing session…");
 
 		const stillClosingTimer = setTimeout(() => {

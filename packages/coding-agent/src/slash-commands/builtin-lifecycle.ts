@@ -7,6 +7,7 @@ import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
+import { releaseRemovedWorkspaceRoots } from "../lsp";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { AgentSession, FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
@@ -108,7 +109,7 @@ async function relocateHeadlessSession(
 	}
 	const previousState = runtime.sessionManager.captureState();
 	try {
-		await runtime.session.moveSession(resolvedPath);
+		await runtime.session.moveSession(resolvedPath, undefined, { deferWorkspaceCleanup: true });
 	} catch (err) {
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
@@ -124,6 +125,7 @@ async function relocateHeadlessSession(
 				await rescopeHeadlessToCwd(runtime, actual);
 				realigned = true;
 			} catch {}
+			await runtime.session.commitMovedWorkspaceRoots();
 			if (!realigned) {
 				return fatalMoveFailure(
 					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
@@ -135,6 +137,7 @@ async function relocateHeadlessSession(
 				runtime,
 			);
 		}
+		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
 	try {
@@ -150,6 +153,7 @@ async function relocateHeadlessSession(
 				await rescopeHeadlessToCwd(runtime, actual);
 				realigned = true;
 			} catch {}
+			await runtime.session.commitMovedWorkspaceRoots();
 			if (!realigned) {
 				return fatalMoveFailure(
 					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
@@ -161,8 +165,10 @@ async function relocateHeadlessSession(
 				runtime,
 			);
 		}
+		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
+	await runtime.session.commitMovedWorkspaceRoots();
 	await runtime.notifyConfigChanged?.();
 	await runtime.notifyTitleChanged?.();
 	return undefined;
@@ -846,6 +852,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			if (removed === null) {
 				await runtime.output(`Not a workspace directory: ${resolved}`);
 				return commandConsumed();
+			}
+			try {
+				await releaseRemovedWorkspaceRoots(
+					runtime.sessionManager.getCwd(),
+					removed,
+					runtime.session.getLspClientOwner(),
+					undefined,
+					[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
+				);
+			} catch (err) {
+				logger.warn("Failed to stop language servers for a removed workspace directory", {
+					removed,
+					error: errorMessage(err),
+				});
 			}
 			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));

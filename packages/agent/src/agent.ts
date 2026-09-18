@@ -496,7 +496,7 @@ export class Agent {
 		this.#convertToLlm = opts.convertToLlm || defaultConvertToLlm;
 		this.#transformContext = opts.transformContext;
 		this.#steeringMode = opts.steeringMode || "one-at-a-time";
-		this.#followUpMode = opts.followUpMode || "one-at-a-time";
+		this.#followUpMode = opts.followUpMode || "all";
 		this.#interruptMode = opts.interruptMode || "immediate";
 		this.streamFn = opts.streamFn || streamSimple;
 		this.#sessionId = opts.sessionId;

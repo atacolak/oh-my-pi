@@ -16,7 +16,6 @@
 >   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — unowned models use the default retry fallback chain
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
-
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

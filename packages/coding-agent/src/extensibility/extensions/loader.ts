@@ -509,7 +509,13 @@ export async function bindPreparedExtensions(
 }
 
 function isExtensionFile(name: string): boolean {
-	return name.endsWith(".ts") || name.endsWith(".js");
+	if (!name.endsWith(".ts") && !name.endsWith(".js")) {
+		return false;
+	}
+	// Test/spec files are not extension entry points even when they live in an
+	// extensions directory; loading them executes suite code at launch.
+	const stem = name.slice(0, name.lastIndexOf("."));
+	return !stem.endsWith(".test") && !stem.endsWith(".spec");
 }
 
 const CONFIGURED_EXTENSION_DIRECTORY_OPTIONS = {

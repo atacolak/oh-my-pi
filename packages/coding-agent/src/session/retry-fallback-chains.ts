@@ -386,12 +386,19 @@ export function resolveRetryFallbackChainKey(
 	}
 	if (matchedRole) return matchedRole;
 
-	// 4. The default chain, when default has no explicit role primary.
+	// 4. The default chain, for a model no chain key owns — and only when it
+	//    actually supplies a candidate for that model. A model nobody assigned
+	//    to a role (and no model key or wildcard names) has no chain of its own,
+	//    and falling off the end here would leave it with zero fallbacks. Roles
+	//    that matched above keep their own chain — including an explicitly
+	//    emptied one, which still means "no fallbacks" — and a default chain
+	//    whose entries dedupe back to the default role's own primary supplies
+	//    nothing here, so attaching it would claim a model it does not own.
 	const defaultChain = context.chains.default;
 	if (
 		Array.isArray(defaultChain) &&
 		defaultChain.length > 0 &&
-		getRetryFallbackPrimarySelector(context, "default") === undefined
+		findRetryFallbackCandidates(context, "default", currentSelector, currentModel).length > 0
 	) {
 		return "default";
 	}

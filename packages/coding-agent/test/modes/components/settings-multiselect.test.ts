@@ -61,8 +61,6 @@ function createSelector(): SettingsSelectorComponent {
 	);
 }
 
-const [firstChoice, secondChoice] = SEARCH_PROVIDER_CHOICES;
-
 function optionRow(component: SettingsSelectorComponent, label: string): number {
 	const lines = Bun.stripANSI(component.render(120).join("\n")).split("\n");
 	const row = lines.findIndex(line => line.includes(label));
@@ -79,6 +77,8 @@ function clickOption(component: SettingsSelectorComponent, label: string): void 
 	sendMouse(component, 0, row, "M");
 	sendMouse(component, 0, row, "m");
 }
+
+const [firstChoice, secondChoice] = SEARCH_PROVIDER_CHOICES;
 
 describe("multiselect settings (array-of-enum)", () => {
 	it("edits providers.webSearchOrder via the ordered toggle list", () => {
@@ -522,7 +522,6 @@ describe("multiselect settings (array-of-enum)", () => {
 		}
 	});
 });
-
 describe("settings section sidebar", () => {
 	it("does not toggle the selected section's first setting", () => {
 		const comp = createSelector();

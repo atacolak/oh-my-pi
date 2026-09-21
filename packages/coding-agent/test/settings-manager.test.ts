@@ -578,10 +578,9 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
-		it("clears migrated search and find aliases on inherit", async () => {
+		it("clears migrated search aliases on inherit", async () => {
 			await writeSettings({
 				grep: { enabled: true, contextBefore: 0, contextAfter: 0 },
-				glob: { enabled: true },
 			});
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
@@ -589,7 +588,6 @@ describe("Settings", () => {
 				YAML.stringify(
 					{
 						search: { enabled: false, contextBefore: 2, contextAfter: 5 },
-						"find.enabled": false,
 					},
 					null,
 					2,
@@ -599,15 +597,12 @@ describe("Settings", () => {
 			expect(settings.get("grep.enabled")).toBe(false);
 			expect(settings.get("grep.contextBefore")).toBe(2);
 			expect(settings.get("grep.contextAfter")).toBe(5);
-			expect(settings.get("glob.enabled")).toBe(false);
 			expect(settings.clearProject("grep.enabled")).toBe(true);
 			expect(settings.clearProject("grep.contextBefore")).toBe(true);
 			expect(settings.clearProject("grep.contextAfter")).toBe(true);
-			expect(settings.clearProject("glob.enabled")).toBe(true);
 			expect(settings.get("grep.enabled")).toBe(true);
 			expect(settings.get("grep.contextBefore")).toBe(0);
 			expect(settings.get("grep.contextAfter")).toBe(0);
-			expect(settings.get("glob.enabled")).toBe(true);
 			await settings.flush();
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
@@ -662,28 +657,19 @@ describe("Settings", () => {
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
 
-		it("clears migrated provider preference aliases on inherit", async () => {
+		it("clears a project compaction.methodOrder override on inherit", async () => {
 			await writeSettings({
-				providers: { webSearchOrder: ["exa"], imageOrder: ["openai-codex"] },
+				compaction: { methodOrder: ["soft"] },
 			});
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
-				YAML.stringify({ providers: { webSearch: "brave", image: "openai" } }, null, 2),
+				YAML.stringify({ compaction: { methodOrder: ["handoff"] } }, null, 2),
 			);
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			expect(settings.get("providers.webSearchOrder")).toEqual([
-				"brave",
-				...SEARCH_PROVIDER_ORDER.filter(id => id !== "brave"),
-			]);
-			expect(settings.get("providers.imageOrder")).toEqual([
-				"openai",
-				...AUTO_IMAGE_PROVIDER_ORDER.filter(id => id !== "openai"),
-			]);
-			expect(settings.clearProject("providers.webSearchOrder")).toBe(true);
-			expect(settings.clearProject("providers.imageOrder")).toBe(true);
-			expect(settings.get("providers.webSearchOrder")).toEqual(["exa"]);
-			expect(settings.get("providers.imageOrder")).toEqual(["openai-codex"]);
+			expect(settings.get("compaction.methodOrder")).toEqual(["handoff"]);
+			expect(settings.clearProject("compaction.methodOrder")).toBe(true);
+			expect(settings.get("compaction.methodOrder")).toEqual(["soft"]);
 			await settings.flush();
 			expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({});
 		});
@@ -1218,35 +1204,6 @@ describe("Settings", () => {
 			}
 		});
 
-		it("fires session-runtime hooks after adopting a sibling providers.webSearchExclude disk edit", async () => {
-			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
-			await Bun.write(
-				projectConfigPath,
-				YAML.stringify({ providers: { webSearchExclude: [] }, ask: { enabled: true } }, null, 2),
-			);
-			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			const received: Array<{ value: string[]; paths: string[] }> = [];
-			const unsubscribe = onSessionRuntimeChanged(paths => {
-				received.push({ value: [...settings.get("providers.webSearchExclude")], paths: [...paths] });
-			});
-			try {
-				settings.set("ask.enabled", false, "project");
-				expect(received).toEqual([]);
-				await Bun.write(
-					projectConfigPath,
-					YAML.stringify({ providers: { webSearchExclude: ["exa"] }, ask: { enabled: true } }, null, 2),
-				);
-				await settings.flush();
-				expect(settings.get("providers.webSearchExclude")).toEqual(["exa"]);
-				expect(received).toEqual([{ value: ["exa"], paths: ["providers.webSearchExclude"] }]);
-				expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
-					providers: { webSearchExclude: ["exa"] },
-					ask: { enabled: false },
-				});
-			} finally {
-				unsubscribe();
-			}
-		});
 
 		it("fires session-runtime hooks after adopting a sibling display.hideToolActivity disk edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");

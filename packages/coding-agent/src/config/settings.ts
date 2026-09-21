@@ -2374,14 +2374,6 @@ export class Settings {
 			delete target["power.declareUserActive"];
 			delete target["power.preventDisplaySleep"];
 		}
-		if (path === "providers.webSearchOrder") {
-			deleteByPath(target, ["providers", "webSearch"]);
-			delete target["providers.webSearch"];
-		}
-		if (path === "providers.imageOrder") {
-			deleteByPath(target, ["providers", "image"]);
-			delete target["providers.image"];
-		}
 		if (path === "todo.remindersMax") {
 			deleteByPath(target, ["todo", "reminders", "max"]);
 			delete target["todo.reminders.max"];
@@ -4049,9 +4041,6 @@ export type SessionRuntimePath =
 	| "personality"
 	| "presencePenalty"
 	| "proseOnlyThinking"
-	| "providers.imageOrder"
-	| "providers.webSearchExclude"
-	| "providers.webSearchOrder"
 	| "repetitionPenalty"
 	| "spelling.autocomplete"
 	| "spelling.autocorrect"
@@ -4101,9 +4090,6 @@ const SESSION_RUNTIME_PATHS: Record<SessionRuntimePath, true> = {
 	personality: true,
 	presencePenalty: true,
 	proseOnlyThinking: true,
-	"providers.imageOrder": true,
-	"providers.webSearchExclude": true,
-	"providers.webSearchOrder": true,
 	repetitionPenalty: true,
 	"spelling.autocomplete": true,
 	"spelling.autocorrect": true,

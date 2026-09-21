@@ -1217,10 +1217,7 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	#getMultiSelectOptions(def: SettingDef & { type: "multiselect" }) {
-		if (def.path !== "providers.webSearchOrder") return def.options;
-		const excluded: unknown = this.#scopedValue("providers.webSearchExclude");
-		if (!Array.isArray(excluded)) return def.options;
-		return def.options.filter(option => !excluded.includes(option.value));
+		return def.options;
 	}
 
 	#createMultiSelect(def: SettingDef & { type: "multiselect" }, done: (value?: string) => void): Container {
@@ -1538,8 +1535,7 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	#openSubmenuDependsOnAdoptedPaths(itemId: string, adoptedPaths: readonly string[]): boolean {
-		if (adoptedPaths.includes(itemId)) return true;
-		return itemId === "providers.webSearchOrder" && adoptedPaths.includes("providers.webSearchExclude");
+		return adoptedPaths.includes(itemId);
 	}
 
 	#showPluginsTab(): void {

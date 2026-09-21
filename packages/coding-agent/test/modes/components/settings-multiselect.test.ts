@@ -5,7 +5,7 @@ import { SettingsSelectorComponent } from "@oh-my-pi/pi-tui/overlays/settings-se
 import { createSettingsHost } from "@oh-my-pi/pi-coding-agent/config/settings-ui";
 import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/settings-host";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import { SEARCH_PROVIDER_CHOICES } from "@oh-my-pi/pi-coding-agent/web/search/types";
+import { COMPACTION_METHOD_CHOICES } from "@oh-my-pi/pi-coding-agent/session/compaction-methods";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 
@@ -78,14 +78,15 @@ function clickOption(component: SettingsSelectorComponent, label: string): void 
 	sendMouse(component, 0, row, "m");
 }
 
-const [firstChoice, secondChoice] = SEARCH_PROVIDER_CHOICES;
+const [firstChoice, secondChoice] = COMPACTION_METHOD_CHOICES;
 
 describe("multiselect settings (array-of-enum)", () => {
-	it("edits providers.webSearchOrder via the ordered toggle list", () => {
+	it("edits compaction.methodOrder via the ordered toggle list", () => {
+		settings.set("compaction.methodOrder", []);
 		const comp = createSelector();
-		for (const ch of "web search provider order") comp.handleInput(ch);
+		for (const ch of "compaction method order") comp.handleInput(ch);
 		const row = comp.render(120).join("\n");
-		expect(row).toContain("Web Search Provider Order");
+		expect(row).toContain("Compaction Method Order");
 		expect(row).toContain("default");
 
 		// Open the editor; Space toggles the first provider, Enter the second.
@@ -93,62 +94,29 @@ describe("multiselect settings (array-of-enum)", () => {
 		comp.handleInput(" ");
 		comp.handleInput("\x1b[B");
 		comp.handleInput("\n");
-		expect(settings.get("providers.webSearchOrder")).toEqual([firstChoice!.value, secondChoice!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([firstChoice!.value, secondChoice!.value]);
 
 		// ← promotes the highlighted member one slot earlier in priority.
 		comp.handleInput("\x1b[D");
-		expect(settings.get("providers.webSearchOrder")).toEqual([secondChoice!.value, firstChoice!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([secondChoice!.value, firstChoice!.value]);
 
 		// Toggling a member off removes it and renumbers the rest.
 		comp.handleInput(" ");
-		expect(settings.get("providers.webSearchOrder")).toEqual([firstChoice!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([firstChoice!.value]);
 
 		// Esc returns to the list; the row summary reflects the saved order.
 		comp.handleInput("\x1b");
 		expect(comp.render(120).join("\n")).toContain(firstChoice!.label);
 	});
 
-	it("hides excluded providers from the web search order list", () => {
-		const comp = createSelector();
-		settings.set("providers.webSearchExclude", [firstChoice!.value]);
-		for (const ch of "web search provider order") comp.handleInput(ch);
-		comp.handleInput("\n");
 
-		const menu = comp.render(120).join("\n");
-		expect(menu).not.toContain(firstChoice!.label);
-		expect(menu).toContain(secondChoice!.label);
-	});
 
-	it("hides excluded providers from the web search order row summary", () => {
-		const comp = createSelector();
-		settings.set("providers.webSearchOrder", [firstChoice!.value, secondChoice!.value]);
-		settings.set("providers.webSearchExclude", [firstChoice!.value]);
-		for (const ch of "web search provider order") comp.handleInput(ch);
-
-		const row = Bun.stripANSI(comp.render(120).join("\n"))
-			.split("\n")
-			.find(line => line.includes("Web Search Provider Order"));
-		expect(row).not.toContain(firstChoice!.label);
-		expect(row).toContain(secondChoice!.label);
-	});
-
-	it("shows the default web search order when every configured provider is excluded", () => {
-		const comp = createSelector();
-		settings.set("providers.webSearchOrder", [firstChoice!.value]);
-		settings.set("providers.webSearchExclude", [firstChoice!.value]);
-		for (const ch of "web search provider order") comp.handleInput(ch);
-
-		const row = Bun.stripANSI(comp.render(120).join("\n"))
-			.split("\n")
-			.find(line => line.includes("Web Search Provider Order"));
-		expect(row).not.toContain(firstChoice!.label);
-		expect(row).toContain("default");
-	});
 
 	it("splices the hovered option into the pressed digit's position", () => {
-		const [a, b, c] = SEARCH_PROVIDER_CHOICES;
+		const [a, b, c] = COMPACTION_METHOD_CHOICES;
+		settings.set("compaction.methodOrder", []);
 		const comp = createSelector();
-		for (const ch of "web search provider order") comp.handleInput(ch);
+		for (const ch of "compaction method order") comp.handleInput(ch);
 		comp.handleInput("\n");
 
 		// Select rows 1 and 3 → [a, c].
@@ -156,58 +124,44 @@ describe("multiselect settings (array-of-enum)", () => {
 		comp.handleInput("\x1b[B");
 		comp.handleInput("\x1b[B");
 		comp.handleInput(" ");
-		expect(settings.get("providers.webSearchOrder")).toEqual([a!.value, c!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([a!.value, c!.value]);
 
 		// Hover row 2 (unselected) and press "2" → spliced between them.
 		comp.handleInput("\x1b[A");
 		comp.handleInput("2");
-		expect(settings.get("providers.webSearchOrder")).toEqual([a!.value, b!.value, c!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([a!.value, b!.value, c!.value]);
 
 		// Press "9" (past the end) → clamps to the tail.
 		comp.handleInput("9");
-		expect(settings.get("providers.webSearchOrder")).toEqual([a!.value, c!.value, b!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([a!.value, c!.value, b!.value]);
 
 		// Press "1" → promotes to the head.
 		comp.handleInput("1");
-		expect(settings.get("providers.webSearchOrder")).toEqual([b!.value, a!.value, c!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([b!.value, a!.value, c!.value]);
 	});
 
-	it("edits providers.webSearchExclude as an unordered toggle set", () => {
-		const comp = createSelector();
-		for (const ch of "excluded web search providers") comp.handleInput(ch);
-		expect(comp.render(120).join("\n")).toContain("none");
-
-		comp.handleInput("\n");
-		comp.handleInput(" ");
-		expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value]);
-
-		// Unordered lists ignore reorder keys.
-		comp.handleInput("\x1b[C");
-		expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value]);
-
-		comp.handleInput(" ");
-		expect(settings.get("providers.webSearchExclude")).toEqual([]);
-	});
 
 	it("toggles list members on mouse click", () => {
+		settings.set("compaction.methodOrder", []);
 		const comp = createSelector();
-		for (const ch of "web search provider order") comp.handleInput(ch);
+		for (const ch of "compaction method order") comp.handleInput(ch);
 		comp.handleInput("\n");
 
 		clickOption(comp, firstChoice!.label);
-		expect(settings.get("providers.webSearchOrder")).toEqual([firstChoice!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([firstChoice!.value]);
 
 		clickOption(comp, firstChoice!.label);
-		expect(settings.get("providers.webSearchOrder")).toEqual([]);
+		expect(settings.get("compaction.methodOrder")).toEqual([]);
 	});
 
 	it("reorders selected list members by drag and drop", () => {
+		settings.set("compaction.methodOrder", []);
 		const comp = createSelector();
-		for (const ch of "web search provider order") comp.handleInput(ch);
+		for (const ch of "compaction method order") comp.handleInput(ch);
 		comp.handleInput("\n");
 		clickOption(comp, firstChoice!.label);
 		clickOption(comp, secondChoice!.label);
-		expect(settings.get("providers.webSearchOrder")).toEqual([firstChoice!.value, secondChoice!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([firstChoice!.value, secondChoice!.value]);
 
 		const sourceRow = optionRow(comp, secondChoice!.label);
 		const targetRow = optionRow(comp, firstChoice!.label);
@@ -215,57 +169,9 @@ describe("multiselect settings (array-of-enum)", () => {
 		sendMouse(comp, 32, targetRow, "M");
 		sendMouse(comp, 0, targetRow, "m");
 
-		expect(settings.get("providers.webSearchOrder")).toEqual([secondChoice!.value, firstChoice!.value]);
+		expect(settings.get("compaction.methodOrder")).toEqual([secondChoice!.value, firstChoice!.value]);
 	});
 
-	it("keeps a provider in the global search order when only the project layer excludes it", async () => {
-		resetSettingsForTest();
-		const tempDir = TempDir.createSync("@pi-settings-multiselect-scope-");
-		try {
-			const projectDir = tempDir.join("project");
-			const agentDir = tempDir.join("agent");
-			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
-			await Bun.write(
-				projectConfigPath,
-				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
-			);
-			await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("providers.webSearchOrder", [firstChoice!.value, secondChoice!.value], "global");
-
-			// The exclusion exists only on the project layer.
-			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value]);
-			expect(settings.getGlobalValue("providers.webSearchExclude")).toEqual([]);
-
-			const comp = new SettingsSelectorComponent(
-				{
-					availableThinkingLevels: [],
-					thinkingLevel: undefined,
-					availableThemes: ["dark"],
-					providers: [],
-					settings: createSettingsHost(projectDir),
-					plugins: createPluginSettingsHost(projectDir),
-				},
-				{
-					onChange: () => {},
-					onCancel: () => {},
-				},
-			);
-
-			// Switch to global scope: the project-only exclusion must not filter
-			// the global order's options or silently drop the provider on toggle.
-			comp.handleInput("\x1bs");
-			for (const ch of "web search provider order") comp.handleInput(ch);
-			comp.handleInput("\n");
-			expect(comp.render(120).join("\n")).toContain(firstChoice!.label);
-
-			comp.handleInput("\x1b[B");
-			comp.handleInput(" ");
-			expect(settings.getGlobalValue("providers.webSearchOrder")).toEqual([firstChoice!.value]);
-		} finally {
-			resetSettingsForTest();
-			await tempDir.remove();
-		}
-	});
 
 	it("rebuilds an open multi-select after a skipped same-key project save", async () => {
 		resetSettingsForTest();
@@ -276,7 +182,7 @@ describe("multiselect settings (array-of-enum)", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
-				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
+				YAML.stringify({ compaction: { methodOrder: [firstChoice!.value] } }, null, 2),
 			);
 			await Settings.init({ cwd: projectDir, agentDir });
 
@@ -295,24 +201,24 @@ describe("multiselect settings (array-of-enum)", () => {
 				},
 			);
 
-			for (const ch of "excluded web search providers") comp.handleInput(ch);
+			for (const ch of "compaction method order") comp.handleInput(ch);
 			comp.handleInput("\n");
 			comp.handleInput(" ");
-			expect(settings.get("providers.webSearchExclude")).toEqual([]);
+			expect(settings.get("compaction.methodOrder")).toEqual([]);
 
 			await Bun.write(
 				projectConfigPath,
-				YAML.stringify({ providers: { webSearchExclude: [secondChoice!.value] } }, null, 2),
+				YAML.stringify({ compaction: { methodOrder: [secondChoice!.value] } }, null, 2),
 			);
 			await settings.flush();
 
-			expect(settings.get("providers.webSearchExclude")).toEqual([secondChoice!.value]);
+			expect(settings.get("compaction.methodOrder")).toEqual([secondChoice!.value]);
 			const menu = Bun.stripANSI(comp.render(120).join("\n"));
 			expect(menu).toContain(secondChoice!.label);
 			expect(menu).not.toMatch(new RegExp(`●\\s+${firstChoice!.label}`));
 
 			comp.handleInput(" ");
-			expect(settings.get("providers.webSearchExclude")).toEqual([secondChoice!.value, firstChoice!.value]);
+			expect(settings.get("compaction.methodOrder")).toEqual([secondChoice!.value, firstChoice!.value]);
 		} finally {
 			resetSettingsForTest();
 			await tempDir.remove();
@@ -328,7 +234,7 @@ describe("multiselect settings (array-of-enum)", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
-				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
+				YAML.stringify({ compaction: { methodOrder: [firstChoice!.value] } }, null, 2),
 			);
 			await Settings.init({ cwd: projectDir, agentDir });
 
@@ -347,17 +253,17 @@ describe("multiselect settings (array-of-enum)", () => {
 				},
 			);
 
-			for (const ch of "excluded web search providers") comp.handleInput(ch);
+			for (const ch of "compaction method order") comp.handleInput(ch);
 			comp.handleInput("\n");
 			comp.handleInput("\x1b[B");
 			comp.handleInput(" ");
-			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value, secondChoice!.value]);
+			expect(settings.get("compaction.methodOrder")).toEqual([firstChoice!.value, secondChoice!.value]);
 
 			await settings.flush();
-			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value, secondChoice!.value]);
+			expect(settings.get("compaction.methodOrder")).toEqual([firstChoice!.value, secondChoice!.value]);
 
 			comp.handleInput(" ");
-			expect(settings.get("providers.webSearchExclude")).toEqual([firstChoice!.value]);
+			expect(settings.get("compaction.methodOrder")).toEqual([firstChoice!.value]);
 		} finally {
 			resetSettingsForTest();
 			await tempDir.remove();
@@ -373,7 +279,7 @@ describe("multiselect settings (array-of-enum)", () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
-				YAML.stringify({ providers: { webSearchExclude: [firstChoice!.value] } }, null, 2),
+				YAML.stringify({ compaction: { methodOrder: [firstChoice!.value] } }, null, 2),
 			);
 			await Settings.init({ cwd: projectDir, agentDir });
 
@@ -399,12 +305,12 @@ describe("multiselect settings (array-of-enum)", () => {
 
 			await Bun.write(
 				projectConfigPath,
-				YAML.stringify({ providers: { webSearchExclude: [secondChoice!.value] } }, null, 2),
+				YAML.stringify({ compaction: { methodOrder: [secondChoice!.value] } }, null, 2),
 			);
 			settings.set("git.enabled", false, "project");
 			await settings.flush();
 
-			expect(settings.get("providers.webSearchExclude")).toEqual([secondChoice!.value]);
+			expect(settings.get("compaction.methodOrder")).toEqual([secondChoice!.value]);
 			expect(Bun.stripANSI(comp.render(120).join("\n"))).toContain("/tmp/upload");
 
 			comp.handleInput("\n");

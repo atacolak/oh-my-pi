@@ -316,4 +316,13 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(await drainNudges()).toEqual([]);
 		expect(reminderEvents.length).toBe(1);
 	});
+
+	it("never nudges when all open work is passive", async () => {
+		session.setTodoPhases([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+		]);
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		expect(await drainNudges()).toEqual([]);
+		expect(reminderEvents).toEqual([]);
+	});
 });

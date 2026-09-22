@@ -18,6 +18,7 @@ from omp_rpc import (
     RpcCommandError,
     RpcConcurrencyError,
     RpcError,
+    TodoPhase,
     host_tool,
 )
 from omp_rpc.client import _RpcFrameDecoder
@@ -1148,6 +1149,40 @@ class RpcClientTests(unittest.TestCase):
 
             state = client.get_state()
             self.assertEqual(state.todo_phases[0].tasks[1].content, "Exercise edits")
+
+    def test_normalize_todo_phases_omits_absent_kind(self) -> None:
+        legacy_flat = RpcClient._normalize_todo_phases(["Map tools"])
+        self.assertNotIn("kind", legacy_flat[0])
+
+        legacy_phase = RpcClient._normalize_todo_phases(
+            [{"name": "Todos", "tasks": [{"content": "Map tools"}]}]
+        )
+        self.assertNotIn("kind", legacy_phase[0])
+
+        passive = RpcClient._normalize_todo_phases(
+            [{"name": "Reference", "kind": "passive", "tasks": ["Retain report"]}]
+        )
+        self.assertEqual(passive[0]["kind"], "passive")
+
+    def test_normalize_todo_phases_reads_typed_phase_kind(self) -> None:
+        typed = TodoPhase(
+            id="",
+            name="Reference",
+            tasks=(),
+            kind="passive",
+        )
+
+        normalized = RpcClient._normalize_todo_phases([typed])
+
+        self.assertEqual(normalized[0]["kind"], "passive")
+
+    def test_normalize_todo_phases_rejects_unknown_phase_kind(self) -> None:
+        with self.assertRaisesRegex(
+            RpcError, "Todo phase 'kind' must be 'continuing' or 'passive'"
+        ):
+            RpcClient._normalize_todo_phases(
+                [{"name": "Reference", "kind": "background"}]
+            )
 
     def test_model_mode_and_session_commands(self) -> None:
         with self.make_client() as client:

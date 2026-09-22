@@ -1,12 +1,12 @@
 **Tasks: verbatim content strings, NEVER auto-generated IDs; no "task-1"/"task-N". Pass content in `task`.**
 
-After each successful state-changing op: if nothing is `in_progress`, the earliest `pending` task (phase order) auto-promotes to `in_progress`; if several are `in_progress`, only the earliest stays. Blocked tasks NEVER auto-promote—`unblock` first. Out-of-order completion may move pointer back to an earlier phase—expected; completed tasks NEVER revert.
+After each successful state-changing op: if nothing is `in_progress`, the earliest `pending` task (phase order) auto-promotes to `in_progress`; if several are `in_progress`, only the earliest stays. Blocked tasks NEVER auto-promote—`unblock` first. Out-of-order completion may move pointer back to an earlier phase—expected; completed tasks NEVER revert. A phase may set `kind: "passive"`. Absent/`"continuing"` means today's behavior. Passive tasks remain stored and visible, but never auto-promote, drive next-action selection, or trigger stop/mid-run reminders. Explicit task ops still work.
 
 ## Operations
 
 |`op`|Fields|Effect|
 |---|---|---|
-|`init`|`list: [{phase, items: string[]}]`|Initialize full list; replaces existing|
+|`init`|`list: [{phase, kind?, items: string[]}]`|Initialize full list; replaces existing|
 |`init`|`items: string[]`|Flattened single-phase init|
 |`start`|`task`|Mark in progress|
 |`done`|`task` or `phase`|Mark completed|
@@ -21,6 +21,7 @@ After each successful state-changing op: if nothing is `in_progress`, the earlie
 
 - Task content: 5–10 words; what, not how; unique identifier.
 - Phase name: short noun phrase (e.g. `Foundation`, `Auth`, `Verification`); unique identifier. NEVER prefix `1.`, `A)`, `Phase 1:`.
+- Phase kind: optional `kind: "passive"` opts the phase out of automatic continuation (promotion, next-action selection, stop/mid-run reminders); it stays stored, visible, and explicitly editable. Omit it for today's behavior.
 
 ## Rules
 

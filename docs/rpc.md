@@ -275,12 +275,24 @@ is re-armed.
   "todoPhases": [
     {
       "id": "phase-1",
-      "name": "Todos",
+      "name": "Work",
       "tasks": [
         {
           "id": "task-1",
           "content": "Map the tool surface",
           "status": "in_progress"
+        }
+      ]
+    },
+    {
+      "id": "phase-2",
+      "name": "Reference",
+      "kind": "passive",
+      "tasks": [
+        {
+          "id": "task-2",
+          "content": "Retain the review report",
+          "status": "pending"
         }
       ]
     }
@@ -300,6 +312,8 @@ is re-armed.
   }
 }
 ```
+
+`todoPhases[]` entries normally omit `kind`: an absent `kind` is the default and means the phase is continuing. Only a phase that opted out of todo automation carries `"kind": "passive"`, and the list may mix both as the example does.
 
 ### `set_fast_mode` payload
 
@@ -380,6 +394,7 @@ Replaces the in-memory todo state for the current session and returns the normal
     {
       "id": "phase-1",
       "name": "Evaluation",
+      "kind": "passive",
       "tasks": [
         {
           "id": "task-1",
@@ -398,6 +413,8 @@ Replaces the in-memory todo state for the current session and returns the normal
 ```
 
 This is useful for hosts that want to pre-seed a plan before the first prompt.
+
+`kind` is optional and accepts `"continuing"` or `"passive"`; omitting it means the phase is continuing. The server stores the phase list verbatim, and these generic names are not tied to project-lead sections.
 
 ### `set_host_tools` payload
 

@@ -216,10 +216,12 @@ describe("InteractiveMode todo HUD persistence", () => {
 		setTodoClearDelay(0);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		session.sessionManager.appendCustomEntry("user_todo_edit", {
-			phases: [{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] }],
+			phases: [
+				{ name: "Implementation", kind: "passive", tasks: [{ content: "Fix review comments", status: "pending" }] },
+			],
 		});
 		session.setTodoPhases([
-			{ name: "Implementation", tasks: [{ content: "Fix review comments", status: "pending" }] },
+			{ name: "Implementation", kind: "passive", tasks: [{ content: "Fix review comments", status: "pending" }] },
 		]);
 		mode.setTodos(session.getTodoPhases());
 		await mode.init();
@@ -236,8 +238,58 @@ describe("InteractiveMode todo HUD persistence", () => {
 		vi.advanceTimersByTime(0);
 		await session.settleInFlightMessagePersistence();
 		await session.sessionManager.flush();
-		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
+		const phase = session.getTodoPhases()[0];
+		// The reconciliation rebuilds phases field by field; a dropped kind would
+		// silently put a passive phase back on the automation path.
+		expect(phase?.kind).toBe("passive");
+		expect(phase?.tasks[0]?.status).toBe("completed");
 		expect(renderTodos(mode)).toBe("");
+	});
+
+	it("labels a lone passive phase in the HUD", () => {
+		setTodoClearDelay(-1);
+		mode.setTodos([{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] }]);
+
+		const rendered = renderTodos(mode);
+		expect(rendered).toContain("Reference (passive)");
+		expect(rendered).toContain("retain report");
+	});
+
+	it("marks passive stages while highlighting continuing work", async () => {
+		await replaceMode();
+		setTodoClearDelay(-1);
+		session.setTodoPhases([
+			{ name: "Work", tasks: [{ content: "ship change", status: "in_progress" }] },
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+		]);
+		mode.setTodos(session.getTodoPhases());
+		await mode.init();
+
+		const rendered = renderTodos(mode);
+		expect(rendered).toContain("II. Reference (passive)");
+		// The continuing stage is the active one, so its tasks stay expanded
+		// while the passive stage renders its header alone.
+		expect(rendered).toContain("ship change");
+		expect(rendered).not.toContain("retain report");
+	});
+
+	it("does not open the HUD on a passive phase while continuing work remains", async () => {
+		await replaceMode();
+		setTodoClearDelay(-1);
+		session.setTodoPhases([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			{ name: "Work", tasks: [{ content: "ship change", status: "pending" }] },
+		]);
+		mode.setTodos(session.getTodoPhases());
+		await mode.init();
+
+		// The collapsed HUD starts at the active stage, so naming the continuing
+		// stage as active is what keeps the passive stage from leading.
+		const rendered = renderTodos(mode);
+		expect(rendered).toContain("II. Work");
+		expect(rendered).toContain("ship change");
+		expect(rendered).not.toContain("Reference");
+		expect(rendered).not.toContain("retain report");
 	});
 
 	it("reconciles focused worker todos without overwriting the main session", async () => {

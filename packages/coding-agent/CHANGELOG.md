@@ -35,6 +35,8 @@
 - Hindsight `/tree` now resyncs the post-clear document overlay so a pre-reset leaf cannot overwrite the drained post-clear document.
 - Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
 - Fixed Hindsight live retainStrategy refresh from adopting unrelated endpoint, token, or timeout settings that never rebuilt the client.
+- Hindsight session retain now waits for server-side processing before the local append cursor advances, so a failed retain retries the omitted delta instead of appending past it.
+
 ## [18.2.9] - 2026-09-22
 
 ### Added

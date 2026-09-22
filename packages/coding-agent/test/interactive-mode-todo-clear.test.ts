@@ -743,6 +743,19 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(lines.some(line => line.includes("alpha"))).toBe(true);
 	});
 
+	it("points the compact status line at continuing work behind a passive phase", () => {
+		// The passive phase holds the only in-progress task, so a pointer that
+		// ignored kind would name it as the current work.
+		mode.setTodos([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "in_progress" }] },
+			{ name: "Work", tasks: [{ content: "ship change", status: "pending" }] },
+		]);
+
+		const line = Bun.stripANSI(mode.renderCompactStatusLine(120, [""]).join("\n"));
+		expect(line).toContain("ship change");
+		expect(line).not.toContain("retain report");
+	});
+
 	it("caps the visible stage list and summarizes the hidden ones in an overflow row", () => {
 		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
 		mode.setTodos([

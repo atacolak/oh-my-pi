@@ -185,6 +185,8 @@
 - A corrupted or externally modified session file no longer leaves the session impossible to close; a subsequent Ctrl+C exits without rewriting the session log.
 - Fixed silent MCP requests being terminated by an undeclared idle timeout; closing a legacy SSE connection now also cancels pending requests and notifications.
 - Fixed browser reuse for Chromium installed behind Linux wrapper scripts and prevented duplicate launches when a profile is locked ([#12236](https://github.com/can1357/oh-my-pi/pull/12236) by [@shivamklr](https://github.com/shivamklr)).
+- Added `tui.titleSpinner` (`braille` | `dots` | `line`, default `braille`) to pick the terminal-title working-state spinner glyphs alongside the existing `tui.titleState` on/off toggle.
+- Todo phases can now be marked `passive`: they remain durable and visible to the model, transcript, RPC clients, and TUI while staying out of automatic task promotion, next-action selection, stop-time completion reminders, and mid-run Todo nudges. Existing phases remain continuing by default.
 
 ## [18.2.1] - 2026-09-15
 

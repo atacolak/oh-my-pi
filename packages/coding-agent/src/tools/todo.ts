@@ -683,6 +683,15 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	return { phases, errors };
 }
 
+/**
+ * Display-only phase name: `Reference (passive)`. Passive is the sole kind the
+ * model or the human needs to see spelled out; absent/continuing stays bare so
+ * the default surface is byte-identical to before kinds existed.
+ */
+function phaseLabel(phase: Pick<TodoPhase, "name" | "kind">): string {
+	return phase.kind === "passive" ? `${phase.name} (passive)` : phase.name;
+}
+
 function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
 	if (tasks.length === 0) {
@@ -692,7 +701,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 
 	const remainingByPhase = phases
 		.map(phase => ({
-			name: phase.name,
+			name: phaseLabel(phase),
 			tasks: phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress"),
 		}))
 		.filter(phase => phase.tasks.length > 0);
@@ -731,7 +740,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
 	);
 	lines.push(
-		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
+		`Active phase ${currentIdx + 1}/${phases.length} "${phaseLabel(current)}" (${done}/${current.tasks.length})${
 			workedAhead
 				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
 				: "."

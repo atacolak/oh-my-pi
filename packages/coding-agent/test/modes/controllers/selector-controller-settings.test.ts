@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import type { Model } from "@oh-my-pi/pi-ai";
+import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -104,6 +104,103 @@ describe("SelectorController prompt-affecting settings", () => {
 
 		// persist=true: panel edits are durable, unlike the session-scoped RPC path (#11431).
 		expect(setAutoCompactionEnabled).toHaveBeenCalledWith(false, true);
+	});
+
+	describe("live panel side effects that read the settings singleton", () => {
+		let settingsState: SettingsTestState | undefined;
+
+		beforeEach(async () => {
+			settingsState = beginSettingsTest();
+			await Settings.init({ inMemory: true });
+		});
+
+		afterEach(() => {
+			restoreSettingsTestState(settingsState);
+			settingsState = undefined;
+		});
+
+		it("refreshes the status line when cached status-line settings change", () => {
+			const updateSettings = vi.fn();
+			const requestRender = vi.fn();
+			const controller = new SelectorController({
+				statusLine: { updateSettings },
+				ui: { requestRender },
+			} as unknown as InteractiveModeContext);
+
+			Settings.instance.override("statusLine.preset", "full");
+			Settings.instance.override("statusLine.leftSegments", ["model"]);
+			Settings.instance.override("statusLine.contextLine", "annotated");
+			controller.handleSettingChange("statusLine.preset", "full");
+			controller.handleSettingChange("statusLine.leftSegments", ["model"]);
+			controller.handleSettingChange("statusLine.contextLine", "annotated");
+
+			expect(updateSettings).toHaveBeenCalledTimes(3);
+			expect(updateSettings).toHaveBeenCalledWith(
+				expect.objectContaining({
+					preset: "full",
+					leftSegments: ["model"],
+					contextLine: "annotated",
+				}),
+			);
+			expect(requestRender).toHaveBeenCalledTimes(3);
+		});
+
+		it("applies a thinking-level change without re-persisting it globally", () => {
+			const setThinkingLevel = vi.fn();
+			const invalidate = vi.fn();
+			const updateEditorBorderColor = vi.fn();
+			Settings.instance.set("defaultThinkingLevel", Effort.Medium);
+			const controller = new SelectorController({
+				session: { setThinkingLevel },
+				statusLine: { invalidate },
+				updateEditorBorderColor,
+			} as unknown as InteractiveModeContext);
+
+			controller.handleSettingChange("defaultThinkingLevel", Effort.High);
+
+			expect(setThinkingLevel).toHaveBeenCalledTimes(1);
+			expect(setThinkingLevel).toHaveBeenCalledWith(Effort.High);
+			expect(setThinkingLevel.mock.calls[0]).toHaveLength(1);
+			expect(Settings.instance.get("defaultThinkingLevel")).toBe(Effort.Medium);
+		});
+	});
+
+	it("applies composer, spelling, scrollback, mermaid, and mcp changes live", () => {
+		const syncComposerShape = vi.fn();
+		const syncEditorSpelling = vi.fn();
+		const requestRender = vi.fn();
+		const setResizeScrollback = vi.fn();
+		const rebuildChatFromMessages = vi.fn();
+		const resetDisplay = vi.fn();
+		const refreshBaseSystemPrompt = vi.fn(async () => {});
+		const showError = vi.fn();
+		const setNotificationsEnabled = vi.fn();
+		const controller = new SelectorController({
+			syncComposerShape,
+			syncEditorSpelling,
+			rebuildChatFromMessages,
+			showError,
+			session: { refreshBaseSystemPrompt },
+			mcpManager: { setNotificationsEnabled },
+			ui: { requestRender, setResizeScrollback, resetDisplay },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("composer.shape", "box");
+		controller.handleSettingChange("spelling.typoDetection", false);
+		controller.handleSettingChange("tui.resizeScrollback", "preserve");
+		controller.handleSettingChange("tui.renderMermaid", false);
+		controller.handleSettingChange("mcp.notifications", true);
+
+		expect(syncComposerShape).toHaveBeenCalledTimes(1);
+		expect(syncEditorSpelling).toHaveBeenCalledTimes(1);
+		expect(setResizeScrollback).toHaveBeenCalledWith("preserve");
+		expect(refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages.mock.invocationCallOrder[0]).toBeLessThan(
+			resetDisplay.mock.invocationCallOrder[0],
+		);
+		expect(setNotificationsEnabled).toHaveBeenCalledWith(true);
 	});
 });
 

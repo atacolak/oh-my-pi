@@ -314,7 +314,6 @@ describe("AgentSession adopted session-runtime changes", () => {
 		expect(session.thinkingLevel).toBe(Effort.High);
 	});
 
-
 	it("ignores session-runtime events from a different Settings clone", async () => {
 		const projectDir = tempDir.join("project");
 		const otherDir = tempDir.join("other-project");

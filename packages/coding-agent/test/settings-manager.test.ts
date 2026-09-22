@@ -662,10 +662,7 @@ describe("Settings", () => {
 				compaction: { methodOrder: ["soft"] },
 			});
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
-			await Bun.write(
-				projectConfigPath,
-				YAML.stringify({ compaction: { methodOrder: ["handoff"] } }, null, 2),
-			);
+			await Bun.write(projectConfigPath, YAML.stringify({ compaction: { methodOrder: ["handoff"] } }, null, 2));
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			expect(settings.get("compaction.methodOrder")).toEqual(["handoff"]);
 			expect(settings.clearProject("compaction.methodOrder")).toBe(true);
@@ -1203,7 +1200,6 @@ describe("Settings", () => {
 				unsubscribe();
 			}
 		});
-
 
 		it("fires session-runtime hooks after adopting a sibling display.hideToolActivity disk edit", async () => {
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
@@ -4066,12 +4062,12 @@ describe("Settings", () => {
 			expect(settings.get("grep.enabled")).toBe(true);
 		});
 
-		it("keeps find.enabled as the semantic find tool toggle across reloads", async () => {
+		it("migrates a boolean find.enabled to its explicit on/off mode without touching glob", async () => {
 			await writeSettings({ find: { enabled: true }, glob: { enabled: false } });
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("find.enabled")).toBe(true);
+			expect(settings.get("find.enabled")).toBe("on");
 			expect(settings.get("glob.enabled")).toBe(false);
 		});
 

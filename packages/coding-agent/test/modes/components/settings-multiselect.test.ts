@@ -109,9 +109,6 @@ describe("multiselect settings (array-of-enum)", () => {
 		expect(comp.render(120).join("\n")).toContain(firstChoice!.label);
 	});
 
-
-
-
 	it("splices the hovered option into the pressed digit's position", () => {
 		const [a, b, c] = COMPACTION_METHOD_CHOICES;
 		settings.set("compaction.methodOrder", []);
@@ -139,7 +136,6 @@ describe("multiselect settings (array-of-enum)", () => {
 		comp.handleInput("1");
 		expect(settings.get("compaction.methodOrder")).toEqual([b!.value, a!.value, c!.value]);
 	});
-
 
 	it("toggles list members on mouse click", () => {
 		settings.set("compaction.methodOrder", []);
@@ -171,7 +167,6 @@ describe("multiselect settings (array-of-enum)", () => {
 
 		expect(settings.get("compaction.methodOrder")).toEqual([secondChoice!.value, firstChoice!.value]);
 	});
-
 
 	it("rebuilds an open multi-select after a skipped same-key project save", async () => {
 		resetSettingsForTest();

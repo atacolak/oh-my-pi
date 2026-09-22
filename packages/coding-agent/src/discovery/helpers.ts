@@ -608,6 +608,8 @@ export async function loadFilesFromDir<T>(
 		transform: (name: string, content: string, path: string, source: SourceMeta) => T | null;
 		/** Whether to recurse into subdirectories (default: false) */
 		recursive?: boolean;
+		/** Registry/CLI origin forwarded to {@link SourceMeta.origin} (see {@link createSourceMeta}). */
+		origin?: string;
 	},
 ): Promise<LoadResult<T>> {
 	const items: T[] = [];
@@ -660,7 +662,7 @@ export async function loadFilesFromDir<T>(
 		}
 
 		const name = path.basename(filePath);
-		const source = createSourceMeta(provider, filePath, level);
+		const source = createSourceMeta(provider, filePath, level, options.origin);
 
 		try {
 			const item = options.transform(name, content, filePath, source);

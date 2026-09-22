@@ -7,9 +7,9 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR(s):** [#9311](https://github.com/can1357/oh-my-pi/pull/9311) — inspector (merged). Discovery skip: fork-local.
-> - **Upstream base:** [OMP 18.2.8 (`5e0fc867`)](https://github.com/can1357/oh-my-pi/tree/5e0fc867f8a58dfe8812b5e99b2e7b6a0313da6c)
+> - **Upstream base:** [OMP 18.2.9 (`8cd6f8c6`)](https://github.com/can1357/oh-my-pi/tree/8cd6f8c619e89e935b6c6c5c91f6a4d20f6d7a75)
 >
-> This branch tracks required generation `5e0fc867` plus the discovery skip.
+> This branch tracks required generation `8cd6f8c6` plus the discovery skip.
 >
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

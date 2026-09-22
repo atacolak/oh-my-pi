@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
+
 ### Changed
 
 - Extensions load faster on warm starts: their dependencies are no longer re-parsed on every launch ([#12908](https://github.com/can1357/oh-my-pi/pull/12908) by [@H4vC](https://github.com/H4vC)).

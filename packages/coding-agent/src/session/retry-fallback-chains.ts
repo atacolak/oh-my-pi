@@ -437,17 +437,25 @@ export function resolveRetryFallbackChainKey(
 	}
 	if (matchedRole) return matchedRole;
 
-	// 4. The default chain. Use it even when `default` has an explicit role
-	//    primary that is a *different* model than the live one (#12421): a
-	//    /model switch or a mid-chain hop onto Fable/Astra must still reach
-	//    glm/grok/… instead of resolving no key and aborting on wait > maxDelayMs.
+	// 4. The default chain, for a model no chain key owns — and only when it
+	//    actually supplies a candidate for that model. Use it even when `default`
+	//    has an explicit role primary that is a *different* model than the live
+	//    one (#12421): a /model switch or a mid-chain hop onto Fable/Astra must
+	//    still reach glm/grok/… instead of resolving no key and aborting on
+	//    wait > maxDelayMs. A default chain whose entries dedupe back to the
+	//    default role's own primary supplies nothing here, so attaching it would
+	//    claim a model it does not own. Roles that matched above keep their own
+	//    chain, including an explicitly emptied one.
 	const defaultChain = context.chains.default;
-	if (Array.isArray(defaultChain) && defaultChain.length > 0) {
+	if (
+		Array.isArray(defaultChain) &&
+		defaultChain.length > 0 &&
+		findRetryFallbackCandidates(context, "default", currentSelector, currentModel).length > 0
+	) {
 		return "default";
 	}
 	return undefined;
 }
-
 /**
  * Parse one configured chain entry. A `provider/*` entry keeps the failing
  * model's id and swaps the provider (google-antigravity/x → google/x); an

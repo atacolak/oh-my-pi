@@ -438,13 +438,14 @@ export function resolveRetryFallbackChainKey(
 	if (matchedRole) return matchedRole;
 
 	// 4. The default chain, for a model no chain key owns — and only when it
-	//    actually supplies a candidate for that model. A model nobody assigned
-	//    to a role (and no model key or wildcard names) has no chain of its own,
-	//    and falling off the end here would leave it with zero fallbacks. Roles
-	//    that matched above keep their own chain — including an explicitly
-	//    emptied one, which still means "no fallbacks" — and a default chain
-	//    whose entries dedupe back to the default role's own primary supplies
-	//    nothing here, so attaching it would claim a model it does not own.
+	//    actually supplies a candidate for that model. Use it even when `default`
+	//    has an explicit role primary that is a *different* model than the live
+	//    one (#12421): a /model switch or a mid-chain hop onto Fable/Astra must
+	//    still reach glm/grok/… instead of resolving no key and aborting on
+	//    wait > maxDelayMs. A default chain whose entries dedupe back to the
+	//    default role's own primary supplies nothing here, so attaching it would
+	//    claim a model it does not own. Roles that matched above keep their own
+	//    chain, including an explicitly emptied one.
 	const defaultChain = context.chains.default;
 	if (
 		Array.isArray(defaultChain) &&
@@ -455,7 +456,6 @@ export function resolveRetryFallbackChainKey(
 	}
 	return undefined;
 }
-
 /**
  * Parse one configured chain entry. A `provider/*` entry keeps the failing
  * model's id and swaps the provider (google-antigravity/x → google/x); an
@@ -589,5 +589,5 @@ export function findRetryFallbackCandidates(
 		const candidatesAfter = chain.slice(baseIndex + 1);
 		return options?.wrapAround ? [...candidatesAfter, ...chain.slice(0, baseIndex)] : candidatesAfter;
 	}
-	return chain.slice(1);
+	return chain;
 }

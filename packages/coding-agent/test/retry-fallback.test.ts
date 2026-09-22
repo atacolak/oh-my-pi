@@ -219,6 +219,23 @@ describe("retry fallback selector resolution", () => {
 		});
 		expect(resolveRetryFallbackChainKey(exactHigh, high, model)).toBe(high);
 	});
+
+	it("uses the default chain when the live model matches no role primary (#12421)", () => {
+		const live = "openrouter/google/gemini-2.5-flash";
+		const context = createContext(
+			{
+				default: ["openai/gpt-4o-mini", "google/gemini-2.5-flash"],
+				slow: ["openai/gpt-4o-mini"],
+			},
+			{ default: "google/gemini-2.5-flash", slow: "openai/gpt-4o-mini" },
+		);
+		expect(resolveRetryFallbackChainKey(context, live)).toBe("default");
+		// The effective chain leads with `default`'s primary, then the configured entries.
+		expect(findRetryFallbackCandidates(context, "default", live).map(candidate => candidate.raw)).toEqual([
+			"google/gemini-2.5-flash",
+			"openai/gpt-4o-mini",
+		]);
+	});
 });
 
 describe("retry fallback kind-role validation", () => {
@@ -342,10 +359,13 @@ const LIVE_MODEL_ROLES: Record<string, string> = {
 	builder: "cpa/deepseek-flash:auto",
 	smol: "cpa/gemini-3.8-flash-high:high",
 };
-
-const DEFAULT_CHAIN_CANDIDATES: RetryFallbackSelector[] = [
+const CONFIGURED_DEFAULT_ENTRIES: RetryFallbackSelector[] = [
 	{ raw: "cursor/cursor-grok-4.6", provider: "cursor", id: "cursor-grok-4.6", thinkingLevel: undefined },
 	{ raw: "cpa/deepseek-flash", provider: "cpa", id: "deepseek-flash", thinkingLevel: undefined },
+];
+const DEFAULT_CHAIN_CANDIDATES: RetryFallbackSelector[] = [
+	{ raw: "cpa/grok-4.6:high", provider: "cpa", id: "grok-4.6", thinkingLevel: ThinkingLevel.High },
+	...CONFIGURED_DEFAULT_ENTRIES,
 ];
 
 function createLiveContext(
@@ -372,7 +392,7 @@ describe("retry fallback chain keys for a model no role owns", () => {
 	it("keeps every model-owned selector on its own chain", () => {
 		const context = createLiveContext();
 		const cases: [string, string, RetryFallbackSelector[]][] = [
-			["cpa/grok-4.6:high", "default", DEFAULT_CHAIN_CANDIDATES],
+			["cpa/grok-4.6:high", "default", CONFIGURED_DEFAULT_ENTRIES],
 			[
 				"cpa/gemini-3.8-flash-high:high",
 				"smol",
@@ -385,7 +405,7 @@ describe("retry fallback chain keys for a model no role owns", () => {
 					},
 				],
 			],
-			["cpa/deepseek-flash:auto", "builder", DEFAULT_CHAIN_CANDIDATES],
+			["cpa/deepseek-flash:auto", "builder", CONFIGURED_DEFAULT_ENTRIES],
 		];
 		for (const [currentSelector, chainKey, candidates] of cases) {
 			expect(resolveRetryFallbackChainKey(context, currentSelector)).toBe(chainKey);

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, LspTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BUILTIN_TOOLS, createTools, LspTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 
@@ -448,9 +448,5 @@ describe("createTools", () => {
 		).map(t => t.name);
 		expect(names).toContain("checkpoint");
 		expect(names).toContain("rewind");
-	});
-
-	it("HIDDEN_TOOLS contains yield, goal, and think", () => {
-		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual(["goal", "think", "yield"]);
 	});
 });

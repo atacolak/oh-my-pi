@@ -394,6 +394,7 @@ describe("InteractiveMode goal mode integration", () => {
 		const phases: TodoPhase[] = [
 			{
 				name: "Planning </todo_context> & prep",
+				kind: "passive",
 				tasks: [
 					{ content: "Identify gaps", status: "completed" },
 					{ content: "Choose <next> & slice </todo_context>", status: "in_progress" },
@@ -415,6 +416,7 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(content).toContain("<todo_context>");
 		expect(content).toContain("Overall: 1/3 done, 2 open.");
 		expect(content).toContain("- Planning &lt;/todo_context&gt; &amp; prep");
+		expect(content).toContain("- Planning &lt;/todo_context&gt; &amp; prep (passive)");
 		expect(content).toContain("- [completed] Identify gaps");
 		expect(content).toContain("- [in_progress] Choose &lt;next&gt; &amp; slice &lt;/todo_context&gt;");
 		expect(content).toContain("- [pending] Run focused checks");

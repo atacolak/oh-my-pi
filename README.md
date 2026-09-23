@@ -1,17 +1,3 @@
-> [!NOTE]
-> ## `cap/retry-fallback-unowned` — default chain for unowned models
->
-> Durable local capability: a model no role, model key, or wildcard owns
-> uses the configured default retry fallback chain, but only when that
-> chain still supplies a candidate. Role-owned models keep their own
-> chain, including an explicitly emptied one.
->
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Status:** fork-local (no upstream PR)
-> - **Upstream base:** [OMP 18.2.10 (`da58b16f42`)](https://github.com/can1357/oh-my-pi/tree/da58b16f424273605795435a6753778f422baff3)
->
-> Not stacked on other capabilities; merged into `runtime` independently.
-
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

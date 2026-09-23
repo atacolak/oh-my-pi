@@ -66,4 +66,15 @@ describe("AgentSession todo blocker clone", () => {
 		const open = roundTripped[0]?.tasks.find(task => task.content === "b");
 		expect(open?.blocker).toBeUndefined();
 	});
+
+	it("preserves a passive phase kind across setTodoPhases/getTodoPhases", () => {
+		session.setTodoPhases([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			{ name: "Work", tasks: [{ content: "ship change", status: "in_progress" }] },
+		]);
+		expect(session.getTodoPhases()).toEqual([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			{ name: "Work", tasks: [{ content: "ship change", status: "in_progress" }] },
+		]);
+	});
 });

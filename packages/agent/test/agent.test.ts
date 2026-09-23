@@ -611,6 +611,79 @@ describe("Agent", () => {
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
 	});
 
+	it("injects every queued follow-up into the same provider turn by default", async () => {
+		// Default followUpMode is "all": N follow-ups queued after a yield must become
+		// N user messages in the SAME next provider call, not one turn each.
+		const mock = createMockModel({
+			responses: [{ content: ["First answer"] }, { content: ["Second answer"] }],
+		});
+		const agent = new Agent({ streamFn: mock.stream });
+		let injected = false;
+		agent.setOnBeforeYield(() => {
+			if (injected) return;
+			injected = true;
+			agent.followUp({ role: "user", content: [{ type: "text", text: "Follow-up 1" }], timestamp: Date.now() });
+			agent.followUp({
+				role: "user",
+				content: [{ type: "text", text: "Follow-up 2" }],
+				timestamp: Date.now() + 1,
+			});
+			agent.followUp({
+				role: "user",
+				content: [{ type: "text", text: "Follow-up 3" }],
+				timestamp: Date.now() + 2,
+			});
+		});
+
+		await agent.prompt("Initial");
+
+		expect(mock.calls.length).toBe(2);
+		const followUpTurn = JSON.stringify(mock.calls[1].context.messages);
+		expect(followUpTurn).toContain("Follow-up 1");
+		expect(followUpTurn).toContain("Follow-up 2");
+		expect(followUpTurn).toContain("Follow-up 3");
+		expect(agent.peekFollowUpQueue()).toHaveLength(0);
+	});
+
+	it("drains one follow-up per yield when followUpMode is one-at-a-time", async () => {
+		const mock = createMockModel({
+			responses: [
+				{ content: ["First answer"] },
+				{ content: ["Second answer"] },
+				{ content: ["Third answer"] },
+				{ content: ["Fourth answer"] },
+			],
+		});
+		const agent = new Agent({ streamFn: mock.stream, followUpMode: "one-at-a-time" });
+		let injected = false;
+		agent.setOnBeforeYield(() => {
+			if (injected) return;
+			injected = true;
+			agent.followUp({ role: "user", content: [{ type: "text", text: "Follow-up 1" }], timestamp: Date.now() });
+			agent.followUp({
+				role: "user",
+				content: [{ type: "text", text: "Follow-up 2" }],
+				timestamp: Date.now() + 1,
+			});
+			agent.followUp({
+				role: "user",
+				content: [{ type: "text", text: "Follow-up 3" }],
+				timestamp: Date.now() + 2,
+			});
+		});
+
+		await agent.prompt("Initial");
+
+		expect(mock.calls.length).toBe(4);
+		const turnTwo = JSON.stringify(mock.calls[1].context.messages);
+		expect(turnTwo).toContain("Follow-up 1");
+		expect(turnTwo).not.toContain("Follow-up 2");
+		expect(turnTwo).not.toContain("Follow-up 3");
+		expect(JSON.stringify(mock.calls[2].context.messages)).toContain("Follow-up 2");
+		expect(JSON.stringify(mock.calls[3].context.messages)).toContain("Follow-up 3");
+		expect(agent.peekFollowUpQueue()).toHaveLength(0);
+	});
+
 	it("keeps Anthropic refusal errors out of the next provider context", async () => {
 		const mock = createMockModel({
 			responses: [

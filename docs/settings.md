@@ -763,7 +763,7 @@ The `cost` segment shows recorded session costs. For an active provider/model wi
 | Key                    | Type    | Default         | Values                                                                                                  |
 | ---------------------- | ------- | --------------- | ------------------------------------------------------------------------------------------------------- |
 | `steeringMode`         | enum    | `one-at-a-time` | `all`, `one-at-a-time`. How queued steering messages are delivered.                                     |
-| `followUpMode`         | enum    | `one-at-a-time` | `all`, `one-at-a-time`.                                                                                 |
+| `followUpMode`         | enum    | `all`           | `all`, `one-at-a-time`.                                                                                 |
 | `interruptMode`        | enum    | `immediate`     | `immediate`, `wait`.                                                                                    |
 | `doubleEscapeAction`   | enum    | `rewind`          | `rewind`, `none`.                                                                               |
 | `autoResume`           | boolean | `false`         | Auto-resume the most recent session in the cwd.                                                         |

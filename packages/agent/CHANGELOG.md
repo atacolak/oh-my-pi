@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `Agent` now defaults `followUpMode` to `all`, so every follow-up queued at a yield boundary is delivered in the same next turn instead of one per turn. Pass `followUpMode: "one-at-a-time"` to keep the previous behavior.
 ## [18.2.9] - 2026-09-22
 
 ### Fixed

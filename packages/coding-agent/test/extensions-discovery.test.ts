@@ -79,6 +79,72 @@ describe("extensions discovery", () => {
 		expect(path.basename(result.extensions[0].path)).toBe("foo.js");
 	});
 
+	it("ignores direct .test.ts and .spec.ts files in extensions/", async () => {
+		fs.writeFileSync(path.join(extensionsDir, "actors.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "actors.test.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "hcom.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "hcom.test.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "widget.spec.ts"), extensionCode);
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions.map(e => path.basename(e.path)).sort()).toEqual(["actors.ts", "hcom.ts"]);
+	});
+
+	it("ignores direct .test.js and .spec.js files in extensions/", async () => {
+		fs.writeFileSync(path.join(extensionsDir, "hcom.js"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "hcom.test.js"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "widget.spec.js"), extensionCode);
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions.map(e => path.basename(e.path)).sort()).toEqual(["hcom.js"]);
+	});
+
+	it("native extension-module discovery ignores .test.ts and .spec.ts files", async () => {
+		fs.writeFileSync(path.join(extensionsDir, "actors.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "actors.test.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "hcom.test.ts"), extensionCode);
+		fs.writeFileSync(path.join(extensionsDir, "widget.spec.ts"), extensionCode);
+
+		// Ambient discovery walks the native extension-module provider, the same
+		// path a real `~/.omp/agent/extensions` scan takes at launch.
+		const paths = await discoverExtensionPaths([], tempDir.path());
+		const projectPaths = paths.filter(p => p.startsWith(tempDir.path()));
+
+		expect(projectPaths.map(p => path.basename(p)).sort()).toEqual(["actors.ts"]);
+	});
+
+	it("does not load .test.ts hook factories from package hook dirs", async () => {
+		const hookDir = path.join(getProjectAgentDir(tempDir.path()), "hooks", "pre");
+		fs.mkdirSync(hookDir, { recursive: true });
+		const hookPath = path.join(hookDir, "guard.ts");
+		fs.writeFileSync(
+			hookPath,
+			`
+				export default function(pi) {
+					pi.on("tool_call", async () => ({ block: true, reason: "blocked by hook" }));
+				}
+			`,
+		);
+		fs.writeFileSync(
+			path.join(hookDir, "guard.test.ts"),
+			`
+				export default function(pi) {
+					pi.on("tool_call", async () => ({ block: true, reason: "blocked by hook" }));
+				}
+			`,
+		);
+
+		const result = await discoverForTest([], true);
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions.find(extension => extension.path === hookPath)).toBeDefined();
+		expect(result.extensions.some(extension => extension.path === path.join(hookDir, "guard.test.ts"))).toBe(false);
+	});
+
 	it("discovers subdirectory with index.ts", async () => {
 		const subdir = path.join(extensionsDir, "my-extension");
 		fs.mkdirSync(subdir);

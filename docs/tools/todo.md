@@ -18,14 +18,14 @@ The params object **is** a single op — the discriminator and its fields live a
 
 | Op | Required fields | Optional fields | Effect |
 | --- | --- | --- | --- |
-| `init` | `list` **or** flat `items` | `phase` (names the phase for the flat `items` form; defaults to `Tasks`) | Replaces the entire list — with `list`, uses the given phases; with a flat `items` array, synthesizes one phase. Every new task starts `pending` before normalization. |
-| `start` | `task` | None | Marks one task `in_progress`; any other `in_progress` task is demoted to `pending`. |
+| `init` | `list` **or** flat `items` | `phase` (names the phase for the flat `items` form; defaults to `Tasks`), `kind` (`"continuing" \| "passive"`; applies to the flat `items` form and to every entry of `list`) | Replaces the entire list — with `list`, uses the given phases; with a flat `items` array, synthesizes one phase. Every new task starts `pending` before normalization. |
+| `start` | `task` | None | Marks one task `in_progress`; any other `in_progress` task in a continuing phase is demoted to `pending`. |
 | `done` | `task` or `phase` or neither | None | Marks the target task, phase, or all tasks `completed`. |
 | `drop` | `task` or `phase` or neither | None | Marks the target task, phase, or all tasks `abandoned`. |
 | `block` | `task` or `phase` | `reason` | Marks actionable target tasks `blocked`; completed/abandoned tasks are left closed. Whitespace in `reason` is collapsed to one line. |
 | `unblock` | `task` or `phase` | None | Returns blocked target tasks to `pending` and clears their blocker notes. |
 | `rm` | `task` or `phase` or neither | None | Removes the target task, clears the phase's task list, or clears all task lists. |
-| `append` | `phase`, `items` | None | Appends new `pending` tasks to a phase; creates the phase if missing. |
+| `append` | `phase`, `items` | `kind` (`"continuing" \| "passive"`) | Appends new `pending` tasks to a phase; creates the phase if missing. An explicit `kind` sets the phase's kind whether the phase is created or found. |
 | `view` | None | None | Echoes the current list. A `view` call is read-only: no normalization, no state write. |
 
 ### Fields
@@ -33,7 +33,8 @@ The params object **is** a single op — the discriminator and its fields live a
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `op` | `"init" \| "start" \| "done" \| "rm" \| "drop" \| "block" \| "unblock" \| "append" \| "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
-| `list` | `{ phase: string; items: string[] }[]` | For `init` (unless a flat `items` list is given) | Full replacement payload. Each `items` array has `minItems: 1`. |
+| `list` | `{ phase: string; kind?: "continuing" \| "passive"; items: string[] }[]` | For `init` (unless a flat `items` list is given) | Full replacement payload. Each `items` array has `minItems: 1`. |
+| `kind` | `"continuing" \| "passive"` | No; accepted by flat `init`, each `init.list` phase, and `append` | Omission means continuing. Passive phases remain stored and visible but do not participate in next-action selection, automatic `in_progress` normalization, stop reminders, or mid-run nudges. |
 | `task` | `string` | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm` | Exact task content match. |
 | `phase` | `string` | For `append`; for phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`). |
 | `items` | `string[]` | For `append`; or as a flat `init` payload | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
@@ -54,7 +55,7 @@ The tool returns a single-shot `AgentToolResult`:
 
 `TodoPhase` / `TodoItem` state model:
 
-- `TodoPhase`: `{ name: string, tasks: TodoItem[] }`
+- `TodoPhase`: `{ name: string, tasks: TodoItem[], kind?: "continuing" | "passive" }`
 - `TodoItem`: `{ content: string, status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked", blocker?: string }`
 
 The TUI renderer (`todoToolRenderer`) merges call and result into one transcript block and renders phases as a tree. Collapsed transcript previews cap tree items at `PREVIEW_LIMITS.COLLAPSED_ITEMS` (`8`).
@@ -65,17 +66,18 @@ The TUI renderer (`todoToolRenderer`) merges call and result into one transcript
 3. `applyParams(...)` applies the resolved op with `applyEntry(...)`.
 4. Each op mutates the working phase array:
    - `initPhases(...)` rebuilds the list from scratch.
-   - `start` resolves a task by exact `content`, demotes every other `in_progress` task to `pending`, then marks the target `in_progress`.
+   - `start` resolves a task by exact `content`, demotes every other `in_progress` task in a continuing phase to `pending`, then marks the target `in_progress`. Starting a task in a passive phase changes only that task.
    - `done` / `drop` use `getTaskTargets(...)` to target one task, one phase, or every task.
    - `block` requires a task or phase target. It marks only `pending`, `in_progress`, or already-`blocked` targets as blocked, preserving completed/abandoned tasks; a repeated block can replace or clear the note.
    - `unblock` requires a task or phase target and changes only blocked targets to `pending`.
    - `rm` removes one task, clears one phase's `tasks`, or clears all phases' task arrays.
    - `appendItems(...)` resolves or creates the target phase and pushes new `pending` tasks unless the same task content already exists anywhere.
 5. Missing task/phase references and op-specific failures are recorded in an `errors` array; any error discards the op's mutations at the end.
-6. After a successful mutation, `normalizeInProgressTask(...)` enforces the single-active-task invariant:
+6. After a successful mutation, `normalizeInProgressTask(...)` enforces the single-active-task invariant across **continuing** phases (see [Phase continuation modes](#phase-continuation-modes)):
    - if multiple tasks are `in_progress`, only the first stays active and the rest become `pending`;
    - if none are `in_progress`, the first `pending` task in phase/task order is auto-promoted to `in_progress`;
    - blocked tasks are skipped, so a list may have no active task when all open work is blocked.
+   - tasks in passive phases are never promoted, never demoted, and never count as an existing `in_progress` task; a passive phase may therefore hold zero or several `in_progress` tasks.
 7. `execute(...)` stores the updated phases with `session.setTodoPhases?.(...)` only when the op produced no errors and was not a `view`; a failed op is discarded. `storage` is `"session"` when `session.getSessionFile()` exists, else `"memory"`.
 8. `getCompletionTransitions(...)` compares the previous and updated phases (skipped for failed or `view` calls); newly completed tasks are returned in `details.completedTasks`.
 9. Details include the resolved `op` on success or op-specific failure, including an op inferred from omitted input. A payload that cannot be schema-validated returns before an op is available.
@@ -83,7 +85,19 @@ The TUI renderer (`todoToolRenderer`) merges call and result into one transcript
 11. The event controller updates the visible todo UI from `result.details.phases` on success, or shows a warning on error (`packages/coding-agent/src/modes/controllers/event-controller.ts`).
 
 ## Modes / Variants
-### State transitions
+### Phase continuation modes
+
+A phase is `continuing` (the default) or `passive`. Core selects the behavior by the `kind` field, never by the phase name: no core code path compares a phase name against a policy name. Only the exact literal `"passive"` opts a phase out; an absent or unrecognized `kind` is continuing, so a list written before kinds existed behaves exactly as it does today.
+
+| Behavior | continuing / omitted | passive |
+| --- | --- | --- |
+| stored, transcript/model/TUI visible, compaction/resume/recycle durable | Yes | Yes |
+| explicit `start`/`done`/`drop`/`block`/`unblock`/`rm` | Yes | Yes |
+| next-action selection and automatic promotion/demotion | Yes | No |
+| stop-time completion reminder and mid-run Todo nudge | Yes | No |
+
+Passive phases are excluded from automatic continuation only, not from explicit model control: every explicit op still applies to their tasks. Because they sit outside normalization, multiple explicit passive `in_progress` items are possible, and they neither take nor block the continuing pointer. The visible surfaces still label a passive phase (`Reference (passive)` in the model goal context, the transcript, and the sticky HUD).
+
 
 | Current status | `start` | `done` | `drop` | `block` | `unblock` | `rm` | `append` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -107,7 +121,8 @@ Normalization then re-applies the single-active-task rule after the op runs.
 ### Markdown round-trip helpers
 The same file also exposes non-tool helpers used by `/todo`:
 - `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`, `[!]`). A blocked reason is preserved in a trailing `<!-- blocker: ... -->` comment.
-- `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Todos` phase, also accepts `>` as `in_progress` and `~` as `abandoned`, restores blocked notes, and runs the same normalization step.
+- A **passive** phase serializes its heading with a trailing `<!-- kind: passive -->` comment; a continuing (or absent-kind) phase emits the bare heading it always emitted, so existing TODO files and `/todo edit` buffers round-trip byte-identically.
+- `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Todos` phase, also accepts `>` as `in_progress` and `~` as `abandoned`, restores blocked notes, and runs the same normalization step. It recovers a phase's kind from the trailing `<!-- kind: ... -->` comment; a comment that is not the kind marker is left literal, exactly as before.
 
 ## Side Effects
 - Filesystem
@@ -164,6 +179,10 @@ The same file also exposes non-tool helpers used by `/todo`:
 - Reload persistence differs by path:
   - plain `todo` calls survive in transcript tool-result details;
   - `/todo` command edits additionally append `customType: "user_todo_edit"` entries and inject a visible-to-model `<system-reminder>` developer message describing the manual edit.
+- A phase's `kind` survives every field-by-field rebuild: the tool's clone, the session cache, session-branch rehydration from the latest `user_todo_edit` snapshot or successful `todo` result, the interactive-mode subagent reconciliation, the goal Todo context, and the Vibe RPC `get_state` / `set_todos` round-trip each copy the field when it is present. A rebuild that dropped the field would silently re-arm automatic continuation on a phase that had been made passive.
+- Cursor-created flat phases default continuing: the Cursor exec bridge carries no phase metadata, so it preserves a known local kind while regrouping a snapshot and introduces ordinary continuing phases for phases it does not already know.
+- ACP remains a flat plan view: `mapTodoResultToPlanUpdate(...)` (`packages/coding-agent/src/modes/acp/acp-event-mapper.ts`) flattens phases away, so tasks in passive phases still appear as ordinary ACP plan entries.
+- An unrecognized persisted `kind` degrades to continuing rather than erroring: validation accepts any string, and the continuance test compares only against the literal `"passive"`. A list written by a newer build therefore keeps its phases instead of losing them on resume; an unrecognized value on **input** is a normal schema rejection (`Invalid todo arguments: ...`).
 - On session resume, `AgentSession.#syncTodoPhasesFromBranch()` strips `completed` and `abandoned` tasks before restoring the cached list. The `/todo` command works around that by reading the latest transcript/custom-entry state so historical done/dropped tasks still appear to the user.
 - Tool availability is gated by `todo.enabled`, and the registry excludes it when `includeYield` is enabled unless the session is prewalk-armed (`packages/coding-agent/src/tools/index.ts`).
 - Subagents do not inherit `todo`; `packages/coding-agent/src/task/executor.ts` also filters it from the active set as a parent-owned tool. Exception (both layers): prewalk-armed subagents keep it — the prewalk plan nudge and todo gate require the child to commit its own todo list before the hand-off.

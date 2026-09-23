@@ -24,6 +24,7 @@ WidgetPlacement: TypeAlias = Literal["aboveEditor", "belowEditor"]
 TodoStatus: TypeAlias = Literal[
     "pending", "in_progress", "completed", "abandoned", "blocked"
 ]
+TodoPhaseKind: TypeAlias = Literal["continuing", "passive"]
 ExtensionUiMethod: TypeAlias = Literal[
     "select",
     "confirm",
@@ -819,6 +820,8 @@ class TodoPhase:
     id: str
     name: str
     tasks: tuple[TodoItem, ...]
+    # Omitted for legacy payloads; absence means the phase is continuing.
+    kind: TodoPhaseKind | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -1365,10 +1368,14 @@ def parse_todo_phase(payload: JsonObject) -> TodoPhase:
             parse_todo_item(_clone_json_object(item, field="tasks[]"))
             for item in raw_tasks
         )
+    raw_kind = payload.get("kind")
+    if raw_kind is not None and raw_kind not in ("continuing", "passive"):
+        raise ValueError("kind must be 'continuing' or 'passive'")
     return TodoPhase(
         id=str(payload.get("id", "")),
         name=_require_str(payload, "name"),
         tasks=tasks,
+        kind=cast(TodoPhaseKind | None, raw_kind),
     )
 
 

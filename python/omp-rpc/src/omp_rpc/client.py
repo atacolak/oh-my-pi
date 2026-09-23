@@ -55,6 +55,7 @@ from .protocol import (
     ThinkingLevelCycleResult,
     TodoItem,
     TodoPhase,
+    TodoPhaseKind,
     TodoStatus,
     TodoAutoClearEvent,
     TodoReminderEvent,
@@ -1750,12 +1751,22 @@ class RpcClient:
             if isinstance(seed, TodoPhase):
                 phase_id = seed.id or f"phase-{index}"
                 name = seed.name
+                kind = seed.kind
                 tasks = [normalize_todo_item(task) for task in seed.tasks]
             else:
                 raw_name = seed.get("name")
                 if not isinstance(raw_name, str) or not raw_name.strip():
                     raise RpcError("Todo phases must provide a non-empty 'name' value")
                 phase_id_value = seed.get("id")
+                raw_kind = seed.get("kind")
+                if raw_kind is not None and raw_kind not in (
+                    "continuing",
+                    "passive",
+                ):
+                    raise RpcError(
+                        "Todo phase 'kind' must be 'continuing' or 'passive'"
+                    )
+                kind = cast(TodoPhaseKind | None, raw_kind)
                 raw_tasks = seed.get("tasks") or ()
                 if not isinstance(raw_tasks, Sequence) or isinstance(
                     raw_tasks, (str, bytes)
@@ -1771,7 +1782,10 @@ class RpcClient:
                     normalize_todo_item(cast(TodoSeed, task)) for task in raw_tasks
                 ]
 
-            return {"id": phase_id, "name": name, "tasks": tasks}
+            result: JsonObject = {"id": phase_id, "name": name, "tasks": tasks}
+            if kind is not None:
+                result["kind"] = kind
+            return result
 
         if any(is_phase_seed(todo) for todo in todos):
             phases: list[JsonObject] = []

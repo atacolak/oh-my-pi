@@ -107,12 +107,9 @@ import { createExtensionDashboardRuntime } from "../components/extensions/dashbo
 import { HistorySearchComponent } from "@oh-my-pi/pi-tui/overlays/history-search";
 import type { LoginDialogComponent as LoginDialogComponentType } from "@oh-my-pi/pi-tui/overlays/login-dialog";
 import type { LogoutAccountSelectorComponent as LogoutAccountSelectorComponentType } from "@oh-my-pi/pi-tui/overlays/logout-account-selector";
-import type {
-	ModelHubComponent as ModelHubComponentType,
-	ModelRoleSelectionScope,
-} from "@oh-my-pi/pi-tui/overlays/model-hub";
+import { ModelHubComponent, type ModelRoleSelectionScope } from "@oh-my-pi/pi-tui/overlays/model-hub";
 import { createModelBrowserSource } from "../model-browser-source";
-import type { ModelPickerComponent as ModelPickerComponentType } from "@oh-my-pi/pi-tui/overlays/model-picker";
+import { ModelPickerComponent } from "@oh-my-pi/pi-tui/overlays/model-picker";
 import type { OAuthSelectorComponent as OAuthSelectorComponentType } from "@oh-my-pi/pi-tui/overlays/oauth-selector";
 import { PluginSelectorComponent } from "@oh-my-pi/pi-tui/overlays/plugin-selector";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
@@ -130,19 +127,6 @@ import { renderUsageReports } from "./command-controller";
 import type { SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
-
-interface ModelOverlayModules {
-	ModelHubComponent: typeof ModelHubComponentType;
-	ModelPickerComponent: typeof ModelPickerComponentType;
-}
-
-/** Synchronous first-use boundary for model overlays; key callbacks require immediate mounting. */
-function loadModelOverlayComponents(): ModelOverlayModules {
-	return {
-		ModelHubComponent: require("@oh-my-pi/pi-tui/overlays/model-hub.js").ModelHubComponent,
-		ModelPickerComponent: require("@oh-my-pi/pi-tui/overlays/model-picker.js").ModelPickerComponent,
-	};
-}
 
 interface ProviderAuthUiModules {
 	PASTE_CODE_LOGIN_PROVIDERS: typeof PasteCodeLoginProviders;
@@ -272,7 +256,7 @@ export class SelectorController {
 					providers: [...new Set(this.ctx.session.getAvailableModels().map(model => model.provider))].sort(
 						(a, b) => a.localeCompare(b),
 					),
-					settings: createSettingsHost(),
+					settings: createSettingsHost(this.ctx.sessionManager?.getCwd() ?? getProjectDir()),
 					plugins: createPluginSettingsHost(getProjectDir()),
 					model: this.ctx.session.model,
 					imageBudget: this.ctx.ui.imageBudget,
@@ -281,8 +265,12 @@ export class SelectorController {
 				},
 				{
 					onChange: (id, value) => this.handleSettingChange(id, value),
-					onThemePreview: async themeName => {
-						const result = await previewTheme(themeName);
+					onThemePreview: async (themeName, presentation) => {
+						const result = await previewTheme(themeName, {
+							ephemeral: true,
+							symbolPreset: presentation?.symbolPreset,
+							colorBlindMode: presentation?.colorBlindMode,
+						});
 						if (result.success) {
 							this.ctx.statusLine.invalidate();
 							this.ctx.ui.invalidate();
@@ -331,6 +319,7 @@ export class SelectorController {
 							sessionAccent: settings.get("statusLine.sessionAccent"),
 							transparent: settings.get("statusLine.transparent"),
 							compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+							segmentOptions: settings.get("statusLine.segmentOptions"),
 							contextLine: settings.get("statusLine.contextLine"),
 						});
 						this.ctx.ui.requestRender();
@@ -627,17 +616,17 @@ export class SelectorController {
 				}
 				break;
 			case "steeringMode":
-				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time", true);
+				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time", false);
 				break;
 			case "followUpMode":
-				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time", true);
+				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time", false);
 				break;
 			case "interruptMode":
-				this.ctx.session.setInterruptMode(value as "immediate" | "wait", true);
+				this.ctx.session.setInterruptMode(value as "immediate" | "wait", false);
 				break;
 			case "thinkingLevel":
 			case "defaultThinkingLevel":
-				this.ctx.session.setThinkingLevel(value as ConfiguredThinkingLevel, true);
+				this.ctx.session.setThinkingLevel(value as ConfiguredThinkingLevel);
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
 				break;
@@ -859,6 +848,10 @@ export class SelectorController {
 			case "statusLine.sessionAccent":
 			case "statusLine.transparent":
 			case "statusLine.compactThinkingLevel":
+			case "statusLine.contextLine":
+			case "statusLine.leftSegments":
+			case "statusLine.rightSegments":
+			case "statusLine.segmentOptions":
 			case "statusLineSegments":
 			case "statusLineModelThinking":
 			case "statusLinePathAbbreviate":
@@ -880,6 +873,7 @@ export class SelectorController {
 					transparent: settings.get("statusLine.transparent"),
 					segmentOptions: settings.get("statusLine.segmentOptions"),
 					compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+					contextLine: settings.get("statusLine.contextLine"),
 				};
 				this.ctx.statusLine.updateSettings(statusLineSettings);
 				this.ctx.ui.requestRender();
@@ -964,7 +958,6 @@ export class SelectorController {
 	 * highlighted and preselected; a leading `@` searches ctrl+p quick roles.
 	 */
 	#showModelPicker(): void {
-		const { ModelPickerComponent } = loadModelOverlayComponents();
 		const currentContextTokens = this.ctx.session.getContextUsage()?.tokens ?? 0;
 		const current = this.ctx.session.model;
 		const quickRoleOrder = this.ctx.settings.get("cycleOrder");
@@ -1055,7 +1048,6 @@ export class SelectorController {
 	 * entry — used when reopening the hub after a /login round-trip.
 	 */
 	#showModelHub(hubOptions: { initialProviderId?: string }): void {
-		const { ModelHubComponent } = loadModelOverlayComponents();
 		let closed = false;
 		const done = () => {
 			// Re-entrant guard: cancel paths (Esc, login forward) may race;

@@ -27,8 +27,7 @@ import { normalizeToLF } from "../edit/normalize";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import { parseXdUrl } from "@oh-my-pi/pi-tui/tools/xd-url";
-import { createLspWritethrough, type WritethroughCallback, writethroughNoop } from "../lsp";
-
+import { createLspWritethrough, fallbackLspClientOwner, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getLspBatchRequest } from "../lsp/batch";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
@@ -649,9 +648,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		this.#deferredDiagnostics =
 			enableDiagnostics && session.queueDeferredDiagnostics ? new DeferredDiagnostics(session, dedup) : undefined;
 		this.#writethrough = enableLsp
-			? createLspWritethrough(session.cwd, {
+			? createLspWritethrough(() => session.cwd, {
 					enableFormat,
 					enableDiagnostics,
+					additionalDirectories: () => session.additionalDirectories,
+					cwd: () => session.cwd,
+					owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 					transformDiagnostics: dedup
 						? (path, result) => getDiagnosticsLedger(session).reduce(path, result)
 						: undefined,

@@ -116,6 +116,8 @@ export type AnyUiMetadata = UiBase & {
 	ordered?: boolean;
 };
 
+export type SettingsScope = "global" | "project";
+
 /** Structural schema entries supplied by the application host. */
 export interface SettingsDisplayEntry {
 	path: string;
@@ -124,13 +126,21 @@ export interface SettingsDisplayEntry {
 	ui?: AnyUiMetadata;
 	enumValues?: readonly string[];
 	credential?: boolean;
-	condition?: () => boolean;
+	condition?: (scope?: SettingsScope) => boolean;
 }
 
 export interface SettingsHost {
 	entries: readonly SettingsDisplayEntry[];
 	get(path: string): unknown;
-	set(path: string, value: unknown): void;
+	getGlobal(path: string): unknown;
+	getProjectScoped(path: string): unknown;
+	getProjectInherited(path: string): unknown;
+	set(path: string, value: unknown, scope?: SettingsScope): void;
+	clearProject(path: string): boolean;
+	hasProjectConfig(): boolean;
+	isCredential(path: string): boolean;
+	projectLabel(): string;
+	onProjectSettingsReconciled?(cb: (paths: readonly string[]) => void): () => void;
 	normalizeProviderLimits(value: unknown): Record<string, number>;
 	validateProviderLimits(value: unknown): Record<string, number>;
 }
@@ -154,7 +164,7 @@ interface BaseSettingDef {
 	 * setting is hidden from the UI. Applies to every variant — booleans,
 	 * enums, submenus, and text inputs.
 	 */
-	condition?: () => boolean;
+	condition?: (scope?: SettingsScope) => boolean;
 }
 
 export interface BooleanSettingDef extends BaseSettingDef {

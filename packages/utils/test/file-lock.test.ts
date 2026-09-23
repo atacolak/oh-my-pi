@@ -161,5 +161,4 @@ describe("native file-lock ownership", () => {
 			withFileLock(target, async () => "acquired", { retries: 50, retryDelayMs: 100, signal: controller.signal }),
 		).rejects.toMatchObject({ name: "AbortError" });
 	});
-
 });

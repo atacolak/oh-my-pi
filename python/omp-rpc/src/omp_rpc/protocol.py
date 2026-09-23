@@ -1406,7 +1406,7 @@ def parse_session_state(payload: JsonObject) -> SessionState:
         follow_up_mode=cast(
             SteeringMode,
             _require_literal(
-                payload.get("followUpMode", "one-at-a-time"),
+                payload.get("followUpMode", "all"),
                 _STEERING_MODE_VALUES,
                 field="followUpMode",
             ),

@@ -3741,7 +3741,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			transformContext,
 			transformProviderContext,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
-			followUpMode: settings.get("followUpMode") ?? "one-at-a-time",
+			followUpMode: settings.get("followUpMode") ?? "all",
 			interruptMode: settings.get("interruptMode") ?? "immediate",
 			thinkingBudgets: settings.getGroup("thinkingBudgets"),
 			temperature: settings.get("temperature") >= 0 ? settings.get("temperature") : undefined,

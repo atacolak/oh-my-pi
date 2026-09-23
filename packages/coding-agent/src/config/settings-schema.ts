@@ -1885,7 +1885,7 @@ export const SETTINGS_SCHEMA = {
 	followUpMode: {
 		type: "enum",
 		values: ["all", "one-at-a-time"] as const,
-		default: "one-at-a-time",
+		default: "all",
 		ui: {
 			tab: "interaction",
 			group: "Input",

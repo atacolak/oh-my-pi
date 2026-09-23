@@ -151,4 +151,15 @@ describe("native file-lock ownership", () => {
 		const final = JSON.parse(text) as { counter: number };
 		expect(final.counter).toBe(N);
 	}, 30_000);
+
+	test("withFileLock rejects an already-aborted signal without retrying", async () => {
+		const root = await mkRoot();
+		const target = path.join(root, "aborted.json");
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			withFileLock(target, async () => "acquired", { retries: 50, retryDelayMs: 100, signal: controller.signal }),
+		).rejects.toMatchObject({ name: "AbortError" });
+	});
+
 });

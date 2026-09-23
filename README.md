@@ -1,14 +1,3 @@
-> [!NOTE]
-> ## `cap/nested-lsp-roots` — nested project LSP roots
->
-> Durable local capability: concrete file operations discover the nearest nested language-server root lazily (for example `python/pyproject.toml` under a monorepo) without a recursive startup scan. Workspace, write, reload, and symlink paths keep that nested client.
->
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PR:** [#9969](https://github.com/can1357/oh-my-pi/pull/9969) — discover nested project roots lazily
-> - **Upstream base:** [OMP 18.2.10 (`da58b16f`)](https://github.com/can1357/oh-my-pi/tree/da58b16f424273605795435a6753778f422baff3)
->
-> PR head `fix/nested-lsp-roots` stays independently reviewable without this banner.
-
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

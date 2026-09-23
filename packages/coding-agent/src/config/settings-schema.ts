@@ -2364,6 +2364,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"collab.writeLinkPath": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "interaction",
+			group: "Collab",
+			label: "Write Link Path",
+			description: "Write the full write-capable host link after a successful host start; empty disables",
+		},
+	},
+
 	"share.serverUrl": {
 		type: "string",
 		default: DEFAULT_SHARE_URL,

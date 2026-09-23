@@ -58,7 +58,7 @@ describe("queued message preparation", () => {
 
 	it("prepares idle follow-up batches separately in one-at-a-time mode", async () => {
 		const mock = createMockModel({ handler: { content: ["done"] } });
-		const agent = new Agent({ streamFn: mock.stream, initialState: { model: mock.model } });
+		const agent = new Agent({ streamFn: mock.stream, initialState: { model: mock.model }, followUpMode: "one-at-a-time" });
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
 		const first = createUserMessage("first");
 		const second = createUserMessage("second");

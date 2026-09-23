@@ -5,7 +5,7 @@
 ### Fixed
 
 - Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
-### Changed
+
 ## [18.2.11] - 2026-09-23
 
 ### Fixed

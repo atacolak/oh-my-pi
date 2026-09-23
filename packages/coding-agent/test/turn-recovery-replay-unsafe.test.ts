@@ -1042,7 +1042,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		expect(recovery.resolveRetryFallbackRole(selector, model)).toBe("default");
 	});
 
-	it("attaches the default chain to an ephemeral-hopped model that is not default's primary (#12421)", () => {
+	it("does not attach a default chain that degenerates to the default role's own primary", () => {
 		const other = getBundledModel("openai", "gpt-4o-mini");
 		if (!other) throw new Error("Expected bundled model gpt-4o-mini");
 		const recovery = new TurnRecovery(
@@ -1056,12 +1056,11 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 				},
 			}),
 		);
-		// Resolving no chain let a wait past retry.maxDelayMs fail-fast with no
-		// walk (#12421), for `/model`-chosen models and ephemeral hops alike. A
-		// walk that produced the hop stays reachable first through
-		// retryFallbackChainKeys' pinned `#activeRetryFallback.role`, so
-		// attaching `default` here cannot displace the owning chain.
-		expect(recovery.resolveRetryFallbackRole(`${other.provider}/${other.id}`, other)).toBe("default");
+		// The chain's only entry is the default role's own primary, so it
+		// supplies no candidate for a model no role owns. Attaching it would claim
+		// a model the chain does not own. A chain with a distinct candidate still
+		// attaches (#12421).
+		expect(recovery.resolveRetryFallbackRole(`${other.provider}/${other.id}`, other)).toBeUndefined();
 	});
 
 	// Gemini reports MALFORMED_FUNCTION_CALL when the model transcribes the call

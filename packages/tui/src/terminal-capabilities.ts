@@ -79,52 +79,25 @@ function sendCmuxNotification(message: string | TerminalNotification, env: NodeJ
 }
 
 const HERDR_PANE_ID_PATTERN = /^[0-9A-Za-z:_-]{1,64}$/u;
-/**
- * `herdr notification show` takes the title as its first positional and reads
- * exactly these three values there as a help request; it has no `--`
- * terminator. Any other text, including one starting with `-`, is a title.
- */
-const HERDR_USAGE_TOKENS = new Set(["help", "--help", "-h"]);
 
 /**
- * Route a notification through Herdr when the process runs inside one of its
- * panes. Herdr multiplexes panes like tmux but swallows bare OSC 9 / OSC 99 and
- * has no DCS passthrough envelope, and its bell relay does not flag a
- * backgrounded tab — so without this branch a backgrounded pane gets no signal
- * at all that the agent finished or is waiting for input.
+ * Claim Herdr delivery when the process runs inside one of its panes.
+ * Herdr already toasts Finished on Idle and NeedsAttention on Blocked from
+ * `pane.report_agent` (`herdr-omp-agent-state`). Do not spawn
+ * `herdr notification show` — that second card is the session title.
  *
- * `sound` maps the notification kind onto what Herdr offers: a question waiting
- * on the user and a turn that stopped with an error both need the human and
- * ring `request`, a settled turn rings `done`, anything else stays
- * silent. Returns whether Herdr owns delivery, so every existing terminal
- * fallback is preserved when the pane id is absent or the binary is missing.
+ * Still return true so {@link TerminalInfo.sendNotification} does not fall
+ * through to OSC 9/99 (Herdr swallows those). Skip the spawn for done,
+ * request, and none. Do not debounce. Idle reports stay with Herdr.
+ *
+ * Pane-only detection, like {@link isInsideHerdr}: an env-sanitizing launcher
+ * can drop HERDR_ENV and keep the pane identity. Without a valid pane id,
+ * Herdr does not own delivery and the existing terminal fallback stays.
  */
-function sendHerdrNotification(message: string | TerminalNotification, env: NodeJS.ProcessEnv = Bun.env): boolean {
-	// Pane-only detection, like `isInsideHerdr`: an env-sanitizing launcher can
-	// drop HERDR_ENV and keep the pane identity, and that pane can still be
-	// backgrounded. The pane id itself is what the CLI needs, so it stays required.
+function sendHerdrNotification(_message: string | TerminalNotification, env: NodeJS.ProcessEnv = Bun.env): boolean {
 	if (!isInsideHerdr(env)) return false;
 	const paneId = env.HERDR_PANE_ID?.trim();
 	if (!paneId || !HERDR_PANE_ID_PATTERN.test(paneId)) return false;
-
-	const parsed = notificationTitleAndBody(message);
-	const title = HERDR_USAGE_TOKENS.has(parsed.title) ? CMUX_NOTIFICATION_TITLE : parsed.title;
-	const body = parsed.body;
-	const kinds = typeof message === "string" ? [] : [message.type ?? []].flat();
-	const sound =
-		kinds.includes("ask") || kinds.includes("error") ? "request" : kinds.includes("completion") ? "done" : "none";
-	try {
-		const child = Bun.spawn({
-			cmd: ["herdr", "notification", "show", title, "--body", body, "--sound", sound],
-			stdin: "ignore",
-			stdout: "ignore",
-			stderr: "ignore",
-		});
-		child.unref();
-	} catch {
-		// A missing herdr binary leaves delivery to the existing terminal fallback.
-		return false;
-	}
 	return true;
 }
 

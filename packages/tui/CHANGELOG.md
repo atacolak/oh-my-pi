@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopped a second Herdr toast of the session title when a pane already reports Idle or Blocked.
+
 ## [18.3.3] - 2026-09-27
 
 ### Added

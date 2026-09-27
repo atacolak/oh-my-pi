@@ -1,3 +1,12 @@
+> [!NOTE]
+> ## `cap/herdr-idle-toast` — herdr idle toast without session-title card
+>
+> Durable local capability: when a process is inside a Herdr pane (`HERDR_PANE_ID`), claim notification delivery without spawning `herdr notification show`. Herdr already toasts Idle/Blocked from `pane.report_agent`; the extra CLI card was the session title. OSC 9/99 stay suppressed because Herdr swallows them. No debounce. Idle reports stay with Herdr.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR(s):** Status: fork-local
+> - **Upstream base:** [OMP 18.3.4 (`dff728c5`)](https://github.com/can1357/oh-my-pi/tree/dff728c572a8c4c29016549b6e407c4550fcdac6)
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

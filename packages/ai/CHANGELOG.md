@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [18.3.6] - 2026-09-28
+
 ### Breaking Changes
 
 - Changed `LimitsApi.rotate()` to return a `CredentialRotation` object (`{ switched, afterSiblingWait? }`) instead of a boolean. Check `.switched` explicitly, since the returned object is always truthy.

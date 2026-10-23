@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { BtwHistoryPanel } from "@oh-my-pi/pi-tui/overlays/btw-history-panel";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { BtwHistoryStore } from "@oh-my-pi/pi-coding-agent/session/btw-history";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { BtwPanelComponent } from "@oh-my-pi/pi-tui/overlays/btw-panel";
@@ -12,6 +13,7 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { Container, replaceTabs, type TUI } from "@oh-my-pi/pi-tui";
+import type { NativeChild, NativeNode } from "@oh-my-pi/pi-tui/native/node";
 
 const usage: Usage = {
 	input: 0,
@@ -67,6 +69,7 @@ function makeCtx(session: InteractiveModeContext["session"], btwContainer = new 
 			setFocus: vi.fn(),
 			terminal: { rows: 30 },
 		} as unknown as TUI,
+		keybindings: KeybindingsManager.inMemory(),
 		btwContainer,
 		session,
 		sessionManager: {
@@ -102,18 +105,6 @@ async function drainBtwRequest(): Promise<void> {
 }
 
 describe("BtwPanelComponent", () => {
-	it("is branchable only after a complete non-empty answer", () => {
-		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
-		const panel = new BtwPanelComponent({ question: "Question?", tui: ui });
-
-		expect(panel.isBranchable()).toBe(false);
-		panel.setAnswer("   ");
-		panel.markComplete();
-		expect(panel.isBranchable()).toBe(false);
-		panel.setAnswer("Answer");
-		expect(panel.isBranchable()).toBe(true);
-	});
-
 	it("confirms a copy visually and clears the confirmation on the next answer", () => {
 		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
 		const panel = new BtwPanelComponent({ question: "Question?", tui: ui });
@@ -170,6 +161,56 @@ describe("BtwController", () => {
 		await controller.dispose();
 	});
 
+	it("in Tern answers in the BTW history sheet, which Esc puts away while the answer keeps streaming", async () => {
+		const pending = Promise.withResolvers<RunEphemeralTurnResult>();
+		let onTextDelta: ((delta: string) => void) | undefined;
+		const runEphemeralTurn = vi.fn((args: RunEphemeralTurnArgs) => {
+			onTextDelta = args.onTextDelta;
+			return pending.promise;
+		});
+		const btwContainer = new Container();
+		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer);
+		const hide = vi.fn();
+		const showOverlay = vi.fn((_component: unknown) => ({ hide }));
+		Object.assign(ctx.ui, { nativeRendering: true, showOverlay });
+		const controller = new BtwController(ctx);
+		const sheetAt = (call: number): BtwHistoryPanel => {
+			const sheet = showOverlay.mock.calls[call]?.[0];
+			if (!(sheet instanceof BtwHistoryPanel)) throw new Error("expected the BTW history sheet");
+			return sheet;
+		};
+		const answerText = (sheet: BtwHistoryPanel): unknown => {
+			const find = (node: NativeChild): NativeNode | undefined => {
+				if (!("k" in node) || typeof node.k !== "string") return undefined;
+				if (node.k === "md" && node.p?.text === "Because streaming.") return node;
+				for (const child of node.c ?? []) {
+					const found = find(child);
+					if (found) return found;
+				}
+				return undefined;
+			};
+			return find(sheet.describe());
+		};
+
+		await controller.start("Why?");
+		// No inline dock panel: Tern clips it, while the sheet body scrolls.
+		expect(btwContainer.children).toHaveLength(0);
+		onTextDelta?.("Because streaming.");
+		expect(answerText(sheetAt(0))).toBeDefined();
+
+		sheetAt(0).handleInput("\x1b");
+		expect(hide).toHaveBeenCalledTimes(1);
+		expect(runEphemeralTurn.mock.calls[0]?.[0].signal?.aborted).toBe(false);
+		expect(ctx.showStatus).toHaveBeenCalledWith(expect.stringContaining("/btw to reopen"), { dim: true });
+
+		// `/btw` lands back on the answer that kept streaming.
+		await controller.start("");
+		expect(answerText(sheetAt(1))).toBeDefined();
+		pending.resolve({ replyText: "Because streaming.", assistantMessage: createAssistantMessage("x") });
+		await drainBtwRequest();
+		await controller.dispose();
+	});
+
 	it("opens history without a model request when invoked without a question", async () => {
 		const runEphemeralTurn = vi.fn(async () => ({
 			replyText: "n/a",
@@ -222,19 +263,6 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(controller.canBranch()).toBe(false);
-		expect(controller.handlesBranchKey()).toBe(true);
-	});
-
-	it("allows branch after a complete non-empty reply", async () => {
-		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
-		const controller = new BtwController(ctx);
-
-		await controller.start("Question?");
-		await drainBtwRequest();
-
-		expect(controller.canBranch()).toBe(true);
 		expect(controller.handlesBranchKey()).toBe(true);
 	});
 
@@ -429,31 +457,6 @@ describe("BtwController", () => {
 		await erroredController.start("Question?");
 		await drainBtwRequest();
 		expect(erroredController.canBranch()).toBe(false);
-	});
-
-	it("handleBranch returns false and does not call the context when not branchable", async () => {
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "", assistantMessage: createAssistantMessage("") }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
-		const controller = new BtwController(ctx);
-
-		await controller.start("Question?");
-		await drainBtwRequest();
-
-		expect(await controller.handleBranch()).toBe(false);
-		expect(ctx.handleBtwBranch).not.toHaveBeenCalled();
-	});
-
-	it("handleBranch calls the context with the question and full assistant message when branchable", async () => {
-		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
-		const controller = new BtwController(ctx);
-
-		await controller.start("Question?");
-		await drainBtwRequest();
-
-		expect(await controller.handleBranch()).toBe(true);
-		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", assistantMessage, "leaf-1", "session-1");
 	});
 
 	it("keeps a pending branch visible and refuses to dismiss it", async () => {

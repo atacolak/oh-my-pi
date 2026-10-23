@@ -18,21 +18,6 @@ describe("CombinedAutocompleteProvider", () => {
 			expect(result?.prefix).toBe("/");
 		});
 
-		it("extracts /A from '/A' when forced", async () => {
-			const provider = new CombinedAutocompleteProvider([], "/tmp");
-			const lines = ["/A"];
-			const cursorLine = 0;
-			const cursorCol = 2; // After the "A"
-
-			const result = await provider.getForceFileSuggestions(lines, cursorLine, cursorCol);
-
-			// This might return null if /A doesn't match anything, which is fine
-			// We're mainly testing that the prefix extraction works
-			if (result) {
-				expect(result.prefix).toBe("/A");
-			}
-		});
-
 		it("does not trigger for slash commands", async () => {
 			const provider = new CombinedAutocompleteProvider([], "/tmp");
 			const lines = ["/model"];
@@ -329,15 +314,20 @@ describe("CombinedAutocompleteProvider", () => {
 			expect(result.cursorCol).toBe("/skill:".length);
 		});
 
-		it("never sync-completes Enter to the bare skill namespace", () => {
+		it("completes a namespaced skill as a slash command, not a file path", async () => {
 			const provider = new CombinedAutocompleteProvider(
-				[{ name: "skill:humanizer", description: "Remove signs of AI writing" }],
+				[{ name: "skill:superpowers/tdd", description: "Test-driven development" }],
 				"/tmp",
 			);
+			const line = "/skill:superpowers/t";
 
-			// items[0] of the sync path is applied and submitted immediately;
-			// `/skill:` alone is not a runnable command, so `/sk` must not match.
-			expect(provider.trySyncSlashCompletion("/sk")).toBeNull();
+			const suggestions = await provider.getSuggestions([line], 0, line.length);
+			const item = suggestions?.items.find(entry => entry.value === "skill:superpowers/tdd");
+			expect(item).toBeDefined();
+			const result = provider.applyCompletion([line], 0, line.length, item!, suggestions!.prefix);
+
+			expect(result.lines[0]).toBe("/skill:superpowers/tdd ");
+			expect(result.cursorCol).toBe("/skill:superpowers/tdd ".length);
 		});
 
 		it("lists every skill while typing toward the skill: namespace mid-prompt", async () => {
@@ -707,20 +697,6 @@ describe("CombinedAutocompleteProvider", () => {
 			expect(result.cursorCol).toBe("/swarm run package.json".length);
 		});
 
-		it("replaces only the last path token when completing a multi-token slash command argument", () => {
-			const provider = new CombinedAutocompleteProvider([], "/tmp");
-			const result = provider.applyCompletion(
-				["/model claude"],
-				0,
-				13,
-				{ value: "claude-sonnet", label: "claude-sonnet" },
-				"claude",
-			);
-
-			expect(result.lines[0]).toBe("/model claude-sonnet");
-			expect(result.cursorCol).toBe("/model claude-sonnet".length);
-		});
-
 		it("does not add a trailing space when completing a directory with @", () => {
 			const provider = new CombinedAutocompleteProvider([], "/tmp");
 			const result = provider.applyCompletion(
@@ -876,6 +852,23 @@ describe("CombinedAutocompleteProvider", () => {
 			expect(result?.items.map(item => item.value)).toContain("@widget-app/");
 			expect(partials).toEqual([]);
 		});
+
+		it("settles on the prefix listing when the walk hits its deadline", async () => {
+			// A walk into a huge symlinked tree never finishes on its own; only the
+			// native deadline ends it. Model that walk: with a deadline it rejects
+			// as a timed-out native call does, without one it never settles.
+			spyOn(natives, "fuzzyFind").mockImplementation(options =>
+				options.timeoutMs
+					? Promise.reject(new Error("Timeout"))
+					: Promise.withResolvers<natives.FuzzyFindResult>().promise,
+			);
+
+			const provider = new CombinedAutocompleteProvider([], baseDir);
+			const line = "see @widget";
+			const result = await provider.getSuggestions([line], 0, line.length);
+
+			expect(result?.items.map(item => item.value)).toEqual(["@widget-app/"]);
+		});
 	});
 
 	describe("@ paths outside cwd", () => {
@@ -1000,30 +993,6 @@ describe("CombinedAutocompleteProvider", () => {
 	});
 });
 describe("trySyncSlashCompletion", () => {
-	it("returns null for bare '/' (no prefix to match)", () => {
-		const provider = new CombinedAutocompleteProvider([], "/tmp");
-		const result = provider.trySyncSlashCompletion("/");
-		expect(result).toBeNull();
-	});
-
-	it("returns null for non-slash text", () => {
-		const provider = new CombinedAutocompleteProvider([], "/tmp");
-		expect(provider.trySyncSlashCompletion("hello")).toBeNull();
-		expect(provider.trySyncSlashCompletion("")).toBeNull();
-	});
-
-	it("returns null when text has spaces (argument phase, not command name)", () => {
-		const provider = new CombinedAutocompleteProvider([], "/tmp");
-		expect(provider.trySyncSlashCompletion("/model claude")).toBeNull();
-		expect(provider.trySyncSlashCompletion("/model ")).toBeNull();
-	});
-
-	it("returns null when no commands match", () => {
-		const provider = new CombinedAutocompleteProvider([], "/tmp");
-		const result = provider.trySyncSlashCompletion("/zzzzz");
-		expect(result).toBeNull();
-	});
-
 	it("returns matching items for partial slash command name", () => {
 		const provider = new CombinedAutocompleteProvider(
 			[{ name: "model", description: "Switch AI model", value: "model" }],

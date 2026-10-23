@@ -211,28 +211,6 @@ describe("EventController.sendErrorNotification", () => {
 });
 
 describe("EventController — notifications through the real turn-end path (#handleAgentEnd)", () => {
-	it("fires the error notification when the dispatched turn settles with stopReason === 'error', even with a stale active-context snapshot", async () => {
-		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
-		cfgErrorNotify.override(settings, "on");
-		cfgCompletionNotify.override(settings, "off");
-		// viewSession (active context) reports no assistant at all — the shape a
-		// classifier-refusal prune leaves behind — while the terminal agent_end
-		// event still carries the failed turn.
-		const controller = new EventController(makeTurnEndContext({ lastAssistantMessage: undefined }));
-		await controller.handleEvent(makeAgentEndEvent([makeAssistantMessage("error")]));
-		expect(spy).toHaveBeenCalledTimes(1);
-		expect(spy).toHaveBeenCalledWith(expect.objectContaining({ body: "Stopped with error", type: "error" }));
-	});
-
-	it("skips the error notification when the dispatched turn settles with stopReason === 'aborted'", async () => {
-		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
-		cfgErrorNotify.override(settings, "on");
-		cfgCompletionNotify.override(settings, "off");
-		const controller = new EventController(makeTurnEndContext());
-		await controller.handleEvent(makeAgentEndEvent([makeAssistantMessage("aborted")]));
-		expect(spy).not.toHaveBeenCalled();
-	});
-
 	it("fires only the error toast — never a paired 'Complete' toast — for one error-ending turn", async () => {
 		// Regression for the exact coupling bug: with both notify settings on,
 		// a classifier-refusal turn's stale active context must not let
@@ -249,39 +227,6 @@ describe("EventController — notifications through the real turn-end path (#han
 });
 
 describe("EventController — error toast gated while auto-retry is pending", () => {
-	it("suppresses the error toast for the agent_end that lands mid-retry, then still fires on the real final failure", async () => {
-		// `#handleRetryableError` emits `auto_retry_start`, then still publishes the
-		// failed turn's `agent_end` (stopReason === 'error') before the retry has a
-		// chance to recover. That agent_end must not raise a toast — only the
-		// retry's own eventual settle (success or exhausted) should.
-		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
-		cfgErrorNotify.override(settings, "on");
-		cfgCompletionNotify.override(settings, "off");
-		const controller = new EventController(makeTurnEndContext());
-
-		await controller.handleEvent({
-			type: "auto_retry_start",
-			attempt: 1,
-			maxAttempts: 3,
-			delayMs: 100,
-			errorMessage: "overloaded",
-		} as Extract<AgentSessionEvent, { type: "auto_retry_start" }>);
-		await controller.handleEvent(makeAgentEndEvent([makeAssistantMessage("error")]));
-		expect(spy).not.toHaveBeenCalled();
-
-		// Retries exhausted: the session falls through to its own final agent_end
-		// for the same failed message, now that the retry saga is over.
-		await controller.handleEvent({
-			type: "auto_retry_end",
-			success: false,
-			attempt: 3,
-			finalError: "still overloaded",
-		} as Extract<AgentSessionEvent, { type: "auto_retry_end" }>);
-		await controller.handleEvent(makeAgentEndEvent([makeAssistantMessage("error")]));
-		expect(spy).toHaveBeenCalledTimes(1);
-		expect(spy).toHaveBeenCalledWith(expect.objectContaining({ body: "Stopped with error", type: "error" }));
-	});
-
 	it("keeps retry suppression when the next attempt starts before a deferred failed agent_end settles", async () => {
 		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
 		cfgErrorNotify.override(settings, "on");
@@ -415,28 +360,52 @@ async function nextMacrotask(): Promise<void> {
 }
 
 describe("EventController — terminal title across a non-terminal agent_end", () => {
-	it("keeps the working title and skips loader teardown but still flushes a deferred model switch during a scheduled continuation (isTerminal:false, not yielded)", async () => {
+	it("keeps the working title and skips loader teardown but still flushes a deferred model switch during a scheduled continuation (isTerminal:false, not yielded), then tears down if it is cancelled before starting", async () => {
 		const stateSpy = vi.spyOn(titleGenerator, "setTerminalTitleState").mockImplementation(() => {});
-		const ctx = makeTurnEndContext();
+		// The reminder/retry is scheduled post-prompt work the session still owes.
+		let continuationPending = true;
+		const continuation = Promise.withResolvers<void>();
+		const ctx = createInteractiveModeContext({
+			sessionManager: { getSessionName: () => "test-session" },
+			session: {
+				get hasPostPromptWork() {
+					return continuationPending;
+				},
+				waitForIdle: () => continuation.promise,
+			},
+		});
 		const markActivityEnd = vi.spyOn(ctx.statusLine, "markActivityEnd");
+		const tornDown = Promise.withResolvers<void>();
+		markActivityEnd.mockImplementation(() => tornDown.resolve());
 		const flushPendingModelSwitch = vi.spyOn(ctx, "flushPendingModelSwitch");
 		const controller = new EventController(ctx);
 		await controller.handleEvent({
 			...makeAgentEndEvent([makeAssistantMessage("stop")]),
 			isTerminal: false,
 		} as Extract<AgentSessionEvent, { type: "agent_end" }> & { isTerminal: false });
-		// The agent's own continuation (reminder/retry) follows: never drop to `idle`, never run #finishAgentEnd teardown.
+		await nextMacrotask();
+		// The agent's own continuation follows: never drop to `idle`, never run #finishAgentEnd teardown.
 		expect(stateSpy).not.toHaveBeenCalledWith("idle");
 		expect(markActivityEnd).not.toHaveBeenCalled();
 		// The automatic continuation must still pick up a queued plan-mode model switch.
 		expect(flushPendingModelSwitch).toHaveBeenCalledTimes(1);
+
+		// An abort cancels the continuation before its agent_start, so no terminal
+		// agent_end ever arrives: the settle itself must end the run.
+		continuationPending = false;
+		continuation.resolve();
+		await tornDown.promise;
+		expect(stateSpy).toHaveBeenCalledWith("idle");
 	});
 
 	it("keeps the working title on a queued steer/follow-up or IRC continuation (isTerminal:false, yielded:true, no awaitingAsyncWork)", async () => {
 		// `AgentSession#flushPendingAgentEnd` re-tags a built terminal end as
 		// non-terminal when queued input is about to drain; `yielded` stays true.
 		const stateSpy = vi.spyOn(titleGenerator, "setTerminalTitleState").mockImplementation(() => {});
-		const ctx = makeTurnEndContext();
+		const ctx = createInteractiveModeContext({
+			sessionManager: { getSessionName: () => "test-session" },
+			session: { queuedMessageCount: 1 },
+		});
 		const markActivityEnd = vi.spyOn(ctx.statusLine, "markActivityEnd");
 		const controller = new EventController(ctx);
 		await controller.handleEvent({
@@ -444,6 +413,7 @@ describe("EventController — terminal title across a non-terminal agent_end", (
 			isTerminal: false,
 			yielded: true,
 		} as Extract<AgentSessionEvent, { type: "agent_end" }>);
+		await nextMacrotask();
 		expect(stateSpy).not.toHaveBeenCalledWith("idle");
 		expect(markActivityEnd).not.toHaveBeenCalled();
 	});

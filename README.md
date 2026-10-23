@@ -1,3 +1,15 @@
+> [!NOTE]
+> ## `cap/comments-dock` — runtime `mg` is comments dock
+>
+> Fork-local topology pin. PATH `mg` is mardi-gras `5ac1138` (`feat: comments dock for bead threads`). not mardi-gras product; systemd-ops capability-maintainer owns this branch.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Status:** fork-local (no upstream PR)
+> - **Upstream base:** [OMP 18.2.11 (`7ae76f8e`)](https://github.com/can1357/oh-my-pi/tree/7ae76f8e4daca0c8f409f61bcd514260cd522365)
+> - **Pinned mg:** `5ac1138dd3372e3d28419f9a02b7015b3c66f6a3` (`/home/sf/.local/bin/mg`)
+>
+> Not stacked on other capabilities; merged into `runtime` independently.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

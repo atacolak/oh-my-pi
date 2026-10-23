@@ -296,7 +296,7 @@ describe("terminal notifications", () => {
 	// Delivery tries the innermost pane notifier, then the containing surface,
 	// then in-band rewrites (tmux before Zellij), then the terminal fallback.
 	it.each([
-		["a Herdr pane over tmux", { HERDR_PANE_ID: "w6:p1", TMUX: "/tmp/tmux-1000/default,1234,0" }, "herdr", []],
+		["a Herdr pane over tmux", { HERDR_PANE_ID: "w6:p1", TMUX: "/tmp/tmux-1000/default,1234,0" }, undefined, []],
 		[
 			"a cmux surface over tmux",
 			{ CMUX_SURFACE_ID: "123e4567-e89b-12d3-a456-426614174000", TMUX: "/tmp/tmux-1000/default,1234,0" },

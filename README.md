@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR(s):** Status: fork-local
-> - **Upstream base:** [OMP 18.12.6 (`45c35e40`)](https://github.com/can1357/oh-my-pi/tree/45c35e40c46166dc726ccc52f5d27f40f2449f99)
+- **Upstream base:** [OMP 18.13.0 (`011ab732`)](https://github.com/can1357/oh-my-pi/tree/011ab732fa2d8657203d17f6af80d57809eb24f4)
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

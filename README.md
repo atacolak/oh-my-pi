@@ -1,14 +1,14 @@
 > [!NOTE]
-> ## `cap/comments-dock` — runtime `mg` is comments dock
+> ## `runtime` — Ata's daily OMP
 >
-> Fork-local topology pin. PATH `mg` is mardi-gras `5ac1138` (`feat: comments dock for bead threads`). not mardi-gras product; systemd-ops capability-maintainer owns this branch.
+> Daily composition of selected local capabilities on upstream OMP 18.13.0.
 >
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Status:** fork-local (no upstream PR)
 > - **Upstream base:** [OMP 18.13.0 (`011ab732`)](https://github.com/can1357/oh-my-pi/tree/011ab732fa2d8657203d17f6af80d57809eb24f4)
-> - **Pinned mg:** `5ac1138dd3372e3d28419f9a02b7015b3c66f6a3` (`/home/sf/.local/bin/mg`)
+> - **Capabilities:**
+>   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
+>   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
 >
-> Not stacked on other capabilities; merged into `runtime` independently.
+> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

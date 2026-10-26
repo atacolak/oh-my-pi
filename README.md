@@ -1,9 +1,9 @@
 > [!NOTE]
 > ## `runtime` — Ata's daily OMP
 >
-> Daily composition of selected local capabilities on upstream OMP 18.12.6.
+> Daily composition of selected local capabilities on upstream OMP 18.13.0.
 >
-> - **Upstream base:** [OMP 18.12.6 (`45c35e40`)](https://github.com/can1357/oh-my-pi/tree/45c35e40c46166dc726ccc52f5d27f40f2449f99)
+> - **Upstream base:** [OMP 18.13.0 (`011ab732`)](https://github.com/can1357/oh-my-pi/tree/011ab732fa2d8657203d17f6af80d57809eb24f4)
 > - **Capabilities:**
 >   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
 >   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card

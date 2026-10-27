@@ -13,9 +13,11 @@ import {
 	setExtensionTerminalTitle,
 	setSessionTerminalTitle,
 	setTerminalTitle,
+	setTerminalTitlePullRequest,
 	setTerminalTitleSpinnerStyle,
 	setTerminalTitleState,
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { isWsl, logger, setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { mockWindowsConsoleTitle, type WindowsConsoleTitleMock } from "./terminal-title-test-utils";
 
@@ -1053,6 +1055,33 @@ describe("terminal title runtime", () => {
 		}
 	});
 
+	it("reclaims the Windows console title after another process replaces it", () => {
+		// Issue #16842: a child omp (worker, `browser-relay`) attached to the
+		// pane's console retitled it to `omp`; under a TSP terminal every later
+		// emit composes the same title, so the dedupe cache must not swallow it.
+		const originalPlatform = process.platform;
+		const native = windowsTitleMock;
+		if (!native) throw new Error("Windows console title mock not initialized");
+		try {
+			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+			setNativeRendering(true);
+			setSessionTerminalTitle("HOST: Summarize self-host blog post");
+			resetEmitted();
+
+			// Untouched console: the repeat stays deduped.
+			setTerminalTitleState("working");
+			expect(native.titles).toEqual([]);
+
+			native.current = "omp";
+			setTerminalTitleState("idle");
+			expect(native.titles).toEqual(["HOST: Summarize self-host blog post"]);
+			expect(writes).toEqual([]);
+		} finally {
+			setNativeRendering(false);
+			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+		}
+	});
+
 	it("falls back to OSC verbatim when a direct title fails the native path on Windows", () => {
 		const originalPlatform = process.platform;
 		const native = windowsTitleMock;
@@ -1156,5 +1185,29 @@ describe("terminal title runtime", () => {
 		expect(last).toBeDefined();
 		expect(last).toContain("my-session");
 		expectWorkingSeparator(last, "my-session");
+	});
+
+	it("titles the tab with the bare session name while a TSP terminal renders, and restores the run state after", () => {
+		setSessionTerminalTitle("Ack path refactor");
+		setTerminalTitleState("working");
+		try {
+			setNativeRendering(true);
+			resetEmitted();
+			// The terminal shows run state itself: no brand, no spinner ticks.
+			vi.advanceTimersByTime(400);
+			setTerminalTitlePullRequest(412);
+			expect(emittedTitles()).toEqual(["Ack path refactor · #412"]);
+
+			setSessionTerminalTitle("Renamed");
+			expect(emittedTitles().at(-1)).toBe("Renamed · #412");
+			setSessionTerminalTitle(undefined);
+			setTerminalTitlePullRequest(undefined);
+			expect(emittedTitles().at(-1)).toBe("omp");
+			setSessionTerminalTitle("Renamed");
+		} finally {
+			setNativeRendering(false);
+			setTerminalTitlePullRequest(undefined);
+		}
+		expectWorkingSeparator(emittedTitles().at(-1), "Renamed");
 	});
 });

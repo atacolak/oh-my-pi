@@ -39,8 +39,7 @@ import {
 	sessionResolveContext,
 	sessionWriteContext,
 } from "../internal-urls";
-import { createLspWritethrough, type WritethroughCallback, writethroughNoop } from "../lsp";
-
+import { createLspWritethrough, fallbackLspClientOwner, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getLspBatchRequest } from "../lsp/batch";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
@@ -633,6 +632,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const writethrough = createLspWritethrough(this.session.cwd, {
 			enableFormat: cfgLspFormatOnWrite.get(settings),
 			enableDiagnostics,
+			additionalDirectories: () => this.session.additionalDirectories,
+			cwd: () => this.session.cwd,
+			owner:
+				this.session.lspClientOwner ?? this.session.getLspClientOwner?.() ?? fallbackLspClientOwner(this.session),
 			transformDiagnostics: dedup
 				? (path, result) => getDiagnosticsLedger(this.session).reduce(path, result)
 				: undefined,

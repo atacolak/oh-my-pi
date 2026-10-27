@@ -31,7 +31,10 @@ import {
 	cfgHindsightRetainMission,
 	cfgHindsightRetainMode,
 	cfgHindsightRetainOverlapTurns,
+	cfgHindsightRetainStrategy,
 	cfgHindsightRetainTimeoutMs,
+	cfgHindsightRetainUpdateMode,
+	cfgHindsightScopeTags,
 	cfgHindsightScoping,
 } from "./settings";
 
@@ -44,6 +47,7 @@ export interface HindsightConfig {
 	bankId: string | null;
 	bankIdPrefix: string;
 	scoping: HindsightScoping;
+	scopeTags: string[];
 	bankMission: string;
 	retainMission: string | null;
 
@@ -54,6 +58,10 @@ export interface HindsightConfig {
 	retainEveryNTurns: number;
 	retainOverlapTurns: number;
 	retainContext: string;
+	/** How full-session retains update the existing document. Default replace. */
+	retainUpdateMode: "replace" | "append";
+	/** Per-item Hindsight extraction strategy. Null/empty omits the request field. */
+	retainStrategy: string | null;
 
 	recallBudget: "low" | "mid" | "high";
 	recallMaxTokens: number;
@@ -94,6 +102,10 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 		bankId: cfgHindsightBankId.get(settings) ?? null,
 		bankIdPrefix: cfgHindsightBankIdPrefix.get(settings) ?? "",
 		scoping: cfgHindsightScoping.get(settings),
+		scopeTags: [...cfgHindsightScopeTags.get(settings)]
+			.filter((item): item is string => typeof item === "string")
+			.map(item => item.trim())
+			.filter(Boolean),
 		bankMission: cfgHindsightBankMission.get(settings) ?? "",
 		retainMission: cfgHindsightRetainMission.get(settings) ?? null,
 
@@ -104,6 +116,8 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 		retainEveryNTurns: cfgHindsightRetainEveryNTurns.get(settings),
 		retainOverlapTurns: cfgHindsightRetainOverlapTurns.get(settings),
 		retainContext: cfgHindsightRetainContext.get(settings),
+		retainUpdateMode: cfgHindsightRetainUpdateMode.get(settings),
+		retainStrategy: cfgHindsightRetainStrategy.get(settings)?.trim() || null,
 
 		recallBudget: cfgHindsightRecallBudget.get(settings),
 		recallMaxTokens: cfgHindsightRecallMaxTokens.get(settings),

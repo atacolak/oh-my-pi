@@ -108,6 +108,8 @@ describe("runRootCommand — --alt mode guard", () => {
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		const settings = Settings.isolated({ "marketplace.autoUpdate": "off" });
 		const previousExitCode = process.exitCode;
+		const originalIsTTY = process.stdin.isTTY;
+		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
 			throw new Error(`process.exit:${code ?? 0}`);
 		}) as never);
@@ -134,6 +136,7 @@ describe("runRootCommand — --alt mode guard", () => {
 			expect(String(error)).toContain("stop after backend env is set");
 		} finally {
 			exitSpy.mockRestore();
+			Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
 			process.exitCode = previousExitCode ?? 0;
 		}
 	});

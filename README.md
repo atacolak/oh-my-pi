@@ -1,12 +1,16 @@
 > [!NOTE]
-> ## `cap/herdr-idle-toast` — herdr idle toast without session-title card
+> ## `cap/extensions` — extension discovery skip
 >
-> Durable local capability: when a process is inside a Herdr pane (`HERDR_PANE_ID`), claim notification delivery without spawning `herdr notification show`. Herdr already toasts Idle/Blocked from `pane.report_agent`; the extra CLI card was the session title. OSC 9/99 stay suppressed because Herdr swallows them. No debounce. Idle reports stay with Herdr.
+> Durable local capability: skip colocated `*.test.*` / `*.spec.*` files as extension entry points so suite files in an extensions directory are not loaded at launch.
+>
+> The `/extensions` inspector already landed upstream as [#9311](https://github.com/can1357/oh-my-pi/pull/9311); this remaining delta is fork-local.
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PR(s):** Status: fork-local
+> - **Upstream PR(s):** [#9311](https://github.com/can1357/oh-my-pi/pull/9311) — inspector (merged). Discovery skip: fork-local.
 > - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
-
+>
+> This branch tracks required generation `e996e1c7` plus the discovery skip.
+>
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

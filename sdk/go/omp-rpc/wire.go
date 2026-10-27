@@ -1996,6 +1996,26 @@ func (v *TodoStatus) UnmarshalJSON(data []byte) error {
 	return unknownValue("TodoStatus", s)
 }
 
+type TodoPhaseKind string
+
+const (
+	TodoPhaseKindContinuing TodoPhaseKind = "continuing"
+	TodoPhaseKindPassive    TodoPhaseKind = "passive"
+)
+
+func (v *TodoPhaseKind) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoPhaseKind")
+	if err != nil {
+		return err
+	}
+	switch value := TodoPhaseKind(s); value {
+	case TodoPhaseKindContinuing, TodoPhaseKindPassive:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoPhaseKind", s)
+}
+
 type GoalOp string
 
 const (
@@ -2161,8 +2181,9 @@ func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
 }
 
 type TodoPhase struct {
-	Name  string     `json:"name"`
-	Tasks []TodoItem `json:"tasks"`
+	Name  string         `json:"name"`
+	Tasks []TodoItem     `json:"tasks"`
+	Kind  *TodoPhaseKind `json:"kind,omitempty"`
 }
 
 func (v *TodoPhase) UnmarshalJSON(data []byte) error {
@@ -2174,6 +2195,7 @@ func (v *TodoPhase) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "TodoPhase"}
 	d.required("name", &out.Name)
 	d.required("tasks", &out.Tasks)
+	d.optional("kind", &out.Kind)
 	if d.err != nil {
 		return d.err
 	}

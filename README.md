@@ -1,14 +1,25 @@
 > [!NOTE]
-> ## `wip/agent-flag` — root agent launch capability
+> ## `runtime` — Ata's daily OMP
 >
-> Root sessions can launch directly from discovered agent definitions through `--agent`.
+> Daily composition of selected local capabilities on upstream OMP 18.13.2.
 >
-> - **Runtime composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Role discovery:** `--agent-cwd` selects the agent-definition project without changing `--cwd`
-> - **Hidden roles:** `hide: true` keeps explicit automation identities out of ambient task rosters
-> - **Resume:** session header `rootAgent` restores `--agent` on continue/fork; conflicting `--agent` is refused, missing privileged roles fail closed
 > - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
+> - **Capabilities:**
+>   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
+>   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
+>   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — skip colocated test files as extension entry points
+>   - [`cap/followup-draft`](https://github.com/atacolak/oh-my-pi/tree/cap/followup-draft) — followUpMode default all
+>   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retention + locked scope seam
+>   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — nested project LSP roots
+>   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — default retry chain for unowned models
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped `/settings`
+>   - [`cap/todo-passive-phase`](https://github.com/atacolak/oh-my-pi/tree/cap/todo-passive-phase) — passive todo phases
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — app viewport + `ompalt` launcher
+>   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root agent launch via `--agent`
 >
+> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

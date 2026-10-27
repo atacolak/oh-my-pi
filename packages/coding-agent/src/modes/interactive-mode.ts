@@ -2230,6 +2230,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.statusLine.dispose();
 			},
 			saveDraft: text => this.sessionManager.saveDraft(text),
+			stopCollab: async () => {
+				await this.collabController.shutdown("session shutdown");
+			},
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
 				await this.session.dispose({
@@ -7446,8 +7449,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
 
-		// `#beginClose()` already acknowledged the close; escalate only once the
-		// teardown itself lingers, so time spent in exit prompts never counts.
+		// Surface progress before any asynchronous cleanup, including collab host
+		// stop, live commands, and BTW history writes, so the user sees a reason
+		// for the pause.
+		this.showStatus("Closing session…");
 		const stillClosingTimer = setTimeout(() => {
 			this.showStatus("Still closing… (flushing memory backend / network)");
 		}, STILL_CLOSING_DELAY_MS);

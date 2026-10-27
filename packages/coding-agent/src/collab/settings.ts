@@ -69,3 +69,15 @@ export const cfgCollabAutoStart = register({
 		],
 	},
 });
+
+export const cfgCollabWriteLinkPath = register({
+	id: "collab.writeLinkPath",
+	type: "string",
+	default: "",
+	ui: {
+		tab: "interaction",
+		group: "Collab",
+		label: "Write Link Path",
+		description: "Write the full write-capable host link after a successful host start; empty disables",
+	},
+});

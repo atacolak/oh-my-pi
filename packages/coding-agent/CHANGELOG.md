@@ -6,19 +6,6 @@
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
 
-## [18.2.11] - 2026-09-23
-
-### Fixed
-
-- Fixed nested `eval` Todo updates not being reflected by the Todo tracker, including cases where a cell fails after committing an update.
-- Fixed strict-mode structured-output validation for JSON Schemas without a root `type`, preserving their `items` and `required` keywords.
-- Improved streamed TTSR whole-buffer matching to avoid repeated scans from the beginning of the buffer.
-- Fixed plural browser queries when compiled binaries provide shallow stack traces.
-- Fixed browser `tab.fill` timing out on pages whose animation frames stall.
-- Fixed the first LSP diagnostics request returning no results while a newly started language server is still analyzing.
-- `/shake thinking` now reports the number of tokens freed.
-
-## [18.2.10] - 2026-09-22
 ## [18.13.1] - 2026-10-27
 
 ### Added

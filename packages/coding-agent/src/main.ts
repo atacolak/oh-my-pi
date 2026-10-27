@@ -153,7 +153,7 @@ import { cfgGoalEnabled } from "./goals/settings";
 import { cfgPlanDefaultOnStartup, cfgPlanEnabled } from "./plan-mode/settings";
 
 import { cfgAdvisorEnabled } from "./advisor/settings";
-import { cfgAsyncPrintWake, cfgToolsApprovalMode } from "./tools/settings";
+import { cfgAsyncPrintWake, cfgReadSummarizeEnabled, cfgToolsApprovalMode } from "./tools/settings";
 import {
 	cfgAutocompleteMaxVisible,
 	cfgAutoResume,
@@ -190,7 +190,7 @@ import {
 	cfgSessionWarnCost,
 } from "./session/settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "./config/model-settings";
-import { cfgTaskAgentIdleTtlMs } from "./task/settings";
+import { cfgTaskAgentAdvisor, cfgTaskAgentIdleTtlMs } from "./task/settings";
 import { cfgSkillsIncludeSkills } from "./extensibility/settings";
 import { cfgWorkspaceAdditionalDirectories } from "./session/context-settings";
 
@@ -1785,15 +1785,15 @@ export async function buildSessionOptions(
 			options.spawns = launchAgent.spawns === "*" ? "*" : launchAgent.spawns.join(",");
 		}
 		if (launchAgent.readSummarize === false) {
-			activeSettings.override("read.summarize.enabled", false);
+			cfgReadSummarizeEnabled.override(activeSettings, false);
 		}
 		if (parsed.advisor === undefined) {
 			const advisorSelection = resolveAgentAdvisorSelection({
-				settingsOverride: activeSettings.get("task.agentAdvisor")[launchAgent.name],
+				settingsOverride: cfgTaskAgentAdvisor.get(activeSettings)[launchAgent.name],
 				agentAdvisor: launchAgent.advisor,
 			});
 			if (advisorSelection) {
-				activeSettings.override("advisor.enabled", true);
+				cfgAdvisorEnabled.override(activeSettings, true);
 				if (advisorSelection.model) {
 					activeSettings.overrideModelRoles({
 						...activeSettings.getModelRoles(),

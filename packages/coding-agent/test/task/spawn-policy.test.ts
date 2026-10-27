@@ -76,7 +76,7 @@ describe("task spawn policy surfaces", () => {
 		});
 
 		const tool = await TaskTool.create(makeSession("*"));
-		expect(tool.description).toContain("### fact-finder");
+		expect(tool.description).toContain("- `fact-finder`: Find facts.");
 		expect(tool.description).not.toContain("runtime-integrator");
 	});
 });

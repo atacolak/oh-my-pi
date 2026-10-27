@@ -98,6 +98,11 @@ _TODO_STATUS_VALUES: Final[frozenset[str]] = frozenset({"pending", "in_progress"
 _decode_todo_status = cast("Decoder[TodoStatus]", literal(_TODO_STATUS_VALUES))
 
 
+TodoPhaseKind: TypeAlias = Literal["continuing", "passive"]
+_TODO_PHASE_KIND_VALUES: Final[frozenset[str]] = frozenset({"continuing", "passive"})
+_decode_todo_phase_kind = cast("Decoder[TodoPhaseKind]", literal(_TODO_PHASE_KIND_VALUES))
+
+
 GoalOp: TypeAlias = Literal["get", "create", "resume", "pause", "drop"]
 _GOAL_OP_VALUES: Final[frozenset[str]] = frozenset({"get", "create", "resume", "pause", "drop"})
 _decode_goal_op = cast("Decoder[GoalOp]", literal(_GOAL_OP_VALUES))
@@ -562,6 +567,7 @@ class TodoItem:
 class TodoPhase:
     name: str
     tasks: tuple[TodoItem, ...]
+    kind: TodoPhaseKind | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1846,6 +1852,7 @@ def parse_todo_phase(value: object, path: str = "TodoPhase") -> TodoPhase:
     return TodoPhase(
         name=required(payload, "name", decode_str, path),
         tasks=required(payload, "tasks", array(parse_todo_item), path),
+        kind=optional(payload, "kind", _decode_todo_phase_kind, path),
     )
 
 
@@ -3898,6 +3905,7 @@ __all__ = [
     "TodoAutoClearEvent",
     "TodoItem",
     "TodoPhase",
+    "TodoPhaseKind",
     "TodoReminderEvent",
     "TodoStatus",
     "TokenUsage",

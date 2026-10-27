@@ -1206,7 +1206,7 @@ streaming response; otherwise it is delivered at a turn/tool-batch boundary.
 From `packages/coding-agent/src/modes/settings.ts` (also the core `Agent` defaults):
 
 - `steeringMode`: `"one-at-a-time"`
-- `followUpMode`: `"one-at-a-time"`
+- `followUpMode`: `"all"`
 - `interruptMode`: `"immediate"`
 
 CLI settings can change these initial values. `set_steering_mode`,

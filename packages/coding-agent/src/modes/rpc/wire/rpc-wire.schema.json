@@ -2555,7 +2555,7 @@
 				},
 				"followUpMode": {
 					"$ref": "#/$defs/QueueMode",
-					"default": "one-at-a-time"
+					"default": "all"
 				},
 				"interruptMode": {
 					"$ref": "#/$defs/InterruptMode",

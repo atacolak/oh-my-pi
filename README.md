@@ -1,17 +1,13 @@
 > [!NOTE]
-> ## `cap/hindsight` — Hindsight retention + locked scope seam
+> ## `cap/nested-lsp-roots` — nested project LSP roots
 >
-> Durable local capability: per-retain extraction strategy, conversation source timestamps, append-mode session retention, and the fork-local locked memory-scope seam (`hindsight.scopeTags` → retain/recall/reflect + exact `observation_scopes`, subset mental-model visibility).
+> Durable local capability: concrete file operations discover the nearest nested language-server root lazily (for example `python/pyproject.toml` under a monorepo) without a recursive startup scan. Workspace, write, reload, and symlink paths keep that nested client.
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PRs:**
->   - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy *(open)*
->   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps *(merged)*
->   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention *(open)*
-> - **Fork-local:** locked `scope:personal` / `scope:coding` + `project:<repo>` routing — no upstream PR yet
+> - **Upstream PR:** [#9969](https://github.com/can1357/oh-my-pi/pull/9969) — discover nested project roots lazily
 > - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
 >
-> PR heads stay independently reviewable without this banner.
+> PR head `fix/nested-lsp-roots` stays independently reviewable without this banner.
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

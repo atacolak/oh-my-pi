@@ -264,6 +264,27 @@ describe("TUI app viewport backend", () => {
 		});
 	});
 
+	it("notifies frame write listeners on app-viewport paints", async () => {
+		await withEnv("PI_TUI_RENDER_BACKEND", "app-viewport", async () => {
+			const term = new VirtualTerminal(40, 5);
+			const tui = new TUI(term);
+			tui.addChild(new TranscriptComponent(["row-0", "row-1", "row-2", "row-3"]));
+			const frames: string[] = [];
+			const unsubscribe = tui.addFrameWriteListener(frame => {
+				frames.push(frame);
+			});
+
+			try {
+				tui.start();
+				await flushRender(term);
+				expect(frames.some(frame => frame.includes("row-3"))).toBe(true);
+			} finally {
+				unsubscribe();
+				tui.stop();
+			}
+		});
+	});
+
 	it("stays on the native renderer unless the app viewport backend is requested", async () => {
 		await withEnv("PI_TUI_RENDER_BACKEND", "", async () => {
 			const term = new VirtualTerminal(40, 5);

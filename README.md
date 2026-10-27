@@ -1,9 +1,9 @@
 > [!NOTE]
 > ## `runtime` — Ata's daily OMP
 >
-> Daily composition of selected local capabilities on upstream OMP 18.13.1.
+> Daily composition of selected local capabilities on upstream OMP 18.13.2.
 >
-> - **Upstream base:** [OMP 18.13.1 (`0838d2ab`)](https://github.com/can1357/oh-my-pi/tree/0838d2ab4407b74e870de07e1a6780a13c7d542c)
+> - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
 > - **Capabilities:**
 >   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
 >   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
@@ -646,7 +646,7 @@ bun setup
 bun dev
 ```
 
-Build and smoke-test the distributable Nix package with `nix build .#omp`. Wayland screencast support is off by default (linking libpipewire adds ~750 MB of runtime closure); enable it with `omp.override { withWaylandScreencast = true; }`. `nix/bun.nix` is generated only when `bun.lock` changes; releases regenerate it automatically. For dependency changes, run:
+Build and smoke-test the distributable Nix package with `nix build .#omp`. Wayland screencast support is off by default (linking libpipewire adds ~750 MB of runtime closure); enable it with `omp.override { withWaylandScreencast = true; }`. Release builds link `pi-natives` with fat LTO; `omp.override { withFatLto = false; }` uses thin LTO for much faster local rebuilds. Rust dependencies and the native addon build in separate derivations, so Rust edits reuse compiled dependencies and TypeScript edits reuse the addon. `nix/bun.nix` is generated only when `bun.lock` changes; releases regenerate it automatically. For dependency changes, run:
 
 ```sh
 bun run gen:nix

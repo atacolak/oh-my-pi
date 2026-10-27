@@ -51,7 +51,7 @@ const BRANCH_LATEST: TodoPhase[] = [
 ];
 
 const authStorage = createInMemoryAuthStorage();
-authStorage.setRuntimeApiKey("anthropic", "test-key");
+authStorage.keys.setRuntime("anthropic", "test-key");
 const modelRegistry = new ModelRegistry(authStorage);
 
 afterAll(() => {

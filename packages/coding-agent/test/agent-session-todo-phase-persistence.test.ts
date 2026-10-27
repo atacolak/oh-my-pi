@@ -35,7 +35,7 @@ const PERSISTED_PHASES: TodoPhase[] = [
 ];
 
 const authStorage = createInMemoryAuthStorage();
-authStorage.setRuntimeApiKey("anthropic", "test-key");
+authStorage.keys.setRuntime("anthropic", "test-key");
 const modelRegistry = new ModelRegistry(authStorage);
 
 describe("passive todo phase durability across a session restart", () => {

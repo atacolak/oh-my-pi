@@ -22,11 +22,19 @@ const RUNTIME_ONLY_PROVIDERS = new Set([
 	// including its tariff and effort ladder, comes from the live /v1/models
 	// snapshot, so no bundled rows are frozen into models.json.
 	"charm-hyper",
+	// Factory has no public model-listing endpoint. Its CLI roster is a
+	// `bundle="never"` KDL seed; factoryDroidModelManagerOptions serves it
+	// offline and narrows it by account flags/org policy live.
+	"factory-droid",
 	// Both SingularityAPI rosters are live and credential-scoped (one key sees
 	// only its own product's models — the pay-as-you-go catalog or the reserved
 	// lanes), so no rows are frozen into models.json.
 	"singularityapi-dev",
 	"singularityapi-tech",
+	// Clef judges are a `bundle="always"` KDL seed that
+	// cloudflareWorkersAiModelManagerOptions serves at runtime; models.json
+	// gains the rows at the next regeneration.
+	"cloudflare-workers-ai",
 	// User-configured LiteLLM proxy (models.yml provider or litellm auth flow;
 	// PROXY_OPENAI_COMPAT_PROVIDERS) that forwards upstream chat templates.
 	"litellm",
@@ -85,6 +93,21 @@ describe("compat rules conformance", () => {
 		for (const [provider, source] of collectReferencedProviders()) {
 			if (!known.has(provider) && !RUNTIME_ONLY_PROVIDERS.has(provider)) {
 				offenders.push(`${provider} (${source})`);
+			}
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	test('every bundle="always" seed row is bundled in models.json', () => {
+		// bundledSeedRows() writes every bundle="always" seed row on each
+		// regeneration, so a missing row means models.json was regenerated from
+		// a stale snapshot (#16610 lost web/deepseek that way in 18.12.2).
+		const offenders: string[] = [];
+		for (const [provider, entry] of Object.entries(rules.providers)) {
+			if (entry.seed?.bundle !== "always") continue;
+			const bundled = Object.entries(models).find(([id]) => id === provider)?.[1] ?? {};
+			for (const seed of entry.seed.models) {
+				if (!Object.hasOwn(bundled, seed.id)) offenders.push(`${provider}/${seed.id}`);
 			}
 		}
 		expect(offenders).toEqual([]);

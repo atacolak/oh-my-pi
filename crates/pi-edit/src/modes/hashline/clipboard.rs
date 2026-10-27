@@ -1,5 +1,7 @@
 //! Clipboard edit resolution (`packages/hashline/src/clipboard.ts`).
 
+use std::borrow::Cow;
+
 use super::{
 	apply::EmptyPaste,
 	messages::{
@@ -8,7 +10,10 @@ use super::{
 	},
 	types::{Anchor, Cursor, Edit, PasteTarget},
 };
-use crate::{error::EditError, store::Clipboard};
+use crate::{
+	error::{EditError, Rejection},
+	store::Clipboard,
+};
 
 fn describe_cut(edit: &Edit) -> String {
 	let Edit::Cut { range, register, .. } = edit else {
@@ -101,20 +106,26 @@ fn read_register(
 
 fn write_register(
 	edit: &Edit,
-	file_lines: &[String],
+	file_lines: &[&str],
 	clipboard: &mut Clipboard,
 ) -> Result<(), EditError> {
 	let Edit::Cut { range, register, line_num, .. } = edit else {
 		unreachable!("register write requires a cut")
 	};
 	if range.start.line == 0 || range.end.line as usize > file_lines.len() {
-		return Err(EditError::apply(format!(
-			"line {line_num}: `{}` is out of range (file has {} lines).",
-			describe_cut(edit),
-			file_lines.len()
-		)));
+		return Err(EditError::rejected(
+			Rejection::OutOfRange,
+			format!(
+				"line {line_num}: `{}` is out of range (file has {} lines).",
+				describe_cut(edit),
+				file_lines.len()
+			),
+		));
 	}
-	let captured = file_lines[(range.start.line - 1) as usize..range.end.line as usize].to_vec();
+	let captured: Vec<String> = file_lines[(range.start.line - 1) as usize..range.end.line as usize]
+		.iter()
+		.map(|line| (*line).to_owned())
+		.collect();
 	if let Some(register) = register {
 		clipboard
 			.named
@@ -132,15 +143,15 @@ fn write_register(
 
 /// Lower cut/paste operations into inserts and deletes against the original
 /// file lines.
-pub fn resolve_clipboard_edits(
-	edits: &[Edit],
-	file_lines: &[String],
+pub fn resolve_clipboard_edits<'e>(
+	edits: &'e [Edit],
+	file_lines: &[&str],
 	clipboard: &mut Clipboard,
 	on_empty_paste: EmptyPaste,
 	on_warning: &mut dyn FnMut(String),
-) -> Result<Vec<Edit>, EditError> {
+) -> Result<Cow<'e, [Edit]>, EditError> {
 	if !has_clipboard_edit(edits) {
-		return Ok(edits.to_vec());
+		return Ok(Cow::Borrowed(edits));
 	}
 	let mut resolved = Vec::new();
 	let mut synth_index = 0;
@@ -178,13 +189,16 @@ pub fn resolve_clipboard_edits(
 							let register = register
 								.as_ref()
 								.map_or_else(String::new, |value| format!(" @{value}"));
-							return Err(EditError::apply(format!(
-								"line {line_num}: `PUT {}.={}{}` is out of range (file has {} lines).",
-								range.start.line,
-								range.end.line,
-								register,
-								file_lines.len()
-							)));
+							return Err(EditError::rejected(
+								Rejection::OutOfRange,
+								format!(
+									"line {line_num}: `PUT {}.={}{}` is out of range (file has {} lines).",
+									range.start.line,
+									range.end.line,
+									register,
+									file_lines.len()
+								),
+							));
 						}
 						let cursor = Cursor::BeforeAnchor(Anchor { line: range.start.line });
 						for text in lines {
@@ -213,7 +227,7 @@ pub fn resolve_clipboard_edits(
 			_ => resolved.push(edit.clone()),
 		}
 	}
-	Ok(resolved)
+	Ok(Cow::Owned(resolved))
 }
 
 /// Validate anonymous clipboard sequencing without mutating the supplied

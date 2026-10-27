@@ -28,6 +28,14 @@ pub const fn reduced(cap: usize, by: usize) -> usize {
 	if reduced == 0 && cap > 0 { 1 } else { reduced }
 }
 
+/// Size up to which output the agent asked to read is returned whole.
+///
+/// Applies to patches, `jq` results and remote command output. Below it a
+/// lossy summary sends the agent to the raw artifact more often than it saves
+/// context: in recorded sessions, nearly half of the summarized `jq` results
+/// and `git diff`/`git show` patches were followed by a read of the raw output.
+pub const WHOLE_OUTPUT_BYTES: usize = 16 * 1024;
+
 /// Remove ANSI CSI escape sequences while preserving line endings verbatim.
 #[must_use]
 pub fn strip_ansi(input: &str) -> String {
@@ -86,6 +94,16 @@ pub fn head_tail_lines(input: &str, head: usize, tail: usize) -> String {
 	let lines: Vec<&str> = input.lines().collect();
 	if lines.len() <= head + tail {
 		return input.to_string();
+	}
+	head_tail_of_lines(&lines, head, tail)
+}
+
+/// [`head_tail_lines`] over already-split lines; when nothing is elided the
+/// lines are joined back with `\n`.
+#[must_use]
+pub fn head_tail_of_lines(lines: &[&str], head: usize, tail: usize) -> String {
+	if lines.len() <= head + tail {
+		return lines.join("\n");
 	}
 	let omitted = lines.len() - head - tail;
 	let mut out = String::new();
@@ -218,6 +236,31 @@ pub fn is_horizontal_rule(line: &str) -> bool {
 	line.len() >= 3
 		&& line.chars().all(|ch| matches!(ch, '-' | '*' | '_' | ' '))
 		&& line.chars().any(|ch| matches!(ch, '-' | '*' | '_'))
+}
+
+/// Append `line` verbatim followed by `\n`. Does not trim; callers that
+/// want trailing whitespace dropped pass `line.trim_end()` themselves.
+pub fn push_line(out: &mut String, line: &str) {
+	out.push_str(line);
+	out.push('\n');
+}
+
+/// Whether `text` has any non-whitespace line.
+#[must_use]
+pub fn has_content(text: &str) -> bool {
+	text.lines().any(|line| !line.trim().is_empty())
+}
+
+/// Join lines with `\n` and terminate with a trailing newline; empty input
+/// stays empty rather than becoming a lone `\n`.
+#[must_use]
+pub fn join_lines<S: std::borrow::Borrow<str>>(lines: &[S]) -> String {
+	if lines.is_empty() {
+		return String::new();
+	}
+	let mut out = lines.join("\n");
+	out.push('\n');
+	out
 }
 
 /// Compact a long plain listing to head/tail form.

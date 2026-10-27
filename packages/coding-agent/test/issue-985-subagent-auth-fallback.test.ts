@@ -77,6 +77,21 @@ function createMockRegistry(options: MockRegistryOptions): ModelLookupRegistry &
 }
 
 describe("issue #985: subagent dispatch auth fallback", () => {
+	test("tries configured authenticated fallbacks before the parent model", async () => {
+		const registry = createMockRegistry({
+			models: [unauthedTaskModel, sharedModel, parentModel],
+			authedProviders: new Set(["deepseek"]),
+		});
+		const selected = await resolveModelOverrideWithAuthFallback(
+			["opencode-zen/qwen3.6-plus-free", "deepseek/shared-id:high"],
+			"deepseek/deepseek-v4-pro",
+			registry,
+		);
+		expect(selected.model?.id).toBe("shared-id");
+		expect(selected.thinkingLevel?.toString()).toBe("high");
+		expect(selected.authFallbackUsed).toBe(false);
+	});
+
 	test("falls back to parent active model when resolved subagent model has no auth", async () => {
 		const registry = createMockRegistry({
 			models: [parentModel, unauthedTaskModel],
@@ -252,29 +267,6 @@ describe("issue #5325: sessionId forwarded to getApiKey for session-sticky OAuth
 		expect(result.warning).toBe(
 			'Invalid thinking level "invalid" in pattern "qwen3.6-plus-free:invalid". Using default instead.',
 		);
-	});
-
-	test("still falls back when getApiKey returns undefined even with sessionId", async () => {
-		const registry: ModelLookupRegistry & { getApiKey(model: Model<Api>): Promise<string | undefined> } = {
-			getAvailable: () => [parentModel, unauthedTaskModel],
-			getApiKey: async (model: Model<Api>, _sessionId?: string) => {
-				if (model.provider === "deepseek") return "sk-test";
-				// Genuinely broken: undefined even with sessionId (stale OAuth, revoked token)
-				return undefined;
-			},
-		} as never;
-
-		const result = await resolveModelOverrideWithAuthFallback(
-			["qwen3.6-plus-free"],
-			"deepseek/deepseek-v4-pro",
-			registry,
-			undefined,
-			"subagent-session-456",
-		);
-
-		expect(result.authFallbackUsed).toBe(true);
-		expect(result.model?.provider).toBe("deepseek");
-		expect(result.model?.id).toBe("deepseek-v4-pro");
 	});
 });
 

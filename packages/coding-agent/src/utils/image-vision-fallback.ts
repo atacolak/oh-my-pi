@@ -26,6 +26,9 @@ import type { ModelRegistry } from "../config/model-registry";
 import { expandRoleAlias, getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { type LocalProtocolOptions, resolveLocalRoot } from "../internal-urls";
+import { cfgImagesBlockImages } from "../modes/settings";
+import type { CostGate } from "../session/cost-gate";
+import { cfgImagesDescribeForTextModels } from "../session/settings";
 import describeUserPrompt from "../prompts/tools/image-attachment-describe.md" with { type: "text" };
 import describeSystemPrompt from "../prompts/tools/image-attachment-describe-system.md" with { type: "text" };
 
@@ -42,6 +45,19 @@ const DESCRIPTION_UNAVAILABLE_NOTE =
 /** Registry surface needed to resolve a vision model and authorize requests. */
 export type VisionFallbackRegistry = Pick<ModelRegistry, "getAvailable" | "getApiKey" | "resolver">;
 
+/** Whether user images sent to `model` should be replaced by a vision-model description. */
+export function shouldDescribeImagesForTextModel(
+	model: Model<Api> | undefined,
+	settings: Settings,
+): model is Model<Api> {
+	return (
+		!!model &&
+		!sendsImageInputOnWire(model) &&
+		!cfgImagesBlockImages.get(settings) &&
+		cfgImagesDescribeForTextModels.get(settings)
+	);
+}
+
 export interface DescribeAttachedImagesDeps {
 	/** Active (text-only) model the prompt is destined for. */
 	activeModel: Model<Api>;
@@ -55,6 +71,8 @@ export interface DescribeAttachedImagesDeps {
 	sessionId?: string;
 	/** Test seam: overrides the underlying completeSimple call. */
 	completeImpl?: typeof completeSimple;
+	/** The session tree's cost gate: at the cap images are not described, and each description's cost is added. */
+	costGate?: CostGate;
 }
 
 /** Map an image MIME type to a file extension for the saved artifact. */
@@ -127,6 +145,7 @@ async function describeImage(
 	telemetry: AgentTelemetry | undefined,
 	signal: AbortSignal | undefined,
 ): Promise<string | null> {
+	if (deps.costGate?.check()) return null;
 	try {
 		const response = await instrumentedCompleteSimple(
 			visionModel,
@@ -146,6 +165,7 @@ async function describeImage(
 			{ apiKey: deps.modelRegistry.resolver(visionModel, deps.sessionId), signal },
 			{ telemetry, oneshotKind: ONESHOT_KIND, completeImpl: deps.completeImpl },
 		);
+		deps.costGate?.record(response.usage.cost.total);
 		if (response.stopReason === "error" || response.stopReason === "aborted") {
 			logger.warn("image attachment description did not complete", {
 				stopReason: response.stopReason,

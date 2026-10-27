@@ -1,57 +1,60 @@
 import * as path from "node:path";
 import { TERMINAL, replaceTabs } from "@oh-my-pi/pi-tui";
+import { isNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import {
 	SETTING_TABS,
 	type SettingsDisplayEntry,
 	type SettingsHost,
-	type SettingsScope,
+	type SettingsUiScope,
 } from "@oh-my-pi/pi-tui/overlays/settings-defs";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import {
-	isSettingsInitialized,
-	normalizeProviderMaxInFlightRequests,
-	onProjectSettingsReconciled,
-	Settings,
-	settings,
-	type SettingValue,
-	validateProviderMaxInFlightRequests,
-} from "./settings";
-import {
-	getDefault,
-	getEnumValues,
-	getPathsForTab,
-	getType,
-	getUi,
-	isCredential,
-	type SettingPath,
-} from "./settings-schema";
+import { isSettingsInitialized, Settings, settings } from "./settings";
+import { orderedSettings } from "./all-settings";
+import { type AnySetting, lookup } from "./registry";
 
-function readSetting<P extends SettingPath>(path: P, scope?: SettingsScope): SettingValue<P> | undefined {
-	try {
-		const sm = Settings.instance;
-		if (scope === "global") return sm.getGlobalValue(path);
-		if (scope === "project") return sm.getProjectScopedValue(path);
-		return sm.get(path);
-	} catch {
-		return undefined;
-	}
+import { cfgPlanAutosave, cfgPlanEnabled } from "../plan-mode/settings";
+import {
+	cfgRetryUsageAwareFallback,
+	cfgDefaultThinkingLevel,
+	normalizeProviderMaxInFlightRequests,
+	validateProviderMaxInFlightRequests,
+} from "../session/settings";
+import { cfgAutolearnEnabled } from "../autolearn/settings";
+import { cfgMemoryBackend } from "../memory-backend/settings";
+import { cfgTuiVimMode } from "../modes/settings";
+import { cfgAdvisorEnabled } from "../advisor/settings";
+import { cfgContextFilesExtra } from "../session/context-settings";
+import { cfgToolsRestrictedFolders } from "../tools/settings";
+
+/** Condition over the global settings; hidden (false) until they are initialized. */
+function whenSettings(test: (settings: Settings) => boolean): () => boolean {
+	return () => isSettingsInitialized() && test(Settings.instance);
 }
 
-const CONDITIONS: Record<string, (scope?: SettingsScope) => boolean> = {
+const CONDITIONS: Record<string, () => boolean> = {
 	macOS: () => process.platform === "darwin",
 	hasImageProtocol: () => !!TERMINAL.imageProtocol,
-	advisorEnabled: scope => readSetting("advisor.enabled", scope) === true,
-	vimModeEnabled: scope => readSetting("tui.vimMode", scope) === true,
-	hindsightActive: scope => readSetting("memory.backend", scope) === "hindsight",
-	mnemopiActive: scope => readSetting("memory.backend", scope) === "mnemopi",
-	autolearnActive: scope => readSetting("autolearn.enabled", scope) === true,
-	autoThinkingActive: scope => readSetting("defaultThinkingLevel", scope) === "auto",
-	usageAwareFallbackEnabled: scope => readSetting("retry.usageAwareFallback", scope) === true,
-	planModeEnabled: scope => readSetting("plan.enabled", scope) === true,
-	planAutosaveEnabled: scope => Boolean(readSetting("plan.enabled", scope) && readSetting("plan.autosave", scope)),
-	unexpectedStopSmart: scope => readSetting("features.unexpectedStopDetection", scope) === "smart",
+	nativeRendering: () => isNativeRendering(),
+	advisorEnabled: whenSettings(s => cfgAdvisorEnabled.get(s) === true),
+	vimModeEnabled: whenSettings(s => cfgTuiVimMode.get(s) === true),
+	hindsightActive: whenSettings(s => cfgMemoryBackend.get(s) === "hindsight"),
+	mnemopiActive: whenSettings(s => cfgMemoryBackend.get(s) === "mnemopi"),
+	autolearnActive: whenSettings(s => cfgAutolearnEnabled.get(s) === true),
+	autoThinkingActive: whenSettings(s => cfgDefaultThinkingLevel.get(s) === "auto"),
+	usageAwareFallbackEnabled: whenSettings(s => cfgRetryUsageAwareFallback.get(s) === true),
+	planModeEnabled: whenSettings(s => cfgPlanEnabled.get(s)),
+	planAutosaveEnabled: whenSettings(s => cfgPlanEnabled.get(s) && cfgPlanAutosave.get(s)),
+	contextFilesExtraNotProject: whenSettings(s => cfgContextFilesExtra.provenance(s) !== "project"),
+	restrictedFoldersNotProject: whenSettings(s => cfgToolsRestrictedFolders.provenance(s) !== "project"),
 };
+
+function envNote(setting: AnySetting): string {
+	if (!setting.envName || setting.envValue() === undefined) return "";
+	return setting.envFallback
+		? ` Unset, it falls back to $${setting.envName}.`
+		: ` $${setting.envName} overrides this setting while it is set.`;
+}
 
 function settingsProjectLabel(cwd: string): string {
 	let primary: string | null = null;
@@ -68,39 +71,50 @@ function settingsProjectLabel(cwd: string): string {
 	return cleaned || "project";
 }
 
-/** Adapt the application schema and settings store to the terminal overlay. */
+/**
+ * Adapt the application schema and settings store to the terminal overlay. The panel shows and
+ * edits the value of the settings layers, never an environment-supplied one (so an env credential
+ * is never pre-filled or written to config); descriptions note an active environment variable.
+ */
 export function createSettingsHost(cwd: string = process.cwd()): SettingsHost {
 	const entries: SettingsDisplayEntry[] = [];
 	for (const tab of SETTING_TABS) {
-		for (const settingPath of getPathsForTab(tab)) {
-			const ui = getUi(settingPath);
+		for (const setting of orderedSettings()) {
+			const ui = setting.ui;
+			if (ui?.tab !== tab) continue;
+			const note = envNote(setting);
 			entries.push({
-				path: settingPath,
-				type: getType(settingPath),
-				defaultValue: getDefault(settingPath),
-				ui,
-				enumValues: getEnumValues(settingPath),
-				credential: isCredential(settingPath),
-				condition: ui?.condition ? CONDITIONS[ui.condition] : undefined,
+				path: setting.id,
+				type: setting.type,
+				defaultValue: setting.default,
+				ui: note ? { ...ui, description: `${ui.description}${note}` } : ui,
+				enumValues: setting.enumValues,
+				credential: setting.isCredential,
+				condition: ui.condition ? CONDITIONS[ui.condition] : undefined,
 			});
 		}
 	}
+	const resolve = (path: string): AnySetting => {
+		const setting = lookup(path);
+		if (!setting) throw new Error(`Unknown setting: ${path}`);
+		return setting;
+	};
 	return {
 		entries,
-		get: settingPath => settings.get(settingPath as SettingPath),
-		getGlobal: settingPath => Settings.instance.getGlobalValue(settingPath as SettingPath),
-		getProjectScoped: settingPath => Settings.instance.getProjectScopedValue(settingPath as SettingPath),
-		getProjectInherited: settingPath => Settings.instance.getProjectInheritedValue(settingPath as SettingPath),
-		set: (settingPath, value, scope = "global") => settings.set(settingPath as SettingPath, value as never, scope),
-		clearProject: settingPath => Settings.instance.clearProject(settingPath as SettingPath),
+		get: path => lookup(path)?.layered(settings),
+		getGlobal: path => Settings.instance.globalLayerValue(resolve(path)),
+		getProjectScoped: path => Settings.instance.projectScopedValue(resolve(path)),
+		getProjectInherited: path => Settings.instance.projectInheritedValue(resolve(path)),
+		set: (path, value, scope: SettingsUiScope = "global") => {
+			const setting = resolve(path);
+			if (scope === "project") setting.setProject(settings, value as never);
+			else setting.set(settings, value as never);
+		},
+		unset: path => resolve(path).unset(settings),
+		clearProject: path => resolve(path).unsetProject(settings),
 		hasProjectConfig: () => Settings.instance.hasProjectConfig(),
-		isCredential: settingPath => isCredential(settingPath as SettingPath),
+		isCredential: path => resolve(path).isCredential,
 		projectLabel: () => settingsProjectLabel(cwd),
-		onProjectSettingsReconciled: cb =>
-			onProjectSettingsReconciled((paths, source) => {
-				if (!isSettingsInitialized() || source !== Settings.instance) return;
-				cb(paths);
-			}),
 		normalizeProviderLimits: normalizeProviderMaxInFlightRequests,
 		validateProviderLimits: validateProviderMaxInFlightRequests,
 	};

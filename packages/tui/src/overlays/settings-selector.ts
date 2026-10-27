@@ -1,16 +1,27 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort } from "@oh-my-pi/pi-ai";
-import { type Component, Container } from "../tui";
-import { Input } from "../components/input";
-import { type SelectItem, SelectList } from "../components/select-list";
-import { getSettingItemFilterText, type SettingItem, SettingsList } from "../components/settings-list";
-import { type Tab, TabBar } from "../components/tab-bar";
-import { extractPrintableText, matchesKey } from "../keys";
-import { fuzzyRank } from "../fuzzy";
-import { getKeybindings } from "../keybindings";
-import type { ImageBudget } from "../components/image";
-import { routeSelectListMouse, routeSgrMouseInput, type SgrMouseEvent } from "../mouse";
-import { truncateToWidth, visibleWidth } from "../utils";
+import {
+	type Component,
+	Container,
+	extractPrintableText,
+	FuzzyCorpus,
+	getKeybindings,
+	getSettingItemFilterText,
+	type ImageBudget,
+	Input,
+	matchesKey,
+	routeSelectListMouse,
+	routeSgrMouseInput,
+	type SelectItem,
+	SelectList,
+	type SettingItem,
+	SettingsList,
+	type SgrMouseEvent,
+	type Tab,
+	TabBar,
+	truncateToWidth,
+	visibleWidth,
+} from "../index";
 import type { ShapeTarget } from "@oh-my-pi/snapcompact";
 import type {
 	ContextLineMode,
@@ -19,15 +30,21 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../status-line/schema";
 import {
+	numberSteps,
+	numericOption,
 	SETTING_TABS,
+	type SubmenuOption,
+	TAB_LEADS,
 	TAB_METADATA,
 	type SettingTab,
 	type SettingsHost,
 	type SettingsDisplayEntry,
-	type SettingsScope,
+	type SettingsUiScope,
 } from "./settings-defs";
+import type { TspPrefsControl, TspPrefsProps } from "@oh-my-pi/pi-wire";
+import { prefsSectionId } from "../components/settings-list";
 import {
-	detectTerminalAppearance,
+	detectTerminalBackground,
 	getCurrentThemeName,
 	getSelectListTheme,
 	getSettingsListTheme,
@@ -41,9 +58,108 @@ import { bottomBorder, divider, row, topBorder } from "../chrome/overlay-box";
 import { PluginSettingsComponent, type PluginSettingsHost } from "./plugin-settings";
 import { getSettingDef, getSettingsForTab, type SettingDef } from "./settings-defs";
 import { SnapcompactShapePreview } from "./snapcompact-shape-preview";
+import { themePickerOptions } from "./theme-selector";
+import type { SelectPickerOptions } from "../native/picker";
 import { getPreset } from "../status-line/presets";
 import { FormField, SelectFormField, TextFormField } from "../components/form";
 import { formTheme } from "../chrome/form-theme";
+import { formatKeyHint, formatKeyHints } from "../app-keybindings";
+import { editorKey, editorKeys } from "../chrome/keybinding-hints";
+import type { DescribeContext, NativeChild, NativeNode, NativeUiEvent } from "../native/node";
+import { col, node, span, text } from "../native/describe";
+import { actionHint, hintsRow, type NativeHint, overlayCard } from "../native/overlay";
+import { styledSpans } from "../native/spans";
+import { sameItems } from "../native/memo";
+import type { KeyName } from "../key-hint-format";
+
+/** The native page id of the plugins tab. */
+const PLUGINS_PAGE = "plugins";
+/** Role of the status-line preview child: the page places it after the status-line section. */
+const PREFS_STATUS_ROLE = "omp.prefs.preview.status";
+/** Role of a sub-editor child without a native control: the page shows it in a card over itself. */
+const PREFS_EDITOR_ROLE = "omp.prefs.editor";
+/** Most choices a native popup menu lists; larger submenus open as a picker over the page. */
+const PREFS_MENU_MAX = 12;
+/** Text settings whose values are paths, ids or commands (drawn in mono). */
+const MONO_TEXT_SETTING = /(path|dir|url|endpoint|host|command|model|id)$/i;
+/** Submenus whose choices preview live while highlighted (the branches of `#createSubmenu`). */
+const PREVIEWED_SETTINGS = new Set([
+	"theme.dark",
+	"theme.light",
+	"statusLine.preset",
+	"statusLine.separator",
+	"statusLine.contextLine",
+	"snapcompact.shape",
+	"composer.shape",
+]);
+/** The byte a cancel key sends: native menu closes go through the same cancel handling as the key. */
+const ESCAPE = "\x1b";
+
+/** Footer hint set of the settings overlay, by what currently owns the keys. */
+type SettingsHintMode = "search" | "plugins" | "sections" | "rows" | "rows-sections";
+
+/** The settings tab strip; muted tabs (no search matches) keep their place, dimmed. */
+function settingsTabsNode(tabs: readonly Tab[], active: string | undefined): NativeNode {
+	return node(
+		"tabs",
+		{
+			items: tabs.map(tab => ({ id: tab.id, label: tab.muted ? [span(tab.label, "muted")] : tab.label })),
+			active,
+		},
+		undefined,
+		"tabs",
+	);
+}
+
+/** Footer hints for `mode`, mirroring the ANSI footer line. */
+function settingsHintsNode(mode: SettingsHintMode): NativeNode {
+	const confirmKeys: readonly KeyName[] = actionHint("tui.select.confirm", "")?.keys ?? [];
+	const close = actionHint("tui.select.cancel", "close");
+	const switchTabs: NativeHint = { keys: ["left", "right"], label: "switch tabs" };
+	let hints: (NativeHint | undefined)[];
+	switch (mode) {
+		case "search":
+			hints = [
+				actionHint("tui.select.confirm", "change"),
+				{ keys: ["tab"], label: "jump tabs" },
+				actionHint("tui.select.cancel", "exit search"),
+			];
+			break;
+		case "plugins":
+			hints = [{ keys: ["tab"], label: "switch tabs" }, close];
+			break;
+		case "sections":
+			hints = [
+				actionHint(["tui.select.up", "tui.select.down"], "jump sections"),
+				{ keys: ["tab", ...confirmKeys], label: "to settings" },
+				switchTabs,
+				close,
+			];
+			break;
+		case "rows":
+		case "rows-sections":
+			hints = [
+				{ keys: [...confirmKeys, "space"], label: "change" },
+				...(mode === "rows-sections"
+					? [{ keys: ["tab"], label: "jump sections" } satisfies NativeHint, switchTabs]
+					: [{ keys: ["tab"], label: "switch tabs" } satisfies NativeHint]),
+				{ keys: [], label: "type to search" },
+				close,
+			];
+			break;
+	}
+	return hintsRow(hints);
+}
+
+interface SettingsNativeMemo {
+	prefs?: { signature: string; children: readonly NativeChild[]; node: NativeNode };
+	prefsPreview?: { source: string; node: NativeNode };
+	tabs?: { tabs: readonly Tab[]; active: string | undefined; node: NativeNode };
+	search?: { input: Input; count: number; node: NativeNode };
+	preview?: { source: string; node: NativeNode };
+	hints: Partial<Record<SettingsHintMode, NativeNode>>;
+	root?: { children: readonly NativeChild[]; node: NativeNode };
+}
 
 /**
  * Free-text string setting field backed by the shared text form field.
@@ -66,7 +182,7 @@ function createSettingsTextField(
 		secret,
 		initialValue: currentValue || undefined,
 		empty: "submit",
-		hint: "  Enter to save · Esc to cancel · Clear field to unset",
+		hint: `  ${editorKey("tui.input.submit")} to save · ${editorKey("tui.select.cancel")} to cancel · Clear field to unset`,
 		onSubmit,
 		onCancel,
 		requestRender,
@@ -89,6 +205,7 @@ function createSettingsSelectField(
 	getPreview?: () => string,
 	footer?: Component,
 	requestRender?: () => void,
+	picker?: SelectPickerOptions,
 ): SelectFormField {
 	return new SelectFormField({
 		theme: formTheme,
@@ -102,9 +219,10 @@ function createSettingsSelectField(
 		onSelectionChange,
 		onSubmit: onSelect,
 		onCancel,
-		hint: "  Enter to select · Esc to go back",
+		hint: `  ${editorKey("tui.select.confirm")} to select · ${editorKey("tui.select.cancel")} to go back`,
 		footer,
 		requestRender,
+		picker,
 	});
 }
 
@@ -168,9 +286,10 @@ class MultiSelectSubmenu extends Container {
 			this.#cursor = this.#options.findIndex(option => option.value === item.value);
 		};
 		this.#selectList.onCancel = this.#onClose;
+		const back = `${editorKey("tui.select.cancel")} to go back`;
 		const hint = this.#ordered
-			? "  Click to toggle · drag selected items to reorder · ←/→ move · 1-9 place · Esc to go back"
-			: "  Click/Enter/Space to toggle · Esc to go back";
+			? `  Click to toggle · drag selected items to reorder · ${formatKeyHints(["left", "right"])} move · 1-9 place · ${back}`
+			: `  Click/${editorKey("tui.select.confirm")}/${formatKeyHint("space")} to toggle · ${back}`;
 		this.#field = new FormField(this.#selectList, {
 			theme: formTheme,
 			label: this.#title,
@@ -178,6 +297,16 @@ class MultiSelectSubmenu extends Container {
 			hint,
 		});
 		this.addChild(this.#field);
+	}
+
+	/** The highlighted option (a native settings page rings it). */
+	get prefsOption(): string | undefined {
+		return this.#options[this.#cursor]?.value;
+	}
+
+	/** Applies a whole new selection (a native page's chip toggle or drag), as a key toggle or move does. */
+	setValues(next: readonly string[]): void {
+		this.#apply(next.filter(id => this.#options.some(option => option.value === id)));
 	}
 
 	#apply(next: string[]): void {
@@ -336,7 +465,7 @@ class ProviderLimitsSubmenu extends Container {
 			items,
 			maxVisible: 12,
 			selectTheme: getSelectListTheme(),
-			hint: "  Enter to edit provider · Esc to go back",
+			hint: `  ${editorKey("tui.select.confirm")} to edit provider · ${editorKey("tui.select.cancel")} to go back`,
 			onSubmit: value => {
 				if (value === "__clear_all") {
 					this.#settings.set("providers.maxInFlightRequests", {});
@@ -365,7 +494,7 @@ class ProviderLimitsSubmenu extends Container {
 					"Enter a positive number. Decimals round down. Clear the field to make this provider unlimited.",
 				initialValue: limits[provider]?.toString() ?? undefined,
 				empty: "submit",
-				hint: "  Enter to save · Esc to cancel · Clear field to unset",
+				hint: `  ${editorKey("tui.input.submit")} to save · ${editorKey("tui.select.cancel")} to cancel · Clear field to unset`,
 				validate: value => {
 					if (value.trim() === "") return undefined;
 					const limit = Number(value.trim());
@@ -464,27 +593,22 @@ export interface StatusLinePreviewSettings {
 	leftSegments?: StatusLineSegmentId[];
 	rightSegments?: StatusLineSegmentId[];
 	separator?: StatusLineSeparatorStyle;
-	showHookStatus?: boolean;
 	sessionAccent?: boolean;
 	transparent?: boolean;
 	compactThinkingLevel?: boolean;
-	segmentOptions?: Record<string, unknown>;
-}
-
-export interface ThemePreviewOptions {
-	symbolPreset?: "unicode" | "nerd" | "ascii";
-	colorBlindMode?: boolean;
 }
 
 export interface SettingsCallbacks {
 	/** Called when any setting value changes */
 	onChange: (path: string, newValue: unknown) => void;
 	/** Called for theme preview while browsing */
-	onThemePreview?: (theme: string, options?: ThemePreviewOptions) => void | Promise<void>;
+	onThemePreview?: (theme: string) => void | Promise<void>;
 	/** Called for status line preview while configuring */
 	onStatusLinePreview?: (settings: StatusLinePreviewSettings) => void;
 	/** Get current rendered status line for inline preview */
 	getStatusLinePreview?: () => string;
+	/** Native status bar for the inline preview (TSP terminals dock the bar; its ANSI border geometry doesn't apply) */
+	describeStatusLinePreview?: () => NativeNode;
 	/** Called when plugins change */
 	onPluginsChanged?: () => void | Promise<void>;
 	/** Called when settings panel is closed */
@@ -497,6 +621,11 @@ export interface SettingsCallbacks {
  */
 export class SettingsSelectorComponent implements Component {
 	#tabBar: TabBar;
+	/** The tab bar's current tab list (the bar keeps no public getter). */
+	#tabs: Tab[];
+	readonly #native: SettingsNativeMemo = { hints: {} };
+	/** Changed-setting counts per tab for the native page nav, cleared whenever the items rebuild. */
+	readonly #changedCounts = new Map<SettingTab, number>();
 	#currentList: SettingsList | null = null;
 	#searchList: SettingsList | null = null;
 	#pluginComponent: PluginSettingsComponent | null = null;
@@ -508,14 +637,16 @@ export class SettingsSelectorComponent implements Component {
 	#searchMatchCount = 0;
 	/** First matching item id per tab id, for Tab-key jumps while searching. */
 	#searchFirstMatch = new Map<string, string>();
+	/**
+	 * Per-tab search candidates prepared once per search session. Dropped on
+	 * search start/end and whenever a value or condition may have changed
+	 * (`#refreshItems`, `#onSearchSettingChange`); rebuilt lazily by `#setSearchQuery`.
+	 */
+	#searchCorpora: { tab: SettingTab; corpus: FuzzyCorpus<SettingItem> }[] | null = null;
 	#textInputActive = false;
-	#hasSectionJump = false;
-	#scope: SettingsScope;
-	#unsubscribeProjectSettings?: () => void;
-	/** Live theme before the first scoped preview; close restores this if the effective name cannot load. */
-	#themeBeforePreview: string | undefined;
-	/** Cached overlay title for project scope; VCS discovery is not render-safe. */
+	#scope: SettingsUiScope;
 	#projectLabel: string;
+	#hasSectionJump = false;
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
 	#tabRowStart = 0;
@@ -525,22 +656,19 @@ export class SettingsSelectorComponent implements Component {
 	#sidebarWidth: number;
 	readonly #context: SettingsRuntimeContext;
 	readonly #callbacks: SettingsCallbacks;
-
 	constructor(context: SettingsRuntimeContext, callbacks: SettingsCallbacks) {
 		this.#context = context;
 		this.#callbacks = callbacks;
 		this.#sidebarWidth = settingsSidebarWidth(context.settings.entries);
-		this.#themeBeforePreview = getCurrentThemeName();
 		this.#projectLabel = context.settings.projectLabel();
 		this.#scope = context.settings.hasProjectConfig() ? "project" : "global";
-		// No label prefix (the frame title already says Settings) and no
-		// "(tab to cycle)" hint (folded into the footer hint line).
-		this.#tabBar = new TabBar("", getSettingsTabs(), getTabBarTheme());
+		const tabs = getSettingsTabs();
+		this.#tabs = tabs;
+		this.#tabBar = new TabBar("", tabs, getTabBarTheme());
 		this.#tabBar.showHint = false;
 		this.#tabBar.onTabChange = () => {
 			const tabId = this.#tabBar.getActiveTab().id as SettingTab | "plugins";
 			if (this.#searchList) {
-				// While searching, tabs act as jump targets into the result list.
 				const firstId = this.#searchFirstMatch.get(tabId);
 				if (firstId) this.#searchList.selectItem(firstId);
 				return;
@@ -548,13 +676,8 @@ export class SettingsSelectorComponent implements Component {
 			this.#switchToTab(tabId);
 		};
 
-		// Initialize with first tab and preview the selected scope's
-		// appearance so an overlay cannot pin the live theme/status.
 		this.#switchToTab("appearance");
-		this.#previewAppearanceForScope();
-		this.#unsubscribeProjectSettings = context.settings.onProjectSettingsReconciled?.(paths => {
-			this.#resyncItemsFromSettings(paths);
-		});
+		if (context.settings.hasProjectConfig()) this.#previewAppearanceForScope();
 	}
 
 	invalidate(): void {
@@ -584,18 +707,22 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	#footerHintText(): string {
+		const confirm = editorKey("tui.select.confirm");
+		const cancel = editorKey("tui.select.cancel");
+		const tab = formatKeyHint("tab");
+		const switchTabs = `${formatKeyHints(["left", "right"])} to switch tabs`;
+		const scope = this.#scope === "project" ? "Alt+S to switch scope · Del to inherit" : "Alt+S to switch scope";
 		if (this.#searchList) {
-			return "Enter to change · Tab to jump tabs · Alt+S to switch scope · Esc to exit search";
+			return `${confirm} to change · ${tab} to jump tabs · Alt+S to switch scope · ${cancel} to exit search`;
 		}
 		if (this.#currentTabId === "plugins") {
-			return "Tab to switch tabs · Esc to close";
+			return `${tab} to switch tabs · ${cancel} to close`;
 		}
-		const scope = this.#scope === "project" ? "Alt+S to switch scope · Del to inherit" : "Alt+S to switch scope";
 		if (this.#currentList?.sectionFocused) {
-			return `↑/↓ to jump sections · Tab/Enter to settings · ←/→ to switch tabs · ${scope} · Esc to close`;
+			return `${editorKeys("tui.select.up", "tui.select.down")} to jump sections · ${tab}/${confirm} to settings · ${switchTabs} · ${scope} · ${cancel} to close`;
 		}
-		const nav = this.#hasSectionJump ? "Tab to jump sections · ←/→ to switch tabs" : "Tab to switch tabs";
-		return `Enter/Space to change · ${nav} · ${scope} · Type to search · Esc to close`;
+		const nav = this.#hasSectionJump ? `${tab} to jump sections · ${switchTabs}` : `${tab} to switch tabs`;
+		return `${confirm}/${formatKeyHint("space")} to change · ${nav} · ${scope} · Type to search · ${cancel} to close`;
 	}
 
 	/** Single-line search banner: accent icon, editable query with live cursor, right-aligned match count. */
@@ -642,7 +769,8 @@ export class SettingsSelectorComponent implements Component {
 		}
 
 		const out: string[] = [];
-		out.push(topBorder(width, this.#title()));
+
+		out.push(topBorder(width, this.#overlayTitle()));
 		this.#tabRowStart = out.length;
 		this.#tabRowCount = tabLines.length;
 		for (const line of tabLines) {
@@ -664,6 +792,442 @@ export class SettingsSelectorComponent implements Component {
 		out.push(row(theme.fg("dim", this.#footerHintText()), width));
 		out.push(bottomBorder(width));
 		return out;
+	}
+
+	/**
+	 * Over a live session the native page is its own sheet: the backend puts
+	 * it in `layer`, where a terminal with the `aside` feature docks it at the
+	 * pane's right edge with the transcript beside it. Without `aside` it
+	 * fills a screen surface instead.
+	 */
+	nativeSheet(cx: DescribeContext): boolean {
+		return cx.supports("prefs") && cx.feature("aside");
+	}
+
+	/**
+	 * The native settings page (`prefs`) when the terminal draws it, else the
+	 * root card of today's generic composition.
+	 */
+	describe(cx: DescribeContext): NativeNode {
+		return cx.supports("prefs") ? this.#describePrefs() : this.#describeCard();
+	}
+
+	/**
+	 * The settings as a native page: every tab (and the plugins page) in the
+	 * nav with its changed count, the current tab's sections (or the search
+	 * results grouped by tab), the keyboard focus and open editor, the
+	 * status-line preview on Appearance, and editors without a native control
+	 * (large choice pickers, provider limits) as children over the page.
+	 */
+	#describePrefs(): NativeNode {
+		const memo = this.#native;
+		const searching = this.#searchList !== null;
+		const list = this.#searchList ?? this.#currentList;
+		const entries = this.#context.settings.entries;
+		const plugins = this.#currentTabId === "plugins" ? this.#pluginComponent : null;
+		const pluginPage = plugins?.prefsPage();
+		const tab = this.#currentTabId === "plugins" ? undefined : this.#currentTabId;
+
+		const pages: TspPrefsProps["pages"][number][] = SETTING_TABS.map(id => {
+			const changed = this.#changedCount(id);
+			return { id, label: TAB_METADATA[id].label, icon: id, changed: changed > 0 ? changed : undefined };
+		});
+		pages.push({ id: PLUGINS_PAGE, label: "Installed", icon: "plugins", group: "Plugins" });
+
+		let sections: TspPrefsProps["sections"] = [];
+		let focus: string | null = null;
+		let editing: TspPrefsProps["editing"] = null;
+		const children: NativeChild[] = [];
+		if (pluginPage) {
+			sections = pluginPage.sections;
+			focus = pluginPage.focus;
+			editing = pluginPage.editing;
+			if (pluginPage.editor) children.push(pluginPage.editor);
+		} else if (list) {
+			sections = list.prefsSections(
+				item => {
+					const def = getSettingDef(entries, item.id);
+					const group = def?.group ?? "General";
+					const id = prefsSectionId(group);
+					return searching && def ? { id: `${def.tab}/${id}`, title: group, page: def.tab } : { id, title: group };
+				},
+				item => this.#prefsControl(item.id, item.currentValue),
+			);
+			const at = list.prefsFocus();
+			focus = at.row ?? (at.section ? prefsSectionId(at.section) : null);
+			editing = list.prefsEditing(id => this.#inlineMenu(id));
+			const open = list.openSubmenu;
+			if (open && !editing) {
+				// Pickers describe themselves as a sheet; anything else sits in a card over the page.
+				children.push(
+					open.component instanceof SelectFormField
+						? open.component
+						: col([open.component], { role: PREFS_EDITOR_ROLE }),
+				);
+			}
+		}
+
+		if (tab === "appearance" && !searching) {
+			const source = this.#getStatusPreviewString();
+			if (memo.prefsPreview?.source !== source) {
+				memo.prefsPreview = {
+					source,
+					node: node(
+						"col",
+						{ role: PREFS_STATUS_ROLE },
+						[
+							this.#callbacks.describeStatusLinePreview?.() ??
+								text(styledSpans(source), { wrap: "none", truncate: "end" }),
+						],
+						"status-preview",
+					),
+				};
+			}
+			children.push(memo.prefsPreview.node);
+		}
+
+		const props: TspPrefsProps = {
+			title: "omp settings",
+			pages,
+			page: searching ? this.#preSearchTabId : this.#currentTabId,
+			lead: searching ? undefined : (pluginPage?.lead ?? (tab ? TAB_LEADS[tab] : undefined)),
+			query: searching ? this.#searchQuery : undefined,
+			cursor: searching ? this.#searchInput.getCursor() : undefined,
+			sections,
+			focus,
+			editing,
+		};
+		const signature = JSON.stringify(props);
+		if (memo.prefs && memo.prefs.signature === signature && sameItems(memo.prefs.children, children)) {
+			return memo.prefs.node;
+		}
+		const root = node("prefs", props, children);
+		memo.prefs = { signature, children, node: root };
+		return root;
+	}
+
+	/** Settings changed from their default on `tab` (visible ones only); cached until the items rebuild. */
+	#changedCount(tab: SettingTab): number {
+		const cached = this.#changedCounts.get(tab);
+		if (cached !== undefined) return cached;
+		let count = 0;
+		for (const def of getSettingsForTab(this.#context.settings.entries, tab)) {
+			if (def.condition && !def.condition()) continue;
+			if (this.#isChanged(def, this.#getCurrentValue(def))) count++;
+		}
+		this.#changedCounts.set(tab, count);
+		return count;
+	}
+
+	/** Whether row `id`'s choices fit its popup menu (else the submenu opens as a picker over the page). */
+	#inlineMenu(id: string): boolean {
+		const def = getSettingDef(this.#context.settings.entries, id);
+		return def?.type !== "submenu" || this.#submenuOptions(def).length <= PREFS_MENU_MAX;
+	}
+
+	/** Setting `id`'s typed control for the native page; `shown` is the list's display value. */
+	#prefsControl(id: string, shown: string): TspPrefsControl | undefined {
+		const def = getSettingDef(this.#context.settings.entries, id);
+		if (!def) return undefined;
+		const value = this.#getCurrentValue(def);
+		switch (def.type) {
+			case "boolean":
+				return { k: "switch", on: value === true };
+			case "enum":
+				return { k: "choice", value: shown, options: def.values.map(v => ({ value: v, label: v })) };
+			case "submenu": {
+				const labels = numberSteps(def);
+				if (labels) {
+					const n = Number(value);
+					return { k: "number", value: Number.isFinite(n) ? n : -1, labels };
+				}
+				const options = this.#submenuOptions(def).map(o => ({
+					value: o.value,
+					label: o.label,
+					detail: o.description,
+				}));
+				// Few short plain choices segment; described ones and live-previewed ones
+				// (hovering the menu previews, see #createSubmenu) keep the menu.
+				return {
+					k: "choice",
+					value: shown,
+					options,
+					style: PREVIEWED_SETTINGS.has(def.path) || options.some(o => o.detail) ? "menu" : "auto",
+					mono: options.every(o => o.label === o.value),
+				};
+			}
+			case "text":
+				return {
+					k: "text",
+					value: shown,
+					secret: def.secret || undefined,
+					mono: !def.secret && MONO_TEXT_SETTING.test(def.path) ? true : undefined,
+				};
+			case "providerLimits":
+				return { k: "action", label: "Edit…", act: "edit" };
+			case "multiselect":
+				return {
+					k: "multi",
+					values: Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [],
+					options: def.options.map(o => ({ value: o.value, label: o.label, detail: o.description })),
+					ordered: def.ordered || undefined,
+				};
+		}
+	}
+
+	/** The default of `def` as its control names it (the changed dot's title). */
+	#defaultLabel(def: SettingDef): string {
+		const value: unknown = def.defaultValue;
+		switch (def.type) {
+			case "boolean":
+				return value ? "On" : "Off";
+			case "submenu": {
+				const raw = this.#getSubmenuCurrentValue(def.path, value);
+				return this.#submenuOptions(def).find(o => o.value === raw)?.label ?? raw;
+			}
+			case "multiselect":
+				return this.#formatMultiSelectValue(def, value);
+			case "text":
+				return def.secret ? "" : this.#formatTextInputEditValue(def.path, value);
+			default:
+				return value === undefined || value === null ? "" : String(value);
+		}
+	}
+
+	/**
+	 * Pointer actions on the native page, each through the code the keys use:
+	 * a page click switches tabs (leaving a search), a row click moves the
+	 * selection, a value change goes through the row's cycle, submenu or text
+	 * field (`null` unsets the setting), menu hovers preview, and closing an
+	 * open menu cancels it (reverting its preview).
+	 */
+	#handlePrefsEvent(event: NativeUiEvent): void {
+		if (this.#currentTabId === "plugins" && this.#pluginComponent) {
+			if (event.type === "action" && event.act === "page" && event.value === PLUGINS_PAGE) {
+				this.#switchToTab("plugins");
+				return;
+			}
+			if (
+				!(event.type === "action" && (event.act === "page" || (event.act === "close" && event.value === undefined)))
+			) {
+				this.#pluginComponent.handlePrefsEvent(event);
+				return;
+			}
+		}
+		const list = this.#searchList ?? this.#currentList;
+		switch (event.type) {
+			case "action":
+				if (event.act === "page" && event.value) {
+					this.#showPage(event.value);
+				} else if (event.act === "close") {
+					if (event.value === undefined) this.#callbacks.onCancel();
+					else if (list?.openSubmenu?.id === event.value) list.handleInput(ESCAPE);
+				} else if (event.act === "edit" && event.value) {
+					list?.openSubmenuFor(event.value);
+				}
+				return;
+			case "select": {
+				if (!list) return;
+				const eq = event.item.indexOf("=");
+				if (eq >= 0) {
+					const open = list.openSubmenu;
+					if (open?.id !== event.item.slice(0, eq) || !(open.component instanceof SelectFormField)) return;
+					const select = open.component.selectList;
+					select.setSelectedValue(event.item.slice(eq + 1));
+					const item = select.getSelectedItem();
+					if (item) select.onSelectionChange?.(item);
+					return;
+				}
+				if (list.openSubmenu) list.handleInput(ESCAPE);
+				list.selectItem(event.item);
+				return;
+			}
+			case "activate":
+				list?.openSubmenuFor(event.item);
+				return;
+			case "change":
+				if (list) this.#applyPrefsChange(list, event.item, event.value);
+				return;
+			case "toggle":
+				return;
+		}
+	}
+
+	/** Shows page `id` (a tab or the plugins page), leaving a search. */
+	#showPage(id: string): void {
+		if (this.#searchList) this.#endSearch(false);
+		if (id !== this.#currentTabId) this.#tabBar.selectTab(id);
+	}
+
+	/** A pointer value change on row `id`, through the path its keys take (see {@link #handlePrefsEvent}). */
+	#applyPrefsChange(
+		list: SettingsList,
+		id: string,
+		value: boolean | number | string | readonly string[] | null,
+	): void {
+		const def = getSettingDef(this.#context.settings.entries, id);
+		if (!def) return;
+		if (value === null) {
+			if (list.openSubmenu) list.handleInput(ESCAPE);
+			this.#clearSetting(def.path);
+			this.#callbacks.onChange(def.path, this.#context.settings.get(def.path));
+			if (def.tab === "appearance") this.#triggerStatusLinePreview();
+			this.#refreshItems();
+			return;
+		}
+		switch (def.type) {
+			case "boolean":
+				if (typeof value === "boolean") list.applyValue(id, String(value));
+				return;
+			case "enum":
+				if (typeof value === "string") list.applyValue(id, value);
+				return;
+			case "submenu": {
+				const choice =
+					typeof value === "number"
+						? this.#submenuOptions(def).find(o => numericOption(o.value) === value)?.value
+						: typeof value === "string"
+							? value
+							: undefined;
+				if (choice === undefined) return;
+				const field = list.openSubmenuFor(id);
+				if (field instanceof SelectFormField) {
+					field.selectList.handleNativeEvent({ type: "activate", key: "", item: choice });
+				}
+				return;
+			}
+			case "text": {
+				if (typeof value !== "string") return;
+				const field = list.openSubmenuFor(id);
+				if (field instanceof TextFormField) {
+					field.setValue(value);
+					field.submit();
+				}
+				return;
+			}
+			case "multiselect": {
+				if (!Array.isArray(value)) return;
+				const open = list.openSubmenu;
+				if (open?.id === id && open.component instanceof MultiSelectSubmenu) {
+					open.component.setValues(value);
+					// The native page applies a chip toggle without closing its
+					// editor, so the row and its tab badge only update here.
+					this.#refreshItems();
+					return;
+				}
+				const next = [...value];
+				this.#writeSetting(def.path, next);
+				this.#callbacks.onChange(def.path, next);
+				list.updateValue(id, this.#formatMultiSelectValue(def, next));
+				this.#refreshItems();
+				return;
+			}
+			case "providerLimits":
+				return;
+		}
+	}
+
+	/** Rebuilds the visible items after a change made outside a list's own `onChange` (changed flags, conditions). */
+	#refreshItems(): void {
+		if (this.#searchList) {
+			this.#searchCorpora = null;
+			this.#setSearchQuery(this.#searchQuery);
+		} else if (this.#currentTabId !== "plugins")
+			this.#refreshCurrentTabItems(getSettingsForTab(this.#context.settings.entries, this.#currentTabId));
+	}
+
+	/**
+	 * Root card: tab strip, search field while searching, the active content
+	 * component (settings list, search results, or plugins), the appearance
+	 * status-line preview, and the footer hints.
+	 */
+	#describeCard(): NativeNode {
+		const memo = this.#native;
+		const searching = this.#searchList !== null;
+		const children: NativeChild[] = [];
+
+		const active = this.#tabBar.getActiveTab()?.id;
+		if (memo.tabs?.tabs !== this.#tabs || memo.tabs.active !== active) {
+			memo.tabs = { tabs: this.#tabs, active, node: settingsTabsNode(this.#tabs, active) };
+		}
+		children.push(memo.tabs.node);
+
+		if (searching) {
+			const count = this.#searchMatchCount;
+			if (memo.search?.input !== this.#searchInput || memo.search.count !== count) {
+				const countText = count === 1 ? "1 match" : `${count} matches`;
+				memo.search = {
+					input: this.#searchInput,
+					count,
+					node: node(
+						"row",
+						{ gap: "xs", align: "center", role: "omp.settings.search" },
+						[
+							text([span(theme.symbol("icon.search"), "accent")]),
+							col([this.#searchInput], { grow: 1 }),
+							text([span(countText, count > 0 ? "dim" : "warning")], { wrap: "none" }),
+						],
+						"search",
+					),
+				};
+			}
+			children.push(memo.search.node);
+		}
+
+		const content = this.#searchList ?? this.#currentList ?? this.#pluginComponent;
+		if (content) children.push(content);
+
+		if (!searching && this.#currentTabId === "appearance") {
+			const source = this.#getStatusPreviewString();
+			if (memo.preview?.source !== source) {
+				memo.preview = {
+					source,
+					node: node(
+						"col",
+						{ gap: "xs" },
+						[
+							text([span("Preview:", "muted")]),
+							this.#callbacks.describeStatusLinePreview?.() ??
+								text(styledSpans(source), { wrap: "none", truncate: "end" }),
+						],
+						"preview",
+					),
+				};
+			}
+			children.push(memo.preview.node);
+		}
+
+		const mode: SettingsHintMode = searching
+			? "search"
+			: this.#currentTabId === "plugins"
+				? "plugins"
+				: this.#currentList?.sectionFocused
+					? "sections"
+					: this.#hasSectionJump
+						? "rows-sections"
+						: "rows";
+		memo.hints[mode] ??= settingsHintsNode(mode);
+		children.push(memo.hints[mode]);
+
+		if (memo.root && sameItems(memo.root.children, children)) return memo.root.node;
+		const root = overlayCard("omp.overlay.settings", "Settings", children);
+		memo.root = { children, node: root };
+		return root;
+	}
+
+	/**
+	 * Native page events (the root node, see {@link #handlePrefsEvent}); in the
+	 * generic composition a tab pick does what a tab click does: switch tabs (or
+	 * jump, while searching), unless an open submenu owns the pointer.
+	 */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.key === "") {
+			this.#handlePrefsEvent(event);
+			return;
+		}
+		if ((event.type !== "select" && event.type !== "activate") || event.key !== "tabs") return;
+		if ((this.#searchList ?? this.#currentList)?.hasOpenSubmenu()) return;
+		this.#tabBar.selectTab(event.item);
 	}
 
 	/**
@@ -737,6 +1301,7 @@ export class SettingsSelectorComponent implements Component {
 	/** Swap the tab content for the global search result list. */
 	#startSearch(initialQuery: string): void {
 		this.#preSearchTabId = this.#currentTabId;
+		this.#searchCorpora = null;
 		this.#searchInput = new Input();
 		this.#searchInput.prompt = "";
 		this.#searchInput.setValue(initialQuery);
@@ -745,7 +1310,7 @@ export class SettingsSelectorComponent implements Component {
 			10,
 			getSettingsListTheme(),
 			(id, newValue) => this.#onSearchSettingChange(id, newValue),
-			() => this.#close(),
+			() => this.#callbacks.onCancel(),
 			{
 				layout: "flat",
 				typeToSearch: false,
@@ -773,19 +1338,24 @@ export class SettingsSelectorComponent implements Component {
 			return;
 		}
 		this.#searchQuery = query;
+		this.#changedCounts.clear();
 
 		const counts = new Map<SettingTab, number>();
 		const items: SettingItem[] = [];
 		const tabResults: { tab: SettingTab; matched: SettingItem[]; bestScore: number; order: number }[] = [];
 		this.#searchFirstMatch.clear();
 		let total = 0;
-		for (const tab of SETTING_TABS) {
+		this.#searchCorpora ??= SETTING_TABS.map(tab => {
 			const candidates: SettingItem[] = [];
 			for (const def of getSettingsForTab(this.#context.settings.entries, tab)) {
 				const item = this.#defToItem(def);
 				if (item) candidates.push(item);
 			}
-			const ranked = fuzzyRank(candidates, query, getSettingItemFilterText);
+			return { tab, corpus: new FuzzyCorpus(candidates, getSettingItemFilterText) };
+		});
+		for (let order = 0; order < this.#searchCorpora.length; order++) {
+			const { tab, corpus } = this.#searchCorpora[order]!;
+			const ranked = corpus.rank(query);
 			const matched = ranked.map(result => result.item);
 			counts.set(tab, matched.length);
 			if (matched.length === 0) continue;
@@ -794,7 +1364,7 @@ export class SettingsSelectorComponent implements Component {
 				tab,
 				matched,
 				bestScore: ranked[0]?.score ?? 0,
-				order: SETTING_TABS.indexOf(tab),
+				order,
 			});
 		}
 
@@ -813,12 +1383,11 @@ export class SettingsSelectorComponent implements Component {
 
 		this.#searchList.setItems(items);
 		this.#searchMatchCount = total;
-		this.#tabBar.setTabs(
-			this.#buildSearchTabs(
-				counts,
-				tabResults.map(result => result.tab),
-			),
+		this.#tabs = this.#buildSearchTabs(
+			counts,
+			tabResults.map(result => result.tab),
 		);
+		this.#tabBar.setTabs(this.#tabs);
 		this.#syncTabBarToSelection(this.#searchList.getSelectedItem());
 	}
 
@@ -834,9 +1403,11 @@ export class SettingsSelectorComponent implements Component {
 		const targetTab: SettingTab | "plugins" = selectedDef?.tab ?? this.#preSearchTabId;
 
 		this.#searchQuery = "";
+		this.#searchCorpora = null;
 		this.#searchFirstMatch.clear();
 		this.#searchMatchCount = 0;
-		this.#tabBar.setTabs(getSettingsTabs(), targetTab);
+		this.#tabs = getSettingsTabs();
+		this.#tabBar.setTabs(this.#tabs, targetTab);
 		this.#switchToTab(targetTab);
 		if (selectedDef) {
 			this.#currentList?.selectItem(selectedDef.path);
@@ -883,16 +1454,17 @@ export class SettingsSelectorComponent implements Component {
 		const def = getSettingDef(this.#context.settings.entries, path);
 		if (!def) return;
 		if (def.type === "boolean") {
-			this.#persistSetting(path, newValue === "true");
+			this.#writeSetting(path, newValue === "true");
 		} else if (def.type === "enum") {
-			this.#persistSetting(path, newValue);
+			this.#writeSetting(path, newValue);
 		}
 		// Submenu/text types already persisted inside their own done callbacks.
 		if (def.tab === "appearance") {
-			this.#previewAppearanceForScope();
+			this.#triggerStatusLinePreview();
 		}
 		// Values feed the searchable text and condition gates may have flipped:
 		// recompute results in place (selection is preserved by item id).
+		this.#searchCorpora = null;
 		this.#setSearchQuery(this.#searchQuery);
 	}
 
@@ -901,17 +1473,19 @@ export class SettingsSelectorComponent implements Component {
 	 */
 	#defToItem(def: SettingDef): SettingItem | null {
 		// Check condition: applies to every variant — booleans, enums, submenus, text inputs.
-		if (def.condition && !def.condition(this.#scope)) {
+		if (def.condition && !def.condition()) {
 			return null;
 		}
 
 		const currentValue = this.#getCurrentValue(def);
+		const changed = this.#isChanged(def, currentValue);
 		const item = {
 			id: def.path,
 			label: def.label,
 			description: def.description,
 			warning: def.warning,
-			changed: this.#isChanged(def, currentValue),
+			changed,
+			defaultLabel: changed ? this.#defaultLabel(def) : undefined,
 		};
 
 		switch (def.type) {
@@ -951,11 +1525,10 @@ export class SettingsSelectorComponent implements Component {
 		}
 	}
 
-	/**
-	 * Get the current value for a setting.
-	 */
-	#getCurrentValue(def: SettingDef): unknown {
-		return this.#scopedValue(def.path);
+	#overlayTitle(): string {
+		if (this.#currentTabId === "plugins") return "Settings";
+		if (this.#scope === "global") return "Settings · global";
+		return `Settings · ${this.#projectLabel}`;
 	}
 
 	#scopedValue(path: string): unknown {
@@ -964,64 +1537,54 @@ export class SettingsSelectorComponent implements Component {
 			: this.#context.settings.getProjectScoped(path);
 	}
 
-	#persistSetting(path: string, value: unknown): unknown {
-		if (this.#scope === "project" && this.#context.settings.isCredential(path)) {
-			const inherited = this.#context.settings.getProjectInherited(path);
-			if (Bun.deepEquals(value, inherited) && Bun.deepEquals(this.#scopedValue(path), inherited)) {
-				return this.#context.settings.get(path);
-			}
+	#writeSetting(path: string, value: unknown): unknown {
+		if (
+			this.#scope === "project" &&
+			this.#context.settings.isCredential(path) &&
+			Bun.deepEquals(value, this.#context.settings.getProjectInherited(path)) &&
+			Bun.deepEquals(this.#scopedValue(path), this.#context.settings.getProjectInherited(path))
+		) {
+			return this.#context.settings.get(path);
 		}
 		const previous = this.#context.settings.get(path);
 		this.#context.settings.set(path, value, this.#scope);
-		return this.#notifyLiveChange(path, previous, this.#context.settings.get(path));
-	}
-
-	#persistRecordScopeSetting(path: string, value: Record<string, unknown>): unknown {
-		const previous = this.#context.settings.get(path);
-		if (this.#scope === "global") {
-			this.#context.settings.set(path, value, "global");
-			return this.#notifyLiveChange(path, previous, this.#context.settings.get(path));
-		}
-		if (path === "providers.maxInFlightRequests") {
-			const inherited = this.#context.settings.normalizeProviderLimits(
-				this.#context.settings.getProjectInherited(path),
-			);
-			const limits = this.#context.settings.normalizeProviderLimits(value);
-			const next: Record<string, number | null> = {};
-			for (const provider of new Set([...Object.keys(inherited), ...Object.keys(limits)])) {
-				const nextLimit = limits[provider];
-				if (nextLimit === undefined) {
-					next[provider] = null;
-					continue;
-				}
-				if (nextLimit !== inherited[provider]) next[provider] = nextLimit;
-			}
-			this.#context.settings.set(path, next, "project");
-			return this.#notifyLiveChange(path, previous, this.#context.settings.get(path));
-		}
-		const inheritedRaw = this.#context.settings.getProjectInherited(path);
-		const inherited =
-			inheritedRaw && typeof inheritedRaw === "object" && !Array.isArray(inheritedRaw)
-				? (inheritedRaw as Record<string, unknown>)
-				: {};
-		const next: Record<string, unknown> = {};
-		for (const key of new Set([...Object.keys(inherited), ...Object.keys(value)])) {
-			const nextValue = value[key];
-			if (nextValue === undefined) {
-				next[key] = null;
-				continue;
-			}
-			if (!Bun.deepEquals(nextValue, inherited[key])) next[key] = nextValue;
-		}
-		this.#context.settings.set(path, next, "project");
-		return this.#notifyLiveChange(path, previous, this.#context.settings.get(path));
-	}
-
-	#notifyLiveChange(path: string, previous: unknown, next: unknown): unknown {
-		if (!Bun.deepEquals(previous, next)) {
-			this.#callbacks.onChange(path, next);
-		}
+		const next = this.#context.settings.get(path);
+		if (!Bun.deepEquals(previous, next)) this.#callbacks.onChange(path, next);
 		return next;
+	}
+
+	#clearSetting(path: string): void {
+		const previous = this.#context.settings.get(path);
+		if (this.#scope === "project") {
+			if (!this.#context.settings.clearProject(path)) return;
+		} else {
+			this.#context.settings.unset(path);
+		}
+		const next = this.#context.settings.get(path);
+		if (!Bun.deepEquals(previous, next)) this.#callbacks.onChange(path, next);
+	}
+
+	#switchScope(): void {
+		this.#scope = this.#scope === "project" ? "global" : "project";
+		if (this.#searchList) this.#setSearchQuery(this.#searchQuery);
+		else if (this.#currentTabId !== "plugins") this.#switchToTab(this.#currentTabId);
+		this.#previewAppearanceForScope();
+	}
+
+	#previewAppearanceForScope(): void {
+		const dark = this.#scopedValue("theme.dark");
+		const light = this.#scopedValue("theme.light");
+		const appearance = detectTerminalBackground();
+		const name = appearance === "light" ? light : dark;
+		if (typeof name === "string" && name.length > 0) {
+			const preview = this.#context.availableThemes.includes(name) ? name : "dark";
+			void this.#callbacks.onThemePreview?.(preview);
+		}
+		this.#triggerStatusLinePreview();
+	}
+
+	#getCurrentValue(def: SettingDef): unknown {
+		return this.#scopedValue(def.path);
 	}
 
 	#isChanged(def: SettingDef, currentValue: unknown): boolean {
@@ -1046,6 +1609,20 @@ export class SettingsSelectorComponent implements Component {
 		return rawValue;
 	}
 
+	/** A submenu's choices: the declared ones, or the runtime ones (thinking levels, themes, composer shapes). */
+	#submenuOptions(def: SettingDef & { type: "submenu" }): readonly SubmenuOption[] {
+		if (def.path === "defaultThinkingLevel") {
+			// Prepend `auto`; the rest are the model's runtime-supported efforts.
+			const levels: ConfiguredThinkingLevel[] = [AUTO_THINKING, ...this.#context.availableThinkingLevels];
+			return levels.map(level => def.options.find(o => o.value === level) ?? { value: level, label: level });
+		}
+		if (def.path === "theme.dark" || def.path === "theme.light") {
+			return this.#context.availableThemes.map(t => ({ value: t, label: t }));
+		}
+		if (def.path === "composer.shape") return getComposerShapeOptions();
+		return def.options;
+	}
+
 	/**
 	 * Create a submenu for a submenu-type setting.
 	 */
@@ -1054,35 +1631,19 @@ export class SettingsSelectorComponent implements Component {
 		currentValue: string,
 		done: (value?: string) => void,
 	): Component {
-		let options = def.options;
-
-		// Special case: inject runtime options for thinking level
-		if (def.path === "defaultThinkingLevel") {
-			// Prepend `auto`; the rest are the model's runtime-supported efforts.
-			const levels: ConfiguredThinkingLevel[] = [AUTO_THINKING, ...this.#context.availableThinkingLevels];
-			options = levels.map(level => {
-				const baseOpt = options.find(o => o.value === level);
-				return baseOpt || { value: level, label: level };
-			});
-		} else if (def.path === "theme.dark" || def.path === "theme.light") {
-			options = this.#context.availableThemes.map(t => ({ value: t, label: t }));
-		} else if (def.path === "composer.shape") {
-			options = getComposerShapeOptions();
-		}
+		const options = this.#submenuOptions(def);
 		// Preview handlers
 		let onPreview: ((value: string) => void | Promise<void>) | undefined;
 		let onPreviewCancel: (() => void) | undefined;
 		let footer: Component | undefined;
 
+		const activeThemeBeforePreview = getCurrentThemeName() ?? currentValue;
 		if (def.path === "theme.dark" || def.path === "theme.light") {
 			onPreview = value => {
-				return this.#callbacks.onThemePreview?.(
-					value,
-					this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
-				);
+				return this.#callbacks.onThemePreview?.(value);
 			};
 			onPreviewCancel = () => {
-				this.#previewAppearanceForScope();
+				this.#callbacks.onThemePreview?.(activeThemeBeforePreview);
 			};
 		} else if (def.path === "statusLine.preset") {
 			onPreview = value => {
@@ -1097,21 +1658,31 @@ export class SettingsSelectorComponent implements Component {
 				});
 			};
 			onPreviewCancel = () => {
-				this.#triggerStatusLinePreview();
+				const currentPreset = this.#context.settings.get("statusLine.preset") as StatusLinePreset;
+				const presetDef = getPreset(currentPreset);
+				this.#callbacks.onStatusLinePreview?.({
+					preset: currentPreset,
+					leftSegments: presetDef.leftSegments,
+					rightSegments: presetDef.rightSegments,
+					separator: presetDef.separator,
+				});
 			};
 		} else if (def.path === "statusLine.separator") {
 			onPreview = value => {
 				this.#callbacks.onStatusLinePreview?.({ separator: value as StatusLineSeparatorStyle });
 			};
 			onPreviewCancel = () => {
-				this.#triggerStatusLinePreview();
+				const separator = this.#context.settings.get("statusLine.separator") as StatusLineSeparatorStyle;
+				this.#callbacks.onStatusLinePreview?.({ separator });
 			};
 		} else if (def.path === "statusLine.contextLine") {
 			onPreview = value => {
 				this.#callbacks.onStatusLinePreview?.({ contextLine: value as ContextLineMode });
 			};
 			onPreviewCancel = () => {
-				this.#triggerStatusLinePreview();
+				this.#callbacks.onStatusLinePreview?.({
+					contextLine: this.#context.settings.get("statusLine.contextLine") as ContextLineMode,
+				});
 			};
 		} else if (def.path === "snapcompact.shape") {
 			const shapePreview = new SnapcompactShapePreview(currentValue, {
@@ -1140,7 +1711,8 @@ export class SettingsSelectorComponent implements Component {
 			currentValue,
 			value => {
 				this.#setSettingValue(def.path, value);
-				done(this.#getSubmenuCurrentValue(def.path, this.#scopedValue(def.path)));
+				this.#callbacks.onChange(def.path, value);
+				done(value);
 			},
 			() => {
 				onPreviewCancel?.();
@@ -1150,11 +1722,12 @@ export class SettingsSelectorComponent implements Component {
 			getPreview,
 			footer,
 			this.#context.requestRender,
+			isThemeSetting ? themePickerOptions(def.label, String(currentValue)) : undefined,
 		);
 	}
 
 	/**
-	 * Create a text input submenu for a plain string setting.
+	 * Create a text input submenu for a string or structured setting.
 	 */
 	#createTextInput(
 		def: SettingDef & { type: "text" },
@@ -1172,9 +1745,8 @@ export class SettingsSelectorComponent implements Component {
 			this.#formatTextInputEditValue(def.path, this.#scopedValue(def.path)),
 			def.secret,
 			value => {
-				// Empty string clears the setting; undefined-typed string settings
-				// store "" which the browser.ts expandPath ignores (no-op fallback).
-				this.#setSettingValue(def.path, value);
+				if (value === "") this.#clearSetting(def.path);
+				else this.#setSettingValue(def.path, value);
 				wrappedDone(this.#formatTextInputValue(def, this.#scopedValue(def.path)));
 			},
 			() => wrappedDone(),
@@ -1184,24 +1756,10 @@ export class SettingsSelectorComponent implements Component {
 
 	#createProviderLimitsInput(done: (value?: string) => void): Container {
 		return new ProviderLimitsSubmenu(
-			{
-				...this.#context.settings,
-				get: path => this.#scopedValue(path),
-				set: (path, value) => {
-					if (
-						path === "providers.maxInFlightRequests" &&
-						value &&
-						typeof value === "object" &&
-						!Array.isArray(value)
-					) {
-						this.#persistRecordScopeSetting(path, value as Record<string, unknown>);
-					} else {
-						this.#persistSetting(path, value);
-					}
-				},
-			},
+			this.#context.settings,
 			this.#context.providers,
 			value => {
+				this.#callbacks.onChange("providers.maxInFlightRequests", value);
 				done(this.#formatProviderLimitsValue(value));
 			},
 			() => done(),
@@ -1216,12 +1774,7 @@ export class SettingsSelectorComponent implements Component {
 		return entries.map(([provider, limit]) => `${provider}: ${limit}`).join(", ");
 	}
 
-	#getMultiSelectOptions(def: SettingDef & { type: "multiselect" }) {
-		return def.options;
-	}
-
 	#createMultiSelect(def: SettingDef & { type: "multiselect" }, done: (value?: string) => void): Container {
-		const options = this.#getMultiSelectOptions(def);
 		const current: unknown = this.#scopedValue(def.path);
 		const initial = Array.isArray(current)
 			? current.filter((entry): entry is string => typeof entry === "string")
@@ -1229,18 +1782,18 @@ export class SettingsSelectorComponent implements Component {
 		return new MultiSelectSubmenu(
 			def.label,
 			def.description,
-			options,
+			def.options,
 			initial,
 			def.ordered,
 			value => {
-				this.#persistSetting(def.path, value);
+				this.#writeSetting(def.path, value);
 			},
 			() => done(this.#formatMultiSelectValue(def, this.#scopedValue(def.path))),
 		);
 	}
 
 	#formatMultiSelectValue(def: SettingDef & { type: "multiselect" }, value: unknown): string {
-		const options = this.#getMultiSelectOptions(def);
+		const { options } = def;
 		const labels = Array.isArray(value)
 			? value.flatMap(entry => {
 					if (typeof entry !== "string") return [];
@@ -1266,16 +1819,23 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Set a setting value, handling type conversion.
 	 */
-	#setSettingValue(path: string, value: string): unknown {
+	#setSettingValue(path: string, value: string): void {
 		const currentValue = this.#scopedValue(path);
 		const schemaType = getSettingDef(this.#context.settings.entries, path)?.schemaType;
 		if (path === "compaction.thresholdPercent" && value === "default") {
-			return this.#persistSetting(path, -1);
-		}
-		if (path === "compaction.thresholdTokens" && value === "default") {
-			return this.#persistSetting(path, -1);
-		}
-		if (schemaType === "record") {
+			this.#writeSetting(path, -1);
+		} else if (path === "compaction.thresholdTokens" && value === "default") {
+			this.#writeSetting(path, -1);
+		} else if (schemaType === "array") {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(value);
+			} catch {
+				throw new Error(`Invalid array JSON for ${path}`);
+			}
+			if (!Array.isArray(parsed)) throw new Error(`Invalid array JSON for ${path}`);
+			this.#writeSetting(path, parsed);
+		} else if (schemaType === "record") {
 			let parsed: unknown;
 			try {
 				parsed = JSON.parse(value || "{}");
@@ -1288,15 +1848,14 @@ export class SettingsSelectorComponent implements Component {
 			if (path === "providers.maxInFlightRequests") {
 				parsed = this.#context.settings.validateProviderLimits(parsed);
 			}
-			return this.#persistRecordScopeSetting(path, parsed as Record<string, unknown>);
+			this.#writeSetting(path, parsed);
+		} else if (typeof currentValue === "number") {
+			this.#writeSetting(path, Number(value));
+		} else if (typeof currentValue === "boolean") {
+			this.#writeSetting(path, value === "true");
+		} else {
+			this.#writeSetting(path, value);
 		}
-		if (typeof currentValue === "number") {
-			return this.#persistSetting(path, Number(value));
-		}
-		if (typeof currentValue === "boolean") {
-			return this.#persistSetting(path, value === "true");
-		}
-		return this.#persistSetting(path, value);
 	}
 
 	/**
@@ -1323,12 +1882,12 @@ export class SettingsSelectorComponent implements Component {
 				const path = def.path;
 
 				if (def.type === "boolean") {
-					this.#persistSetting(path, newValue === "true");
+					this.#writeSetting(path, newValue === "true");
+					if (tabId === "appearance") {
+						this.#triggerStatusLinePreview();
+					}
 				} else if (def.type === "enum") {
-					this.#persistSetting(path, newValue);
-				}
-				if (tabId === "appearance") {
-					this.#previewAppearanceForScope();
+					this.#writeSetting(path, newValue);
 				}
 				// Submenu/text types already persisted the value inside their own
 				// done callbacks before SettingsList re-dispatches here. Re-run the
@@ -1337,7 +1896,7 @@ export class SettingsSelectorComponent implements Component {
 				// immediately instead of waiting for the next tab switch.
 				this.#refreshCurrentTabItems(defs);
 			},
-			() => this.#close(),
+			() => this.#callbacks.onCancel(),
 			// The selector owns type-to-search and the footer hint; pin the
 			// split sidebar width so the divider never jumps between tabs.
 			{ typeToSearch: false, hint: "", sidebarWidth: this.#sidebarWidth },
@@ -1350,6 +1909,7 @@ export class SettingsSelectorComponent implements Component {
 	 * into a new group; groups whose items are all condition-hidden emit none.
 	 */
 	#buildItemsForDefs(defs: SettingDef[]): SettingItem[] {
+		this.#changedCounts.clear();
 		const items: SettingItem[] = [];
 		let lastGroup: string | undefined;
 		for (const def of defs) {
@@ -1383,164 +1943,21 @@ export class SettingsSelectorComponent implements Component {
 	/**
 	 * Trigger status line preview with current settings.
 	 */
-	#triggerStatusLinePreview(overrides?: StatusLinePreviewSettings): void {
+	#triggerStatusLinePreview(): void {
 		const statusLineSettings: StatusLinePreviewSettings = {
 			preset: this.#scopedValue("statusLine.preset") as StatusLinePreset,
 			leftSegments: this.#scopedValue("statusLine.leftSegments") as StatusLineSegmentId[],
 			rightSegments: this.#scopedValue("statusLine.rightSegments") as StatusLineSegmentId[],
 			separator: this.#scopedValue("statusLine.separator") as StatusLineSeparatorStyle,
-			showHookStatus: this.#scopedValue("statusLine.showHookStatus") as boolean,
 			sessionAccent: this.#scopedValue("statusLine.sessionAccent") as boolean,
 			transparent: this.#scopedValue("statusLine.transparent") as boolean,
-			compactThinkingLevel: this.#scopedValue("statusLine.compactThinkingLevel") as boolean,
-			contextLine: this.#scopedValue("statusLine.contextLine") as ContextLineMode,
-			segmentOptions: this.#scopedValue("statusLine.segmentOptions") as Record<string, unknown>,
-			...overrides,
 		};
 		this.#callbacks.onStatusLinePreview?.(statusLineSettings);
 	}
 
-	#title(): string {
-		if (this.#currentTabId === "plugins") return "Settings";
-		if (this.#scope === "global") return "Settings · global";
-		return `Settings · ${this.#projectLabel}`;
-	}
-
-	#switchScope(): void {
-		this.#scope = this.#scope === "project" ? "global" : "project";
-		if (this.#searchList) {
-			this.#setSearchQuery(this.#searchQuery);
-		} else if (this.#currentTabId !== "plugins") {
-			const selectedId = this.#currentList?.getSelectedItem()?.id;
-			this.#switchToTab(this.#currentTabId);
-			if (selectedId) this.#currentList?.selectItem(selectedId);
-		}
-		this.#previewAppearanceForScope();
-		this.#context.requestRender?.();
-	}
-
-	#previewAppearanceForScope(): void {
-		this.#triggerThemePreview(
-			this.#loadableScopedThemeName(),
-			this.#themePreviewOptions(this.#scopedValue("symbolPreset"), this.#scopedValue("colorBlindMode")),
-		);
-		this.#triggerStatusLinePreview();
-	}
-
-	#scopedThemeName(): string | undefined {
-		return this.#themeName(this.#scopedValue("theme.dark"), this.#scopedValue("theme.light"));
-	}
-
-	#loadableScopedThemeName(): string | undefined {
-		const name = this.#scopedThemeName();
-		if (name && this.#context.availableThemes.includes(name)) return name;
-		return name ? "dark" : undefined;
-	}
-
-	#effectiveThemeName(): string | undefined {
-		return this.#themeName(this.#context.settings.get("theme.dark"), this.#context.settings.get("theme.light"));
-	}
-
-	#themePreviewOptions(symbolPreset: unknown, colorBlindMode: unknown): ThemePreviewOptions {
-		return {
-			symbolPreset:
-				symbolPreset === "unicode" || symbolPreset === "nerd" || symbolPreset === "ascii"
-					? symbolPreset
-					: undefined,
-			colorBlindMode: typeof colorBlindMode === "boolean" ? colorBlindMode : undefined,
-		};
-	}
-
-	#themeName(dark: unknown, light: unknown): string | undefined {
-		const preferred = detectTerminalAppearance() === "light" ? light : dark;
-		if (typeof preferred === "string" && preferred.length > 0) return preferred;
-		if (typeof dark === "string" && dark.length > 0) return dark;
-		if (typeof light === "string" && light.length > 0) return light;
-		return undefined;
-	}
-
-	#triggerThemePreview(themeName: string | undefined, options: ThemePreviewOptions): void {
-		if (themeName) void this.#callbacks.onThemePreview?.(themeName, options);
-	}
-
-	#loadableThemeName(name: string | undefined): string | undefined {
-		if (name && this.#context.availableThemes.includes(name)) return name;
-		return this.#themeBeforePreview ?? (name ? "dark" : undefined);
-	}
-
-	#close(): void {
-		this.#unsubscribeProjectSettings?.();
-		this.#unsubscribeProjectSettings = undefined;
-		this.#triggerThemePreview(
-			this.#loadableThemeName(this.#effectiveThemeName()),
-			this.#themePreviewOptions(
-				this.#context.settings.get("symbolPreset"),
-				this.#context.settings.get("colorBlindMode"),
-			),
-		);
-		this.#callbacks.onStatusLinePreview?.({
-			preset: this.#context.settings.get("statusLine.preset") as StatusLinePreset,
-			leftSegments: this.#context.settings.get("statusLine.leftSegments") as StatusLineSegmentId[],
-			rightSegments: this.#context.settings.get("statusLine.rightSegments") as StatusLineSegmentId[],
-			separator: this.#context.settings.get("statusLine.separator") as StatusLineSeparatorStyle,
-			showHookStatus: this.#context.settings.get("statusLine.showHookStatus") as boolean,
-			sessionAccent: this.#context.settings.get("statusLine.sessionAccent") as boolean,
-			transparent: this.#context.settings.get("statusLine.transparent") as boolean,
-			compactThinkingLevel: this.#context.settings.get("statusLine.compactThinkingLevel") as boolean,
-			contextLine: this.#context.settings.get("statusLine.contextLine") as ContextLineMode,
-			segmentOptions: this.#context.settings.get("statusLine.segmentOptions") as Record<string, unknown>,
-		});
-		this.#callbacks.onCancel();
-	}
-
-	#inheritSelectedSetting(): void {
-		const item = this.#currentList?.getSelectedItem();
-		const def = item ? getSettingDef(this.#context.settings.entries, item.id) : undefined;
-		if (!def) return;
-		const previous = this.#context.settings.get(def.path);
-		if (!this.#context.settings.clearProject(def.path)) return;
-		this.#notifyLiveChange(def.path, previous, this.#context.settings.get(def.path));
-		if (def.tab === "appearance") {
-			this.#previewAppearanceForScope();
-		}
-		this.#refreshCurrentTabItems(getSettingsForTab(this.#context.settings.entries, def.tab));
-		this.#context.requestRender?.();
-	}
-
-	#resyncItemsFromSettings(adoptedPaths: readonly string[]): void {
-		const list = this.#searchList ?? this.#currentList;
-		const openSubmenuId = list?.getOpenSubmenuItemId() ?? null;
-		if (this.#searchList) {
-			this.#setSearchQuery(this.#searchQuery);
-		} else if (this.#currentTabId !== "plugins") {
-			const selectedId = this.#currentList?.getSelectedItem()?.id;
-			this.#refreshCurrentTabItems(getSettingsForTab(this.#context.settings.entries, this.#currentTabId));
-			if (selectedId) this.#currentList?.selectItem(selectedId);
-		}
-		const shouldRefreshOpenSubmenu =
-			this.#scope === "project" &&
-			openSubmenuId !== null &&
-			list !== null &&
-			(!list.hasItem(openSubmenuId) || this.#openSubmenuDependsOnAdoptedPaths(openSubmenuId, adoptedPaths));
-		if (shouldRefreshOpenSubmenu && list) {
-			const refreshed = list.refreshOpenSubmenu();
-			if (!refreshed && this.#textInputActive && !list.hasOpenSubmenu()) {
-				this.#textInputActive = false;
-			}
-		}
-		if (adoptedPaths.some(path => getSettingDef(this.#context.settings.entries, path)?.tab === "appearance")) {
-			this.#previewAppearanceForScope();
-		}
-		this.#context.requestRender?.();
-	}
-
-	#openSubmenuDependsOnAdoptedPaths(itemId: string, adoptedPaths: readonly string[]): boolean {
-		return adoptedPaths.includes(itemId);
-	}
-
 	#showPluginsTab(): void {
 		this.#pluginComponent = new PluginSettingsComponent(this.#context.plugins, {
-			onClose: () => this.#close(),
+			onClose: () => this.#callbacks.onCancel(),
 			onPluginChanged: () => this.#callbacks.onPluginsChanged?.(),
 			requestRender: this.#context.requestRender,
 		});
@@ -1568,12 +1985,13 @@ export class SettingsSelectorComponent implements Component {
 			return;
 		}
 
-		if (this.#currentTabId !== "plugins" && matchesKey(data, "alt+s")) {
+		if (data === "\x1bs") {
 			this.#switchScope();
 			return;
 		}
 		if (!this.#searchList && this.#scope === "project" && matchesKey(data, "delete")) {
-			this.#inheritSelectedSetting();
+			const selected = this.#currentList?.getSelectedItem();
+			if (selected) this.#clearSetting(selected.id);
 			return;
 		}
 

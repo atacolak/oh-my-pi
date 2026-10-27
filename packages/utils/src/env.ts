@@ -9,7 +9,9 @@ import {
 	normalizeProfileName,
 	refreshDirsFromEnv,
 } from "./dirs";
+import { isBunTestRuntime } from "./test-runtime";
 
+export * from "./test-runtime";
 export * from "./worker-host";
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -499,7 +501,7 @@ function loadLaunchCwdDotenv(
 const homeEnv = parseEnvFile(path.join(os.homedir(), ".env"));
 const piEnv = parseEnvFile(path.join(getConfigRootDir(), ".env"));
 const agentEnv = parseEnvFile(path.join(getAgentDir(), ".env"));
-const projectEnv = parseEnvFile(path.join(getProjectDir(), ".env"));
+const projectEnv = parseEnvFile(path.join(process.cwd(), ".env"));
 
 for (const key of Object.keys(Bun.env)) {
 	const value = Bun.env[key];
@@ -525,7 +527,7 @@ for (const file of [projectEnv, agentEnv, piEnv, homeEnv]) {
 refreshDirsFromEnv();
 
 const launchProjectDotenv = (() => {
-	const cwd = getProjectDir();
+	const cwd = process.cwd();
 	const processValues = filterProcessEnv(process.env);
 	const loaded = loadLaunchCwdDotenv(cwd, processValues, launchEnvValues);
 	const names = new Set(Object.keys(loaded.launchEnv));
@@ -659,15 +661,6 @@ export function $envpos(name: string, defaultValue: number): number {
 	const parsed = Number.parseInt(raw, 10);
 	if (Number.isNaN(parsed) || parsed <= 0) return defaultValue;
 	return parsed;
-}
-
-const BUN_TEST_ENTRY_PATTERN = /[._](?:test|spec)\.[cm]?[jt]sx?$/;
-
-/** True when the process is an explicitly marked test child or Bun is running a test entrypoint. */
-export function isBunTestRuntime(): boolean {
-	if (Bun.env.PI_TEST_RUNTIME === "1") return true;
-	const hasTestEnvironment = Bun.env.BUN_ENV === "test" || Bun.env.NODE_ENV === "test";
-	return hasTestEnvironment && BUN_TEST_ENTRY_PATTERN.test(Bun.main);
 }
 
 let terminalHeadless = isBunTestRuntime();

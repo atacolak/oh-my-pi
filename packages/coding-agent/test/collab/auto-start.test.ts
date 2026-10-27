@@ -7,7 +7,8 @@ import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabHost, CollabHostStoppedError } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { COLLAB_PROTO, DEFAULT_RELAY_URL, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
-import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgCollabAutoStart, cfgCollabRelayUrl } from "@oh-my-pi/pi-coding-agent/collab/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import * as atomicFile from "@oh-my-pi/pi-coding-agent/utils/atomic-file";
 import * as dirs from "@oh-my-pi/pi-utils/dirs";
@@ -15,11 +16,9 @@ import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { FakeWebSocket, installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
-function context(
-	overrides: Record<string, unknown> = {},
-	sessionSettings = Settings.isolated(overrides as Partial<Record<SettingPath, unknown>>),
-): InteractiveModeContext {
-	const settings = sessionSettings;
+function context(overrides: Record<string, unknown> = {}, sessionSettings?: Settings): InteractiveModeContext {
+	const settingOverrides = Object.fromEntries(Object.entries(overrides).filter(([key]) => key.startsWith("collab.")));
+	const settings = sessionSettings ?? Settings.isolated(settingOverrides);
 	const ctx = {
 		settings,
 		collabHost: undefined,
@@ -37,6 +36,7 @@ function context(
 				entries: [],
 			}),
 			onEntryAppended: undefined,
+			onPersistenceNotice: () => () => {},
 		},
 		session: {
 			subscribe: () => () => {},
@@ -310,7 +310,7 @@ describe("collab auto-start", () => {
 			(name: string) => name === "PI_CODING_AGENT_DIR" || name === "OMP_CODING_AGENT_DIR",
 		);
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(await Bun.file(target).exists()).toBe(false);
@@ -340,7 +340,7 @@ describe("collab auto-start", () => {
 			(name: string) => name === "PI_CONFIG_DIR" || name === "OMP_CONFIG_DIR",
 		);
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(await Bun.file(target).exists()).toBe(false);
@@ -370,7 +370,7 @@ describe("collab auto-start", () => {
 			(name: string) => name === "OMP_PROFILE" || name === "PI_PROFILE",
 		);
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(await Bun.file(target).exists()).toBe(false);
@@ -400,7 +400,7 @@ describe("collab auto-start", () => {
 		const fromArgv = spyOn(dirs, "isProfileSelectedFromArgv").mockReturnValue(true);
 		const profile = spyOn(dirs, "getActiveProfile").mockReturnValue("work");
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(true);
 			expect(start).toHaveBeenCalled();
 			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
@@ -434,7 +434,7 @@ describe("collab auto-start", () => {
 		const previousOmpProfile = process.env.OMP_PROFILE;
 		process.env.OMP_PROFILE = "work";
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(true);
 			expect(start).toHaveBeenCalled();
 			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
@@ -474,7 +474,7 @@ describe("collab auto-start", () => {
 		process.env.PI_PROFILE = "evil";
 		dirs.setProfile(dirs.resolveProfileEnv(process.env.OMP_PROFILE, process.env.PI_PROFILE));
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(await Bun.file(target).exists()).toBe(false);
@@ -511,7 +511,7 @@ describe("collab auto-start", () => {
 		const fromArgv = spyOn(dirs, "isProfileSelectedFromArgv").mockReturnValue(false);
 		const profile = spyOn(dirs, "getActiveProfile").mockReturnValue("work");
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(true);
 			expect(start).toHaveBeenCalled();
 			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
@@ -545,7 +545,7 @@ describe("collab auto-start", () => {
 		const fromArgv = spyOn(dirs, "isProfileSelectedFromArgv").mockReturnValue(true);
 		const profile = spyOn(dirs, "getActiveProfile").mockReturnValue(undefined);
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(await Bun.file(target).exists()).toBe(false);
@@ -579,7 +579,7 @@ describe("collab auto-start", () => {
 		const fromArgv = spyOn(dirs, "isProfileSelectedFromArgv").mockReturnValue(true);
 		const profile = spyOn(dirs, "getActiveProfile").mockReturnValue("work");
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("global");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("global");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(await Bun.file(target).exists()).toBe(false);
@@ -608,8 +608,8 @@ describe("collab auto-start", () => {
 		const ctx = context({}, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.get("collab.autoStart")).toBe("off");
-			expect(settings.getProvenance("collab.autoStart")).toBe("project");
+			expect(cfgCollabAutoStart.get(settings)).toBe("off");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("project");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(ctx.collabHost).toBeUndefined();
@@ -640,8 +640,8 @@ describe("collab auto-start", () => {
 		const ctx = context({}, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.get("collab.autoStart")).toBe("off");
-			expect(settings.getProvenance("collab.autoStart")).toBe("overlay");
+			expect(cfgCollabAutoStart.get(settings)).toBe("off");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("overlay");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(ctx.collabHost).toBeUndefined();
@@ -673,8 +673,8 @@ describe("collab auto-start", () => {
 		const ctx = context({}, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.get("collab.autoStart")).toBe("control");
-			expect(settings.getProvenance("collab.autoStart")).toBe("overlay");
+			expect(cfgCollabAutoStart.get(settings)).toBe("control");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("overlay");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(ctx.collabHost).toBeUndefined();
@@ -707,8 +707,8 @@ describe("collab auto-start", () => {
 		const ctx = context({}, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.get("collab.autoStart")).toBe("control");
-			expect(settings.getProvenance("collab.autoStart")).toBe("overlay");
+			expect(cfgCollabAutoStart.get(settings)).toBe("control");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("overlay");
 			expect(settings.getConfigOverlayLayers()).toHaveLength(2);
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
@@ -735,8 +735,8 @@ describe("collab auto-start", () => {
 		const ctx = context({}, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.get("collab.autoStart")).toBe("control");
-			expect(settings.getProvenance("collab.autoStart")).toBe("project");
+			expect(cfgCollabAutoStart.get(settings)).toBe("control");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("project");
 			expect(settings.getProjectSettingsLayers().length).toBeGreaterThanOrEqual(2);
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
@@ -848,7 +848,7 @@ describe("collab auto-start", () => {
 		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("overlay");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("overlay");
 			await expect(autoStart(ctx)).resolves.toBe(false);
 			expect(start).not.toHaveBeenCalled();
 			expect(await Bun.file(target).exists()).toBe(false);
@@ -912,7 +912,7 @@ describe("collab auto-start", () => {
 		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.getProvenance("collab.relayUrl")).toBe("overlay");
+			expect(cfgCollabRelayUrl.provenance(settings)).toBe("overlay");
 			await expect(autoStart(ctx)).resolves.toBe(true);
 			expect(start).toHaveBeenCalledWith("ws://localhost:8787", "");
 			expect(ctx.collabHost?.link).toContain("localhost:8787");
@@ -948,8 +948,8 @@ describe("collab auto-start", () => {
 		const ctx = context({ showWarning: (text: string) => warnings.push(text) }, settings);
 		const start = spyOn(CollabHost.prototype, "start");
 		try {
-			expect(settings.getProvenance("collab.autoStart")).toBe("project");
-			expect(settings.getProvenance("collab.relayUrl")).toBe("overlay");
+			expect(cfgCollabAutoStart.provenance(settings)).toBe("project");
+			expect(cfgCollabRelayUrl.provenance(settings)).toBe("overlay");
 			await expect(autoStart(ctx)).resolves.toBe(true);
 			expect(start).toHaveBeenCalledWith("ws://localhost:8787", "");
 			expect(ctx.collabHost?.link).toContain("localhost:8787");

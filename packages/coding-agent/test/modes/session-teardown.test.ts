@@ -120,7 +120,6 @@ describe("createSessionTeardown", () => {
 			"disposeSession",
 		]);
 	});
-
 	it("marks the session disposing before awaiting draft persistence", async () => {
 		const order: string[] = [];
 		const release = Promise.withResolvers<void>();

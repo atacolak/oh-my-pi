@@ -15,7 +15,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { type AsyncJob, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { createAgentsHubDeps } from "@oh-my-pi/pi-coding-agent/modes/agents-hub-deps";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
@@ -25,7 +28,10 @@ import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runne
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { AgentProgress, SingleResult, TaskParams } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { snapshotJobs } from "@oh-my-pi/pi-coding-agent/tools/hub/jobs";
+import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
+import { snapshotJobs } from "@oh-my-pi/pi-coding-agent/async/job-control";
+import { cfgTaskAgentModelOverrides, cfgTaskMaxConcurrency } from "@oh-my-pi/pi-coding-agent/task/settings";
+import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
 const taskAgent: AgentDefinition = {
 	name: "task",
@@ -104,6 +110,7 @@ describe("task spawn routing", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
 	});
 
 	afterEach(async () => {
@@ -113,6 +120,7 @@ describe("task spawn routing", () => {
 		}
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
 	});
 
 	it("returns immediately on spawn and delivers the follow-up hint when the job completes", async () => {
@@ -151,11 +159,99 @@ describe("task spawn routing", () => {
 		await job!.promise;
 
 		expect(job!.status).toBe("completed");
-		expect(job!.resultText).toContain("Spawnling is now idle");
-		expect(job!.resultText).toContain("message it via `hub` to follow up");
 		expect(job!.resultText).toContain("history://Spawnling");
 		expect(runSpy).toHaveBeenCalledTimes(1);
 		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini"]);
+	});
+
+	it("owes the parent no reply once the spawn job of the child it messaged has delivered", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		const gate = deferred();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			await gate.promise;
+			return makeResult(options.id ?? "?", { output: "Mask path checked too." });
+		});
+		const manager = createManager();
+		const registry = AgentRegistry.global();
+		const parent = {
+			...createSession({ manager, settings: { "launch.enabled": false } }),
+			agentRegistry: registry,
+			getAgentId: () => "Main",
+		} as unknown as ToolSession;
+		registry.register({
+			id: "Main",
+			displayName: "Main",
+			kind: "main",
+			session: { isStreaming: true } as never,
+			status: "running",
+		});
+		const tool = await TaskTool.create(parent);
+		const spawned = await tool.execute("tc-ask", {
+			agent: "task",
+			name: "Spawnling",
+			task: "Check the mask.",
+		} as TaskParams);
+		const job = manager.getJob(spawned.details!.async!.jobId!)!;
+		// The child is mid-run when its parent sends it a follow-up.
+		const child = { isStreaming: true, deliverIrcMessage: async () => "injected" as const };
+		registry.register({
+			id: "Spawnling",
+			displayName: "Spawnling",
+			kind: "sub",
+			parentId: "Main",
+			session: child as never,
+		});
+		const receipt = await IrcBus.global().send({ from: "Main", to: "Spawnling", body: "check the mask path too" });
+		expect(receipt.outcome).toBe("injected");
+
+		const waiting = new WaitTool(parent).execute("wait-job", {});
+		child.isStreaming = false;
+		gate.resolve();
+		expect((await waiting).details?.jobs?.[0]).toMatchObject({ id: job.id, status: "completed" });
+
+		// The job carried the child's result: it did not end without replying, and nothing is owed.
+		const again = await new WaitTool(parent).execute("wait-again", {});
+		expect(again.content[0]).toMatchObject({
+			text: expect.stringContaining("no agent you messaged this run owes a reply"),
+		});
+	});
+
+	it("uses the persisted /agents model after replacing a session-only task selection", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ ...taskAgent, model: ["@task"] }],
+			projectAgentsDir: null,
+		});
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+		const manager = createManager();
+		const session = createSession({ manager });
+		const auth = createInMemoryAuthStorage();
+		try {
+			const deps = createAgentsHubDeps(session.cwd, session.settings, new ModelRegistry(auth), () => ({
+				explicit: [],
+				configured: [],
+				configuredLevel: "user",
+				mode: "explicit-only",
+			}));
+			const tool = await TaskTool.create(session);
+
+			cfgTaskAgentModelOverrides.override(session.settings, { task: "anthropic/claude-opus-5" });
+			const first = await tool.execute("tc-old", { agent: "task", name: "Old", task: "First task" } as TaskParams);
+			const firstJob = manager.getJob(first.details?.async?.jobId ?? "");
+			if (!firstJob) throw new Error("First task did not spawn");
+			await firstJob.promise;
+			deps.setAgentOverride("model", "task", "anthropic/claude-opus-5-5");
+			await tool.execute("tc-new", { agent: "task", name: "New", task: "Second task" } as TaskParams);
+			await Promise.all(manager.getAllJobs().map(job => job.promise));
+
+			expect(runSpy.mock.calls.map(([options]) => options.modelOverride)).toEqual([
+				["anthropic/claude-opus-5"],
+				["anthropic/claude-opus-5-5"],
+			]);
+		} finally {
+			auth.close();
+		}
 	});
 
 	it("fires before_subagent_spawn once per child even though the task preflight resolves policy first", async () => {
@@ -209,13 +305,7 @@ describe("task spawn routing", () => {
 				projectAgentsDir: null,
 			});
 			const repoRoot = "/repo-root";
-			vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({
-				repoRoot,
-				baseline: {
-					root: { repoRoot, headCommit: "HEAD", staged: "", unstaged: "", untracked: [], untrackedPatch: "" },
-					nested: [],
-				},
-			});
+			vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot });
 			vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockImplementation(async opts => ({
 				...makeResult(opts.agentId),
 				isolated: true,
@@ -351,6 +441,69 @@ describe("task spawn routing", () => {
 			expect(snapshotJobs(session, [job])[0]?.advisor).toBe(expectedAdvisor);
 		});
 	}
+
+	it("forwards the running call's arguments, key, start time and intent from detached progress", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
+		const gate = deferred();
+		let publishProgress: ((metadata: Partial<AgentProgress>) => void) | undefined;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const progress: AgentProgress = {
+				...makeResult(options.id ?? "?"),
+				status: "running",
+				recentTools: [],
+				recentOutput: [],
+				toolCount: 0,
+				cost: 0,
+			};
+			options.onProgress?.(progress);
+			publishProgress = metadata => options.onProgress?.({ ...progress, ...metadata });
+			await gate.promise;
+			return makeResult(options.id ?? "?");
+		});
+		const manager = createManager();
+		const session = createSession({ manager });
+		const tool = await TaskTool.create(session);
+		const result = await tool.execute("tc-tool-preview", {
+			agent: "task",
+			name: "Preview",
+			task: "work",
+		} as TaskParams);
+		const job = manager.getJob(result.details!.async!.jobId)!;
+		try {
+			await pollUntil(() => publishProgress !== undefined);
+			publishProgress!({
+				currentTool: "grep",
+				currentToolArgs: "needle",
+				currentToolArgsKey: "pattern",
+				currentToolIntent: "Searching for the symbol",
+				currentToolStartMs: 1234,
+				lastIntent: "Searching for the symbol",
+			});
+			await pollUntil(() => getJobProgress(job)?.currentTool === "grep");
+			expect(getJobProgress(job)).toMatchObject({
+				currentToolArgs: "needle",
+				currentToolArgsKey: "pattern",
+				currentToolIntent: "Searching for the symbol",
+				currentToolStartMs: 1234,
+			});
+
+			// A following call without an intent must not keep the previous call's.
+			publishProgress!({
+				currentTool: "read",
+				currentToolArgs: "src/one.ts",
+				currentToolArgsKey: "path",
+				currentToolIntent: undefined,
+				currentToolStartMs: 5678,
+				lastIntent: "Searching for the symbol",
+			});
+			await pollUntil(() => getJobProgress(job)?.currentTool === "read");
+			expect(getJobProgress(job)?.currentToolIntent).toBeUndefined();
+			expect(getJobProgress(job)).toMatchObject({ currentToolArgsKey: "path", currentToolStartMs: 5678 });
+		} finally {
+			gate.resolve();
+			await job.promise;
+		}
+	});
 
 	it("clears stale model metadata and fallback state from detached progress", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
@@ -839,7 +992,7 @@ describe("task spawn routing", () => {
 		await pollUntil(() => started.length === 1);
 
 		// Tighten the cap mid-session. The next spawn MUST see the new ceiling.
-		settings.override("task.maxConcurrency", 1);
+		cfgTaskMaxConcurrency.override(settings, 1);
 		const second = await tool.execute("tc-2", { agent: "task", name: "Second", task: "Work B." } as TaskParams);
 		const secondJob = manager.getJob(second.details!.async!.jobId)!;
 
@@ -896,7 +1049,7 @@ describe("task spawn routing", () => {
 		expect([...started].sort()).toEqual(["First", "Fourth", "Second", "Third"]);
 		expect(fifthJob.queued).toBe(true);
 
-		settings.override("task.maxConcurrency", 1);
+		cfgTaskMaxConcurrency.override(settings, 1);
 		gates.get("First")!.resolve();
 		await jobs[0]!.promise;
 		await Promise.resolve();

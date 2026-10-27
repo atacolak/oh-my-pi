@@ -3,16 +3,16 @@ import * as path from "node:path";
 import { getActiveProfile, isProfileSelectedFromArgv, isProfileSelectedFromOmpEnv } from "@oh-my-pi/pi-utils/dirs";
 import * as env from "@oh-my-pi/pi-utils/env";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
-import { getDefault, type SettingPath, type SettingValue, type Settings } from "../config/settings";
+import type { Setting } from "../config/registry";
+import type { Settings } from "../config/settings";
 import { expandTilde } from "../tools/path-utils";
 import { sanitizeStatusText, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
 import { DEFAULT_RELAY_URL } from "./protocol";
 import type { CollabAccess } from "./registry";
+import { cfgCollabAutoStart, cfgCollabRelayUrl, cfgCollabWebUrl, cfgCollabWriteLinkPath } from "./settings";
 
 export type CollabAutoStart = "off" | CollabAccess;
-
-type CollabSettingPath = Extract<SettingPath, `collab.${string}`>;
 
 const PROJECT_DOTENV_GLOBAL_DIR_KEYS = [
 	"PI_CODING_AGENT_DIR",
@@ -30,9 +30,9 @@ export interface TrustedAutoStartLaunch {
 	writeLinkPath: string;
 }
 
-function collabLayerValue(layer: unknown, path: CollabSettingPath): unknown {
+function collabLayerValue(layer: unknown, setting: Setting<unknown>): unknown {
 	let current: unknown = layer;
-	for (const segment of path.split(".")) {
+	for (const segment of setting.segments) {
 		if (current === null || current === undefined || typeof current !== "object") return undefined;
 		current = (current as Record<string, unknown>)[segment];
 	}
@@ -66,40 +66,40 @@ function asAutoStart(value: unknown): CollabAutoStart {
 	return "off";
 }
 
-function trustedCollabSetting<P extends CollabSettingPath>(settings: Settings, path: P): SettingValue<P> {
-	const provenance = settings.getProvenance(path);
-	if (provenance === "runtime" || provenance === "default") return settings.get(path);
-	const effective = settings.get(path);
-	if (path === "collab.autoStart") {
-		if (isAutoStartOff(effective)) return "off" as SettingValue<P>;
-		if (settings.getProjectSettingsLayers().some(layer => isAutoStartOff(collabLayerValue(layer, path)))) {
-			return "off" as SettingValue<P>;
+function trustedCollabSetting<T>(settings: Settings, setting: Setting<T>): T {
+	const provenance = setting.provenance(settings);
+	if (provenance === "runtime" || provenance === "default") return setting.get(settings);
+	const effective = setting.get(settings);
+	if (setting === cfgCollabAutoStart) {
+		if (isAutoStartOff(effective)) return "off" as T;
+		if (settings.getProjectSettingsLayers().some(layer => isAutoStartOff(collabLayerValue(layer, setting)))) {
+			return "off" as T;
 		}
-		if (settings.getConfigOverlayLayers().some(layer => isAutoStartOff(collabLayerValue(layer, path)))) {
-			return "off" as SettingValue<P>;
+		if (settings.getConfigOverlayLayers().some(layer => isAutoStartOff(collabLayerValue(layer, setting)))) {
+			return "off" as T;
 		}
 	}
-	if (redirectedGlobalConfig() && provenance !== "project") return getDefault(path);
+	if (redirectedGlobalConfig() && provenance !== "project") return setting.default;
 	if (provenance === "overlay") {
-		const projectValue = collabLayerValue(settings.getProjectSettings(), path);
-		if (projectValue !== undefined) return projectValue as SettingValue<P>;
-		const globalValue = collabLayerValue(settings.getGlobalSettings(), path);
-		return (globalValue !== undefined ? globalValue : getDefault(path)) as SettingValue<P>;
+		const projectValue = collabLayerValue(settings.getProjectSettings(), setting);
+		if (projectValue !== undefined) return projectValue as T;
+		const globalValue = collabLayerValue(settings.getGlobalSettings(), setting);
+		return (globalValue !== undefined ? globalValue : setting.default) as T;
 	}
 	return effective;
 }
 
-function isTrustedCollabConfigured(settings: Settings, path: CollabSettingPath): boolean {
-	const provenance = settings.getProvenance(path);
+function isTrustedCollabConfigured(settings: Settings, setting: Setting<unknown>): boolean {
+	const provenance = setting.provenance(settings);
 	if (provenance === "runtime") return true;
 	if (redirectedGlobalConfig()) return provenance === "project";
 	if (provenance === "overlay") {
 		return (
-			collabLayerValue(settings.getProjectSettings(), path) !== undefined ||
-			collabLayerValue(settings.getGlobalSettings(), path) !== undefined
+			collabLayerValue(settings.getProjectSettings(), setting) !== undefined ||
+			collabLayerValue(settings.getGlobalSettings(), setting) !== undefined
 		);
 	}
-	return settings.isConfigured(path);
+	return setting.isConfigured(settings);
 }
 
 export function resolveRelayUrl(input: string): string {
@@ -108,7 +108,7 @@ export function resolveRelayUrl(input: string): string {
 }
 
 export function resolveTrustedAutoStartMode(settings: Settings): CollabAutoStart {
-	return asAutoStart(trustedCollabSetting(settings, "collab.autoStart"));
+	return asAutoStart(trustedCollabSetting(settings, cfgCollabAutoStart));
 }
 
 export function resolveTrustedAutoStartLaunch(
@@ -117,33 +117,33 @@ export function resolveTrustedAutoStartLaunch(
 ): TrustedAutoStartLaunch | undefined {
 	const access = resolveTrustedAutoStartMode(settings);
 	if (access === "off") {
-		if (!isAutoStartOff(settings.get("collab.autoStart"))) {
+		if (!isAutoStartOff(cfgCollabAutoStart.get(settings))) {
 			warn("Collab auto-start skipped: configure collab.autoStart outside config overlays.");
 		}
 		return undefined;
 	}
-	const relayInput = trustedCollabSetting(settings, "collab.relayUrl")?.trim() ?? "";
+	const relayInput = trustedCollabSetting(settings, cfgCollabRelayUrl)?.trim() ?? "";
 	if (!relayInput) {
 		return { access, relayUrl: "", webUrl: "", writeLinkPath: "" };
 	}
 	const relayUrl = resolveRelayUrl(relayInput);
-	if (relayUrl === DEFAULT_RELAY_URL && !isTrustedCollabConfigured(settings, "collab.relayUrl")) {
+	if (relayUrl === DEFAULT_RELAY_URL && !isTrustedCollabConfigured(settings, cfgCollabRelayUrl)) {
 		warn("Collab auto-start skipped: configure collab.relayUrl explicitly before using the public relay.");
 		return undefined;
 	}
-	if ((settings.get("collab.relayUrl") ?? "") !== relayInput) {
+	if ((cfgCollabRelayUrl.get(settings) ?? "") !== relayInput) {
 		warn("Collab auto-start ignored an overlay collab.relayUrl.");
 	}
-	const configuredLinkPath = settings.get("collab.writeLinkPath") ?? "";
+	const configuredLinkPath = cfgCollabWriteLinkPath.get(settings) ?? "";
 	const writeLinkPath =
-		settings.getProvenance("collab.writeLinkPath") === "overlay"
+		cfgCollabWriteLinkPath.provenance(settings) === "overlay"
 			? ""
-			: (trustedCollabSetting(settings, "collab.writeLinkPath") ?? "");
+			: (trustedCollabSetting(settings, cfgCollabWriteLinkPath) ?? "");
 	if (configuredLinkPath.trim() && !writeLinkPath) {
 		warn("Collab link file skipped: configure collab.writeLinkPath outside config overlays.");
 	}
-	const webUrl = trustedCollabSetting(settings, "collab.webUrl") ?? "";
-	if ((settings.get("collab.webUrl") ?? "") !== webUrl) {
+	const webUrl = trustedCollabSetting(settings, cfgCollabWebUrl) ?? "";
+	if ((cfgCollabWebUrl.get(settings) ?? "") !== webUrl) {
 		warn("Collab auto-start ignored an overlay collab.webUrl.");
 	}
 	return { access, relayUrl, webUrl, writeLinkPath };

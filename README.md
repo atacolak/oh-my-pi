@@ -1,14 +1,14 @@
 > [!NOTE]
-> ## `cap/viewport` — app viewport + `ompalt` launcher
+> ## `cap/collab-autostart` — opt-in collab auto-hosting
 >
-> Durable local capability: experimental app-viewport TUI renderer and the `--alt` / `ompalt` daily launcher.
+> Durable local capability: interactive TUI sessions can opt in to auto-start collab hosting, write a full write-capable link file, and refuse the implicit public relay. Project `.omp/config.yml` may enable hosting for that cwd only.
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Status:** fork-local (no upstream PR)
-> - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
+> - **Upstream PR(s):** [#9833](https://github.com/can1357/oh-my-pi/pull/9833) — opt-in auto-start hosting and write-link file
+- **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
 >
-> Not stacked on other capabilities; merged into `runtime` independently.
-
+> PR heads stay independently reviewable without this banner.
+>
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

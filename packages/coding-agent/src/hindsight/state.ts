@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { findPersistedRecall, persistRecall } from "../memory-backend/recall-entry";
 import type { MemoryPromptPreparation } from "../memory-backend/types";
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, ensureBankExists } from "./bank";
@@ -261,15 +262,21 @@ function sameRetainRoute(a: PendingRetainItem, b: PendingRetainItem): boolean {
 	return true;
 }
 
-/** Rolling hash of messages[0, count) for retention-cache validation (see #lastRetainedPrefixKey). */
-function retentionPrefixKey(messages: HindsightMessage[], count: number): string {
-	let key = "";
-	for (let i = 0; i < count; i++) {
+/**
+ * Rolling hash of messages[0, to) for retention-cache validation (see #lastRetainedPrefixKey),
+ * continued from `key` = the rolling hash of messages[0, from).
+ */
+function extendRetentionPrefixKey(key: string, messages: HindsightMessage[], from: number, to: number): string {
+	for (let i = from; i < to; i++) {
 		const m = messages[i];
 		if (m === undefined) break;
 		key = Bun.hash(`${key}\u0000${m.role}\u0000${m.content}\u0000${m.timestamp ?? ""}`).toString(36);
 	}
 	return key;
+}
+
+function retentionPrefixKey(messages: HindsightMessage[], count: number): string {
+	return extendRetentionPrefixKey("", messages, 0, count);
 }
 
 /** Per-session Hindsight runtime state owned by its AgentSession. */
@@ -699,21 +706,24 @@ export class HindsightSessionState {
 		let transcript: string;
 		let nextCachedTranscript: string | undefined;
 		let updateMode: UpdateMode | undefined;
+		let prefixKey = "";
+		let hashedThrough = 0;
 
 		if (retainFullWindow) {
 			documentId = sessionId;
 			const previousBoundary = this.#lastRetainedMessageIndex;
 			let rebuiltDivergentPrefix = false;
-			if (
-				previousBoundary > messages.length ||
-				retentionPrefixKey(messages, previousBoundary) !== this.#lastRetainedPrefixKey
-			) {
+			if (previousBoundary <= messages.length)
+				prefixKey = extendRetentionPrefixKey("", messages, 0, previousBoundary);
+			if (previousBoundary > messages.length || prefixKey !== this.#lastRetainedPrefixKey) {
 				rebuiltDivergentPrefix = previousBoundary > 0;
 				this.#lastRetainedMessageIndex = 0;
 				this.#cachedTranscript = "";
 				this.#lastRetainedPrefixKey = "";
+				prefixKey = "";
 			}
-			const start = this.#lastRetainedMessageIndex;
+			hashedThrough = this.#lastRetainedMessageIndex;
+			const start = hashedThrough;
 			const newMessages = messages.slice(start);
 			const { transcript: newPart } = prepareRetentionTranscript(newMessages, true, { includeTimestamps: true });
 			if (!newPart) return;
@@ -750,9 +760,11 @@ export class HindsightSessionState {
 		});
 		if (!retainFullWindow) this.#recordCompletedLastTurnRetain(sessionId, messages);
 		if (generation === this.#retainGeneration) {
-			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;
-			this.#lastRetainedMessageIndex = messages.length;
-			this.#lastRetainedPrefixKey = retentionPrefixKey(messages, messages.length);
+			if (nextCachedTranscript !== undefined) {
+				this.#cachedTranscript = nextCachedTranscript;
+				this.#lastRetainedPrefixKey = extendRetentionPrefixKey(prefixKey, messages, hashedThrough, messages.length);
+				this.#lastRetainedMessageIndex = messages.length;
+			}
 			this.#forceNextRetainReplace = false;
 		}
 	}
@@ -849,6 +861,15 @@ export class HindsightSessionState {
 		const latestPrompt = promptText.trim();
 		if (!latestPrompt) return undefined;
 		const generation = ++this.#recallGeneration;
+		// Reuse this transcript's recall so a resumed session sends the same prompt. Hindsight
+		// memories cannot be looked up by id, so changes since are not reported.
+		const persisted = findPersistedRecall(this.session.sessionManager, this.#recallScope());
+		if (persisted !== undefined) {
+			return {
+				context: persisted.text || undefined,
+				commit: () => this.#commitRecall(generation, persisted.text, false),
+			};
+		}
 
 		const history = extractMessages(this.session.sessionManager);
 		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
@@ -859,15 +880,43 @@ export class HindsightSessionState {
 
 		return {
 			context: context ?? undefined,
-			commit: () => {
-				if (this.#recallGeneration !== generation) return false;
-				this.hasRecalledForFirstTurn = true;
-				if (context) this.lastRecallSnippet = context;
-				return true;
-			},
+			commit: () => this.#commitRecall(generation, context ?? "", true),
 		};
 	}
 
+	/** Adopts a first-turn recall unless a newer turn or reset superseded it; `""` means it found nothing. */
+	#commitRecall(generation: number, context: string, persist: boolean): boolean {
+		if (this.#recallGeneration !== generation) return false;
+		this.hasRecalledForFirstTurn = true;
+		if (context) this.lastRecallSnippet = context;
+		if (persist) persistRecall(this.session.sessionManager, this.#recallScope(), { text: context, memories: [] });
+		return true;
+	}
+
+	/**
+	 * Identifies the server, account, bank and tag filter a recall reads, so a persisted
+	 * recall is only reused for the same ones. The account is a hash of the API token.
+	 */
+	#recallScope(): string {
+		return JSON.stringify([
+			"hindsight",
+			this.config.hindsightApiUrl,
+			Bun.hash(this.config.hindsightApiToken ?? "").toString(16),
+			this.bankId,
+			this.recallTags ?? [],
+			this.recallTagsMatch ?? null,
+		]);
+	}
+
+	async recallForCompaction(messages: HindsightMessage[]): Promise<string | undefined> {
+		const lastUser = messages.findLast(m => m.role === "user");
+		if (!lastUser) return undefined;
+
+		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
+		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
+		const { context } = await this.recallForContext(truncated);
+		return context ?? undefined;
+	}
 	async runMentalModelLoad(scope: BankScope): Promise<void> {
 		if (!this.config.mentalModelsEnabled) return;
 		const generation = ++this.#mentalModelsLoadGeneration;
@@ -1001,8 +1050,6 @@ export class HindsightSessionState {
 		this.#mentalModelsLoadGeneration++;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		this.unsubscribeScope?.();
-		this.unsubscribeScope = undefined;
 		this.retainQueue.dispose();
 	}
 

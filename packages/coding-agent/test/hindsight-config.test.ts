@@ -3,7 +3,20 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadHindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 
 function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) {
-	return loadHindsightConfig(Settings.isolated(overrides as never), env);
+	const previous = new Map<string, string | undefined>();
+	for (const [key, value] of Object.entries(env)) {
+		previous.set(key, Bun.env[key]);
+		if (value === undefined) delete Bun.env[key];
+		else Bun.env[key] = String(value);
+	}
+	try {
+		return loadHindsightConfig(Settings.isolated(overrides as never));
+	} finally {
+		for (const [key, value] of previous) {
+			if (value === undefined) delete Bun.env[key];
+			else Bun.env[key] = value;
+		}
+	}
 }
 
 describe("loadHindsightConfig retainUpdateMode", () => {
@@ -13,8 +26,8 @@ describe("loadHindsightConfig retainUpdateMode", () => {
 		).toBe("append");
 	});
 
-	it("falls back to replace when retainUpdateMode is invalid", () => {
-		expect(load({ "hindsight.retainUpdateMode": "upsert" }).retainUpdateMode).toBe("replace");
+	it("falls back to replace when retainUpdateMode env is invalid", () => {
+		expect(load({}, { HINDSIGHT_RETAIN_UPDATE_MODE: "upsert" }).retainUpdateMode).toBe("replace");
 	});
 });
 

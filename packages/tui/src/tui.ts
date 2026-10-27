@@ -4848,6 +4848,7 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+		this.#notifyFrameWrite(buffer);
 		this.#appViewportPreviousLines = prepared.lines;
 		this.#appViewportPreparedRows = prepared.rows;
 		this.#appViewportPreviousWidth = width;

@@ -645,7 +645,7 @@ class SessionState:
     is_streaming: bool = False
     is_compacting: bool = False
     steering_mode: QueueMode = "one-at-a-time"
-    follow_up_mode: QueueMode = "one-at-a-time"
+    follow_up_mode: QueueMode = "all"
     interrupt_mode: InterruptMode = "immediate"
     session_file: str | None = None
     session_name: str | None = None
@@ -1972,7 +1972,7 @@ def parse_session_state(value: object, path: str = "SessionState") -> SessionSta
         is_streaming=defaulted(payload, "isStreaming", decode_bool, path, False),
         is_compacting=defaulted(payload, "isCompacting", decode_bool, path, False),
         steering_mode=defaulted(payload, "steeringMode", _decode_queue_mode, path, "one-at-a-time"),
-        follow_up_mode=defaulted(payload, "followUpMode", _decode_queue_mode, path, "one-at-a-time"),
+        follow_up_mode=defaulted(payload, "followUpMode", _decode_queue_mode, path, "all"),
         interrupt_mode=defaulted(payload, "interruptMode", _decode_interrupt_mode, path, "immediate"),
         session_file=optional(payload, "sessionFile", decode_str, path),
         session_name=optional(payload, "sessionName", decode_str, path),

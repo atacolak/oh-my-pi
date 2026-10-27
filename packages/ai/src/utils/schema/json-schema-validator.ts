@@ -12,8 +12,10 @@
  * Compared to AJV this is single-pass, synchronous, dependency-free, and
  * tolerates non-standard shapes (`nullable`) that LLM-emitted schemas carry.
  */
-import { logger } from "@oh-my-pi/pi-utils";
+import { parseLocalRefPointer } from "@oh-my-pi/omptype";
+import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import { areJsonValuesEqual } from "./equality";
+import { stamp } from "./stamps";
 
 export interface JsonSchemaValidationIssue {
 	path: PropertyKey[];
@@ -65,9 +67,6 @@ function getValueIdentity(ctx: ValidationContext, value: object): number {
 	return id;
 }
 
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 /**
  * Whether `value` matches every `const`/`enum` discriminator property the
  * branch declares (with at least one such property present and matching).
@@ -76,13 +75,13 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
  * repairs to them; without a unique tag, branch issues are guesses.
  */
 function isTagSelectedBranch(branch: unknown, value: unknown): boolean {
-	if (!isJsonObject(branch) || !isJsonObject(value)) return false;
+	if (!isRecord(branch) || !isRecord(value)) return false;
 	const props = branch.properties;
-	if (!isJsonObject(props)) return false;
+	if (!isRecord(props)) return false;
 	let matched = false;
 	for (const key in props) {
 		const propSchema = props[key];
-		if (!isJsonObject(propSchema)) continue;
+		if (!isRecord(propSchema)) continue;
 		const hasConst = Object.hasOwn(propSchema, "const");
 		const enumValues = Array.isArray(propSchema.enum) ? propSchema.enum : undefined;
 		if (!hasConst && !enumValues) continue;
@@ -138,7 +137,7 @@ function matchesJsonSchemaType(value: unknown, type: string): boolean {
 		case "boolean":
 			return typeof value === "boolean";
 		case "object":
-			return isJsonObject(value);
+			return isRecord(value);
 		case "array":
 			return Array.isArray(value);
 		case "null":
@@ -166,19 +165,12 @@ function schemaTypes(schema: Record<string, unknown>): string[] {
 
 /** Extract the effective `type` list from a schema, treating `nullable: true` as adding `"null"`. */
 
-function decodePointerToken(token: string): string {
-	return token.replace(/~1/g, "/").replace(/~0/g, "~");
-}
-
-/** RFC 6901 token decode: `~1` → `/`, `~0` → `~`. */
-
 function resolveLocalRef(root: unknown, ref: string): unknown | undefined {
-	if (ref === "#") return root;
-	if (!ref.startsWith("#/")) return undefined;
+	const pointer = parseLocalRefPointer(ref);
+	if (pointer === undefined) return undefined;
 	let current: unknown = root;
-	for (const rawToken of ref.slice(2).split("/")) {
-		const token = decodePointerToken(rawToken);
-		if (!isJsonObject(current) && !Array.isArray(current)) return undefined;
+	for (const token of pointer) {
+		if (!isRecord(current) && !Array.isArray(current)) return undefined;
 		current = (current as Record<string, unknown>)[token];
 	}
 	return current;
@@ -186,7 +178,7 @@ function resolveLocalRef(root: unknown, ref: string): unknown | undefined {
 
 /** A presence-only constraint, as distinct from restrictions on a property's value. */
 function requiresOnlyPropertyPresence(schema: unknown, key: string, root: unknown, depth = 0): boolean {
-	if (!isJsonObject(schema) || depth >= MAX_REF_DEPTH) return false;
+	if (!isRecord(schema) || depth >= MAX_REF_DEPTH) return false;
 	for (const keyword of Object.keys(schema)) {
 		switch (keyword) {
 			case "required":
@@ -212,22 +204,60 @@ function requiresOnlyPropertyPresence(schema: unknown, key: string, root: unknow
 	);
 }
 
-/** Whether any same-instance schema declaration or constraint owns this property name. */
+/**
+ * Memo slot for {@link schemaDefinesProperty}'s per-schema answer cache: one
+ * slot per schema object, with the property name as the key inside it.
+ */
+const kDefinesPropertyCache = Symbol("ai.schemaDefinesPropertyCache");
+
+/**
+ * Whether any same-instance schema declaration or constraint owns this property name.
+ *
+ * The answer depends on exactly two things: the property name, and the content
+ * of the JSON-Schema graph reachable from the root. The cache is keyed by BOTH
+ * — the root's object identity (through {@link stamp}, the repo's
+ * identity-keyed side table) and the property name within it — so two
+ * schemas asking about the same name keep separate answers, and one schema
+ * asked about two names keeps two answers.
+ *
+ * The root identity covers the graph because the schema graphs reaching this
+ * function are already treated as immutable for the lifetime of their
+ * identity: `toolWireSchema` memoizes the wire schema against the tool's
+ * parameters, and `stripSchemaDescriptions`, `tryEnforceStrictSchema` and
+ * `memoizedInjectIntentIntoSchema` already memoize derived values against
+ * that same wire-schema object. A graph mutated in place after production
+ * would already hand those three a stale answer; this cache adds no new
+ * assumption beyond the ones the schema pipeline already relies on.
+ */
 export function schemaDefinesProperty(schema: unknown, key: string): boolean {
+	if (!isRecord(schema)) return false;
+	const cache = stamp(schema, kDefinesPropertyCache, () => new Map<string, boolean>());
+	const cached = cache.get(key);
+	if (cached !== undefined) return cached;
+	const result = computeSchemaDefinesProperty(schema, key);
+	cache.set(key, result);
+	return result;
+}
+
+/**
+ * Uncached walk of the schema graph. {@link schemaDefinesProperty} fronts
+ * this with the memo described there.
+ */
+function computeSchemaDefinesProperty(schema: unknown, key: string): boolean {
 	const root = schema;
 	const visited = new WeakMap<object, number>();
 	const visit = (node: unknown, context: "positive" | "negative" | "predicate" = "positive"): boolean => {
-		if (!isJsonObject(node)) return false;
+		if (!isRecord(node)) return false;
 		const contextBit = context === "positive" ? 1 : context === "negative" ? 2 : 4;
 		const previousContexts = visited.get(node) ?? 0;
 		if (previousContexts & contextBit) return false;
 		visited.set(node, previousContexts | contextBit);
-		if (isJsonObject(node.const) && Object.hasOwn(node.const, key)) return true;
-		if (Array.isArray(node.enum) && node.enum.some(value => isJsonObject(value) && Object.hasOwn(value, key))) {
+		if (isRecord(node.const) && Object.hasOwn(node.const, key)) return true;
+		if (Array.isArray(node.enum) && node.enum.some(value => isRecord(value) && Object.hasOwn(value, key))) {
 			return true;
 		}
 		const properties = node.properties;
-		if (isJsonObject(properties) && Object.hasOwn(properties, key)) {
+		if (isRecord(properties) && Object.hasOwn(properties, key)) {
 			return properties[key] !== false || context !== "positive";
 		}
 		const required = node.required;
@@ -240,7 +270,7 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 			return true;
 		}
 		const patternProperties = node.patternProperties;
-		if (isJsonObject(patternProperties)) {
+		if (isRecord(patternProperties)) {
 			for (const [pattern, patternSchema] of Object.entries(patternProperties)) {
 				try {
 					if (new RegExp(pattern).test(key)) {
@@ -251,8 +281,8 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 				}
 			}
 		}
-		if (isJsonObject(node.unevaluatedProperties)) return true;
-		if (isJsonObject(node.additionalProperties)) return true;
+		if (isRecord(node.unevaluatedProperties)) return true;
+		if (isRecord(node.additionalProperties)) return true;
 		for (const keyword of ["anyOf", "oneOf", "allOf"] as const) {
 			const branches = node[keyword];
 			if (Array.isArray(branches) && branches.some(branch => visit(branch, context))) return true;
@@ -270,19 +300,19 @@ export function schemaDefinesProperty(schema: unknown, key: string): boolean {
 			return true;
 		}
 		const dependentSchemas = node.dependentSchemas;
-		if (isJsonObject(dependentSchemas)) {
+		if (isRecord(dependentSchemas)) {
 			if (Object.hasOwn(dependentSchemas, key)) return true;
 			if (Object.values(dependentSchemas).some(dependency => visit(dependency, context))) return true;
 		}
 		const dependentRequired = node.dependentRequired;
-		if (isJsonObject(dependentRequired)) {
+		if (isRecord(dependentRequired)) {
 			if (Object.hasOwn(dependentRequired, key)) return true;
 			for (const dependencies of Object.values(dependentRequired)) {
 				if (Array.isArray(dependencies) && dependencies.includes(key)) return true;
 			}
 		}
 		const dependencies = node.dependencies;
-		if (isJsonObject(dependencies)) {
+		if (isRecord(dependencies)) {
 			if (Object.hasOwn(dependencies, key)) return true;
 			for (const dependency of Object.values(dependencies)) {
 				if (Array.isArray(dependency) && dependency.includes(key)) return true;
@@ -324,7 +354,7 @@ function validateSchemaNode(
 		pushIssue(issues, path, "must not match false schema", { keyword: "false" });
 		return false;
 	}
-	if (!isJsonObject(schema)) {
+	if (!isRecord(schema)) {
 		pushIssue(issues, path, "schema must be an object or boolean", { keyword: "schema" });
 		return false;
 	}
@@ -469,7 +499,7 @@ function validateSchemaNode(
 		);
 	}
 
-	if (isJsonObject(value)) {
+	if (isRecord(value)) {
 		valid = validateObjectKeywords(schema, value, path, ctx, issues) && valid;
 	}
 	if (Array.isArray(value)) {
@@ -494,7 +524,7 @@ function validateObjectKeywords(
 	issues: JsonSchemaValidationIssue[],
 ): boolean {
 	let valid = true;
-	const properties = isJsonObject(schema.properties) ? schema.properties : {};
+	const properties = isRecord(schema.properties) ? schema.properties : {};
 	if (isRequiredSet(schema.required)) {
 		for (const key of schema.required) {
 			if (!(key in value)) {
@@ -516,7 +546,7 @@ function validateObjectKeywords(
 	}
 
 	const known = new Set(Object.keys(properties));
-	if (isJsonObject(schema.patternProperties)) {
+	if (isRecord(schema.patternProperties)) {
 		const patternProperties = schema.patternProperties;
 		for (const pattern in patternProperties) {
 			const patternSchema = patternProperties[pattern];
@@ -536,7 +566,7 @@ function validateObjectKeywords(
 		}
 	}
 
-	if (isJsonObject(schema.dependentRequired)) {
+	if (isRecord(schema.dependentRequired)) {
 		const dependentRequired = schema.dependentRequired;
 		for (const key in dependentRequired) {
 			const deps = dependentRequired[key];
@@ -554,7 +584,7 @@ function validateObjectKeywords(
 		}
 	}
 
-	if (isJsonObject(schema.dependentSchemas)) {
+	if (isRecord(schema.dependentSchemas)) {
 		const dependentSchemas = schema.dependentSchemas;
 		for (const key in dependentSchemas) {
 			if (!(key in value)) continue;

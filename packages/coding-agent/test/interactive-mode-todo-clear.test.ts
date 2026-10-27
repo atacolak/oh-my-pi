@@ -14,6 +14,8 @@ import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
+import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
+
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
 }
@@ -76,7 +78,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 	});
 
 	function setTodoClearDelay(todoClearDelay: number): void {
-		session.settings.override("tasks.todoClearDelay", todoClearDelay);
+		cfgTasksTodoClearDelay.override(session.settings, todoClearDelay);
 	}
 
 	it("clears closed todos from the panel instantly without mutating session history", async () => {
@@ -272,6 +274,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 			},
 		]);
 		const registry = AgentRegistry.global();
+		// Registration schedules a coalesced observer UI flush; own that timer so the
+		// lifecycle event below gets its own flush window.
+		vi.useFakeTimers();
 		const agentId = "FocusedTodoParent";
 		const ref = registry.register({
 			id: agentId,
@@ -284,8 +289,8 @@ describe("InteractiveMode todo HUD persistence", () => {
 		try {
 			await mode.focusAgentSession(agentId);
 			expect(renderTodos(mode)).toContain("apply nested review fixes");
+			vi.advanceTimersByTime(100);
 
-			vi.useFakeTimers();
 			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 				id: `${agentId}/NestedFixer`,
 				index: 0,
@@ -452,7 +457,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("cancels an old dismissal timer when a replacement plan becomes visible", async () => {
 		await replaceMode();
 		vi.useFakeTimers();
-		session.settings.override("tasks.todoClearDelay", 1);
+		cfgTasksTodoClearDelay.override(session.settings, 1);
 		const completed: TodoPhase[] = [{ name: "Old", tasks: [{ content: "old", status: "completed" }] }];
 		const replacement: TodoPhase[] = [{ name: "New", tasks: [{ content: "new", status: "in_progress" }] }];
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases: completed });
@@ -536,7 +541,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await replaceMode();
 		vi.useFakeTimers();
 		const phases: TodoPhase[] = [{ name: "Done", tasks: [{ content: "ship", status: "completed" }] }];
-		session.settings.override("tasks.todoClearDelay", 0);
+		cfgTasksTodoClearDelay.override(session.settings, 0);
 		session.sessionManager.appendMessage({
 			role: "assistant",
 			content: [{ type: "text", text: "Finished the plan." }],

@@ -21,16 +21,24 @@ describe("issue #935 path equivalence", () => {
 		expect(realpathSpy).toHaveBeenCalledWith(inputPath);
 	});
 
-	it("canonicalizes a missing candidate through its existing symlink ancestor", () => {
-		const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), "omp-path-equiv-"));
-		const linkRoot = `${realRoot}-link`;
-		fs.symlinkSync(realRoot, linkRoot);
+	it("resolves a missing path through its deepest existing ancestor only when asked", () => {
+		const temp = fs.mkdtempSync(path.join(os.tmpdir(), "omp-through-missing-"));
 		try {
-			const missing = path.join(linkRoot, "src", "new.ts");
-			expect(resolveEquivalentPath(missing)).toBe(path.join(fs.realpathSync(realRoot), "src", "new.ts"));
+			const real = path.join(temp, "real");
+			const link = path.join(temp, "link");
+			fs.mkdirSync(real);
+			try {
+				fs.symlinkSync(real, link, "junction");
+			} catch {
+				return; // Symlinks unavailable on this host.
+			}
+			const missing = path.join(link, "sub", "new.ts");
+			expect(resolveEquivalentPath(missing)).toBe(missing);
+			expect(resolveEquivalentPath(missing, { throughMissing: true })).toBe(
+				path.join(fs.realpathSync(real), "sub", "new.ts"),
+			);
 		} finally {
-			fs.rmSync(linkRoot, { force: true });
-			fs.rmSync(realRoot, { recursive: true, force: true });
+			fs.rmSync(temp, { recursive: true, force: true });
 		}
 	});
 });

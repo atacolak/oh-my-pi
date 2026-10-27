@@ -8,7 +8,7 @@ import {
 	type LspClientOwner,
 	type LspServerStatus,
 	notifySaved,
-	refreshFile,
+	refreshOpenFiles,
 	sendNotification,
 	sendRequest,
 	shutdownClientInstance,
@@ -18,7 +18,6 @@ import {
 import { getConfig, getServersForFile, type LspConfig, loadConfig } from "./config";
 import { MUX_RESTART_METHOD } from "./mux/protocol";
 import type { LspClient, ServerConfig } from "./types";
-import { uriToFile } from "./utils";
 
 /**
  * LSP actions that do not mutate the workspace or language-server state.
@@ -324,6 +323,6 @@ export async function reloadServer(client: LspClient, serverName: string, signal
 		}
 		return `Restarted ${serverName}`;
 	}
-	await Promise.all(Array.from(client.openFiles.keys(), uri => refreshFile(client, uriToFile(uri), signal)));
+	await refreshOpenFiles(client, signal);
 	return `Reloaded ${serverName}`;
 }

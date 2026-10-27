@@ -25,7 +25,7 @@ import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { clampTimeout } from "../tools/tool-timeouts";
+import { clampTimeout, resolveLspTimeouts, TOOL_TIMEOUTS } from "../tools/tool-timeouts";
 import {
 	applyAndReconcileWorkspaceEdit,
 	applyWorkspaceEditWithLsp,
@@ -43,6 +43,7 @@ import {
 	reconcileExecutedChanges,
 	reconcileFileFromDisk,
 	reconcileIdleChecker,
+	reconcileOpenFilesFromDisk,
 	refreshFile,
 	releaseExecutedMovedDirectoryRoots,
 	releaseLspClientOwner,
@@ -63,7 +64,6 @@ import {
 	isOnlyQueriedDeclaration,
 	MAX_GLOB_DIAGNOSTIC_TARGETS,
 	normalizeLocationResult,
-	PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	PROJECT_INDEXED_ACTIONS,
 	REFERENCE_CONTEXT_LIMIT,
 	REFERENCES_RETRY_COUNT,
@@ -130,6 +130,9 @@ import {
 } from "./utils";
 import { formatGroupedDiagnosticMessages } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { runWorkspaceDiagnostics } from "./workspace-diagnostics";
+
+import { cfgToolsMaxTimeout } from "../tools/settings";
+import { cfgLspRequestTimeout } from "./settings";
 
 const MAX_RENAME_PAIRS = 1000;
 const MOVED_ROOT_NOTIFY_TIMEOUT_MS = 2_000;
@@ -311,7 +314,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 	readonly label = "LSP";
 	readonly loadMode = "discoverable";
 	readonly summary = "Query LSP (language server) for diagnostics, hover info, and references";
-	readonly description: string;
 	readonly parameters = lspSchema;
 	readonly strict = true;
 
@@ -322,16 +324,19 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		clientOwner = session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 	) {
 		this.#clientOwner = clientOwner;
-		this.description = prompt.render(lspDescription);
 		this.session.registerDisposeCallback?.(() => releaseLspClientOwner(this.#clientOwner));
 	}
 
-	/**
-	 * Release this session's ownership of language servers started under a
-	 * workspace root that is no longer in the session. `/remove-dir` calls this
-	 * so a later `reload *` can see the client as stale and another session can
-	 * replace it after configuration changes.
-	 */
+	get description(): string {
+		const maxTimeout = cfgToolsMaxTimeout.get(this.session.settings);
+		const defaults = resolveLspTimeouts(undefined, cfgLspRequestTimeout.get(this.session.settings), maxTimeout);
+		return prompt.render(lspDescription, {
+			defaultTimeoutSec: defaults.call,
+			defaultWaitSec: defaults.wait,
+			maxTimeoutSec: clampTimeout("lsp", TOOL_TIMEOUTS.lsp.max, maxTimeout),
+		});
+	}
+
 	async releaseRemovedWorkspaceRoots(removedRoot: string, signal?: AbortSignal): Promise<string[]> {
 		return releaseOwnedWorkspaceRoots(
 			this.session.cwd,
@@ -357,7 +362,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		if (this.session.lspReadOnly && !LSP_READONLY_ACTIONS.has(action)) {
 			throw new ToolError(`LSP action ${action} is disabled in this read-only session`);
 		}
-		const timeoutSec = clampTimeout("lsp", timeout, this.session.settings.get("tools.maxTimeout"));
+		const budget = resolveLspTimeouts(
+			timeout,
+			cfgLspRequestTimeout.get(this.session.settings),
+			cfgToolsMaxTimeout.get(this.session.settings),
+		);
+		const timeoutSec = budget.call;
+		const waitMs = budget.wait * 1000;
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const callerSignal = signal;
 		signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
@@ -546,13 +557,14 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							throwIfAborted(signal);
 						}
 						const uri = fileToUri(resolved, serverConfig.resolvedRoot ?? client.cwd);
+						await reconcileOpenFilesFromDisk(client, signal);
 						const minVersion = client.diagnosticsVersion;
 						await refreshFile(client, resolved, signal);
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
 						const waitCapMs = detailed
 							? BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS
 							: isProjectAwareLspServer(serverConfig)
-								? PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS
+								? waitMs
 								: SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS;
 						const diagnostics = await waitForDiagnostics(client, uri, {
 							timeoutMs: Math.min(waitCapMs, timeoutSec * 1000),
@@ -1689,9 +1701,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 				case "code_actions": {
 					let diagnostics = client.diagnostics.get(uri)?.diagnostics ?? [];
-					// A reconcile dropped the stale diagnostics and pushed a didChange;
-					// the server re-publishes (or a pull answers) asynchronously, so read
-					// the map now and quick-fix providers see an empty context.diagnostics.
+					// A reconcile dropped the stale diagnostics and pushed a didChange (or
+					// reopened a document closed for idleness); the server re-publishes (or a
+					// pull answers) asynchronously, so read the map now and quick-fix
+					// providers see an empty context.diagnostics.
 					// Wait for diagnostics matching the reconciled document version first.
 					// Non-diagnostic actions (refactors, source actions) still return if the
 					// wait cannot complete, so a diagnostics failure never breaks code_actions.
@@ -1699,9 +1712,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						try {
 							diagnostics = await waitForDiagnostics(client, uri, {
 								timeoutMs: Math.min(
-									isProjectAwareLspServer(serverConfig)
-										? PROJECT_DIAGNOSTICS_WAIT_TIMEOUT_MS
-										: SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS,
+									isProjectAwareLspServer(serverConfig) ? waitMs : SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 									timeoutSec * 1000,
 								),
 								signal,
@@ -1876,6 +1887,15 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							details: { action, serverName, success: false },
 						};
 					}
+
+					// A project-wide rename answers with ranges for every file it
+					// touches. An already-open consumer that was edited outside OMP
+					// still holds its stale overlay, so those ranges point at the old
+					// text and the edit lands on the wrong lines while the rename
+					// reports success (#15772). Sync every open document, not just
+					// the requested target, so the server computes the workspace
+					// edit against current disk text.
+					await reconcileOpenFilesFromDisk(client, signal);
 
 					const result = (await sendRequest(
 						client,

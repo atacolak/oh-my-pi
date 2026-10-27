@@ -9,7 +9,7 @@ import {
 	stableStringifyJson,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
-import { MessageFramer } from "../jsonrpc/message-framing";
+import { encodeMessageFrame, MessageFramer } from "../jsonrpc/message-framing";
 import {
 	isLexicallyWithin,
 	normalizeSessionWorkspace,
@@ -33,7 +33,14 @@ import type {
 	ServerConfig,
 	WorkspaceEdit,
 } from "./types";
-import { detectLanguageId, equivalentDocumentUri, EquivalentUriMap, fileToUri, uriToFile } from "./utils";
+import {
+	detectLanguageId,
+	equivalentDocumentUri,
+	EquivalentUriMap,
+	fileToUri,
+	readTextFromDisk,
+	uriToFile,
+} from "./utils";
 
 // =============================================================================
 // Client State
@@ -602,10 +609,12 @@ const IDLE_CHECK_INTERVAL_MS = 60 * 1000;
 /** Live-acquisition session/request cwds whose config may supply idleTimeoutMs after nested-root rewrite. */
 const clientIdleTimeoutOrigins = new Map<string, Map<IdleOriginOwner, Set<string>>>();
 
-// Broker-shared server mode (one language server per project shared by every
-// omp instance through the LSP mux daemon). Off by default so embedders and
-// tests that drive getOrCreateClient directly never touch the daemon broker;
-// the SDK turns it on from the `lsp.shared` setting at session creation.
+// Broker-shared server mode: language servers hosted by the per-project LSP mux
+// daemon, one per connection; a released server lingers for reuse while the mux runs.
+// Off by default so embedders and tests that drive getOrCreateClient directly
+// never touch the daemon broker; the SDK sets it from the `lsp.shared` setting at
+// session creation and on every later change. Only consulted at cold-start, so
+// running clients keep their transport.
 let sharedLspEnabled = false;
 
 /** Enable or disable attaching to broker-shared language servers. */
@@ -988,10 +997,7 @@ async function writeMessage(
 	if (signal?.aborted) {
 		throw abortReason(signal);
 	}
-	const content = JSON.stringify(message);
-	const write = Promise.resolve(
-		sink.write(`Content-Length: ${Buffer.byteLength(content, "utf-8")}\r\n\r\n${content}`),
-	);
+	const write = Promise.resolve(sink.write(encodeMessageFrame(message)));
 	// Attach before flush(): it may throw synchronously after write() returned a
 	// rejected Promise, and leaving that rejection unobserved kills the host.
 	void write.catch(() => {});
@@ -1040,12 +1046,31 @@ function teardownWedgedClient(client: LspClient): void {
 	}
 }
 
+/** Drain budget for a message written after its caller aborted (see {@link queueWriteMessage}). */
+const DELIVER_QUEUED_TIMEOUT_MS = 2_000;
+
+/**
+ * Queue `message` behind earlier writes. A `signal` aborted while the message is
+ * still queued skips its write, unless `deliverQueued` is set: then the message is
+ * written anyway, bounded by {@link DELIVER_QUEUED_TIMEOUT_MS} instead of `signal`,
+ * so writes queued after it never overtake it and a server that stops reading stdin
+ * is still torn down.
+ */
 function queueWriteMessage(
 	client: LspClient,
 	message: LspJsonRpcRequest | LspJsonRpcNotification | LspJsonRpcResponse,
 	signal?: AbortSignal,
+	deliverQueued = false,
 ): Promise<void> {
-	const write = client.writeQueue.catch(() => {}).then(() => writeMessage(client.proc.stdin, message, signal));
+	const write = client.writeQueue
+		.catch(() => {})
+		.then(() =>
+			writeMessage(
+				client.proc.stdin,
+				message,
+				deliverQueued && signal?.aborted ? AbortSignal.timeout(DELIVER_QUEUED_TIMEOUT_MS) : signal,
+			),
+		);
 	const result = write.catch((err: unknown) => {
 		if (err instanceof LspDrainAbortError) {
 			// Only an abort that raced this write's in-flight drain leaves
@@ -1078,7 +1103,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 
 	const reader = (client.proc.stdout as ReadableStream<Uint8Array>).getReader();
 
-	const framer = new MessageFramer(Buffer.from(client.messageBuffer));
+	const framer = new MessageFramer(Buffer.alloc(0));
 
 	let readerFailed = false;
 	try {
@@ -1086,7 +1111,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 			const { done, value } = await reader.read();
 			if (done) break;
 
-			framer.push(Buffer.from(value));
+			framer.push(value);
 
 			// Drain every complete message currently buffered.
 			for (const messageText of framer.drain(headerText => {
@@ -1176,8 +1201,6 @@ async function startMessageReader(client: LspClient): Promise<void> {
 		}
 		client.pendingRequests.clear();
 	} finally {
-		// Persist any unparsed remainder so a restarted reader resumes mid-message.
-		client.messageBuffer = framer.remainder();
 		reader.releaseLock();
 		client.isReading = false;
 		if (!readerFailed && client.proc.exitCode === null) {
@@ -1577,13 +1600,11 @@ export async function reconcileExecutedChanges(
 				}
 			}
 			if (!deleted) continue;
-			await sendNotification(activeClient, "textDocument/didClose", { textDocument: { uri } }, signal);
-			activeClient.openFiles.delete(uri);
-			activeClient.diagnostics.delete(uri);
+			await closeDocument(activeClient, uri, signal);
 		}
 		for (const uri of finalUris) {
 			for (const openUri of openDocumentUrisForChange(activeClient, uri)) {
-				await refreshOpenDocument(activeClient, openUri, signal);
+				await refreshDocument(activeClient, uriToFile(openUri), "resync", signal);
 			}
 		}
 	}
@@ -2532,6 +2553,9 @@ export async function getOrCreateClient(
 	const clientPromise = (async () => {
 		const baseCommand = config.resolvedCommand ?? config.command;
 		const baseArgs = config.args ?? [];
+		// Sent in both the mux handshake and `initialize`: a reused shared server
+		// answers `initialize` from cache, so the mux keys servers on these options.
+		const initializationOptions = config.initOptions ?? {};
 
 		// Wrap with lspmux if available and supported
 		const { command, args, env } = isLspmuxSupported(baseCommand)
@@ -2543,7 +2567,7 @@ export async function getOrCreateClient(
 		// to a private spawn so LSP never regresses on broker trouble.
 		let proc: LspTransport | null = null;
 		if (sharedLspEnabled && command === baseCommand) {
-			proc = await connectSharedLspTransport({ command, args, cwd, env, signal });
+			proc = await connectSharedLspTransport({ command, args, cwd, env, initializationOptions, signal });
 		}
 		proc ??= ptree.spawn([command, ...args], {
 			cwd,
@@ -2574,7 +2598,6 @@ export async function getOrCreateClient(
 			dynamicCapabilityRegistrations: new Map(),
 			openFiles: new Map(),
 			pendingRequests: new Map(),
-			messageBuffer: new Uint8Array(0),
 			isReading: false,
 			status: "connecting",
 			lastActivity: Date.now(),
@@ -2629,7 +2652,7 @@ export async function getOrCreateClient(
 					rootUri: fileToUri(cwd, cwd),
 					rootPath: cwd,
 					capabilities: CLIENT_CAPABILITIES,
-					initializationOptions: config.initOptions ?? {},
+					initializationOptions,
 					workspaceFolders: currentWorkspaceFolders(client),
 				},
 				signal,
@@ -2777,6 +2800,57 @@ export function endPendingDiskWrite(filePath: string): void {
 }
 
 /**
+ * Open documents no OMP operation has used for this long are closed before the next
+ * document opens. A server keeps the project of every open document loaded, and a
+ * TypeScript server drops a project whose documents are all closed when it handles
+ * the next open.
+ */
+const OPEN_FILE_IDLE_MS = 5 * 60 * 1000;
+
+/**
+ * Close documents no OMP operation has used within {@link OPEN_FILE_IDLE_MS}. Overlays
+ * ahead of disk and documents mid-open, sync or refresh stay open. Each close is queued
+ * before the caller's didOpen and is written even if the caller aborts first, so the
+ * server always sees the close a later reopen assumes. Its drain is bounded by `signal`,
+ * or by its own timeout once `signal` aborted before the write, so a server that stops
+ * reading stdin is torn down as it would be for that didOpen.
+ */
+function closeIdleFiles(client: LspClient, signal?: AbortSignal): void {
+	const idleBefore = Date.now() - OPEN_FILE_IDLE_MS;
+	for (const [uri, info] of client.openFiles) {
+		if (info.lastUsedAt > idleBefore) continue;
+		if (pendingDiskWrites.has(uri) || fileOperationLocks.has(`${client.name}:${uri}`)) continue;
+		client.openFiles.delete(uri);
+		client.diagnostics.delete(uri);
+		(client.idleClosedFiles ??= new Map()).set(uri, info.version);
+		const notification: LspJsonRpcNotification = {
+			jsonrpc: "2.0",
+			method: "textDocument/didClose",
+			params: { textDocument: { uri } },
+		};
+		// A failed write means the client is torn down or its process is gone.
+		void queueWriteMessage(client, notification, signal, true).catch(() => {});
+	}
+}
+
+/**
+ * Track a document the server just opened at `version`. A document closed for
+ * idleness is marked reopened, so diagnostics waits treat the empty publish that
+ * cleared its earlier life as provisional.
+ */
+function trackOpenedFile(client: LspClient, uri: string, languageId: string, version: number, content: string): void {
+	const reopened = client.idleClosedFiles?.delete(uri) === true;
+	client.openFiles.set(uri, {
+		version,
+		languageId,
+		syncedHash: documentSignature(content),
+		lastUsedAt: Date.now(),
+		reopenedAt: reopened ? Date.now() : undefined,
+	});
+	client.lastActivity = Date.now();
+}
+
+/**
  * Ensure a file is opened in the LSP client.
  * Sends didOpen notification if the file is not already tracked.
  */
@@ -2786,7 +2860,9 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 	const lockKey = `${client.name}:${uri}`;
 
 	// Check if file is already open
-	if (client.openFiles.has(uri)) {
+	const openFile = client.openFiles.get(uri);
+	if (openFile) {
+		openFile.lastUsedAt = Date.now();
 		return;
 	}
 
@@ -2807,7 +2883,7 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 
 		let content: string;
 		try {
-			content = await Bun.file(filePath).text();
+			content = await readTextFromDisk(filePath);
 			throwIfAborted(signal);
 		} catch (err) {
 			if (isEnoent(err)) return;
@@ -2816,6 +2892,8 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 		const languageId = client.config.languageId ?? detectLanguageId(filePath);
 		throwIfAborted(signal);
 
+		closeIdleFiles(client, signal);
+		const version = (client.idleClosedFiles?.get(uri) ?? 0) + 1;
 		await sendNotification(
 			client,
 			"textDocument/didOpen",
@@ -2823,15 +2901,14 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 				textDocument: {
 					uri,
 					languageId,
-					version: 1,
+					version,
 					text: content,
 				},
 			},
 			signal,
 		);
 
-		client.openFiles.set(uri, { version: 1, languageId, syncedHash: documentSignature(content) });
-		client.lastActivity = Date.now();
+		trackOpenedFile(client, uri, languageId, version, content);
 	})();
 
 	fileOperationLocks.set(lockKey, openPromise);
@@ -2852,9 +2929,11 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
  * positions from disk. This reads the file and, when its contents diverge from the
  * text last sent to the server, pushes a `didChange` so the server's copy matches
  * the disk text the position was derived from. Untracked files fall through to
- * {@link ensureFileOpen}; unchanged files send nothing.
- * Returns `true` only when a `didChange` was pushed for a reconciled overlay — the
- * caller can then wait for fresh diagnostics, since the stale ones were dropped.
+ * {@link ensureFileOpen}; unchanged files send nothing; a tracked file gone from
+ * disk is closed so the server stops answering for it.
+ * Returns `true` when the caller should wait for fresh diagnostics because the stale
+ * ones were dropped: a `didChange` was pushed for a reconciled overlay, or a document
+ * closed for idleness was reopened.
  * A file with an in-flight OMP write ({@link beginPendingDiskWrite}) is skipped
  * entirely: its overlay leads disk, so reading disk back would revert the server
  * to pre-write content.
@@ -2866,10 +2945,13 @@ export async function reconcileFileFromDisk(
 ): Promise<boolean> {
 	throwIfAborted(signal);
 	const uri = fileToUri(filePath);
-	if (!client.openFiles.has(uri)) {
+	const openFile = client.openFiles.get(uri);
+	if (!openFile) {
+		const reopening = client.idleClosedFiles?.has(uri) === true;
 		await ensureFileOpen(client, filePath, signal);
-		return false;
+		return reopening && client.openFiles.has(uri);
 	}
+	openFile.lastUsedAt = Date.now();
 
 	// An in-flight OMP write has already synced newer (possibly formatted) text to
 	// the server ahead of committing it to disk; the on-disk file is the stale side,
@@ -2895,11 +2977,13 @@ export async function reconcileFileFromDisk(
 
 		let content: string;
 		try {
-			content = await Bun.file(filePath).text();
+			content = await readTextFromDisk(filePath);
 			throwIfAborted(signal);
 		} catch (err) {
-			if (isEnoent(err)) return;
-			throw err;
+			if (!isEnoent(err)) throw err;
+			// Deleted outside OMP; a write that started meanwhile owns the overlay instead.
+			if (!pendingDiskWrites.has(uri)) await closeDocument(client, uri, signal);
+			return;
 		}
 
 		// Re-check after the (awaited) disk read: a write may have started and
@@ -2934,6 +3018,29 @@ export async function reconcileFileFromDisk(
 		fileOperationLocks.delete(lockKey);
 	}
 	return didChange;
+}
+
+/**
+ * Reconciles every document the client holds open against disk.
+ *
+ * A project-wide request answers with ranges for every file it touches. An
+ * already-open consumer that was edited outside OMP keeps a stale overlay, so
+ * the server's ranges still point at the old text — applying them to the
+ * current disk text writes the new identifier into the wrong lines while the
+ * request reports success (#15772). Reconciling only the requested target
+ * leaves those consumers stale, so sync all open documents first.
+ *
+ * Files with an in-flight OMP write are skipped by
+ * {@link reconcileFileFromDisk} (their overlay leads disk), and unchanged files
+ * send nothing. Returns the number of documents that were re-synced.
+ */
+export async function reconcileOpenFilesFromDisk(client: LspClient, signal?: AbortSignal): Promise<number> {
+	let reconciled = 0;
+	for (const uri of Array.from(client.openFiles.keys())) {
+		if (!uri.startsWith("file://")) continue;
+		if (await reconcileFileFromDisk(client, uriToFile(uri), signal)) reconciled++;
+	}
+	return reconciled;
 }
 
 /**
@@ -2980,9 +3087,11 @@ export async function syncContent(
 		const info = client.openFiles.get(uri);
 
 		if (!info) {
+			throwIfAborted(signal);
+			closeIdleFiles(client, signal);
 			// Open file with provided content instead of reading from disk
 			const languageId = client.config.languageId ?? detectLanguageId(filePath);
-			throwIfAborted(signal);
+			const version = (client.idleClosedFiles?.get(uri) ?? 0) + 1;
 			await sendNotification(
 				client,
 				"textDocument/didOpen",
@@ -2990,17 +3099,17 @@ export async function syncContent(
 					textDocument: {
 						uri,
 						languageId,
-						version: 1,
+						version,
 						text: content,
 					},
 				},
 				signal,
 			);
-			client.openFiles.set(uri, { version: 1, languageId, syncedHash: documentSignature(content) });
-			client.lastActivity = Date.now();
+			trackOpenedFile(client, uri, languageId, version, content);
 			return;
 		}
 
+		info.lastUsedAt = Date.now();
 		const version = ++info.version;
 		throwIfAborted(signal);
 		await sendNotification(
@@ -3025,21 +3134,33 @@ export async function syncContent(
 }
 
 /**
+ * Whether the server opted into full text on `didSave`
+ * (`textDocumentSync.save.includeText`); otherwise it already has the text from didChange.
+ */
+function saveIncludesText(client: LspClient): boolean {
+	const sync = client.serverCapabilities?.textDocumentSync;
+	const save = typeof sync === "object" && sync !== null && "save" in sync ? sync.save : undefined;
+	return typeof save === "object" && save !== null && "includeText" in save && save.includeText === true;
+}
+
+/**
  * Notify LSP that a file was saved.
- * Assumes content was already synced via syncContent - just sends didSave.
+ * Assumes content was already synced via syncContent; the saved text is read
+ * back only for servers that asked for it.
  */
 export async function notifySaved(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
 	const uri = fileToUri(filePath, client.cwd);
 	const info = client.openFiles.get(uri);
 	if (!info) return; // File not open, nothing to notify
+	info.lastUsedAt = Date.now();
 
+	throwIfAborted(signal);
+	const text = saveIncludesText(client) ? await Bun.file(filePath).text() : undefined;
 	throwIfAborted(signal);
 	await sendNotification(
 		client,
 		"textDocument/didSave",
-		{
-			textDocument: { uri },
-		},
+		text === undefined ? { textDocument: { uri } } : { textDocument: { uri }, text },
 		signal,
 	);
 	client.lastActivity = Date.now();
@@ -3107,7 +3228,7 @@ export async function notifyWorkspaceWatchedFiles(
 			if (clientChanges.length === 0) return;
 			await sendNotification(client, "workspace/didChangeWatchedFiles", { changes: clientChanges }, sendSignal);
 			if (clientChanges.every(change => change.type === FileChangeType.Changed)) return;
-			await Promise.all(Array.from(client.openFiles.keys(), uri => refreshFile(client, uriToFile(uri), sendSignal)));
+			await refreshOpenFiles(client, sendSignal);
 		}),
 	);
 	throwIfAborted(signal);
@@ -3123,19 +3244,27 @@ export async function notifyWorkspaceWatchedFiles(
 
 /**
  * Refresh a file in the LSP client.
- * Increments version, sends didChange and didSave notifications.
+ * Increments version, sends didChange and didSave notifications; closes a tracked
+ * document whose file is gone from disk.
  */
 export async function refreshFile(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
-	await refreshOpenDocument(client, fileToUri(filePath, client.cwd), signal, filePath);
+	await refreshDocument(client, filePath, "use", signal);
 }
 
-async function refreshOpenDocument(
+export async function refreshOpenFiles(client: LspClient, signal?: AbortSignal): Promise<void> {
+	await Promise.all(
+		Array.from(client.openFiles.keys(), uri => refreshDocument(client, uriToFile(uri), "resync", signal)),
+	);
+}
+
+async function refreshDocument(
 	client: LspClient,
-	uri: string,
+	filePath: string,
+	purpose: "use" | "resync",
 	signal?: AbortSignal,
-	filePath = uriToFile(uri),
 ): Promise<void> {
 	throwIfAborted(signal);
+	const uri = fileToUri(filePath, client.cwd);
 	const lockKey = `${client.name}:${uri}`;
 
 	const existingLock = fileOperationLocks.get(lockKey);
@@ -3152,17 +3281,20 @@ async function refreshOpenDocument(
 		const info = client.openFiles.get(uri);
 
 		if (!info) {
-			await ensureFileOpen(client, filePath, signal);
+			if (purpose === "use") await ensureFileOpen(client, filePath, signal);
 			return;
 		}
+		if (purpose === "use") info.lastUsedAt = Date.now();
 
 		let content: string;
 		try {
-			content = await Bun.file(filePath).text();
+			content = await readTextFromDisk(filePath);
 			throwIfAborted(signal);
 		} catch (err) {
-			if (isEnoent(err)) return;
-			throw err;
+			if (!isEnoent(err)) throw err;
+			// The file is gone; a pending write's overlay still leads disk (new file not yet committed).
+			if (!pendingDiskWrites.has(uri)) await closeDocument(client, uri, signal);
+			return;
 		}
 		const version = ++info.version;
 		throwIfAborted(signal);
@@ -3181,10 +3313,7 @@ async function refreshOpenDocument(
 		await sendNotification(
 			client,
 			"textDocument/didSave",
-			{
-				textDocument: { uri },
-				text: content,
-			},
+			saveIncludesText(client) ? { textDocument: { uri }, text: content } : { textDocument: { uri } },
 			signal,
 		);
 
@@ -3198,6 +3327,18 @@ async function refreshOpenDocument(
 	} finally {
 		fileOperationLocks.delete(lockKey);
 	}
+}
+
+/**
+ * Send `didClose` for a tracked document and forget it.
+ *
+ * Servers treat an open document as authoritative over disk, so a file deleted while
+ * open keeps contributing references, rename edits and diagnostics until it is closed.
+ */
+async function closeDocument(client: LspClient, uri: string, signal?: AbortSignal): Promise<void> {
+	await sendNotification(client, "textDocument/didClose", { textDocument: { uri } }, signal);
+	client.openFiles.delete(uri);
+	client.diagnostics.delete(uri);
 }
 
 async function waitForExit(client: LspClient, timeoutMs: number): Promise<boolean> {

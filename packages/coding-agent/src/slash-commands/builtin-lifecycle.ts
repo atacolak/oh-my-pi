@@ -1,16 +1,16 @@
+import { SEANCE_SLASH_COMMAND } from "./seance";
+import { clearSubmittedText, refuseImages, runWithDetachedDraft } from "./helpers/draft";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import { logger, setProjectDir } from "@oh-my-pi/pi-utils";
-import { reset as resetCapabilities } from "../capability";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
-import { loadSlashCommands } from "../extensibility/slash-commands";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
 import { releaseRemovedWorkspaceRoots } from "../lsp";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
-import type { AgentSession, FreshSessionResult, HandoffResult } from "../session/agent-session";
+import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
-import { buildReplanTitleContext, USER_INTERRUPT_LABEL } from "../session/messages";
+import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
 import { toggleSessionPin } from "../session/session-pins";
 import {
@@ -22,7 +22,6 @@ import {
 } from "../session/session-worktree";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
-import { isLowSignalTitleInput } from "../tiny/text";
 import { resolveToCwd } from "../tools/path-utils";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
@@ -39,32 +38,11 @@ function formatFreshSessionResult(result: FreshSessionResult): string {
 	return `Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`;
 }
 
-/** Null reports no usable title; undefined silently discards an invalidated request. */
-async function generateRenameTitle(session: AgentSession, signal?: AbortSignal): Promise<string | null | undefined> {
-	const { sessionManager } = session;
-	const context = buildReplanTitleContext(session.messages);
-	if (!context || isLowSignalTitleInput(context)) return null;
-	const revision = sessionManager.reserveTitleRevision();
-	const sessionId = sessionManager.getSessionId();
-	const titleSignal = session.titleGenerationSignal;
-	const cleanupProgress = session.notifyTitleGenerationStart();
-	try {
-		const title = await session.generateTitle(context, undefined, signal);
-		return !titleSignal.aborted &&
-			sessionManager.getSessionId() === sessionId &&
-			sessionManager.titleRevision === revision
-			? title
-			: undefined;
-	} finally {
-		cleanupProgress?.();
-	}
-}
-
 export const shutdownHandlerTui = (
 	_command: ParsedSlashCommand,
 	runtime: TuiSlashCommandRuntime,
 ): SlashCommandResult => {
-	runtime.ctx.editor.setText("");
+	clearSubmittedText(runtime);
 	void runtime.ctx.shutdown();
 	return commandConsumed();
 };
@@ -89,6 +67,27 @@ async function fatalMoveFailure(text: string, runtime: SlashCommandRuntime): Pro
 	await runtime.output(text);
 	await runtime.session.dispose();
 	return commandConsumed();
+}
+
+/** A move rollback failed: re-align the workspace to wherever the session ended up and report it. */
+async function reportFailedRollback(runtime: SlashCommandRuntime, rollbackError: unknown): Promise<SlashCommandResult> {
+	const actual = runtime.sessionManager.getCwd();
+	let realigned = false;
+	try {
+		await rescopeHeadlessToCwd(runtime, actual);
+		realigned = true;
+	} catch {}
+	await runtime.session.commitMovedWorkspaceRoots();
+	if (!realigned) {
+		return fatalMoveFailure(
+			`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
+			runtime,
+		);
+	}
+	return usage(
+		`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
+		runtime,
+	);
 }
 
 /**
@@ -118,23 +117,7 @@ async function relocateHeadlessSession(
 		try {
 			await runtime.sessionManager.rollbackMove(previousState);
 		} catch (rollbackError) {
-			const actual = runtime.sessionManager.getCwd();
-			let realigned = false;
-			try {
-				await rescopeHeadlessToCwd(runtime, actual);
-				realigned = true;
-			} catch {}
-			await runtime.session.commitMovedWorkspaceRoots();
-			if (!realigned) {
-				return fatalMoveFailure(
-					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
-					runtime,
-				);
-			}
-			return usage(
-				`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
-				runtime,
-			);
+			return reportFailedRollback(runtime, rollbackError);
 		}
 		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
@@ -146,23 +129,7 @@ async function relocateHeadlessSession(
 			await runtime.sessionManager.rollbackMove(previousState);
 			await rescopeHeadlessToCwd(runtime, previousState.cwd);
 		} catch (rollbackError) {
-			const actual = runtime.sessionManager.getCwd();
-			let realigned = false;
-			try {
-				await rescopeHeadlessToCwd(runtime, actual);
-				realigned = true;
-			} catch {}
-			await runtime.session.commitMovedWorkspaceRoots();
-			if (!realigned) {
-				return fatalMoveFailure(
-					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
-					runtime,
-				);
-			}
-			return usage(
-				`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
-				runtime,
-			);
+			return reportFailedRollback(runtime, rollbackError);
 		}
 		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
@@ -193,7 +160,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handle: handleSshAcp,
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleSSHCommand(command.text);
 		},
 	},
@@ -202,8 +169,8 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		icon: "plus",
 		description: "Start a new session",
 		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleClearCommand();
+			clearSubmittedText(runtime);
+			await runtime.ctx.handleNewCommand();
 		},
 	},
 	{
@@ -224,7 +191,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			return commandConsumed();
 		},
 		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleFreshCommand();
 		},
 	},
@@ -235,7 +202,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		getTuiAutocompleteDescription: runtime =>
 			runtime.ctx.session.isStreaming ? "Clear: unavailable while streaming" : "Clear: drop context, keep session",
 		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleResetContextCommand();
 		},
 	},
@@ -244,7 +211,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		icon: "trash",
 		description: "Delete the current session and start a new one",
 		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleDeleteCommand();
 		},
 	},
@@ -267,6 +234,10 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		handle: async (command, runtime) => {
 			const parsed = parseCompactArgs(command.args);
 			if ("error" in parsed) return usage(parsed.error, runtime);
+			// Print mode turns a failed compaction into a nonzero exit; the
+			// flag is closure state because the background-dispatch branch
+			// (RPC) returns before `runCompact` settles.
+			let compactFailed = false;
 			const runCompact = async (): Promise<void> => {
 				const before = runtime.session.getContextUsage?.();
 				const beforeTokens = before?.tokens;
@@ -282,6 +253,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					// Compaction precondition failures (no model, already compacted, too
 					// small) and provider errors propagate as plain Errors; surface them
 					// via runtime.output so they don't fail the ACP prompt turn.
+					compactFailed = true;
 					await runtime.output(`Compaction failed: ${errorMessage(err)}`);
 					return;
 				}
@@ -302,11 +274,11 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				return commandConsumed();
 			}
 			await runCompact();
-			return commandConsumed();
+			return commandConsumed({ failed: compactFailed });
 		},
 		handleTui: async (command, runtime) => {
 			const parsed = parseCompactArgs(command.args);
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			if ("error" in parsed) {
 				runtime.ctx.showWarning(parsed.error);
 				return;
@@ -334,7 +306,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			const mode = parseShakeMode(command.args);
 			if (typeof mode !== "string") {
 				runtime.ctx.showWarning(mode.error);
@@ -357,6 +329,10 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			if (runtime.session.isGeneratingHandoff) {
 				return usage("Handoff generation is already in progress.", runtime);
 			}
+			// Print mode turns a failed handoff into a nonzero exit; closure
+			// state because the background-dispatch branch (RPC) returns
+			// before `runHandoff` settles.
+			let handoffFailed = false;
 			const runHandoff = async (): Promise<void> => {
 				let result: HandoffResult | undefined;
 				try {
@@ -385,6 +361,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					// Persist the real failure so it stays debuggable after the client
 					// message scrolls away (same rationale as the TUI path, #7993).
 					logger.error("Handoff failed", { error: message });
+					handoffFailed = true;
 					await runtime.output(`Handoff failed: ${message}`);
 					return;
 				}
@@ -402,14 +379,16 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				return commandConsumed();
 			}
 			await runHandoff();
-			return commandConsumed();
+			return commandConsumed({ failed: handoffFailed });
 		},
 		handleTui: async (command, runtime) => {
+			if (refuseImages(command, runtime)) return;
 			const customInstructions = command.args || undefined;
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleHandoffCommand(customInstructions);
 		},
 	},
+	SEANCE_SLASH_COMMAND,
 	{
 		name: "resume",
 		icon: "history",
@@ -418,7 +397,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const sessionArg = command.args.trim();
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			const foreignSource = sessionArg === "@claude" ? "claude" : sessionArg === "@codex" ? "codex" : undefined;
 			if (foreignSource) {
 				runtime.ctx.showSessionSelector(foreignSource);
@@ -438,7 +417,12 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				runtime.ctx.showError(`Session "${sessionArg}" not found`);
 				return;
 			}
-			await runtime.ctx.handleResumeSession(match.session.path);
+			try {
+				await runtime.ctx.handleResumeSession(match.session.path);
+			} catch (error) {
+				// The picker reports a failed switch itself; `/resume <id>` has no picker.
+				runtime.ctx.showError(error instanceof Error ? error.message : String(error));
+			}
 		},
 	},
 	{
@@ -480,8 +464,12 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const question = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleBtwCommand(question);
+			await runWithDetachedDraft(
+				command,
+				runtime,
+				() => runtime.ctx.handleBtwCommand(question, runtime.input?.images),
+				{ restoreText: true },
+			);
 		},
 	},
 	{
@@ -492,8 +480,9 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const work = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleTanCommand(work);
+			await runWithDetachedDraft(command, runtime, () => runtime.ctx.handleTanCommand(work, runtime.input?.images), {
+				restoreText: true,
+			});
 		},
 	},
 	{
@@ -503,8 +492,9 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		inlineHint: "<complaint>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
+			if (refuseImages(command, runtime)) return;
 			const complaint = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleOmfgCommand(complaint);
 		},
 	},
@@ -515,8 +505,9 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		inlineHint: "[request] [--all]",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
+			if (refuseImages(command, runtime)) return;
 			const args = command.text.slice(`/${command.name}`.length).trim();
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleCleanseCommand(args);
 		},
 	},
@@ -552,7 +543,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			if (!didRetry) {
 				runtime.ctx.showStatus("Nothing to retry");
 			}
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -561,7 +552,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		description: "Open debug tools selector",
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.showDebugSelector();
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 		},
 	},
 	{
@@ -599,6 +590,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				case "view": {
 					const payload = await backend.buildDeveloperInstructions(
 						runtime.settings.getAgentDir(),
+						runtime.cwd,
 						runtime.settings,
 						runtime.session,
 					);
@@ -649,7 +641,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			}
 		},
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleMemoryCommand(command.text);
 		},
 	},
@@ -670,13 +662,14 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					runtime.session === session &&
 					runtime.sessionManager === sessionManager &&
 					!runtime.signal?.aborted &&
-					!titleSignal.aborted &&
+					// An interrupt cancels a generated title; a typed one applies regardless.
+					!(titleSignal.aborted && !command.args) &&
 					sessionManager.getSessionId() === sessionId &&
 					sessionManager.titleRevision === titleRevision;
 				try {
-					const generation = command.args || generateRenameTitle(session, runtime.signal);
+					const generation = session.renameTitle(command.args, runtime.signal);
 					titleRevision = sessionManager.titleRevision;
-					const title = typeof generation === "string" ? generation : await generation;
+					const title = await generation;
 					if (!isCurrent() || title === undefined) return;
 					if (!title) {
 						await runtime.output("Could not generate a session title. Use /rename <title> to set one.");
@@ -707,18 +700,17 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			const session = runtime.ctx.session;
 			const sessionManager = runtime.ctx.sessionManager;
 			const sessionId = sessionManager.getSessionId();
-			const titleSignal = session.titleGenerationSignal;
-			const generation = command.args.trim() || generateRenameTitle(session);
+			// `renameTitle` resolves undefined for a generated title an interrupt cancelled.
+			const generation = session.renameTitle(command.args.trim());
 			const titleRevision = sessionManager.titleRevision;
-			const title = typeof generation === "string" ? generation : await generation;
+			const title = await generation;
 			if (
 				runtime.ctx.session !== session ||
 				runtime.ctx.sessionManager !== sessionManager ||
-				titleSignal.aborted ||
 				sessionManager.getSessionId() !== sessionId ||
 				sessionManager.titleRevision !== titleRevision ||
 				title === undefined
@@ -757,7 +749,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.addToHistory(command.text);
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleMoveCommand(command.args || undefined);
 		},
 	},
@@ -792,7 +784,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.addToHistory(command.text);
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.handleWorktreeCommand(command.args || undefined);
 		},
 	},
@@ -890,7 +882,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		icon: "restart",
 		description: "Restart omp with the same launch flags, resuming this session",
 		handleTui: async (_command, runtime) => {
-			runtime.ctx.editor.setText("");
+			clearSubmittedText(runtime);
 			await runtime.ctx.restart();
 		},
 	},
@@ -903,13 +895,7 @@ async function rescopeHeadlessToCwd(runtime: SlashCommandRuntime, cwd: string): 
 	const src = discoverTitleSystemPromptFile(cwd);
 	const p = await resolvePromptInput(src, "title system prompt");
 	runtime.session.setTitleSystemPrompt(p);
-	resetCapabilities();
-	await runtime.session.refreshSkills();
-	const cmds = await loadSlashCommands({
-		cwd,
-		extensionRoots: runtime.session.effectiveExtensionRoots,
-	});
-	runtime.session.setSlashCommands(cmds);
+	await runtime.session.refreshSkillsAndCommands();
 	await runtime.refreshCommands?.();
 	await runtime.reloadPlugins();
 }

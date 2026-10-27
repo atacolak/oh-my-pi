@@ -41,7 +41,6 @@ function mockLspClient(config: ServerConfig, cwd: string): LspClient {
 		diagnosticsVersion: 0,
 		openFiles: new Map(),
 		pendingRequests: new Map(),
-		messageBuffer: new Uint8Array(),
 		isReading: false,
 		status: "ready",
 		lastActivity: Date.now(),
@@ -661,7 +660,7 @@ describe("nested LSP project roots", () => {
 				},
 				nested.projectRoot,
 			);
-			client.openFiles.set(fileToUri(sourceViaLink), { version: 1, languageId: "python" });
+			client.openFiles.set(fileToUri(sourceViaLink), { version: 1, languageId: "python", lastUsedAt: Date.now() });
 			const willRenameRequests: unknown[] = [];
 			const closedUris: string[] = [];
 			const reconciled: ExecutedWorkspaceChange[][] = [];

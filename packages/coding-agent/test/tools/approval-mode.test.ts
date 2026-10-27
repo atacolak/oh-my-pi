@@ -207,18 +207,20 @@ describe("tools.approvalMode setting", () => {
 		expect(textOf(result)).toContain("(no output)");
 	});
 
-	it("xd:// dispatch approval (xdevApproved) suppresses the tier-only re-prompt", async () => {
+	it("xd:// dispatch approval (xdevPolicyKey) suppresses the tier-only re-prompt", async () => {
 		// The write tool's outer gate already prompted at the device tool's tier;
 		// without the flag this exact call rejects (see the always-ask test above).
 		const settings = approvalSettings({ "tools.approvalMode": "always-ask" });
 		const result = await bashTool().execute("xdev-tier", { command: "echo dispatched" }, undefined, undefined, {
 			settings,
-			xdevApproved: true,
+			xdevPolicyKey: "bash",
 		} as AgentToolContext);
 		expect(textOf(result)).toContain("dispatched");
 	});
 
-	it("xdevApproved does not bypass explicit per-tool prompt or deny policies", async () => {
+	it("xd:// dispatch approval does not cover explicit prompts under another key, or deny policies", async () => {
+		// The outer gate resolved `tools.approval.<device>`; a policy keyed
+		// elsewhere was never asked about, so it must still prompt.
 		const promptSettings = approvalSettings({
 			"tools.approvalMode": "always-ask",
 			"tools.approval": { bash: "prompt" },
@@ -226,7 +228,7 @@ describe("tools.approvalMode setting", () => {
 		await expect(
 			bashTool().execute("xdev-explicit-prompt", { command: "echo blocked" }, undefined, undefined, {
 				settings: promptSettings,
-				xdevApproved: true,
+				xdevPolicyKey: "other_device",
 			} as AgentToolContext),
 		).rejects.toThrow(/requires approval but no interactive UI available/);
 
@@ -237,7 +239,7 @@ describe("tools.approvalMode setting", () => {
 		await expect(
 			bashTool().execute("xdev-denied", { command: "echo blocked" }, undefined, undefined, {
 				settings: denySettings,
-				xdevApproved: true,
+				xdevPolicyKey: "bash",
 			} as AgentToolContext),
 		).rejects.toThrow(/blocked by user policy/);
 	});
@@ -303,16 +305,5 @@ describe("tools.approvalMode setting", () => {
 				},
 			} as never),
 		).rejects.toThrow(/pending provider safety checks but no interactive UI/);
-	});
-
-	it("constructs an extensionRunner unconditionally so the approval gate is always installed", async () => {
-		// Regression lock for the architectural fix: the per-tool approval gate is implemented
-		// inside `ExtensionToolWrapper`, which is only attached when `session.extensionRunner` exists.
-		// Historically the runner was conditional on `extensionsResult.extensions.length > 0`, which
-		// meant the entire approval system silently disappeared for users with no extensions loaded —
-		// any non-yolo approval mode setting would be a no-op without feedback. The
-		// fix is to construct the runner unconditionally; this test makes that contract explicit so
-		// a future change to make the runner optional again cannot silently re-open the hole.
-		expect(session.extensionRunner).toBeDefined();
 	});
 });

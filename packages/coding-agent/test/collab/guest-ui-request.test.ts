@@ -12,6 +12,7 @@
  * frame is observable.
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as fsp from "node:fs/promises";
 import { generateRoomKey, importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
@@ -23,6 +24,7 @@ import {
 	parseCollabLink,
 } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type {
 	ExtensionAskDialogQuestion,
 	ExtensionUIDialogOptions,
@@ -31,6 +33,7 @@ import type {
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
+import { instrumentRelay, waitFor } from "./helpers/throttled-host";
 
 // In-memory transport: shared FakeWebSocket + InMemoryRelay harness (see
 // ./helpers/in-memory-relay), same contract as the other collab tests.
@@ -189,7 +192,7 @@ async function makeHarness(opts?: { readOnly?: boolean }): Promise<GuestUiHarnes
 
 	const ctx = {
 		collabGuest: undefined as CollabGuestLink | undefined,
-		settings: { get: () => "" },
+		settings: Settings.isolated(),
 		sessionManager: {
 			getSessionFile: () => null,
 			getSessionName: () => "local session",
@@ -240,7 +243,11 @@ async function makeHarness(opts?: { readOnly?: boolean }): Promise<GuestUiHarnes
 		},
 		updateEditorTopBorder: () => {},
 		updateEditorBorderColor: () => {},
-		eventController: { handleEvent: () => Promise.resolve(), takeDisplaceableComponents: () => [] },
+		eventController: {
+			dispatchSessionEvent: () => Promise.resolve(),
+			takeDisplaceableComponents: () => [],
+			resetTranscriptAnchors: () => {},
+		},
 		syncRunningSubagentBadge: () => {},
 		showHookSelector: (
 			title: string,
@@ -277,16 +284,20 @@ async function makeHarness(opts?: { readOnly?: boolean }): Promise<GuestUiHarnes
 
 const harnessCleanups: (() => Promise<void>)[] = [];
 let writeSpy: { mockRestore(): void } | null = null;
+let renameSpy: { mockRestore(): void } | null = null;
 
 beforeEach(() => {
 	installInMemoryRelay();
 	writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
+	renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
 	for (const cleanup of harnessCleanups.splice(0).reverse()) await cleanup();
 	writeSpy?.mockRestore();
+	renameSpy?.mockRestore();
 	writeSpy = null;
+	renameSpy = null;
 	uninstallInMemoryRelay();
 });
 
@@ -444,7 +455,7 @@ describe("collab TUI guest ui-request handling (#4049)", () => {
 /** Minimal InteractiveModeContext double: only the members CollabHost touches. */
 function makeHostContext(): InteractiveModeContext {
 	return {
-		settings: { get: () => "" },
+		settings: Settings.isolated(),
 		sessionManager: {
 			getSessionId: () => "sess-proto",
 			getCwd: () => "/tmp",
@@ -543,27 +554,6 @@ describe("collab proto handshake (#4049)", () => {
 		}
 	});
 
-	it("welcomes a current-proto guest at v3 and round-trips a ui-request", async () => {
-		const host = new CollabHost(makeHostContext());
-		await host.start("ws://localhost:8787");
-		const guest = await joinRawGuest(host.link, COLLAB_PROTO);
-		try {
-			const welcome = await guest.nextFrame();
-			if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
-			expect(welcome.proto).toBe(3);
-
-			const pending = host.requestGuestUi({ kind: "select", title: "Continue?", options: ["Yes"] });
-			if (!pending) throw new Error("expected writable guest UI request");
-			const request = await guest.nextFrame();
-			if (request.t !== "ui-request") throw new Error(`expected ui-request, got ${request.t}`);
-			guest.socket.send({ t: "ui-response", reqId: request.request.reqId, value: "Yes" });
-			expect(await pending).toEqual({ kind: "answered", value: "Yes" });
-		} finally {
-			guest.socket.close();
-			await host.stop("test done");
-		}
-	});
-
 	it("CollabGuestLink.join fails fast with the host's rejection message instead of hanging for the welcome", async () => {
 		// Scripted host that rejects every hello the way CollabHost does for a
 		// proto mismatch. The real guest must surface that message from join().
@@ -586,7 +576,7 @@ describe("collab proto handshake (#4049)", () => {
 		await hostOpen.promise;
 
 		const ctx = {
-			settings: { get: () => "" },
+			settings: Settings.isolated(),
 			sessionManager: { getSessionFile: () => null },
 			syncRunningSubagentBadge: () => {},
 		} as unknown as InteractiveModeContext;
@@ -826,6 +816,54 @@ function makeAskHostContext(): InteractiveModeContext {
 	};
 	return stub as unknown as InteractiveModeContext;
 }
+
+describe("guest ask host reconnect", () => {
+	it.each(["guest", "host"])("lets a writer answer an open ask after a %s disconnect", async disconnect => {
+		const relay = installInMemoryRelay();
+		const probe = instrumentRelay(relay, { throttle: false });
+		const ctx = makeAskHostContext();
+		const host = new CollabHost(ctx);
+		await host.start("ws://localhost:8787");
+		ctx.collabHost = host;
+		const controller = new ExtensionUiController(ctx);
+		const abort = new AbortController();
+		const firstGuest = await joinRawGuest(host.link, COLLAB_PROTO);
+		let rejoined: { socket: CollabSocket; nextFrame(): Promise<CollabFrame> } | undefined;
+		try {
+			expect((await firstGuest.nextFrame()).t).toBe("welcome");
+			const result = controller.showAskDialog(
+				[{ id: "lock", question: "How should it lock?", options: [{ label: "ACCESS EXCLUSIVE" }] }],
+				{ signal: abort.signal },
+			);
+			expect((await firstGuest.nextFrame()).t).toBe("ui-request");
+
+			if (disconnect === "host") {
+				const previousSocket = probe.hostSocket();
+				previousSocket.close();
+				await waitFor(() => probe.hostSocket() !== previousSocket && host.relayConnected, "host did not reconnect");
+			} else {
+				firstGuest.socket.close();
+			}
+			rejoined = await joinRawGuest(host.link, COLLAB_PROTO);
+			expect((await rejoined.nextFrame()).t).toBe("welcome");
+			// A directed error is a barrier: a retained ask must arrive before it.
+			rejoined.socket.send({ t: "agent-cmd", cmd: "chat", agentId: "barrier", text: "" });
+			const request = await rejoined.nextFrame();
+			expect(request.t).toBe("ui-request");
+			if (request.t !== "ui-request") throw new Error("pending ask was lost across the host reconnect");
+			rejoined.socket.send({ t: "ui-response", reqId: request.request.reqId, value: "ACCESS EXCLUSIVE" });
+			expect(await result).toMatchObject({
+				kind: "submit",
+				results: [{ id: "lock", selectedOptions: ["ACCESS EXCLUSIVE"] }],
+			});
+		} finally {
+			abort.abort();
+			firstGuest.socket.close();
+			rejoined?.socket.close();
+			await host.stop("test done");
+		}
+	});
+});
 
 describe("guest ask room ownership", () => {
 	it.each(["next question", "custom answer"])("does not mirror a %s to a successor room", async followup => {

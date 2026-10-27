@@ -5,8 +5,18 @@
 >
 > - **Upstream base:** [OMP 18.13.1 (`0838d2ab`)](https://github.com/can1357/oh-my-pi/tree/0838d2ab4407b74e870de07e1a6780a13c7d542c)
 > - **Capabilities:**
+>   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
 >   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
+>   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — skip colocated test files as extension entry points
+>   - [`cap/followup-draft`](https://github.com/atacolak/oh-my-pi/tree/cap/followup-draft) — followUpMode default all
 >   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retention + locked scope seam
+>   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — nested project LSP roots
+>   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — default retry chain for unowned models
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped `/settings`
+>   - [`cap/todo-passive-phase`](https://github.com/atacolak/oh-my-pi/tree/cap/todo-passive-phase) — passive todo phases
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — app viewport + `ompalt` launcher
+>   - [`wip/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/wip/agent-flag) — root agent launch via `--agent`
 >
 > Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 

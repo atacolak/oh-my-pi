@@ -31,6 +31,7 @@ import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
+import type { AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
 
@@ -302,12 +303,15 @@ export interface ParsedAgentFields {
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
+	hide?: boolean;
 	/** `true` = keep `yield` and the output schema when `task.structured` is off. */
 	structured?: boolean;
 	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
 	advisor?: boolean | string;
+	/** Root-only durable authoring grant. Independent from `spawns`. */
+	automationAuthor?: AutomationAuthorPolicy;
 }
 
 /**
@@ -375,6 +379,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const thinkingLevel = parseConfiguredThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
+	const hide = parseBoolean(frontmatter.hide);
 	const structured = parseBoolean(frontmatter.structured);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
 	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
@@ -392,6 +397,8 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
+	const automationAuthor = parseAutomationAuthor(frontmatter.automationAuthor);
+
 	return {
 		name,
 		description,
@@ -401,12 +408,37 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		output,
 		thinkingLevel,
 		blocking,
+		hide,
 		structured,
 		autoloadSkills,
 		readSummarize,
 		prewalk,
 		advisor,
+		automationAuthor,
 	};
+}
+
+function parseAutomationAuthor(value: unknown): AutomationAuthorPolicy | undefined {
+	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const jurisdiction = record.jurisdiction;
+	if (jurisdiction !== "descendants" && jurisdiction !== "scope") return undefined;
+	const allowed = record.allowedAgents;
+	let allowedAgents: string[] | "*";
+	if (allowed === "*") {
+		allowedAgents = "*";
+	} else if (
+		Array.isArray(allowed) &&
+		allowed.length > 0 &&
+		allowed.every(item => typeof item === "string" && item.trim().length > 0)
+	) {
+		allowedAgents = allowed.map(item => String(item).trim());
+	} else {
+		return undefined;
+	}
+	return { allowedAgents, jurisdiction };
 }
 
 async function globIf(

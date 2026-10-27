@@ -1,12 +1,14 @@
 > [!NOTE]
-> ## `cap/todo-passive-phase` — passive todo phases
+> ## `wip/agent-flag` — root agent launch capability
 >
-> A todo phase can opt out of automatic continuation with `kind: "passive"`. Passive phases stay stored and visible to the model, transcript, RPC clients, and TUI, but they do not drive next-action selection, automatic `in_progress` promotion, stop reminders, or mid-run nudges. Omitting `kind` keeps the continuing behavior.
+> Root sessions can launch directly from discovered agent definitions through `--agent`.
 >
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PR(s):** Status: fork-local
+> - **Runtime composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Role discovery:** `--agent-cwd` selects the agent-definition project without changing `--cwd`
+> - **Hidden roles:** `hide: true` keeps explicit automation identities out of ambient task rosters
+> - **Resume:** session header `rootAgent` restores `--agent` on continue/fork; conflicting `--agent` is refused, missing privileged roles fail closed
 > - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
-
+>
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

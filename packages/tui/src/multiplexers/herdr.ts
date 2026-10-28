@@ -1,13 +1,6 @@
-import { DEFAULT_NOTIFICATION_TITLE, notificationTitleAndBody, spawnNotifier } from "./notify";
 import type { TerminalMultiplexerModule } from "./types";
 
 const HERDR_PANE_ID_PATTERN = /^[0-9A-Za-z:_-]{1,64}$/u;
-/**
- * `herdr notification show` takes the title as its first positional and reads
- * exactly these three values there as a help request; it has no `--`
- * terminator. Any other text, including one starting with `-`, is a title.
- */
-const HERDR_USAGE_TOKENS: Record<string, true> = { help: true, "--help": true, "-h": true };
 
 export const herdrMultiplexer = {
 	id: "herdr",
@@ -21,33 +14,25 @@ export const herdrMultiplexer = {
 		return env.HERDR_ENV === "1" || Boolean(env.HERDR_PANE_ID || env.HERDR_TAB_ID || env.HERDR_WORKSPACE_ID);
 	},
 	/**
-	 * Herdr multiplexes panes like tmux but swallows bare OSC 9 / OSC 99 and has
-	 * no DCS passthrough envelope, and its bell relay does not flag a
-	 * backgrounded tab — so without its CLI a backgrounded pane gets no signal
-	 * at all that the agent finished or is waiting for input.
+	 * Claim Herdr delivery when the process runs inside one of its panes.
+	 * Herdr already toasts Finished on Idle and NeedsAttention on Blocked from
+	 * `pane.report_agent` (`herdr-omp-agent-state`). Do not spawn
+	 * `herdr notification show` — that second card is the session title.
 	 *
-	 * `sound` maps the notification kind onto what Herdr offers: a question
-	 * waiting on the user and a turn that stopped with an error both need the
-	 * human and ring `request`, a settled turn rings `done`, anything else stays
-	 * silent. The exact pane ID addresses the CLI call; without a valid one, or
-	 * without the binary, delivery falls through.
+	 * Still return true so {@link routeTerminalMultiplexerNotification} does not
+	 * fall through to OSC 9/99 (Herdr swallows those). Skip the spawn for done,
+	 * request, and none. Do not debounce. Idle reports stay with Herdr.
+	 *
+	 * Pane-only detection: without a valid pane id, Herdr does not own delivery
+	 * and the existing terminal fallback stays. Missing binary must not fall
+	 * through either, because claiming delivery never needs the CLI.
 	 */
 	notifier: {
 		tier: "pane",
-		send({ message, env }) {
+		send({ env }) {
 			const paneId = env.HERDR_PANE_ID?.trim();
 			if (!paneId || !HERDR_PANE_ID_PATTERN.test(paneId)) return false;
-
-			const parsed = notificationTitleAndBody(message);
-			const title = Object.hasOwn(HERDR_USAGE_TOKENS, parsed.title) ? DEFAULT_NOTIFICATION_TITLE : parsed.title;
-			const kinds = typeof message === "string" ? [] : [message.type ?? []].flat();
-			const sound =
-				kinds.includes("ask") || kinds.includes("error")
-					? "request"
-					: kinds.includes("completion")
-						? "done"
-						: "none";
-			return spawnNotifier(["herdr", "notification", "show", title, "--body", parsed.body, "--sound", sound]);
+			return true;
 		},
 	},
 	// Herdr hides the outer terminal (`TERM=xterm-256color`, no `TERM_PROGRAM`),

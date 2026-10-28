@@ -1939,6 +1939,19 @@ export async function runRootCommand(
 		if (!isInteractive) {
 			stopPendingStartupComposer();
 		}
+		// Experimental app-viewport backend is interactive-only. Set the env early
+		// enough that InteractiveMode's TUI constructor observes it, and reject
+		// print/protocol (and other non-interactive) startups with a clean usage error.
+		if (parsedArgs.alt) {
+			if (!isInteractive) {
+				process.stderr.write(
+					`${chalk.red("Error: --alt is only supported in interactive mode (not with --print, --mode, or piped input)")}\n`,
+				);
+				process.stderr.write(`Run \`omp --help\` for available flags.\n`);
+				process.exit(2);
+			}
+			Bun.env.PI_TUI_RENDER_BACKEND = "app-viewport";
+		}
 		// Account routing must use the effective settings, including `--config` and
 		// `PI_CONFIG_FILES` overlays, rather than independently re-reading only the
 		// main config file during auth discovery.

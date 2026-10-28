@@ -12,16 +12,24 @@
  */
 import { randomBytes } from "node:crypto";
 import { logger } from "@oh-my-pi/pi-utils";
-import { sanitizeDisplayLine } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
 import type { InteractiveModeContext } from "../modes/types";
 import { TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import { CollabHost, CollabHostStoppedError, CollabRelayUnavailableError } from "./host";
 import type { CollabAccess } from "./registry";
+import {
+	type CollabAutoStart,
+	resolveCollabLinkPath,
+	resolveRelayUrl,
+	resolveTrustedAutoStartLaunch,
+	resolveTrustedAutoStartMode,
+	sanitizeCollabError,
+	type TrustedAutoStartLaunch,
+	writeCollabLink,
+} from "./start";
 
-import { cfgCollabAutoStart, cfgCollabRelayUrl, cfgCollabWebUrl } from "./settings";
+import { cfgCollabRelayUrl, cfgCollabWebUrl } from "./settings";
 
-export type CollabAutoStart = "off" | CollabAccess;
-
+export type { CollabAutoStart } from "./start";
 const SESSION_SWITCH_REASON =
 	"session switched; prompts not shown in the conversation were not submitted. Rejoin and resend them";
 /**
@@ -49,6 +57,8 @@ export class CollabController {
 	#ops: Promise<void> = Promise.resolve();
 	/** Explicit stop invalidates launch requests, not the saved auto-start policy. */
 	#stopEpoch = 0;
+	/** Aborts an in-flight write-link lock wait when stop/shutdown wins. */
+	#writeAbort: AbortController | undefined;
 	/** Installed when the first room starts; a process that never hosts never subscribes. */
 	#unsubscribeSessionChange: (() => void) | undefined;
 	#unsubscribeSessionMove: (() => void) | undefined;
@@ -82,7 +92,7 @@ export class CollabController {
 	}
 
 	get autoStartMode(): CollabAutoStart {
-		return cfgCollabAutoStart.get(this.#ctx.settings);
+		return resolveTrustedAutoStartMode(this.#ctx.settings);
 	}
 
 	/**
@@ -96,13 +106,11 @@ export class CollabController {
 	 * dialogs but cannot prompt, interrupt, or command agents.
 	 */
 	autoStart(): void {
-		// Observe session changes from now on even when auto-start is currently
-		// off: the setting is read live, so enabling it later applies to the
-		// next `/new`, `/resume`, or branch without restarting omp.
 		this.#observeSessionChanges();
-		const access = this.autoStartMode;
-		if (access === "off" || this.#shutdown || this.host || this.#ctx.collabGuest) return;
-		const started = this.#launchReporting(access, this.#stopEpoch);
+		if (this.#shutdown || this.host || this.#ctx.collabHost || this.#ctx.collabGuest) return;
+		const launch = this.#trustedAutoStartLaunch();
+		if (!launch) return;
+		const started = this.#launchReporting(launch.access, this.#stopEpoch, launch);
 		this.#ops = this.#ops.then(() => started);
 	}
 
@@ -118,8 +126,8 @@ export class CollabController {
 		this.#ops = this.#ops.then(async () => {
 			if ((await restored) !== true) return;
 			if (this.#shutdown || stopEpoch !== this.#stopEpoch || this.host || this.#ctx.collabGuest) return;
-			const access = this.autoStartMode;
-			if (access !== "off") await this.#launchReporting(access, stopEpoch);
+			const launch = this.#trustedAutoStartLaunch();
+			if (launch) await this.#launchReporting(launch.access, stopEpoch, launch);
 		});
 	}
 
@@ -183,6 +191,7 @@ export class CollabController {
 	/** Cancel pending launches and stop the current room, including a stop already in flight. */
 	async stop(reason: string): Promise<void> {
 		this.#stopEpoch++;
+		this.#writeAbort?.abort();
 		if (this.#host) await this.#stopHost(this.#host, reason);
 	}
 
@@ -217,15 +226,15 @@ export class CollabController {
 		await this.#ops;
 	}
 
-	#resolveRelayUrl(relay?: string): string {
-		const input = relay?.trim() || cfgCollabRelayUrl.get(this.#ctx.settings) || "";
+	#resolveRelayUrl(relay?: string, trusted?: TrustedAutoStartLaunch): string {
+		const input = trusted ? trusted.relayUrl : relay?.trim() || cfgCollabRelayUrl.get(this.#ctx.settings) || "";
 		if (!input) {
 			throw new Error(
 				"No relay configured. Set collab.relayUrl in /settings or pass one: /collab relay.example.com",
 			);
 		}
-		// Scheme-less relay args default to wss (ws:// must be spelled out for localhost).
-		return input.includes("://") ? input : `wss://${input}`;
+		if (trusted) return trusted.relayUrl;
+		return resolveRelayUrl(input);
 	}
 
 	/**
@@ -233,22 +242,24 @@ export class CollabController {
 	 * can be retained. During a session transition, wait for its final identity
 	 * and state first. Connect only after the previous room is fully gone.
 	 */
-	async #launch(access: CollabAccess, stopEpoch: number, relay?: string): Promise<CollabHost> {
+	async #launch(
+		access: CollabAccess,
+		stopEpoch: number,
+		relay?: string,
+		trusted?: TrustedAutoStartLaunch,
+	): Promise<CollabHost> {
 		if (this.#shutdown) throw new CollabHostStoppedError("collab controller shut down");
 		if (stopEpoch !== this.#stopEpoch) throw new CollabHostStoppedError("collab controller stopped");
-		// Identity cleanup callbacks can precede awaited hooks and message replacement.
-		// Pin and expose only the session left after commit or rollback.
 		if (this.#ctx.session.isSessionTransitioning) {
 			const shutdown = (this.#shutdownWake ??= Promise.withResolvers<void>()).promise;
 			await Promise.race([this.#ctx.session.waitForSessionTransition(), shutdown]);
 		}
-		// Manual upgrades may reach this after awaiting the old room's stop.
-		// Shutdown or an explicit stop may have overtaken either wait.
 		if (this.#shutdown) throw new CollabHostStoppedError("collab controller shut down");
 		if (stopEpoch !== this.#stopEpoch) throw new CollabHostStoppedError("collab controller stopped");
 		if (this.#ctx.collabGuest) throw new CollabHostStoppedError("collab guest owns the session");
-		const relayUrl = this.#resolveRelayUrl(relay);
-		const webUrl = cfgCollabWebUrl.get(this.#ctx.settings) || "";
+		if (this.#ctx.session.isDisposed) throw new CollabHostStoppedError("collab host start cancelled");
+		const relayUrl = this.#resolveRelayUrl(relay, trusted);
+		const webUrl = trusted?.webUrl ?? (cfgCollabWebUrl.get(this.#ctx.settings) || "");
 		this.#observeSessionChanges();
 		const previous = this.#host;
 		const host: CollabHost = new CollabHost(this.#ctx, {
@@ -261,10 +272,21 @@ export class CollabController {
 		this.#host = host;
 		this.#ctx.collabHost = host;
 		try {
-			// A previous room may still be withdrawing subscriptions and registry
-			// state after a fatal close. Finish that before installing new taps.
 			if (previous) await this.#stopHost(previous, "replaced");
 			await host.start(relayUrl, webUrl);
+			if (this.#ctx.collabGuest) {
+				await this.#stopHost(host, "guest joined while host was starting");
+				throw new CollabHostStoppedError("Cannot host while joined as a guest");
+			}
+			if (this.#ctx.session.isDisposed || this.#host !== host || this.#ctx.collabHost !== host || host.ending) {
+				await this.#stopHost(host, "host start cancelled");
+				throw new CollabHostStoppedError("collab host dropped during start");
+			}
+			await this.#maybeWriteLink(host, trusted, stopEpoch);
+			if (this.#ctx.session.isDisposed || this.#host !== host || this.#ctx.collabHost !== host || host.ending) {
+				await this.#stopHost(host, "host start cancelled");
+				throw new CollabHostStoppedError("collab host dropped during write-link");
+			}
 		} catch (err) {
 			if (this.#host === host) this.#host = undefined;
 			if (this.#ctx.collabHost === host) this.#ctx.collabHost = undefined;
@@ -285,9 +307,9 @@ export class CollabController {
 	 * relaunch backoff; any other failure waits for the next session change or
 	 * `/collab`.
 	 */
-	async #launchReporting(access: CollabAccess, stopEpoch: number): Promise<void> {
+	async #launchReporting(access: CollabAccess, stopEpoch: number, trusted?: TrustedAutoStartLaunch): Promise<void> {
 		try {
-			await this.#launch(access, stopEpoch);
+			await this.#launch(access, stopEpoch, undefined, trusted);
 		} catch (err) {
 			this.#reportFailure(err);
 			if (!this.#shutdown && err instanceof CollabRelayUnavailableError) this.#scheduleRelaunch(stopEpoch);
@@ -297,7 +319,7 @@ export class CollabController {
 	#reportFailure(err: unknown): void {
 		if (this.#shutdown || err instanceof CollabHostStoppedError) return;
 		logger.warn("Collab auto-start failed", { error: String(err) });
-		const message = sanitizeDisplayLine(err instanceof Error ? err.message : String(err));
+		const message = sanitizeCollabError(err);
 		this.#ctx.showStatus(truncateToWidth(`Collab auto-start failed: ${message}`, TRUNCATE_LENGTHS.LINE), {
 			dim: true,
 		});
@@ -362,9 +384,38 @@ export class CollabController {
 			.then(async () => {
 				await stopping;
 				if (this.#shutdown || stopEpoch !== this.#stopEpoch || this.host || this.#ctx.collabGuest) return;
-				const access = this.autoStartMode;
-				if (access !== "off") await this.#launchReporting(access, stopEpoch);
+				const launch = this.#trustedAutoStartLaunch();
+				if (launch) await this.#launchReporting(launch.access, stopEpoch, launch);
 			})
 			.catch(err => this.#reportFailure(err));
+	}
+
+	#trustedAutoStartLaunch(): TrustedAutoStartLaunch | undefined {
+		return resolveTrustedAutoStartLaunch(this.#ctx.settings, message => this.#ctx.showWarning(message));
+	}
+
+	async #maybeWriteLink(
+		host: CollabHost,
+		trusted: TrustedAutoStartLaunch | undefined,
+		stopEpoch: number,
+	): Promise<void> {
+		const rawPath = trusted?.writeLinkPath?.trim();
+		if (!rawPath) return;
+		const target = resolveCollabLinkPath(rawPath, this.#ctx.sessionManager.getCwd());
+		const abort = new AbortController();
+		this.#writeAbort = abort;
+		try {
+			await writeCollabLink(target, host.link, abort.signal);
+		} catch (error) {
+			if (abort.signal.aborted || stopEpoch !== this.#stopEpoch || this.#shutdown) {
+				throw new CollabHostStoppedError("collab controller stopped");
+			}
+			this.#ctx.showError(`Failed to write collab link file: ${sanitizeCollabError(error)}`);
+		} finally {
+			if (this.#writeAbort === abort) this.#writeAbort = undefined;
+		}
+		if (abort.signal.aborted || stopEpoch !== this.#stopEpoch || this.#shutdown) {
+			throw new CollabHostStoppedError("collab controller stopped");
+		}
 	}
 }

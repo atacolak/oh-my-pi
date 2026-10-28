@@ -2727,6 +2727,24 @@ impl TodoStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoPhaseKind {
+	#[serde(rename = "continuing")]
+	Continuing,
+	#[serde(rename = "passive")]
+	Passive,
+}
+
+impl TodoPhaseKind {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Continuing => "continuing",
+			Self::Passive => "passive",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalOp {
 	#[serde(rename = "get")]
 	Get,
@@ -2897,6 +2915,8 @@ pub struct TodoItem {
 pub struct TodoPhase {
 	pub name: String,
 	pub tasks: Vec<TodoItem>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub kind: Option<TodoPhaseKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

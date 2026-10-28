@@ -5,6 +5,12 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+## [18.13.3] - 2026-10-28
+
+### Changed
+
+- Updated Bun engine requirement to ≥1.4.4
+
 ## [18.13.2] - 2026-10-27
 
 ### Added

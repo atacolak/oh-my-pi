@@ -1,11 +1,21 @@
 > [!NOTE]
-> ## `cap/todo-passive-phase` — passive todo phases
+> ## `runtime` — Ata's daily OMP
 >
-> A todo phase can opt out of automatic continuation with `kind: "passive"`. Passive phases stay stored and visible to the model, transcript, RPC clients, and TUI, but they do not drive next-action selection, automatic `in_progress` promotion, stop reminders, or mid-run nudges. Omitting `kind` keeps the continuing behavior.
+> Daily composition of selected local capabilities on upstream OMP 18.13.2.
 >
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PR(s):** Status: fork-local
 > - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
+> - **Capabilities:**
+>   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
+>   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
+>   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retention + locked scope seam
+>   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — nested project LSP roots
+>   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — default retry chain for unowned models
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped `/settings`
+>   - [`cap/todo-passive-phase`](https://github.com/atacolak/oh-my-pi/tree/cap/todo-passive-phase) — passive todo phases
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — app viewport + `ompalt` launcher
+>
+> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

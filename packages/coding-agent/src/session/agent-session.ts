@@ -8059,6 +8059,7 @@ export class AgentSession implements SettingsScope {
 		let open = 0;
 		const promptPhases = phases.map(phase => ({
 			name: this.#sanitizeGoalTodoText(phase.name),
+			passive: phase.kind === "passive",
 			tasks: phase.tasks.map(task => {
 				total++;
 				if (task.status === "completed" || task.status === "abandoned") {

@@ -1,3 +1,12 @@
+> [!NOTE]
+> ## `cap/todo-passive-phase` — passive todo phases
+>
+> A todo phase can opt out of automatic continuation with `kind: "passive"`. Passive phases stay stored and visible to the model, transcript, RPC clients, and TUI, but they do not drive next-action selection, automatic `in_progress` promotion, stop reminders, or mid-run nudges. Omitting `kind` keeps the continuing behavior.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR(s):** Status: fork-local
+> - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

@@ -777,7 +777,7 @@ export const cfgFollowUpMode = register({
 	id: "followUpMode",
 	type: "enum",
 	values: ["all", "one-at-a-time"] as const,
-	default: "all",
+	default: "one-at-a-time",
 	ui: {
 		tab: "interaction",
 		group: "Input",

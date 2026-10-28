@@ -172,7 +172,8 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	const spawnPolicy = resolveSpawnPolicy(options.parentSpawns);
 	const spawningDisabled = !spawnPolicy.enabled;
 	const agents = [...options.agents, ...options.sessionAgents];
-	let filteredAgents = agents.filter(agent => agent.hide !== true && !options.disabledAgents.includes(agent.name));
+	let filteredAgents =
+		options.disabledAgents.length > 0 ? agents.filter(agent => !options.disabledAgents.includes(agent.name)) : agents;
 	if (spawningDisabled) {
 		filteredAgents = [];
 	} else if (spawnPolicy.allowedAgents !== null) {

@@ -37,7 +37,6 @@ import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot, SendUserMessageOptions } from "../../session/agent-session";
 import { MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
-import type { AutomationAuthorPolicy } from "../../task/types";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { accumulateToolCallResult, buildAggregatedToolCallResult } from "../shared-events";
@@ -755,8 +754,6 @@ export class ExtensionRunner {
 		private readonly agent: ExtensionAgentIdentity = TOP_LEVEL_AGENT,
 		/** Builds `ctx.annotations`; supplied by the host that wires the bundled `/annotate` command. */
 		createAnnotations?: ExtensionAnnotationsFactory,
-		private readonly rootAgentName?: string,
-		private readonly automationAuthor?: AutomationAuthorPolicy,
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -1540,9 +1537,6 @@ export class ExtensionRunner {
 					}
 				: undefined,
 			localProtocolOptions: this.localProtocolOptions,
-			rootAgentName: this.rootAgentName,
-			automationAuthor: this.automationAuthor,
-
 			memory: this.#getMemoryFn?.(),
 			// A getter, not a value: `createHandlerContext` scopes a handler via `Object.create(ctx)`, and
 			// `this` here is that receiver, so the overlay mounts through the handler's timeout-aware `ui`.

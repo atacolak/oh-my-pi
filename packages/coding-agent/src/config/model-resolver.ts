@@ -1088,8 +1088,7 @@ export function resolveExplicitModelRole(
 	return undefined;
 }
 
-/** True when an agent model pattern means "use the current session model". */
-export function isSessionInheritedAgentPattern(value: string): boolean {
+function isSessionInheritedAgentPattern(value: string): boolean {
 	return (
 		value === DEFAULT_MODEL_ROLE ||
 		value === formatModelRoleAlias(DEFAULT_MODEL_ROLE) ||

@@ -2041,10 +2041,8 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: options?.parentSession,
 			providerPromptCacheKey: options?.providerPromptCacheKey,
-			rootAgent: options?.rootAgent,
 			taskPromptCacheKey: options?.taskPromptCacheKey,
 		};
-
 		const workspace = normalizeSessionWorkspace({
 			cwd: this.#cwd,
 			directories: options?.additionalDirectories ?? [],
@@ -2508,9 +2506,7 @@ export class SessionManager {
 			parentSession: parentSessionId,
 			providerPromptCacheKey: SessionManager.getInheritedProviderPromptCacheKey(this.#header),
 			taskPromptCacheKey: this.#header.taskPromptCacheKey,
-			rootAgent: this.#header.rootAgent,
 		};
-
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
 		this.#titleUpdatedAt = timestamp;
@@ -3885,15 +3881,6 @@ export class SessionManager {
 		return this.#header;
 	}
 
-	async setRootAgent(name: string): Promise<void> {
-		if (!this.#header) return;
-		const trimmed = name.trim();
-		if (!trimmed || this.#header.rootAgent === trimmed) return;
-		this.#header.rootAgent = trimmed;
-		this.#rewriteRequired = true;
-		await this.#rewriteAtomically();
-	}
-
 	static getInheritedProviderPromptCacheKey(header: SessionHeader | undefined): string | undefined {
 		return header?.taskPromptCacheKey !== undefined ? undefined : (header?.providerPromptCacheKey ?? header?.id);
 	}
@@ -3928,6 +3915,7 @@ export class SessionManager {
 	clearTaskSiblingCandidate(): void {
 		this.#taskSiblingCandidate = undefined;
 	}
+
 	/** All session entries (excludes header). Returns a shallow copy. */
 	getEntries(): SessionEntry[] {
 		return [...this.#entries];
@@ -4046,8 +4034,8 @@ export class SessionManager {
 			titleSource: this.#titleSource,
 			parentSession: this.#persist ? sourceSessionFile : undefined,
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
-			rootAgent: this.#header?.rootAgent,
 		};
+
 		const labels: LabelEntry[] = [];
 		let parentId = entriesToKeep[entriesToKeep.length - 1]?.id ?? null;
 		for (const carried of labelsToCarry) {

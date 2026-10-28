@@ -6,7 +6,6 @@
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
 
-- Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
 - Fixed `/settings` leaving the project-effective appearance after adopting a theme or status-line edit while previewing another scope.
 - Fixed `/settings` keeping the previous scope's theme after Alt+S onto an unloadable Dark/Light mapping.
 - Fixed `/settings` leaving a hovered theme after canceling an unloadable Dark/Light Theme submenu.
@@ -285,12 +284,6 @@
 - Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
 - Fixed Hindsight live retainStrategy refresh from adopting unrelated endpoint, token, or timeout settings that never rebuilt the client.
 - Hindsight session retain now waits for server-side processing before the local append cursor advances, so a failed retain retries the omitted delta instead of appending past it.
-### Added
-
-- Added `--agent <name>` to start a root session from a discovered agent definition (user `~/.omp/agent/agents`, project `.omp/agents`, extension, or bundled). The agent's tools, thinking level, model, body, and autoload skills apply unless `--tools` / `--thinking` / `--model` / `--system-prompt` override them. Unknown names fail with a usage error listing available agents.
-- Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
-- Resume and fork now restore a session's original `--agent` identity from the session header. A conflicting `--agent` is refused, and a persisted privileged role that is missing from discovery fails closed.
-- Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
 
 ## [18.13.2] - 2026-10-27
 

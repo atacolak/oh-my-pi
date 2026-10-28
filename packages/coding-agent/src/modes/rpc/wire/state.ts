@@ -109,7 +109,7 @@ export const stateDefs = {
 		isStreaming: absentAs("boolean", false),
 		isCompacting: absentAs("boolean", false),
 		steeringMode: absentAs("QueueMode", "one-at-a-time"),
-		followUpMode: absentAs("QueueMode", "all"),
+		followUpMode: absentAs("QueueMode", "one-at-a-time"),
 		interruptMode: absentAs("InterruptMode", "immediate"),
 		"sessionFile?": "string",
 		sessionId: "string",

@@ -13,12 +13,6 @@ import { $env, isRecord } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
-/** Durable automation-authoring grant carried by a root AgentDefinition. Independent from `spawns`. */
-export interface AutomationAuthorPolicy {
-	allowedAgents: string[] | "*";
-	jurisdiction: "descendants" | "scope";
-}
-
 const parseNumber = (value: string | undefined, defaultValue: number): number => {
 	if (value) {
 		try {
@@ -310,15 +304,10 @@ export interface AgentDefinition {
 	systemPrompt: string;
 	tools?: string[];
 	spawns?: string[] | "*";
-	/** Root-only durable authoring grant. Absent means no `automation_author` authority. */
-	automationAuthor?: AutomationAuthorPolicy;
-
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;
 	output?: unknown;
 	blocking?: boolean;
-	/** Omit this definition from ambient agent rosters while preserving exact-name resolution. */
-	hide?: boolean;
 	/** `true` = task spawns keep the `yield` tool and this agent's `output` schema even when `task.structured` is off. */
 	structured?: boolean;
 	autoloadSkills?: string[];

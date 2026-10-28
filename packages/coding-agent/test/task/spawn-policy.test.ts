@@ -21,14 +21,6 @@ const oracleAgent = {
 	source: "bundled",
 } satisfies AgentDefinition;
 
-const hiddenAutomationAgent = {
-	name: "runtime-integrator",
-	description: "Integrate runtime.",
-	systemPrompt: "Integrate runtime.",
-	source: "project",
-	hide: true,
-} satisfies AgentDefinition;
-
 function makeSession(spawns: string): ToolSession {
 	const settings = Settings.isolated({
 		"async.enabled": false,
@@ -67,17 +59,6 @@ describe("task spawn policy surfaces", () => {
 
 		expect(description).toContain("- `fact-finder`: Find facts.");
 		expect(description).not.toContain("- `oracle`:");
-	});
-
-	it("omits hidden agents from the model-facing task roster", async () => {
-		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({
-			agents: [factFinderAgent, hiddenAutomationAgent],
-			projectAgentsDir: null,
-		});
-
-		const tool = await TaskTool.create(makeSession("*"));
-		expect(tool.description).toContain("- `fact-finder`: Find facts.");
-		expect(tool.description).not.toContain("runtime-integrator");
 	});
 });
 

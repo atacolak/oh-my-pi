@@ -2620,7 +2620,7 @@
 				},
 				"followUpMode": {
 					"$ref": "#/$defs/QueueMode",
-					"default": "all"
+					"default": "one-at-a-time"
 				},
 				"interruptMode": {
 					"$ref": "#/$defs/InterruptMode",

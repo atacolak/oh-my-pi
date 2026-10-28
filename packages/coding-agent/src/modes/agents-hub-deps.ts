@@ -70,19 +70,17 @@ export function createAgentsHubDeps(
 			const overrides = cfgTaskAgentModelOverrides.get(settings);
 			const prewalkOverrides = cfgTaskAgentPrewalk.get(settings);
 			const advisorOverrides = cfgTaskAgentAdvisor.get(settings);
-			return agents
-				.filter(agent => agent.hide !== true)
-				.map(agent => {
-					const override = overrides[agent.name];
-					const overrideModel = (Array.isArray(override) ? override.join(",") : (override ?? "")).trim();
-					return {
-						...agent,
-						disabled: disabled.has(agent.name),
-						overrideModel: overrideModel || undefined,
-						prewalkOverride: prewalkOverrides[agent.name]?.trim() || undefined,
-						advisorOverride: advisorOverrides[agent.name]?.trim() || undefined,
-					};
-				});
+			return agents.map(agent => {
+				const override = overrides[agent.name];
+				const overrideModel = (Array.isArray(override) ? override.join(",") : (override ?? "")).trim();
+				return {
+					...agent,
+					disabled: disabled.has(agent.name),
+					overrideModel: overrideModel || undefined,
+					prewalkOverride: prewalkOverrides[agent.name]?.trim() || undefined,
+					advisorOverride: advisorOverrides[agent.name]?.trim() || undefined,
+				};
+			});
 		},
 		getAvailableModels: () => modelRegistry.getAvailable(),
 		effectiveModelPatterns: agent =>

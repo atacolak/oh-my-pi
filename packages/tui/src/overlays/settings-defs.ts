@@ -143,15 +143,24 @@ export interface SettingsDisplayEntry {
 	condition?: () => boolean;
 }
 
+export type SettingsUiScope = "global" | "project";
+
 export interface SettingsHost {
 	entries: readonly SettingsDisplayEntry[];
 	get(path: string): unknown;
-	set(path: string, value: unknown): void;
+	getGlobal(path: string): unknown;
+	getProjectScoped(path: string): unknown;
+	getProjectInherited(path: string): unknown;
+	set(path: string, value: unknown, scope?: SettingsUiScope): void;
 	/**
 	 * Removes the value from the global config: a project or other layer, or an environment
 	 * variable, that configures the setting still applies; otherwise the default does.
 	 */
 	unset(path: string): void;
+	clearProject(path: string): boolean;
+	hasProjectConfig(): boolean;
+	isCredential(path: string): boolean;
+	projectLabel(): string;
 	normalizeProviderLimits(value: unknown): Record<string, number>;
 	validateProviderLimits(value: unknown): Record<string, number>;
 }

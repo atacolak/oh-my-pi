@@ -1,6 +1,14 @@
-import { TERMINAL } from "@oh-my-pi/pi-tui";
+import * as path from "node:path";
+import { TERMINAL, replaceTabs } from "@oh-my-pi/pi-tui";
 import { isNativeRendering } from "@oh-my-pi/pi-tui/native/state";
-import { SETTING_TABS, type SettingsDisplayEntry, type SettingsHost } from "@oh-my-pi/pi-tui/overlays/settings-defs";
+import {
+	SETTING_TABS,
+	type SettingsDisplayEntry,
+	type SettingsHost,
+	type SettingsUiScope,
+} from "@oh-my-pi/pi-tui/overlays/settings-defs";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, Settings, settings } from "./settings";
 import { orderedSettings } from "./all-settings";
 import { type AnySetting, lookup } from "./registry";
@@ -37,12 +45,10 @@ const CONDITIONS: Record<string, () => boolean> = {
 	usageAwareFallbackEnabled: whenSettings(s => cfgRetryUsageAwareFallback.get(s) === true),
 	planModeEnabled: whenSettings(s => cfgPlanEnabled.get(s)),
 	planAutosaveEnabled: whenSettings(s => cfgPlanEnabled.get(s) && cfgPlanAutosave.get(s)),
-	// These editors write the global layer; hide them so a project-supplied list is never promoted to global.
 	contextFilesExtraNotProject: whenSettings(s => cfgContextFilesExtra.provenance(s) !== "project"),
 	restrictedFoldersNotProject: whenSettings(s => cfgToolsRestrictedFolders.provenance(s) !== "project"),
 };
 
-/** Description suffix telling the panel user that an environment variable is in play. */
 function envNote(setting: AnySetting): string {
 	if (!setting.envName || setting.envValue() === undefined) return "";
 	return setting.envFallback
@@ -50,12 +56,27 @@ function envNote(setting: AnySetting): string {
 		: ` $${setting.envName} overrides this setting while it is set.`;
 }
 
+function settingsProjectLabel(cwd: string): string {
+	let primary: string | null = null;
+	try {
+		primary = vcs.repo(cwd)?.primaryRoot() ?? null;
+	} catch {
+		primary = null;
+	}
+	const base = path.basename(primary ?? cwd);
+	const name = base.endsWith(".git") ? base.slice(0, -4) : base;
+	const cleaned = replaceTabs(sanitizeText(name))
+		.replace(/[\r\n]+/g, " ")
+		.trim();
+	return cleaned || "project";
+}
+
 /**
  * Adapt the application schema and settings store to the terminal overlay. The panel shows and
  * edits the value of the settings layers, never an environment-supplied one (so an env credential
  * is never pre-filled or written to config); descriptions note an active environment variable.
  */
-export function createSettingsHost(): SettingsHost {
+export function createSettingsHost(cwd: string = process.cwd()): SettingsHost {
 	const entries: SettingsDisplayEntry[] = [];
 	for (const tab of SETTING_TABS) {
 		for (const setting of orderedSettings()) {
@@ -81,8 +102,19 @@ export function createSettingsHost(): SettingsHost {
 	return {
 		entries,
 		get: path => lookup(path)?.layered(settings),
-		set: (path, value) => resolve(path).set(settings, value),
+		getGlobal: path => Settings.instance.globalLayerValue(resolve(path)),
+		getProjectScoped: path => Settings.instance.projectScopedValue(resolve(path)),
+		getProjectInherited: path => Settings.instance.projectInheritedValue(resolve(path)),
+		set: (path, value, scope: SettingsUiScope = "global") => {
+			const setting = resolve(path);
+			if (scope === "project") setting.setProject(settings, value as never);
+			else setting.set(settings, value as never);
+		},
 		unset: path => resolve(path).unset(settings),
+		clearProject: path => resolve(path).unsetProject(settings),
+		hasProjectConfig: () => Settings.instance.hasProjectConfig(),
+		isCredential: path => resolve(path).isCredential,
+		projectLabel: () => settingsProjectLabel(cwd),
 		normalizeProviderLimits: normalizeProviderMaxInFlightRequests,
 		validateProviderLimits: validateProviderMaxInFlightRequests,
 	};

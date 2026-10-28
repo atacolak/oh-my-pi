@@ -347,7 +347,7 @@ export class SelectorController {
 						providers: [...new Set(this.ctx.session.getAvailableModels().map(model => model.provider))].sort(
 							(a, b) => a.localeCompare(b),
 						),
-						settings: createSettingsHost(),
+						settings: createSettingsHost(getProjectDir()),
 						plugins: createPluginSettingsHost(getProjectDir()),
 						model: this.ctx.session.model,
 						imageBudget: this.ctx.ui.imageBudget,

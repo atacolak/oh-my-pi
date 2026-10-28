@@ -84,8 +84,18 @@ function harness(initial: Record<string, unknown> = {}): Harness {
 	const settings: SettingsHost = {
 		entries: ENTRIES,
 		get: path => values.get(path),
+		getGlobal: path => values.get(path),
+		getProjectScoped: path => values.get(path),
+		getProjectInherited: path => values.get(path),
 		set: (path, value) => void values.set(path, value),
 		unset: path => void values.set(path, ENTRIES.find(entry => entry.path === path)?.defaultValue),
+		clearProject: path => {
+			values.delete(path);
+			return true;
+		},
+		hasProjectConfig: () => false,
+		isCredential: () => false,
+		projectLabel: () => "project",
 		normalizeProviderLimits: () => ({}),
 		validateProviderLimits: () => ({}),
 	};

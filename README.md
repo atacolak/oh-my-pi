@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Status:** fork-local (no upstream PR)
-> - **Upstream base:** [OMP 18.13.2 (`e996e1c7`)](https://github.com/can1357/oh-my-pi/tree/e996e1c7ac476f60e02b8ed9764cf30fa8c00a8e)
+> - **Upstream base:** [OMP 18.13.3 (`413d278a`)](https://github.com/can1357/oh-my-pi/tree/413d278a87a69b453efabf8d1fedb9940385e8c6)
 > - **Pinned mg:** `5ac1138dd3372e3d28419f9a02b7015b3c66f6a3` (`/home/sf/.local/bin/mg`)
 >
 > Not stacked on other capabilities; merged into `runtime` independently.
@@ -105,7 +105,7 @@ irm https://omp.sh/install.ps1 | iex
 mise use -g github:can1357/oh-my-pi
 ```
 
-macOS · Linux · Windows · bun ≥ 1.3.14
+macOS · Linux · Windows · bun ≥ 1.4.4
 
 ### Shell completions
 

@@ -26,6 +26,9 @@
 - Treated Bun unspaced `#` comments on unquoted dotenv values as comments when matching project-owned environment variables.
 - Did not treat `setProfile`'s mirrored `OMP_PROFILE` as an independent parent selector when the name came from `PI_PROFILE`.
 
+### Fixed
+
+- Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
 ## [18.14.0] - 2026-10-29
 
 ### Added

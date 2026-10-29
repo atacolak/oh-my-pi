@@ -30,6 +30,7 @@ import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
+import type { AutomationAuthorPolicy } from "../../task/types";
 import type { TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
 import type { RetryErrorUpdate } from "../shared-events";
 
@@ -106,6 +107,10 @@ export interface CustomToolContext {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Whether to auto-approve all destructive tool operations (--auto-approve CLI flag) */
 	autoApprove?: boolean;
+	/** Resolved root `--agent` name, if this session launched from a definition. */
+	rootAgentName?: string;
+	/** Effective durable authoring grant from the resolved root AgentDefinition. */
+	automationAuthor?: AutomationAuthorPolicy;
 }
 
 /** Session event passed to onSession callback */

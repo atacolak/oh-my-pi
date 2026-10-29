@@ -28,6 +28,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "./capability";
 import {
 	type Args,
+	reportCliUsageError,
 	reportInvalidFlagValues,
 	reportUnrecognizedFlags,
 	validateGoalLaunch,
@@ -39,6 +40,7 @@ import {
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
+import { resolveLaunchAgent, rootAgentModelSelector, rootAgentToolNames } from "./cli/launch-agent";
 import { formatKeyHint, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { SessionPickerOptions } from "@oh-my-pi/pi-tui/apps/session-picker";
 import { fetchBuild } from "./cli/build-service";
@@ -51,6 +53,7 @@ import {
 	disabledProviderIds,
 	expandRoleAlias,
 	getModelMatchPreferences,
+	resolveAgentAdvisorSelection,
 	resolveCliModel,
 	resolveConfiguredModelPatterns,
 	resolveModelRoleValue,
@@ -136,6 +139,7 @@ import {
 	resolvePromptInput,
 } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
+import type { AgentDefinition } from "./task/types";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
@@ -158,7 +162,7 @@ import { cfgGoalEnabled } from "./goals/settings";
 import { cfgPlanDefaultOnStartup, cfgPlanEnabled } from "./plan-mode/settings";
 
 import { cfgAdvisorEnabled } from "./advisor/settings";
-import { cfgAsyncPrintWake, cfgToolsApprovalMode } from "./tools/settings";
+import { cfgAsyncPrintWake, cfgReadSummarizeEnabled, cfgToolsApprovalMode } from "./tools/settings";
 import {
 	cfgAutocompleteMaxVisible,
 	cfgAutoResume,
@@ -197,7 +201,7 @@ import {
 	cfgSessionWorktreeScope,
 } from "./session/settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "./config/model-settings";
-import { cfgTaskAgentIdleTtlMs } from "./task/settings";
+import { cfgTaskAgentAdvisor, cfgTaskAgentIdleTtlMs } from "./task/settings";
 import { cfgSkillsIncludeSkills } from "./extensibility/settings";
 import { cfgWorkspaceAdditionalDirectories } from "./session/context-settings";
 
@@ -1486,6 +1490,7 @@ export async function buildSessionOptions(
 		const forkCacheShapeChanged =
 			scopedModelOverride ||
 			parsed.model !== undefined ||
+			parsed.agent !== undefined ||
 			parsed.thinking !== undefined ||
 			parsed.systemPrompt !== undefined ||
 			parsed.systemPromptTemplate !== undefined ||
@@ -1496,6 +1501,30 @@ export async function buildSessionOptions(
 			options.providerPromptCacheKey = header.providerPromptCacheKey;
 			options.providerPromptCacheKeySource = "fork";
 		}
+	}
+
+	const persistedRootAgent = restoringSession ? sessionManager?.getHeader()?.rootAgent : undefined;
+	if (restoringSession && persistedRootAgent && parsed.agent && parsed.agent !== persistedRootAgent) {
+		throw new CliUsageError(
+			`Session was launched as --agent ${persistedRootAgent}; refusing conflicting --agent ${parsed.agent}.`,
+		);
+	}
+	const launchAgentName = parsed.agent ?? persistedRootAgent;
+	let launchAgent: AgentDefinition | undefined;
+	try {
+		launchAgent = await resolveLaunchAgent(launchAgentName, parsed.agentCwd ?? options.cwd);
+	} catch (error) {
+		if (persistedRootAgent && !parsed.agent) {
+			throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
+		}
+		throw error;
+	}
+	if (persistedRootAgent && !launchAgent) {
+		throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
+	}
+
+	if (launchAgent && !restoringSession) {
+		await sessionManager?.setRootAgent(launchAgent.name);
 	}
 
 	// Model from CLI
@@ -1569,6 +1598,33 @@ export async function buildSessionOptions(
 			});
 			if (!parsed.thinking && resolved.thinkingLevel) {
 				options.thinkingLevel = resolved.thinkingLevel;
+			}
+		}
+	} else if (launchAgent && !restoringSession) {
+		const agentModel = rootAgentModelSelector(launchAgent);
+		if (agentModel) {
+			const resolved = resolveCliModel({
+				cliModel: agentModel,
+				modelRegistry,
+				availableModels: modelRegistry.getAvailable(),
+				settings: activeSettings,
+				preferences: modelMatchPreferences,
+			});
+			if (resolved.warning) {
+				process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+			}
+			if (resolved.model) {
+				options.model = resolved.model;
+				activeSettings.overrideModelRoles({
+					default: resolved.selector ?? `${resolved.model.provider}/${resolved.model.id}`,
+				});
+				if (!parsed.thinking && resolved.thinkingLevel) {
+					options.thinkingLevel = resolved.thinkingLevel;
+				}
+			} else if (resolved.error && !agentModel.includes(":")) {
+				options.modelPattern = agentModel;
+			} else if (resolved.error) {
+				process.stderr.write(`${chalk.yellow(`Warning: ${resolved.error}`)}\n`);
 			}
 		}
 	} else if (scopedModels.length > 0 && !restoringSession) {
@@ -1706,6 +1762,8 @@ export async function buildSessionOptions(
 	// Thinking level
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
+	} else if (launchAgent?.thinkingLevel && !restoringSession) {
+		options.thinkingLevel = launchAgent.thinkingLevel;
 	} else if (
 		scopedModels.length > 0 &&
 		scopedModels[0].explicitThinkingLevel === true &&
@@ -1727,9 +1785,21 @@ export async function buildSessionOptions(
 	// (handled by caller before createAgentSession)
 
 	// System prompt
-	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
-	if (resolvedSystemPromptTemplate !== undefined) {
-		options.systemPromptTemplate = resolvedSystemPromptTemplate;
+	if (
+		launchAgent &&
+		parsed.systemPrompt === undefined &&
+		parsed.systemPromptTemplate === undefined &&
+		!restoringSession
+	) {
+		options.customSystemPrompt = launchAgent.systemPrompt;
+	} else {
+		applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
+		if (resolvedSystemPromptTemplate !== undefined) {
+			options.systemPromptTemplate = resolvedSystemPromptTemplate;
+		}
+	}
+	if (resolvedAppendPrompt && parsed.systemPrompt === undefined && launchAgent && !restoringSession) {
+		options.appendSystemPrompt = resolvedAppendPrompt;
 	}
 	// Replan-driven title refresh resolves the override from this same field on
 	// `AgentSession`, so threading it through `CreateAgentSessionOptions` keeps
@@ -1738,12 +1808,49 @@ export async function buildSessionOptions(
 	if (titleSystemPrompt) {
 		options.titleSystemPrompt = titleSystemPrompt;
 	}
+	if (launchAgent) {
+		options.agentName = launchAgent.name;
+		options.rootAgentName = launchAgent.name;
+	}
+
+	if (launchAgent && !restoringSession) {
+		options.agentDisplayName = launchAgent.name;
+		if (launchAgent.automationAuthor) {
+			options.automationAuthor = launchAgent.automationAuthor;
+		}
+
+		options.autoloadSkills = launchAgent.autoloadSkills;
+		if (launchAgent.spawns !== undefined) {
+			options.spawns = launchAgent.spawns === "*" ? "*" : launchAgent.spawns.join(",");
+		}
+		if (launchAgent.readSummarize === false) {
+			cfgReadSummarizeEnabled.override(activeSettings, false);
+		}
+		if (parsed.advisor === undefined) {
+			const advisorSelection = resolveAgentAdvisorSelection({
+				settingsOverride: cfgTaskAgentAdvisor.get(activeSettings)[launchAgent.name],
+				agentAdvisor: launchAgent.advisor,
+			});
+			if (advisorSelection) {
+				cfgAdvisorEnabled.override(activeSettings, true);
+				if (advisorSelection.model) {
+					activeSettings.overrideModelRoles({
+						...activeSettings.getModelRoles(),
+						advisor: advisorSelection.model,
+					});
+				}
+			}
+		}
+	}
 
 	// Tools
 	if (parsed.noTools) {
 		options.toolNames = parsed.tools && parsed.tools.length > 0 ? parsed.tools : [];
 	} else if (parsed.tools) {
 		options.toolNames = parsed.tools;
+	} else if (launchAgent && !restoringSession) {
+		const tools = rootAgentToolNames(launchAgent);
+		if (tools) options.toolNames = tools;
 	}
 
 	if (parsed.noLsp) {
@@ -2349,16 +2456,22 @@ export async function runRootCommand(
 			else writeStartupWarning(warning);
 		};
 		const buildStartupSessionOptions = async (manager: SessionManager | undefined) => {
-			const options = await logger.time(
-				"buildSessionOptions",
-				buildSessionOptions,
-				parsedArgs,
-				scopedModels,
-				manager,
-				modelRegistry,
-				settingsInstance,
-				startupWarning,
-			);
+			let options: CreateAgentSessionOptions;
+			try {
+				options = await logger.time(
+					"buildSessionOptions",
+					buildSessionOptions,
+					parsedArgs,
+					scopedModels,
+					manager,
+					modelRegistry,
+					settingsInstance,
+					startupWarning,
+				);
+			} catch (error) {
+				if (reportCliUsageError(error)) process.exit(2);
+				throw error;
+			}
 			options.authStorage = authStorage;
 			options.modelRegistry = modelRegistry;
 			options.hasUI = isInteractive || mode === "rpc-ui";

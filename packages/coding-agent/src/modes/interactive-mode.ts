@@ -204,6 +204,7 @@ import { type CfgApproval, type CfgChangeRequest, setCfgApprovalHost } from "../
 import {
 	createTodoHudStateData,
 	getTodoHudVisibility,
+	isContinuingPhase,
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	USER_TODO_EDIT_CUSTOM_TYPE,
@@ -4672,6 +4673,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		let mutated = false;
 		const next: TodoPhase[] = this.todoPhases.map(phase => ({
 			name: phase.name,
+			...(phase.kind !== undefined ? { kind: phase.kind } : {}),
 			tasks: phase.tasks.map(task => {
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") {
 					return task;
@@ -4791,8 +4793,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#getActivePhase(phases: TodoPhase[]): TodoPhase | undefined {
 		const nonEmpty = phases.filter(phase => phase.tasks.length > 0);
-		const active = nonEmpty.find(phase =>
-			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
+		const active = nonEmpty.find(
+			phase =>
+				isContinuingPhase(phase) &&
+				phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
 		);
 		return active ?? nonEmpty[nonEmpty.length - 1];
 	}
@@ -4893,7 +4897,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// progress; other stages render their whole row (name + progress) in the
 		// brighter muted gray. Overall progress lives in the tree spine (below).
 		const renderPhase = (phase: TodoPhase, oneBased: number, isActive: boolean): string | string[] => {
-			const label = multiPhase ? formatPhaseDisplayName(phase.name, oneBased) : phase.name;
+			// A lone stage drops the roman numeral, so it labels its own kind.
+			const label = multiPhase
+				? formatPhaseDisplayName(phase.name, oneBased, phase.kind)
+				: phase.kind === "passive"
+					? `${phase.name} (passive)`
+					: phase.name;
 			// Closed, not just completed: the collapsed task window hides abandoned
 			// tasks too, so counting only completions leaves the phase reading stuck.
 			const done = phase.tasks.filter(isClosedTodo).length;
@@ -4989,7 +4998,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const phaseNodes: TspTreeNode[] = phaseSlice.map((phase, offset) => {
 			const phaseIndex = baseIdx + offset;
 			const isActive = phaseIndex === activeIdx;
-			const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
+			const name = multiPhase
+				? formatPhaseDisplayName(phase.name, phaseIndex + 1, phase.kind)
+				: phase.kind === "passive"
+					? `${phase.name} (passive)`
+					: phase.name;
 			const done = phase.tasks.filter(isClosedTodo).length;
 			const open = isActive || expanded;
 			return {
@@ -5020,7 +5033,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// A `checklist` HUD is a pill with the whole plan as its popover.
 		const checklistPhases: TspChecklistPhase[] = phases.map((phase, phaseIndex) => ({
 			id: `${phaseIndex}`,
-			title: multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name,
+			title: multiPhase
+				? formatPhaseDisplayName(phase.name, phaseIndex + 1, phase.kind)
+				: phase.kind === "passive"
+					? `${phase.name} (passive)`
+					: phase.name,
 			collapsed: phase.tasks.every(isClosedTodo) || undefined,
 			items: phase.tasks.map((todo, taskIndex): TspChecklistItem => {
 				const note = todo.blocker ?? todo.notes?.at(-1);

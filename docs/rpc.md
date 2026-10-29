@@ -508,11 +508,21 @@ field is absent outside both stages. No event carries it, so re-read
   "queuedMessages": { "steering": [], "followUp": [] },
   "todoPhases": [
     {
-      "name": "Todos",
+      "name": "Work",
       "tasks": [
         {
           "content": "Map the tool surface",
           "status": "in_progress"
+        }
+      ]
+    },
+    {
+      "name": "Reference",
+      "kind": "passive",
+      "tasks": [
+        {
+          "content": "Retain the review report",
+          "status": "pending"
         }
       ]
     }
@@ -533,6 +543,8 @@ field is absent outside both stages. No event carries it, so re-read
   "goal": null
 }
 ```
+
+`todoPhases[]` entries normally omit `kind`: an absent `kind` is the default and means the phase is continuing. Only a phase that opted out of todo automation carries `"kind": "passive"`, and the list may mix both as the example does.
 
 Fields whose values are `undefined` are omitted from JSON, including an unset
 model/thinking level, session name/file, or unavailable `contextUsage`.
@@ -755,6 +767,7 @@ task `details` and `notes`.
   "phases": [
     {
       "name": "Evaluation",
+      "kind": "passive",
       "tasks": [
         {
           "content": "Map the read tool surface",
@@ -771,6 +784,8 @@ task `details` and `notes`.
 ```
 
 This is useful for hosts that want to pre-seed a plan before the first prompt.
+
+`kind` is optional and accepts `"continuing"` or `"passive"`; omitting it means the phase is continuing. The server stores the phase list verbatim, and these generic names are not tied to project-lead sections.
 
 ### `set_host_tools` payload
 

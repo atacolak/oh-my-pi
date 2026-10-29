@@ -57,6 +57,18 @@ export const cfgHindsightBankId = register({
 });
 
 export const cfgHindsightBankIdPrefix = register({ id: "hindsight.bankIdPrefix", type: "string", default: undefined });
+export const cfgHindsightScopeTags = register({
+	id: "hindsight.scopeTags",
+	type: "array",
+	default: [] as string[],
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Scope Tags",
+		description: "Deterministic tags applied to retain, recall, reflect, and observation consolidation scopes",
+		condition: "hindsightActive",
+	},
+});
 
 export const cfgHindsightScoping = register({
 	id: "hindsight.scoping",
@@ -170,6 +182,48 @@ export const cfgHindsightRetainOverlapTurns = register({
 });
 
 export const cfgHindsightRetainContext = register({ id: "hindsight.retainContext", type: "string", default: "omp" });
+export const cfgHindsightRetainUpdateMode = register({
+	id: "hindsight.retainUpdateMode",
+	env: "HINDSIGHT_RETAIN_UPDATE_MODE",
+	type: "enum",
+	values: ["replace", "append"] as const,
+	default: "replace",
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Retain Update Mode",
+		description:
+			"replace = rewrite the full session document; append = send only newly accumulated turns on the same document_id",
+		options: [
+			{
+				value: "replace",
+				label: "Replace",
+				description: "Resend the full session document on each retain (default)",
+			},
+			{
+				value: "append",
+				label: "Append",
+				description: "Append only new conversation turns to the existing session document",
+			},
+		],
+		condition: "hindsightActive",
+	},
+});
+
+export const cfgHindsightRetainStrategy = register({
+	id: "hindsight.retainStrategy",
+	env: "HINDSIGHT_RETAIN_STRATEGY",
+	type: "string",
+	default: undefined,
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Retain Strategy",
+		description:
+			"Named Hindsight extraction strategy sent as the per-item strategy field. Leave empty to use the bank default.",
+		condition: "hindsightActive",
+	},
+});
 
 export const cfgHindsightRecallBudget = register({
 	id: "hindsight.recallBudget",

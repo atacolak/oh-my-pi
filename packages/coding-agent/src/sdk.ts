@@ -5459,6 +5459,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				modelRegistry,
 				agentDir,
 				taskDepth,
+				hindsightCloseRetainBaselineTurns: session.hindsightCloseRetainBaselineTurns,
+				hindsightLoadedMessageCount: session.hindsightLoadedMessageCount,
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 			});
@@ -5546,9 +5548,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// reference is intentionally discarded (the listener retains it).
 		if (!restrictToolNames) {
 			if (cfgAutolearnEnabled.get(settings) && taskDepth === 0) {
-				await logger.time("startMemoryStartupTask", startMemoryBackend);
+				const start = logger.time("startMemoryStartupTask", startMemoryBackend);
+				session.trackMemoryBackendStart(start);
+				await start;
 			} else {
-				void logger.time("startMemoryStartupTask", startMemoryBackend);
+				session.trackMemoryBackendStart(logger.time("startMemoryStartupTask", startMemoryBackend));
 			}
 			if (taskDepth === 0) {
 				new AutoLearnController({

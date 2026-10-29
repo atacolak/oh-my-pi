@@ -1,17 +1,3 @@
-> [!NOTE]
-> ## `cap/followup-draft` — followUpMode default all
->
-> Fork-local: default followUpMode to `all` so after-yield follow-ups inject
-> in the same next turn. Inbound composer-draft protect landed upstream in
-> [#12104](https://github.com/can1357/oh-my-pi/pull/12104) and is no longer
-> part of this capability delta.
->
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Status:** fork-local (no upstream PR)
-> - **Upstream base:** [OMP 18.14.0 (`31147f9d`)](https://github.com/can1357/oh-my-pi/tree/31147f9d1a76608549821c3759f8487b4d66c72d)
->
-> Not stacked on other capabilities; merged into `runtime` independently.
-
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

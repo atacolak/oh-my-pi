@@ -62,6 +62,9 @@
 - `/shake thinking` now reports the number of tokens freed.
 
 ## [18.2.10] - 2026-09-22
+### Fixed
+
+- Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
 ## [18.13.3] - 2026-10-28
 
 ### Added

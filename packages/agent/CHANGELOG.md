@@ -5,6 +5,16 @@
 ### Fixed
 
 - `Agent` now defaults `followUpMode` to `all`, so every follow-up queued at a yield boundary is delivered in the same next turn instead of one per turn. Pass `followUpMode: "one-at-a-time"` to keep the previous behavior.
+## [18.13.3] - 2026-10-28
+
+### Changed
+
+- Updated Bun engine requirement to ≥1.4.4
+
+### Fixed
+
+- Fixed chat-completions context estimates counting past thinking that the request drops (no reasoning replay), which triggered compaction far below the threshold ([#15797](https://github.com/can1357/oh-my-pi/issues/15797), [#17231](https://github.com/can1357/oh-my-pi/pull/17231) by [@ghisguth](https://github.com/ghisguth))
+
 ## [18.13.2] - 2026-10-27
 
 ### Added

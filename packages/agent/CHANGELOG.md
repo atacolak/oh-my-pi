@@ -5,6 +5,18 @@
 ### Fixed
 
 - `Agent` now defaults `followUpMode` to `all`, so every follow-up queued at a yield boundary is delivered in the same next turn instead of one per turn. Pass `followUpMode: "one-at-a-time"` to keep the previous behavior.
+
+## [18.14.0] - 2026-10-29
+
+### Breaking Changes
+
+- Removed the Bun event-loop workaround utilities from `@oh-my-pi/pi-agent-core/utils/yield`; agent loops no longer insert cooperative sleeps while streaming or between tool calls.
+
+### Added
+
+- Added `AgentTool.approvalRestrictionPaths` so tools can report the paths they read, allowing restricted-folder approvals to cover those paths without remembering approval separately for each path.
+- Added `Agent.logContext`, which adds custom context fields to every log record written during an agent run.
+
 ## [18.13.3] - 2026-10-28
 
 ### Changed

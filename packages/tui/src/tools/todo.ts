@@ -38,10 +38,15 @@ export interface TodoItem {
 	notes?: string[];
 }
 
+/** Absent means "continuing". Only the exact string "passive" makes a phase passive. */
+export type TodoPhaseKind = "continuing" | "passive";
+
 /** A named group of todo tasks. */
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+	/** Absent means "continuing". Only the exact string "passive" makes a phase passive. */
+	kind?: TodoPhaseKind;
 }
 
 /** A task that became complete in the latest update. */
@@ -309,8 +314,9 @@ function forDisplay(text: string): string {
  * the name may carry provider or session text holding control sequences. The
  * raw `phase.name` stays the lookup key everywhere else.
  */
-export function formatPhaseDisplayName(name: string, oneBasedIndex: number): string {
-	return `${phaseRomanNumeral(oneBasedIndex)}. ${forDisplay(name)}`;
+export function formatPhaseDisplayName(name: string, oneBasedIndex: number, kind?: TodoPhaseKind): string {
+	const label = kind === "passive" ? `${forDisplay(name)} (passive)` : forDisplay(name);
+	return `${phaseRomanNumeral(oneBasedIndex)}. ${label}`;
 }
 
 /** Frames held before revealing a completion strike. */
@@ -445,7 +451,7 @@ function formatPhaseProgress(phase: TodoPhase, uiTheme: Theme): string {
 
 /** One-line summary for a collapsed (untouched) phase: dim header + progress. */
 function formatPhaseSummary(phase: TodoPhase, oneBasedIndex: number, uiTheme: Theme): string {
-	const name = uiTheme.fg("dim", chalk.bold(formatPhaseDisplayName(phase.name, oneBasedIndex)));
+	const name = uiTheme.fg("dim", chalk.bold(formatPhaseDisplayName(phase.name, oneBasedIndex, phase.kind)));
 	return `${name}${formatPhaseProgress(phase, uiTheme)}`;
 }
 
@@ -487,12 +493,12 @@ function checklistItem(task: TodoItem, id: string, matched = false): TspChecklis
  * numerals — the terminal numbers nothing), completed phases folded.
  */
 export function todoChecklistPhases(
-	phases: readonly { name: string; tasks: readonly TodoItem[] }[],
+	phases: readonly { name: string; tasks: readonly TodoItem[]; kind?: TodoPhaseKind }[],
 	isMatched: (task: TodoItem) => boolean = () => false,
 ): TspChecklistPhase[] {
 	return phases.map((phase, p) => ({
 		id: `p${p}`,
-		title: forDisplay(phase.name),
+		title: phase.kind === "passive" ? `${forDisplay(phase.name)} (passive)` : forDisplay(phase.name),
 		items: phase.tasks.map((task, t) => checklistItem(task, `p${p}.${t}`, isMatched(task))),
 		collapsed: phase.tasks.length > 0 && phase.tasks.every(isClosedTodo),
 	}));
@@ -686,7 +692,7 @@ export const todoToolRenderer = {
 					// viewport below hides closed rows, so without it the phase the
 					// agent is actually working in is the one phase with no visible
 					// completion signal at all.
-					const name = uiTheme.fg("accent", chalk.bold(formatPhaseDisplayName(phase.name, p + 1)));
+					const name = uiTheme.fg("accent", chalk.bold(formatPhaseDisplayName(phase.name, p + 1, phase.kind)));
 					bodyLines.push(`${name}${formatPhaseProgress(phase, uiTheme)}`);
 				}
 				const completionKeys = completionKeysByPhase.get(phase.name) ?? EMPTY_COMPLETION_KEYS;

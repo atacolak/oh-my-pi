@@ -3,6 +3,7 @@ import {
 	type TodoOperation,
 	type TodoItem,
 	type TodoPhase,
+	type TodoPhaseKind,
 	type TodoCompletionTransition,
 	type TodoToolDetails,
 } from "@oh-my-pi/pi-tui/tools/todo";
@@ -19,7 +20,13 @@ import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
-	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) return false;
+	if (
+		!isRecord(value) ||
+		typeof value.name !== "string" ||
+		(value.kind !== undefined && typeof value.kind !== "string") ||
+		!Array.isArray(value.tasks)
+	)
+		return false;
 	return value.tasks.every(
 		task =>
 			isRecord(task) &&
@@ -52,9 +59,12 @@ export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | unde
 
 const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"');
 
+const TodoPhaseKindSchema = type('"continuing" | "passive"').describe("phase continuation behavior");
+
 const InitListEntry = type({
-	phase: type("string"),
-	items: type("string").array().atLeastLength(1),
+	phase: type("string").describe("phase name"),
+	"kind?": TodoPhaseKindSchema,
+	items: type("string").describe("task content").array().atLeastLength(1).describe("tasks for this phase"),
 });
 
 const todoSchema = type({
@@ -62,6 +72,7 @@ const todoSchema = type({
 	"list?": InitListEntry.array().describe("phases for init"),
 	"task?": type("string").describe("verbatim task content"),
 	"phase?": type("string"),
+	"kind?": TodoPhaseKindSchema,
 	// No `atLeastLength(1)` here: `items` is only meaningful for `init`/`append`,
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
@@ -97,7 +108,11 @@ function cloneTask(task: TodoItem): TodoItem {
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
-	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+	return phases.map(phase => ({
+		name: phase.name,
+		...(phase.kind !== undefined ? { kind: phase.kind } : {}),
+		tasks: phase.tasks.map(cloneTask),
+	}));
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -125,8 +140,23 @@ function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): 
 	return transitions;
 }
 
+/**
+ * A phase whose tasks participate in todo automation. Only the exact string
+ * `"passive"` opts out; an absent or unrecognized kind is continuing, so a
+ * phase written by a newer build degrades to today's behavior instead of
+ * vanishing from automation.
+ */
+export function isContinuingPhase(phase: { kind?: string }): boolean {
+	return phase.kind !== "passive";
+}
+
+/** The automation projection: the phases todo automation is allowed to act on. */
+export function continuingPhases<T extends { kind?: string }>(phases: readonly T[]): T[] {
+	return phases.filter(isContinuingPhase);
+}
+
 function normalizeInProgressTask(phases: TodoPhase[]): void {
-	const orderedTasks = phases.flatMap(phase => phase.tasks);
+	const orderedTasks = continuingPhases(phases).flatMap(phase => phase.tasks);
 	if (orderedTasks.length === 0) return;
 
 	const inProgressTasks = orderedTasks.filter(task => task.status === "in_progress");
@@ -145,7 +175,7 @@ function normalizeInProgressTask(phases: TodoPhase[]): void {
 /** Return the active todo task, preferring an in-progress item over the first pending item. */
 export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | undefined {
 	let firstPending: TodoItem | undefined;
-	for (const phase of phases) {
+	for (const phase of continuingPhases(phases)) {
 		for (const task of phase.tasks) {
 			if (task.status === "in_progress") return task;
 			if (!firstPending && task.status === "pending") firstPending = task;
@@ -173,6 +203,7 @@ function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
 	return JSON.stringify(
 		phases.map(phase => ({
 			name: phase.name,
+			...(phase.kind !== undefined ? { kind: phase.kind } : {}),
 			tasks: phase.tasks.map(task =>
 				task.blocker === undefined
 					? { content: task.content, status: task.status }
@@ -314,7 +345,7 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	// params with `[]`, so an empty `list` must not shadow non-empty `items`.
 	const flat =
 		entry.items && entry.items.length > 0
-			? [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, items: entry.items }]
+			? [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, kind: entry.kind, items: entry.items }]
 			: undefined;
 	const list = entry.list?.length ? entry.list : (flat ?? entry.list);
 	if (!list) {
@@ -339,6 +370,7 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	}
 	return list.map(listEntry => ({
 		name: listEntry.phase,
+		...(listEntry.kind !== undefined ? { kind: listEntry.kind } : {}),
 		tasks: listEntry.items.map<TodoItem>(content => ({ content, status: "pending" })),
 	}));
 }
@@ -368,8 +400,10 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 
 	let phase = findPhaseByName(phases, entry.phase);
 	if (!phase) {
-		phase = { name: entry.phase, tasks: [] };
+		phase = { name: entry.phase, ...(entry.kind !== undefined ? { kind: entry.kind } : {}), tasks: [] };
 		phases.push(phase);
+	} else if (entry.kind !== undefined) {
+		phase.kind = entry.kind;
 	}
 
 	for (const content of entry.items) {
@@ -404,10 +438,15 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 		case "start": {
 			const hit = resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
-			for (const phase of phases) {
-				for (const candidate of phase.tasks) {
-					if (candidate.status === "in_progress" && candidate !== hit.task) {
-						candidate.status = "pending";
+			// Starting a passive task changes only that task: it is outside the
+			// automatic pointer, so it neither steals the continuing in_progress
+			// task nor is demoted by a later start in a continuing phase.
+			if (isContinuingPhase(hit.phase)) {
+				for (const phase of continuingPhases(phases)) {
+					for (const candidate of phase.tasks) {
+						if (candidate.status === "in_progress" && candidate !== hit.task) {
+							candidate.status = "pending";
+						}
 					}
 				}
 			}
@@ -553,7 +592,11 @@ export function phasesToMarkdown(phases: TodoPhase[]): string {
 	const out: string[] = [];
 	for (let i = 0; i < phases.length; i++) {
 		if (i > 0) out.push("");
-		out.push(`# ${phases[i].name}`);
+		// Passive is the only kind worth persisting (absent means continuing), so
+		// the marker rides in a trailing HTML comment: invisible in rendered
+		// markdown and unambiguous to parse back, exactly like the blocker note.
+		const kindNote = phases[i].kind === "passive" ? " <!-- kind: passive -->" : "";
+		out.push(`# ${phases[i].name}${kindNote}`);
 		for (const task of phases[i].tasks) {
 			// A blocked task's reason rides in a trailing HTML comment: invisible in
 			// rendered markdown, unambiguous to parse back (task content can't
@@ -593,7 +636,13 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 
 		const headingMatch = /^#{1,6}\s+(.+?)\s*$/.exec(trimmed);
 		if (headingMatch) {
-			currentPhase = { name: headingMatch[1].trim(), tasks: [] };
+			// Recover a phase's kind from its trailing HTML comment (see
+			// phasesToMarkdown). A comment that is not the kind marker stays part of
+			// the name, exactly as before kinds existed.
+			const phaseAttribute = /^(.*?)\s*<!--\s*kind:\s*(continuing|passive)\s*-->\s*$/.exec(headingMatch[1]);
+			const name = (phaseAttribute?.[1] ?? headingMatch[1]).trim();
+			const kind = phaseAttribute?.[2] as TodoPhaseKind | undefined;
+			currentPhase = { name, ...(kind !== undefined ? { kind } : {}), tasks: [] };
 			phases.push(currentPhase);
 			continue;
 		}
@@ -632,6 +681,15 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	return { phases, errors };
 }
 
+/**
+ * Display-only phase name: `Reference (passive)`. Passive is the sole kind the
+ * model or the human needs to see spelled out; absent/continuing stays bare so
+ * the default surface is byte-identical to before kinds existed.
+ */
+function phaseLabel(phase: Pick<TodoPhase, "name" | "kind">): string {
+	return phase.kind === "passive" ? `${phase.name} (passive)` : phase.name;
+}
+
 function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
 	const tasks = phases.flatMap(phase => phase.tasks);
 	if (tasks.length === 0) {
@@ -641,7 +699,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 
 	const remainingByPhase = phases
 		.map(phase => ({
-			name: phase.name,
+			name: phaseLabel(phase),
 			tasks: phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress"),
 		}))
 		.filter(phase => phase.tasks.length > 0);
@@ -680,14 +738,15 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
 	);
 	lines.push(
-		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
+		`Active phase ${currentIdx + 1}/${phases.length} "${phaseLabel(current)}" (${done}/${current.tasks.length})${
 			workedAhead
 				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
 				: "."
 		}`,
 	);
 	for (const phase of phases) {
-		lines.push(`  ${phase.name}:`);
+		const phaseLabel = phase.kind === "passive" ? `${phase.name} (passive)` : phase.name;
+		lines.push(`  ${phaseLabel}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
 			const tag =

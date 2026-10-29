@@ -1,4 +1,4 @@
-export type { LspServerStatus } from "./client";
+export * from "./client";
 export type { FileDiagnosticsResult } from "@oh-my-pi/pi-tui/tools/lsp";
 export type { FormatContentResult } from "./diagnostics";
 export { FileFormatResult } from "@oh-my-pi/pi-tui/tools/lsp";

@@ -16,7 +16,7 @@ export const launchHelp = {
 	},
 	flags: {
 		model: Flags.string({
-			description: 'Model to use (fuzzy match: "opus", "gpt-5.2", or "openai/gpt-5.2")',
+			description: 'Model to use (fuzzy match: "opus", "gpt-5.2"; exact with a provider: "openai/gpt-5.2")',
 		}),
 		agent: Flags.string({
 			description:

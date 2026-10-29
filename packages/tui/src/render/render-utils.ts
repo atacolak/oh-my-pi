@@ -991,6 +991,16 @@ export function shortenEmbeddedPaths(text: string, homeDir?: string, preserveSep
 		.join(" ");
 }
 
+/** Collapse layout/control characters, shorten home paths, and truncate status errors. */
+export function sanitizeStatusText(value: string, maxWidth: number, empty = "(unnamed)"): string {
+	const text = shortenEmbeddedPaths(
+		replaceTabs(sanitizeText(value))
+			.replace(/[\r\n]+/g, " ")
+			.trim(),
+	);
+	return truncateToWidth(text.length > 0 ? text : empty, maxWidth);
+}
+
 /**
  * Shorten filesystem and command arguments without rewriting literal search patterns. A producer that
  * names no argument key gets the general embedded-path shortening.

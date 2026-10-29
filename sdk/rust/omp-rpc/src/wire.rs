@@ -5981,7 +5981,7 @@ fn default_session_state_steering_mode() -> QueueMode {
 }
 
 fn default_session_state_follow_up_mode() -> QueueMode {
-	serde_json::from_str("\"one-at-a-time\"").expect("valid wire default")
+	serde_json::from_str("\"all\"").expect("valid wire default")
 }
 
 fn default_session_state_interrupt_mode() -> InterruptMode {

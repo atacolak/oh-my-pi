@@ -47,6 +47,9 @@
 - Honored a lower project `collab.autoStart: false` even when a later project file tried to re-enable hosting.
 - Distrusted collab auto-start when a project dotenv reassigns an agent or config directory with a later differently-cased key.
 - Distrusted collab auto-start when a project dotenv uses an unspaced `#` comment after an unquoted agent directory.
+### Fixed
+
+- Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
 
 ## [18.14.0] - 2026-10-29
 

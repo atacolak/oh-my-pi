@@ -237,6 +237,10 @@
 - `/shake thinking` now reports the number of tokens freed.
 
 ## [18.2.10] - 2026-09-22
+### Fixed
+
+- Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
+
 ## [18.14.0] - 2026-10-29
 
 ### Breaking Changes

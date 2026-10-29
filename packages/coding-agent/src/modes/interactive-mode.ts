@@ -2362,6 +2362,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.statusLine.dispose();
 			},
 			saveDraft: text => this.sessionManager.saveDraft(text),
+			stopCollab: async () => {
+				await this.collabController.shutdown("session shutdown");
+			},
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
 				await this.session.dispose({

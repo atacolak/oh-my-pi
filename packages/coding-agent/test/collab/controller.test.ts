@@ -176,6 +176,8 @@ function makeControllerContext(over: { autoStart?: "off" | "view" | "control"; r
 			state.showStatus.push(message);
 			state.firstStatus.resolve(message);
 		},
+		showWarning: () => {},
+		showError: () => {},
 		collabHost: undefined,
 	};
 	return { ctx: ctx as unknown as InteractiveModeContext, state };

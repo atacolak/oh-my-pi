@@ -298,6 +298,8 @@
 
 - Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
 - `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.
+- Persisted `steer()` / `followUp()` queues in the session artifact directory and restored them when the session is resumed, so mid-turn user messages survive a process restart
+
 
 ## [18.14.0] - 2026-10-29
 

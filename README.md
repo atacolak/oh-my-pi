@@ -14,6 +14,7 @@
 >   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
 >   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retention + locked scope seam
 >   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — nested project LSP roots
+>   - [`cap/persist-queued-messages`](https://github.com/atacolak/oh-my-pi/tree/cap/persist-queued-messages) — queued steer/followUp prompts persist with the session
 >   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — default retry chain for unowned models
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped `/settings`
 >   - [`cap/todo-passive-phase`](https://github.com/atacolak/oh-my-pi/tree/cap/todo-passive-phase) — passive todo phases

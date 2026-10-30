@@ -85,7 +85,11 @@ export async function fetchHubCatalog(hubUrl: string, bearer?: string): Promise<
 			const names = parseHubCatalog(payload);
 			if (names.length > 0) return names;
 		} catch (error) {
-			logger.debug("MCP hub catalog fetch failed", { url: origin, path: new URL(url).pathname, error: String(error) });
+			logger.debug("MCP hub catalog fetch failed", {
+				url: origin,
+				path: new URL(url).pathname,
+				error: String(error),
+			});
 		}
 	}
 	return [];
@@ -96,7 +100,9 @@ async function readHubCatalogCache(cachePath: string, origin: string): Promise<s
 		const parsed: unknown = await Bun.file(cachePath).json();
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
 		const entry = (parsed as HubCatalogCacheFile)[origin];
-		return Array.isArray(entry?.names) ? entry.names.filter(name => typeof name === "string" && SERVER_NAME.test(name)) : [];
+		return Array.isArray(entry?.names)
+			? entry.names.filter(name => typeof name === "string" && SERVER_NAME.test(name))
+			: [];
 	} catch (error) {
 		if (isEnoent(error)) return [];
 		logger.debug("MCP hub catalog cache unreadable", { origin, error: String(error) });
@@ -131,7 +137,10 @@ export type ResolveHubCatalogOptions = {
  * Live catalog when a bearer exists; otherwise cached names, then hardcoded defaults.
  * Never logs the bearer.
  */
-export async function resolveHubCatalogNames(hubUrl: string, options: ResolveHubCatalogOptions = {}): Promise<string[]> {
+export async function resolveHubCatalogNames(
+	hubUrl: string,
+	options: ResolveHubCatalogOptions = {},
+): Promise<string[]> {
 	const origin = new URL(hubUrl).origin;
 	const cachePath = options.cachePath ?? hubCatalogCachePath();
 	const fetchCatalog = options.fetchCatalog ?? fetchHubCatalog;

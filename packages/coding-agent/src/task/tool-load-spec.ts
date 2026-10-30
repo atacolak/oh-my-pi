@@ -17,7 +17,9 @@ export type NamedLoadSet = {
 
 function asStringList(value: unknown): string[] {
 	if (Array.isArray(value)) {
-		return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map(item => item.trim());
+		return value
+			.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+			.map(item => item.trim());
 	}
 	if (typeof value === "string") {
 		return value
@@ -71,7 +73,10 @@ export function parseNamedLoadSet(
 }
 
 /** Effective loadMode for one name given an agent's maps. Undefined = keep the tool default. */
-export function loadModeOverride(set: NamedLoadSet | undefined, name: string): "essential" | "discoverable" | undefined {
+export function loadModeOverride(
+	set: NamedLoadSet | undefined,
+	name: string,
+): "essential" | "discoverable" | undefined {
 	if (!set) return undefined;
 	if (set.eager.includes(name)) return "essential";
 	if (set.discoverable.includes(name)) return "discoverable";

@@ -5026,8 +5026,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
-		session.setAgentLoadPolicy(options.toolLoad, options.mcpLoad);
 		if (options.toolLoad || options.mcpLoad) {
+			session.setAgentLoadPolicy(options.toolLoad, options.mcpLoad);
 			const enabled = session.getEnabledToolNames();
 			const mounted = (options.toolLoad?.discoverable ?? []).filter(name => enabled.includes(name));
 			await session.setActiveToolPresentation(enabled, mounted);

@@ -1,13 +1,6 @@
-/**
- * Persist the in-memory steering and follow-up queues next to the session file.
- *
- * `session.steer()` and `session.followUp()` keep mid-turn user messages only
- * in RAM, so a process restart would drop them. Write `${sessionFile}.queued.json`
- * on every queue mutation and restore it when AgentSession connects to that
- * session file.
- */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { writeFileAtomicallySync } from "../utils/atomic-file";
 
 export const QUEUED_MESSAGES_VERSION = 1 as const;
 
@@ -29,7 +22,7 @@ export function persistQueuedMessages(
 	const empty = queues.steering.length === 0 && queues.followUp.length === 0;
 	try {
 		if (empty) {
-			if (existsSync(path)) unlinkSync(path);
+			rmSync(path, { force: true });
 			return;
 		}
 		const snapshot: QueuedMessagesSnapshot = {
@@ -37,9 +30,9 @@ export function persistQueuedMessages(
 			steering: queues.steering.slice(),
 			followUp: queues.followUp.slice(),
 		};
-		writeFileSync(path, `${JSON.stringify(snapshot)}\n`);
+		writeFileAtomicallySync(path, `${JSON.stringify(snapshot)}\n`);
 	} catch {
-		/* session dir unwritable: RAM queue still works */
+		return;
 	}
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -8,17 +8,16 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Snowflake, TempDir } from "@oh-my-pi/pi-utils";
-import { loadQueuedMessages } from "../src/session/queued-message-persist.ts";
+import { loadQueuedMessages } from "../src/session/queued-message-persist";
 
-function queuedText(messages: readonly { content?: unknown }[]): string[] {
+function queuedText(messages: readonly AgentMessage[]): string[] {
 	const out: string[] = [];
 	for (const message of messages) {
-		const content = message.content;
+		const content: unknown = "content" in message ? message.content : undefined;
 		if (!Array.isArray(content)) continue;
 		for (const block of content) {
-			if (block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block) {
-				out.push(String(block.text));
-			}
+			const text = (block as { text?: unknown } | null)?.text;
+			if (typeof text === "string") out.push(text);
 		}
 	}
 	return out;

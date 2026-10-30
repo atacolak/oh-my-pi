@@ -658,6 +658,7 @@ export class MCPManager {
 				filterExa: options?.filterExa,
 				filterBrowser: options?.filterBrowser,
 				extensionRoots: options?.extensionRoots,
+				authStorage: this.#authStorage,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -705,6 +706,7 @@ export class MCPManager {
 			filterExa: options.filterExa,
 			filterBrowser: options.filterBrowser,
 			extensionRoots: options.extensionRoots,
+			authStorage: this.#authStorage,
 		});
 		// Every server whose resolution depends on the flag: project-level ones
 		// known now, plus project-level ones the enabled load resolves.
@@ -739,6 +741,7 @@ export class MCPManager {
 			filterExa: options?.filterExa,
 			filterBrowser: false,
 			extensionRoots: options?.extensionRoots,
+			authStorage: this.#authStorage,
 		});
 		const browserConfigs: Record<string, MCPServerConfig> = {};
 		const browserSources: Record<string, SourceMeta> = {};

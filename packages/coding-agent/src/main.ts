@@ -138,9 +138,10 @@ import {
 	loadSystemPromptTemplateFile,
 	resolvePromptInput,
 } from "./system-prompt";
+import { discoverAgents, getAgent } from "./task/discovery";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
-import type { AgentDefinition } from "./task/types";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
+import type { AgentDefinition } from "./task/types";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
 import { registerLocalInferenceApi } from "./tiny/local-inference-api";
@@ -1851,6 +1852,14 @@ export async function buildSessionOptions(
 	} else if (launchAgent && !restoringSession) {
 		const tools = rootAgentToolNames(launchAgent);
 		if (tools) options.toolNames = tools;
+	}
+	if (options.agentName) {
+		const { agents } = await discoverAgents(options.cwd ?? getProjectDir());
+		const agent = getAgent(agents, options.agentName);
+		if (agent) {
+			options.toolLoad = agent.toolLoad;
+			options.mcpLoad = agent.mcpLoad;
+		}
 	}
 
 	if (parsed.noLsp) {

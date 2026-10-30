@@ -33,10 +33,10 @@ import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
 import type { AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
-import { normalizeToolNames } from "../tools/builtin-names";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
 import { buildPluginDirRoot } from "./plugin-dir-roots";
+import { parseNamedLoadSet, type NamedLoadSet } from "../task/tool-load-spec";
 
 /**
  * Standard paths for each config source.
@@ -291,11 +291,13 @@ export function parseModelList(value: unknown): string[] | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
-/** Parsed agent fields from frontmatter (excludes source/filePath/systemPrompt) */
 export interface ParsedAgentFields {
 	name: string;
 	description: string;
 	tools?: string[];
+	toolLoad?: NamedLoadSet;
+	mcps?: string[];
+	mcpLoad?: NamedLoadSet;
 	spawns?: string[] | "*";
 	model?: string[];
 	output?: unknown;
@@ -336,18 +338,10 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		return null;
 	}
 
-	// Only absent or null tools select defaults; malformed restrictions must not widen access.
-	const rawTools = frontmatter.tools;
-	let tools = rawTools == null ? undefined : (parseArrayOrCSV(rawTools) ?? []);
-	if (tools?.length === 0 && !(Array.isArray(rawTools) && rawTools.length === 0)) {
-		const valueType = Array.isArray(rawTools) ? "array" : typeof rawTools;
-		logger.warn("Agent tools declaration names no tools; using an empty built-in allowlist", {
-			agent: name,
-			valueType,
-		});
-	}
-	if (tools) tools = normalizeToolNames(tools);
-
+	const toolLoad = parseNamedLoadSet(frontmatter.tools, { agent: name, field: "tools", normalize: true });
+	const tools = toolLoad?.declared ? toolLoad.names : undefined;
+	const mcpLoad = parseNamedLoadSet(frontmatter.mcps, { agent: name, field: "mcps", normalize: false });
+	const mcps = mcpLoad?.declared ? mcpLoad.names : undefined;
 	// Parse spawns field (array, "*", or CSV)
 	let spawns: string[] | "*" | undefined;
 	if (frontmatter.spawns === "*") {
@@ -403,6 +397,9 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		name,
 		description,
 		tools,
+		toolLoad,
+		mcps,
+		mcpLoad,
 		spawns,
 		model,
 		output,

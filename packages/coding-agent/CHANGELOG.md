@@ -291,6 +291,13 @@
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
+- Agent `tools:` and `mcps:` frontmatter accept `{ eager, discoverable }` maps. Eager names stay top-level; discoverable names mount under `xd://`. An explicit `mcps:` list filters MCP tools by server (`mcps: []` disables them).
+- mcp.json `hubs` entries share one OAuth login per hub origin and auto-register `<hub>/mcp/<name>` HTTP servers.
+
+### Fixed
+
+- Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
+- `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.
 
 ## [18.14.0] - 2026-10-29
 

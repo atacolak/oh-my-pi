@@ -248,6 +248,7 @@ import {
 	withoutAgentsMd,
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
+import type { NamedLoadSet } from "./task/tool-load-spec";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
@@ -812,6 +813,11 @@ export interface CreateAgentSessionOptions {
 	mountedToolNames?: string[];
 	/** Limit the session to explicitly supplied tool names, without discovered extras. */
 	restrictToolNames?: boolean;
+	/** Agent-profile eager/discoverable maps. Applied on new and restored sessions. */
+	toolLoad?: NamedLoadSet;
+	/** Agent-profile mcps: filter and load modes. Applied on new and restored sessions. */
+	mcpLoad?: NamedLoadSet;
+
 	/**
 	 * Permit only caller-supplied SDK custom tools inside a restricted session.
 	 * They must still be named in {@link toolNames}; discovered extensions, MCP,
@@ -5041,6 +5047,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
+		if (options.toolLoad || options.mcpLoad) {
+			session.setAgentLoadPolicy(options.toolLoad, options.mcpLoad);
+			const enabled = session.getEnabledToolNames();
+			const mounted = (options.toolLoad?.discoverable ?? []).filter(name => enabled.includes(name));
+			await session.setActiveToolPresentation(enabled, mounted);
+		}
+
 		credentialNoticeSession = session;
 		// Hashline snapshots are session-scoped: /new and switchSession fire the
 		// change callbacks, so clear the tool-side store there — stale tags would

@@ -1,0 +1,3 @@
+# Keep the launching session's render backend out of package-local test runs.
+[test]
+preload = ["../../scripts/test-preload-render-backend.ts"]

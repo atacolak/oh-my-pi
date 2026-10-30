@@ -4671,6 +4671,24 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
 			const mcpManager = enableMCP ? options.mcpManager : undefined;
+			if (agent.mcpLoad?.declared) {
+				const allowed = new Set(agent.mcpLoad.names);
+				const parentMcp = mcpManager?.getTools() ?? [];
+				if (toolNames) {
+					toolNames = toolNames.filter(name => {
+						const tool = parentMcp.find(candidate => candidate.name === name);
+						if (!tool?.mcpServerName) return true;
+						return allowed.has(tool.mcpServerName);
+					});
+					if (allowed.size > 0) {
+						for (const tool of parentMcp) {
+							if (tool.mcpServerName && allowed.has(tool.mcpServerName) && !toolNames.includes(tool.name)) {
+								toolNames.push(tool.name);
+							}
+						}
+					}
+				}
+			}
 
 			// Derive subagent-scoped telemetry from the parent's config so the
 			// child loop's spans nest under the parent's active execute_tool span
@@ -4858,6 +4876,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				throw err;
 			}
 			mcpFollower?.bind(session);
+			session.setAgentLoadPolicy(agent.toolLoad, agent.mcpLoad);
+			if (agent.mcpLoad?.declared || (agent.toolLoad && (agent.toolLoad.eager.length > 0 || agent.toolLoad.discoverable.length > 0))) {
+				await awaitAbortable(session.setActiveToolsByName(session.getEnabledToolNames()));
+			}
 			// The SDK records a new session's initial model as the default role.
 			// Pin the child's own chain so a parent default sharing that model
 			// cannot steal its fallback routing. Resumed history keeps its role.

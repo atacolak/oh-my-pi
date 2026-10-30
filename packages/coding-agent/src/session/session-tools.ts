@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Agent, AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type { Agent, AgentMessage, AgentTool, AgentToolContext, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import { isRecord, logger, prompt, stringProperty, structuredCloneJSON, untilAborted } from "@oh-my-pi/pi-utils";
@@ -24,6 +24,7 @@ import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
 import { invalidateToolSchemaMetadata } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import type { MemoryBackendStartOptions, MemoryPromptPreparation } from "../memory-backend/types";
 import type { AgentDefinition } from "../task/types";
+import { loadModeOverride, mcpServerAllowed, type NamedLoadSet } from "../task/tool-load-spec";
 import evalPreludeNoticePrompt from "../prompts/system/eval-prelude-notice.md" with { type: "text" };
 import sessionAgentNoticePrompt from "../prompts/system/session-agent-notice.md" with { type: "text" };
 import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
@@ -360,6 +361,9 @@ export class SessionTools {
 	#mcpManagerToolNames = new Set<string>();
 	#extensionMcpTools = new Map<string, AgentTool>();
 	#xdev: XdevState | undefined;
+	#toolLoad: NamedLoadSet | undefined;
+	#mcpLoad: NamedLoadSet | undefined;
+	#loadModeOverrides = new Map<string, ToolLoadMode>();
 	#pendingToolRosterDelta: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingToolRosterDeltaAfterBase: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
@@ -1016,6 +1020,32 @@ export class SessionTools {
 		return this.getEnabledToolNames().filter(name => isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
 
+	/** Session-local eager/discoverable maps from the agent profile. */
+	setAgentLoadPolicy(toolLoad?: NamedLoadSet, mcpLoad?: NamedLoadSet): void {
+		this.#toolLoad = toolLoad;
+		this.#mcpLoad = mcpLoad;
+		this.#rebuildLoadModeOverrides();
+	}
+
+	#rebuildLoadModeOverrides(): void {
+		this.#loadModeOverrides.clear();
+		if (this.#toolLoad) {
+			for (const name of this.#toolLoad.eager) this.#loadModeOverrides.set(name, "essential");
+			for (const name of this.#toolLoad.discoverable) this.#loadModeOverrides.set(name, "discoverable");
+		}
+		if (!this.#mcpLoad) return;
+		for (const tool of this.#toolRegistry.values()) {
+			const server = (tool as { mcpServerName?: unknown }).mcpServerName;
+			if (typeof server !== "string") continue;
+			const mode = loadModeOverride(this.#mcpLoad, server);
+			if (mode) this.#loadModeOverrides.set(tool.name, mode);
+		}
+	}
+
+	#effectiveLoadMode(name: string, declared?: ToolLoadMode): ToolLoadMode | undefined {
+		return this.#loadModeOverrides.get(name) ?? declared;
+	}
+
 	/**
 	 * Wrap a tool with a permission-gate proxy when an ACP client is connected.
 	 * Only wraps tools whose name is in PERMISSION_REQUIRED_TOOLS and only when
@@ -1280,6 +1310,23 @@ export class SessionTools {
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
 		signal?.throwIfAborted();
 		toolNames = normalizeToolNames(toolNames);
+		if (this.#mcpLoad?.declared) {
+			toolNames = toolNames.filter(name => {
+				const tool = this.#toolRegistry.get(name);
+				const server = tool ? (tool as { mcpServerName?: unknown }).mcpServerName : undefined;
+				if (typeof server !== "string") return true;
+				return mcpServerAllowed(this.#mcpLoad, server);
+			});
+			if (this.#mcpLoad.names.length > 0) {
+				for (const tool of this.#toolRegistry.values()) {
+					const server = (tool as { mcpServerName?: unknown }).mcpServerName;
+					if (typeof server !== "string") continue;
+					if (!mcpServerAllowed(this.#mcpLoad, server)) continue;
+					if (!toolNames.includes(tool.name)) toolNames.push(tool.name);
+				}
+			}
+			this.#rebuildLoadModeOverrides();
+		}
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
 		const fullWriteSelected =
 			toolNames.includes("write") &&
@@ -1322,7 +1369,10 @@ export class SessionTools {
 				xdevReadAvailable &&
 				xdevWriteAvailable &&
 				!isPresentationPinned(name) &&
-				isMountableUnderXdev(tool),
+				isMountableUnderXdev({
+					name,
+					loadMode: this.#effectiveLoadMode(name, tool.loadMode),
+				}),
 		);
 		const mountNames = new Set(mountCandidates.map(({ name }) => name));
 		const tools: AgentTool[] = [];

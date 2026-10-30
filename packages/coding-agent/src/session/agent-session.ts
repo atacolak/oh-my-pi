@@ -269,6 +269,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { AgentDefinition } from "../task/types";
+import type { NamedLoadSet } from "../task/tool-load-spec";
 import type { ModelMention } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
 import { ModelMentionRegistry } from "./model-mentions";
 import { parseCommandArgs } from "../utils/command-args";
@@ -7139,6 +7140,11 @@ export class AgentSession implements SettingsScope {
 	/** Selects enabled tools, ignoring names absent from the registry. */
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
 		return this.#tools.setActiveToolsByName(toolNames);
+	}
+
+	/** Apply agent-profile eager/discoverable maps and mcps: filtering. */
+	setAgentLoadPolicy(toolLoad?: NamedLoadSet, mcpLoad?: NamedLoadSet): void {
+		this.#tools.setAgentLoadPolicy(toolLoad, mcpLoad);
 	}
 
 	/** Restores an exact top-level versus `xd://` tool partition. */

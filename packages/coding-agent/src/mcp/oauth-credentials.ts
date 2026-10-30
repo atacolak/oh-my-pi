@@ -13,6 +13,7 @@ import {
 	refreshMCPOAuthToken,
 } from "./oauth-flow";
 import type { MCPAuthConfig, MCPServerConfig } from "./types";
+import { hubOriginUrl } from "./hub";
 
 export interface MCPOAuthCredentialLookup {
 	credentialId: string;
@@ -24,7 +25,10 @@ export type MCPOAuthRefreshMaterial = MCPStoredOAuthCredential | MCPAuthConfig |
 export function mcpOAuthCredentialIdsForServerUrl(serverUrl: string | undefined): string[] {
 	if (!serverUrl) return [];
 	const ids: string[] = [];
-	for (const url of [expandEnvVarsDeep(serverUrl), serverUrl]) {
+	const urls = [expandEnvVarsDeep(serverUrl), serverUrl];
+	const origin = hubOriginUrl(serverUrl);
+	if (origin) urls.push(origin);
+	for (const url of urls) {
 		const id = mcpOAuthCredentialId(url);
 		if (!ids.includes(id)) ids.push(id);
 	}

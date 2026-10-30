@@ -11,6 +11,8 @@ import type { MCPServer } from "../discovery";
 import { loadCapability } from "../discovery";
 import { readMCPConfigFile } from "./config-writer";
 import type { MCPConfigFile, MCPServerConfig } from "./types";
+import { DEFAULT_COLAB_HUB_SERVERS, hubDiscoveredServers } from "./hub";
+import { createSourceMeta } from "../discovery/helpers";
 
 /** Options for loading MCP configs */
 export interface LoadMCPConfigsOptions {
@@ -177,6 +179,23 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 		const browserResult = filterBrowserMCPServers(configs, sources);
 		configs = browserResult.configs;
 		sources = browserResult.sources;
+	}
+
+	if (userConfig.hubs) {
+		for (const hub of Object.values(userConfig.hubs)) {
+			if (!hub?.url) continue;
+			try {
+				const discovered = hubDiscoveredServers(hub.url, DEFAULT_COLAB_HUB_SERVERS);
+				const source = createSourceMeta("omp", userPath, "user", "mcphub");
+				for (const [name, config] of Object.entries(discovered)) {
+					if (configs[name]) continue;
+					configs[name] = config;
+					sources[name] = source;
+				}
+			} catch (error) {
+				logger.warn("Ignoring MCP hub entry", { error: String(error) });
+			}
+		}
 	}
 
 	return { configs, exaApiKeys, sources };

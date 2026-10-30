@@ -135,6 +135,35 @@ describe("parseAgentFields", () => {
 		expect(fields?.tools).toEqual(["find", "glob", "grep"]);
 	});
 
+	test("parses tools eager/discoverable maps without losing the allowlist", () => {
+		const fields = parseAgentFields({
+			name: "lead",
+			description: "desc",
+			tools: { eager: ["read", "bash"], discoverable: ["lsp", "search"] },
+		});
+		expect(fields?.tools).toEqual(["read", "bash", "lsp", "grep"]);
+		expect(fields?.toolLoad?.eager).toEqual(["read", "bash"]);
+		expect(fields?.toolLoad?.discoverable).toEqual(["lsp", "grep"]);
+	});
+
+	test("treats mcps: [] as an explicit empty MCP allowlist", () => {
+		const fields = parseAgentFields({ name: "lead", description: "desc", mcps: [] });
+		expect(fields?.mcps).toEqual([]);
+		expect(fields?.mcpLoad?.declared).toBe(true);
+		expect(parseAgentFields({ name: "lead", description: "desc" })?.mcps).toBeUndefined();
+	});
+
+	test("parses mcps eager/discoverable server names without tool-alias folding", () => {
+		const fields = parseAgentFields({
+			name: "argon",
+			description: "desc",
+			mcps: { eager: [], discoverable: ["whatsapp", "storage"] },
+		});
+		expect(fields?.mcps).toEqual(["whatsapp", "storage"]);
+		expect(fields?.mcpLoad?.eager).toEqual([]);
+		expect(fields?.mcpLoad?.discoverable).toEqual(["whatsapp", "storage"]);
+	});
+
 	test("parses autoloadSkills from array frontmatter", () => {
 		const fields = parseAgentFields({
 			name: "oracle",

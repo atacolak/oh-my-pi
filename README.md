@@ -1,3 +1,12 @@
+> [!NOTE]
+> ## `cap/agent-tool-mcp-surface` — agent tools/mcps laziness + MCPHub discovery
+>
+> Agent frontmatter `tools:` / `mcps:` accept `{ eager, discoverable }` maps. Eager names stay top-level; discoverable names mount under `xd://`. Declared `mcps:` filters MCP tools by server name (`[]` means none). MCPHub URLs share one OAuth login and auto-register `/mcp/<name>` servers.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR(s):** Status: fork-local
+> - **Upstream base:** [OMP (`7e88d11`)](https://github.com/can1357/oh-my-pi/tree/7e88d1186383abc7e1a1fa087d75fe77177f77df)
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

@@ -12,6 +12,7 @@ import { $env, isRecord } from "@oh-my-pi/pi-utils";
 
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { NamedLoadSet } from "./tool-load-spec";
 
 const parseNumber = (value: string | undefined, defaultValue: number): number => {
 	if (value) {
@@ -311,6 +312,9 @@ export interface AgentDefinition {
 	description: string;
 	systemPrompt: string;
 	tools?: string[];
+	toolLoad?: NamedLoadSet;
+	mcps?: string[];
+	mcpLoad?: NamedLoadSet;
 	spawns?: string[] | "*";
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;

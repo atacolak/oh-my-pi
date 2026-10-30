@@ -4,7 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { hubChildUrl, hubDiscoveredServers, hubOriginUrl, parseHubCatalog, resolveHubCatalogNames } from "../../src/mcp/hub";
 import { loadAllMCPConfigs } from "../../src/mcp/config";
-import { mcpOAuthCredentialIdsForServerUrl } from "../../src/mcp/oauth-credentials";
+import {
+	lookupMcpOAuthCredentialForServer,
+	mcpOAuthCredentialIdsForServerUrl,
+} from "../../src/mcp/oauth-credentials";
+import { mcpOAuthCredentialId } from "../../src/mcp/oauth-flow";
+import { findMcpServerForAuth } from "../../src/mcp/oauth-reauth";
 import type { AuthStorage } from "../../src/session/auth-storage";
 import { getAgentDir, setAgentDir, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -97,6 +102,73 @@ describe("MCPHub catalog", () => {
 			});
 			expect(fetched).toEqual(["tok"]);
 			expect(result.configs.calendar).toEqual({ type: "http", url: "https://mcp.colak.sh/mcp/calendar" });
+		} finally {
+			setAgentDir(previous);
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("lookup prefers the hub origin credential so a child login lights siblings", () => {
+		const youtubeUrl = "https://mcp.colak.sh/mcp/youtube";
+		const whatsappUrl = "https://mcp.colak.sh/mcp/whatsapp";
+		const originUrl = "https://mcp.colak.sh";
+		const ids = mcpOAuthCredentialIdsForServerUrl(youtubeUrl);
+		expect(ids[0]).toBe(mcpOAuthCredentialId(originUrl));
+		expect(ids).toContain(mcpOAuthCredentialId(youtubeUrl));
+
+		const store = new Map<string, { type: "oauth"; access: string }>();
+		store.set(mcpOAuthCredentialId(originUrl), { type: "oauth", access: "shared" });
+		const authStorage = {
+			credentials: {
+				get: (id: string) => store.get(id),
+			},
+		} as unknown as AuthStorage;
+		expect(lookupMcpOAuthCredentialForServer(authStorage, undefined, whatsappUrl)?.credential.access).toBe("shared");
+		expect(lookupMcpOAuthCredentialForServer(authStorage, undefined, youtubeUrl)?.credential.access).toBe("shared");
+		expect(lookupMcpOAuthCredentialForServer(authStorage, undefined, originUrl)?.credential.access).toBe("shared");
+	});
+
+	test("lookup finds a child-only token for siblings on the same hub origin", () => {
+		const youtubeUrl = "https://mcp.colak.sh/mcp/youtube";
+		const whatsappUrl = "https://mcp.colak.sh/mcp/whatsapp";
+		const originUrl = "https://mcp.colak.sh";
+		const youtubeId = mcpOAuthCredentialId(youtubeUrl);
+		const store = new Map<string, { type: "oauth"; access: string }>([
+			[youtubeId, { type: "oauth", access: "yt" }],
+		]);
+		const authStorage = {
+			credentials: {
+				get: (id: string) => store.get(id),
+				list: () =>
+					[...store.entries()].map(([provider, credential], index) => ({
+						id: index + 1,
+						provider,
+						credential,
+						disabledCause: null,
+					})),
+			},
+		} as unknown as AuthStorage;
+		expect(lookupMcpOAuthCredentialForServer(authStorage, undefined, whatsappUrl)?.credential.access).toBe("yt");
+		expect(lookupMcpOAuthCredentialForServer(authStorage, undefined, originUrl)?.credential.access).toBe("yt");
+		expect(lookupMcpOAuthCredentialForServer(authStorage, undefined, youtubeUrl)?.credential.access).toBe("yt");
+	});
+
+	test("findMcpServerForAuth matches a hub key and a default hub child", async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), `hub-reauth-${Snowflake.next()}`));
+		const previous = getAgentDir();
+		setAgentDir(dir);
+		try {
+			fs.writeFileSync(
+				path.join(dir, "mcp.json"),
+				JSON.stringify({ hubs: { colak: { url: "https://mcp.colak.sh" } } }),
+			);
+			const hub = await findMcpServerForAuth("colak");
+			expect(hub?.config).toEqual({ type: "http", url: "https://mcp.colak.sh" });
+			expect(hub?.discovered).toBe(true);
+			const youtube = await findMcpServerForAuth("youtube");
+			expect(youtube?.config).toEqual({ type: "http", url: "https://mcp.colak.sh/mcp/youtube" });
+			expect(youtube?.discovered).toBe(true);
+			expect(await findMcpServerForAuth("not-a-server")).toBeNull();
 		} finally {
 			setAgentDir(previous);
 			fs.rmSync(dir, { recursive: true, force: true });

@@ -22,12 +22,31 @@ export interface MCPOAuthCredentialLookup {
 
 export type MCPOAuthRefreshMaterial = MCPStoredOAuthCredential | MCPAuthConfig | undefined;
 
+/** Bare hub origin (`https://mcp.colak.sh`) as written in mcp.json `hubs`. */
+function bareHubOrigin(serverUrl: string): string | undefined {
+	try {
+		const parsed = new URL(serverUrl);
+		if (parsed.pathname === "/" || parsed.pathname === "") return parsed.origin;
+	} catch {
+		return undefined;
+	}
+	return undefined;
+}
+
+/** Origin that shares one OAuth login across `/mcp/<name>` children. */
+export function mcpHubCredentialOrigin(serverUrl: string | undefined): string | undefined {
+	if (!serverUrl) return undefined;
+	return hubOriginUrl(serverUrl) ?? hubOriginUrl(expandEnvVarsDeep(serverUrl)) ?? bareHubOrigin(expandEnvVarsDeep(serverUrl)) ?? bareHubOrigin(serverUrl);
+}
+
 export function mcpOAuthCredentialIdsForServerUrl(serverUrl: string | undefined): string[] {
 	if (!serverUrl) return [];
 	const ids: string[] = [];
-	const urls = [expandEnvVarsDeep(serverUrl), serverUrl];
-	const origin = hubOriginUrl(serverUrl);
+	const urls: string[] = [];
+	const origin = mcpHubCredentialOrigin(serverUrl);
+	// Shared hub login first so a child reauth lights up siblings.
 	if (origin) urls.push(origin);
+	urls.push(expandEnvVarsDeep(serverUrl), serverUrl);
 	for (const url of urls) {
 		const id = mcpOAuthCredentialId(url);
 		if (!ids.includes(id)) ids.push(id);
@@ -63,6 +82,38 @@ export function lookupMcpOAuthCredentialForServer(
 		const credential = authStorage.credentials.get(credentialId);
 		if (credential?.type === "oauth") {
 			return { credentialId, credential };
+		}
+	}
+	return lookupSharedHubOriginCredential(authStorage, serverUrl);
+}
+
+function lookupSharedHubOriginCredential(
+	authStorage: AuthStorage,
+	serverUrl: string | undefined,
+): MCPOAuthCredentialLookup | undefined {
+	const origin = mcpHubCredentialOrigin(serverUrl);
+	if (!origin) return undefined;
+	const list = authStorage.credentials.list;
+	if (typeof list !== "function") return undefined;
+	let rows: ReturnType<AuthStorage["credentials"]["list"]>;
+	try {
+		rows = list.call(authStorage.credentials);
+	} catch {
+		return undefined;
+	}
+	if (!Array.isArray(rows)) return undefined;
+	const activeProfile = getActiveProfile() ?? "default";
+	for (const row of rows) {
+		if (row.disabledCause) continue;
+		const credentialId = row.provider;
+		if (!isManagedMCPOAuthCredentialId(credentialId)) continue;
+		const rowProfile = mcpOAuthCredentialProfile(credentialId);
+		if (rowProfile !== undefined && rowProfile !== activeProfile) continue;
+		const url = mcpOAuthServerUrlFromCredentialId(credentialId);
+		if (!url) continue;
+		if (mcpHubCredentialOrigin(url) !== origin) continue;
+		if (row.credential?.type === "oauth") {
+			return { credentialId, credential: row.credential };
 		}
 	}
 	return undefined;

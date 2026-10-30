@@ -11,6 +11,7 @@
 ### Fixed
 
 - Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
+- `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.
 
 - Startup prewalk now arms a later fallback candidate of the role named by prewalk.into when its first candidate is unavailable, matching /prewalk and /new ([#17373](https://github.com/can1357/oh-my-pi/pull/17373)).
 

@@ -4669,7 +4669,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				}
 			}
 
-			const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
+			const enableMCP =
+				(!restrictToolNames || (agent.mcpLoad?.names.length ?? 0) > 0) && (options.enableMCP ?? true);
 			const mcpManager = enableMCP ? options.mcpManager : undefined;
 			if (agent.mcpLoad?.declared) {
 				const allowed = new Set(agent.mcpLoad.names);
@@ -4752,6 +4753,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
 					toolNames,
+					toolLoad: agent.toolLoad,
+					mcpLoad: agent.mcpLoad,
+
 					outputSchema,
 					outputSchemaMode: options.outputSchemaMode,
 					restrictToolNames,

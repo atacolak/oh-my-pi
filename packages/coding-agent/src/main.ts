@@ -136,6 +136,7 @@ import {
 	resolvePromptInput,
 } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
+import { discoverAgents, getAgent } from "./task/discovery";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
@@ -1744,6 +1745,14 @@ export async function buildSessionOptions(
 		options.toolNames = parsed.tools && parsed.tools.length > 0 ? parsed.tools : [];
 	} else if (parsed.tools) {
 		options.toolNames = parsed.tools;
+	}
+	if (options.agentName) {
+		const { agents } = await discoverAgents(options.cwd ?? getProjectDir());
+		const agent = getAgent(agents, options.agentName);
+		if (agent) {
+			options.toolLoad = agent.toolLoad;
+			options.mcpLoad = agent.mcpLoad;
+		}
 	}
 
 	if (parsed.noLsp) {

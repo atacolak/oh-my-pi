@@ -4,7 +4,9 @@
  * Catalog fetch never logs tokens. Child servers inherit the hub origin credential
  * via {@link hubOriginUrl}.
  */
-import { logger } from "@oh-my-pi/pi-utils";
+import * as path from "node:path";
+import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { MCPHttpServerConfig, MCPServerConfig } from "./types";
 
 export type MCPHubEntry = {
@@ -12,6 +14,8 @@ export type MCPHubEntry = {
 };
 
 const SERVER_NAME = /^[a-zA-Z0-9_.-]{1,100}$/;
+
+type HubCatalogCacheFile = Record<string, { names: string[]; fetchedAt: string }>;
 
 export function hubOriginUrl(serverUrl: string): string | undefined {
 	try {
@@ -25,6 +29,10 @@ export function hubOriginUrl(serverUrl: string): string | undefined {
 
 /** Catalog names used when the hub has not answered yet. */
 export const DEFAULT_COLAB_HUB_SERVERS = ["whatsapp", "mail", "storage", "youtube", "github", "sfub", "services-1"];
+
+export function hubCatalogCachePath(agentDir: string = getAgentDir()): string {
+	return path.join(agentDir, "mcp-hub-catalog.json");
+}
 
 export function hubChildUrl(hubUrl: string, name: string): string {
 	const origin = new URL(hubUrl).origin;
@@ -81,6 +89,66 @@ export async function fetchHubCatalog(hubUrl: string, bearer?: string): Promise<
 		}
 	}
 	return [];
+}
+
+async function readHubCatalogCache(cachePath: string, origin: string): Promise<string[]> {
+	try {
+		const parsed: unknown = await Bun.file(cachePath).json();
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+		const entry = (parsed as HubCatalogCacheFile)[origin];
+		return Array.isArray(entry?.names) ? entry.names.filter(name => typeof name === "string" && SERVER_NAME.test(name)) : [];
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		logger.debug("MCP hub catalog cache unreadable", { origin, error: String(error) });
+		return [];
+	}
+}
+
+async function writeHubCatalogCache(cachePath: string, origin: string, names: string[]): Promise<void> {
+	let file: HubCatalogCacheFile = {};
+	try {
+		const parsed: unknown = await Bun.file(cachePath).json();
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			file = parsed as HubCatalogCacheFile;
+		}
+	} catch (error) {
+		if (!isEnoent(error)) {
+			logger.debug("MCP hub catalog cache reset", { origin, error: String(error) });
+		}
+	}
+	file[origin] = { names, fetchedAt: new Date().toISOString() };
+	await Bun.write(cachePath, `${JSON.stringify(file, null, 2)}\n`);
+}
+
+export type ResolveHubCatalogOptions = {
+	bearer?: string;
+	cachePath?: string;
+	fetchCatalog?: (hubUrl: string, bearer?: string) => Promise<string[]>;
+	defaults?: string[];
+};
+
+/**
+ * Live catalog when a bearer exists; otherwise cached names, then hardcoded defaults.
+ * Never logs the bearer.
+ */
+export async function resolveHubCatalogNames(hubUrl: string, options: ResolveHubCatalogOptions = {}): Promise<string[]> {
+	const origin = new URL(hubUrl).origin;
+	const cachePath = options.cachePath ?? hubCatalogCachePath();
+	const fetchCatalog = options.fetchCatalog ?? fetchHubCatalog;
+	if (options.bearer) {
+		const names = await fetchCatalog(hubUrl, options.bearer);
+		if (names.length > 0) {
+			try {
+				await writeHubCatalogCache(cachePath, origin, names);
+			} catch (error) {
+				logger.debug("MCP hub catalog cache write failed", { origin, error: String(error) });
+			}
+			return names;
+		}
+	}
+	const cached = await readHubCatalogCache(cachePath, origin);
+	if (cached.length > 0) return cached;
+	return options.defaults ?? DEFAULT_COLAB_HUB_SERVERS;
 }
 
 export function hubDiscoveredServers(

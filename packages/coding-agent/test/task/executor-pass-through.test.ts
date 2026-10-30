@@ -50,6 +50,8 @@ function createMockSession(
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
+		setAgentLoadPolicy: () => {},
+		setActiveToolsByName: async () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -335,6 +337,34 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(persistedInits).toHaveLength(1);
 		expect(persistedInits[0]).toMatchObject({ restrictToolNames: true, tools: ["read", "yield"] });
 	});
+
+	it("keeps parent MCP tools when a restricted agent declares mcp names", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const parentMcp = { name: "mcp__youtube_list", mcpServerName: "youtube" };
+		const getTools = vi.fn(() => [parentMcp]);
+		const mcpManager = { getTools, addToolsChangedListener: () => () => {} } as unknown as MCPManager;
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "restricted-mcp-child",
+			restrictToolNames: true,
+			mcpManager,
+			agent: {
+				...baseAgent,
+				tools: ["read"],
+				mcpLoad: { declared: true, names: ["youtube"], eager: [], discoverable: ["youtube"] },
+			},
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.enableMCP).not.toBe(false);
+		expect(forwarded?.mcpManager).toBe(mcpManager);
+		expect(getTools).toHaveBeenCalled();
+		expect(forwarded?.mcpLoad?.names).toEqual(["youtube"]);
+	});
+
 
 	it("persists xd://-mounted tools from the enabled set", async () => {
 		const session = yieldEmittingSession();

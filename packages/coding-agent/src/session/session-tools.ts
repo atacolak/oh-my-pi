@@ -2566,14 +2566,16 @@ export class SessionTools {
 			this.#mcpManagerToolNames = previousMcpManagerToolNames;
 		};
 
+		const allowedMcpTools = mcpTools.filter(tool => mcpServerAllowed(this.#mcpLoad, tool.mcpServerName ?? ""));
 		const extensionRunner = this.#host.extensionRunner();
-		const managerTools = deduplicateMCPToolsByName(mcpTools).map(customTool => {
+		const managerTools = deduplicateMCPToolsByName(allowedMcpTools).map(customTool => {
 			const wrapped = wrapToolWithMetaNotice(
 				CustomToolAdapter.wrap(customTool, this.#getCustomToolContext) as AgentTool,
 			);
 			return (extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped) as AgentTool;
 		});
 		const managerToolSet = new Set(managerTools);
+
 		const reconciledTools = deduplicateMCPToolsByName([...this.#extensionMcpTools.values(), ...managerTools]);
 
 		for (const name of this.#toolRegistry.keys()) {
@@ -2584,6 +2586,7 @@ export class SessionTools {
 			this.#toolRegistry.set(tool.name, tool);
 			if (managerToolSet.has(tool)) this.#mcpManagerToolNames.add(tool.name);
 		}
+		this.#rebuildLoadModeOverrides();
 
 		// Connected manager tools become active immediately, except while vibe
 		// narrows the active set to the director's tools: then every MCP tool keeps

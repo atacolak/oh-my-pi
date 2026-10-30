@@ -1,7 +1,9 @@
 {
 	"tool": "mg",
 	"path": "/home/sf/.local/bin/mg",
-	"revision": "5ac1138dd3372e3d28419f9a02b7015b3c66f6a3",
-	"subject": "feat: comments dock for bead threads",
+	"revision": "a2e6ad421ad91844dad19573e40e21e1953ddb62",
+	"subject": "docs: match estate cadences, hit kinds and the episode overlay",
+	"feature": "comments dock for bead threads",
+	"origin_revision": "5ac1138dd3372e3d28419f9a02b7015b3c66f6a3",
 	"originating_work": "mard-comments-dock-r55"
 }

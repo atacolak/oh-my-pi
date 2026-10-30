@@ -2843,7 +2843,7 @@ export class AgentSession implements SettingsScope {
 			this.#emitQueueUpdateIfChanged();
 			this.#persistQueuedMessages();
 		});
-		this.#restoreQueuedMessagesFromDisk();
+		this.#restoreQueuedMessages();
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		cfgProviderAppendOnlyContext.listen(this, () => this.#syncAppendOnlyContext(this.model));
 		cfgModelRoles.listen(this, () => this.#advisors.reconcileModelRoles());
@@ -6035,7 +6035,7 @@ export class AgentSession implements SettingsScope {
 			this.#emitQueueUpdateIfChanged();
 			this.#persistQueuedMessages();
 		});
-		this.#restoreQueuedMessagesFromDisk();
+		this.#restoreQueuedMessages();
 	}
 
 	#activeProviderSessionId(sessionId?: string): string {
@@ -7510,19 +7510,19 @@ export class AgentSession implements SettingsScope {
 	}
 
 	#persistQueuedMessages(): void {
-		const sessionFile = this.sessionManager.getSessionFile();
-		if (!sessionFile) return;
-		persistQueuedMessages(sessionFile, {
+		const artifactsDir = this.sessionManager.getArtifactsDir();
+		if (!artifactsDir) return;
+		persistQueuedMessages(artifactsDir, this.sessionManager.getSessionId(), {
 			steering: this.agent.peekSteeringQueue(),
 			followUp: this.agent.peekFollowUpQueue(),
 		});
 	}
 
-	#restoreQueuedMessagesFromDisk(): void {
-		const sessionFile = this.sessionManager.getSessionFile();
-		if (!sessionFile) return;
+	#restoreQueuedMessages(): void {
+		const artifactsDir = this.sessionManager.getArtifactsDir();
+		if (!artifactsDir) return;
 		if (this.agent.peekSteeringQueue().length > 0 || this.agent.peekFollowUpQueue().length > 0) return;
-		const snapshot = loadQueuedMessages(sessionFile);
+		const snapshot = loadQueuedMessages(artifactsDir, this.sessionManager.getSessionId());
 		if (!snapshot) return;
 		if (snapshot.steering.length === 0 && snapshot.followUp.length === 0) return;
 		this.agent.replaceQueues(snapshot.steering, snapshot.followUp);

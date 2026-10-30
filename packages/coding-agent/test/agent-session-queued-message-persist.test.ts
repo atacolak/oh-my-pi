@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync } from "node:fs";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -8,7 +9,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Snowflake, TempDir } from "@oh-my-pi/pi-utils";
-import { loadQueuedMessages } from "../src/session/queued-message-persist";
+import { loadQueuedMessages, queuedMessagesPath } from "../src/session/queued-message-persist";
 
 function queuedText(messages: readonly AgentMessage[]): string[] {
 	const out: string[] = [];
@@ -85,7 +86,7 @@ describe("persisted steering/followUp queues", () => {
 			attribution: "user",
 			timestamp: Date.now(),
 		});
-		const snapshot = loadQueuedMessages(sessionFile!);
+		const snapshot = loadQueuedMessages(first.sessionManager.getArtifactsDir()!, first.sessionManager.getSessionId());
 		expect(queuedText(snapshot?.steering ?? [])).toContain("do not lose this");
 		expect(queuedText(snapshot?.followUp ?? [])).toContain("and this after");
 
@@ -93,5 +94,26 @@ describe("persisted steering/followUp queues", () => {
 		const second = await makeSession(secondManager);
 		expect(queuedText(second.agent.peekSteeringQueue())).toContain("do not lose this");
 		expect(queuedText(second.agent.peekFollowUpQueue())).toContain("and this after");
+	});
+
+	it("drops the queued snapshot together with the deleted session", async () => {
+		const sessionDir = tempDir.join("sessions");
+		const manager = SessionManager.create(tempDir.path(), sessionDir);
+		const session = await makeSession(manager);
+		await manager.ensureOnDisk();
+		const sessionFile = session.sessionFile!;
+		const artifactsDir = manager.getArtifactsDir()!;
+
+		session.agent.followUp({
+			role: "user",
+			content: [{ type: "text", text: "delete-me-too" }],
+			attribution: "user",
+			timestamp: Date.now(),
+		});
+		const snapshotPath = queuedMessagesPath(artifactsDir, manager.getSessionId());
+		expect(existsSync(snapshotPath)).toBe(true);
+
+		await manager.dropSession(sessionFile);
+		expect(existsSync(snapshotPath)).toBe(false);
 	});
 });

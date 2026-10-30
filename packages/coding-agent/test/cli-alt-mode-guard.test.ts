@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -8,6 +8,10 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 
 describe("runRootCommand — --alt mode guard", () => {
 	const previousBackend = Bun.env.PI_TUI_RENDER_BACKEND;
+
+	beforeEach(() => {
+		delete Bun.env.PI_TUI_RENDER_BACKEND;
+	});
 
 	afterEach(() => {
 		if (previousBackend === undefined) {

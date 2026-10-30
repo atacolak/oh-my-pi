@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Persisted `steer()` / `followUp()` queues to `${sessionFile}.queued.json` and restored them when the session is resumed, so mid-turn user messages survive a process restart
+
+
 ## [18.14.0] - 2026-10-29
 
 ### Breaking Changes

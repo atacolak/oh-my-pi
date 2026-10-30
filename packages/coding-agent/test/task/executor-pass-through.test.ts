@@ -365,7 +365,6 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.mcpLoad?.names).toEqual(["youtube"]);
 	});
 
-
 	it("persists xd://-mounted tools from the enabled set", async () => {
 		const session = yieldEmittingSession();
 		vi.spyOn(session, "getActiveToolNames").mockReturnValue(["read", "yield"]);

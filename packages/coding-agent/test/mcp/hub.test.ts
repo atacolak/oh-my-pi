@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { hubChildUrl, hubDiscoveredServers, hubOriginUrl, parseHubCatalog, resolveHubCatalogNames } from "../../src/mcp/hub";
-import { loadAllMCPConfigs } from "../../src/mcp/config";
 import {
-	lookupMcpOAuthCredentialForServer,
-	mcpOAuthCredentialIdsForServerUrl,
-} from "../../src/mcp/oauth-credentials";
+	hubChildUrl,
+	hubDiscoveredServers,
+	hubOriginUrl,
+	parseHubCatalog,
+	resolveHubCatalogNames,
+} from "../../src/mcp/hub";
+import { loadAllMCPConfigs } from "../../src/mcp/config";
+import { lookupMcpOAuthCredentialForServer, mcpOAuthCredentialIdsForServerUrl } from "../../src/mcp/oauth-credentials";
 import { mcpOAuthCredentialId } from "../../src/mcp/oauth-flow";
 import { findMcpServerForAuth } from "../../src/mcp/oauth-reauth";
 import type { AuthStorage } from "../../src/session/auth-storage";
@@ -133,9 +136,7 @@ describe("MCPHub catalog", () => {
 		const whatsappUrl = "https://mcp.colak.sh/mcp/whatsapp";
 		const originUrl = "https://mcp.colak.sh";
 		const youtubeId = mcpOAuthCredentialId(youtubeUrl);
-		const store = new Map<string, { type: "oauth"; access: string }>([
-			[youtubeId, { type: "oauth", access: "yt" }],
-		]);
+		const store = new Map<string, { type: "oauth"; access: string }>([[youtubeId, { type: "oauth", access: "yt" }]]);
 		const authStorage = {
 			credentials: {
 				get: (id: string) => store.get(id),

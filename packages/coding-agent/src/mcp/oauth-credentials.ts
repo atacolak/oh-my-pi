@@ -36,7 +36,12 @@ function bareHubOrigin(serverUrl: string): string | undefined {
 /** Origin that shares one OAuth login across `/mcp/<name>` children. */
 export function mcpHubCredentialOrigin(serverUrl: string | undefined): string | undefined {
 	if (!serverUrl) return undefined;
-	return hubOriginUrl(serverUrl) ?? hubOriginUrl(expandEnvVarsDeep(serverUrl)) ?? bareHubOrigin(expandEnvVarsDeep(serverUrl)) ?? bareHubOrigin(serverUrl);
+	return (
+		hubOriginUrl(serverUrl) ??
+		hubOriginUrl(expandEnvVarsDeep(serverUrl)) ??
+		bareHubOrigin(expandEnvVarsDeep(serverUrl)) ??
+		bareHubOrigin(serverUrl)
+	);
 }
 
 export function mcpOAuthCredentialIdsForServerUrl(serverUrl: string | undefined): string[] {

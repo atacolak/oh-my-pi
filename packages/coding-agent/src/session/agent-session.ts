@@ -473,6 +473,7 @@ import {
 	type PersistedSessionInit,
 	type SessionManager,
 } from "./session-manager";
+import { loadQueuedMessages, persistQueuedMessages } from "./queued-message-persist";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
@@ -2851,7 +2852,11 @@ export class AgentSession implements SettingsScope {
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
-		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
+		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => {
+			this.#emitQueueUpdateIfChanged();
+			this.#persistQueuedMessages();
+		});
+		this.#restoreQueuedMessagesFromDisk();
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		cfgProviderAppendOnlyContext.listen(this, () => this.#syncAppendOnlyContext(this.model));
 		cfgModelRoles.listen(this, () => this.#advisors.reconcileModelRoles());
@@ -6041,7 +6046,11 @@ export class AgentSession implements SettingsScope {
 		if (this.#unsubscribeAgent) return; // Already connected
 		this.#disconnectedMessageCount = undefined;
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
-		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
+		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => {
+			this.#emitQueueUpdateIfChanged();
+			this.#persistQueuedMessages();
+		});
+		this.#restoreQueuedMessagesFromDisk();
 	}
 
 	#activeProviderSessionId(sessionId?: string): string {
@@ -7513,6 +7522,25 @@ export class AgentSession implements SettingsScope {
 	/** Current session file path, or undefined if sessions are disabled */
 	get sessionFile(): string | undefined {
 		return this.sessionManager.getSessionFile();
+	}
+
+	#persistQueuedMessages(): void {
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile) return;
+		persistQueuedMessages(sessionFile, {
+			steering: this.agent.peekSteeringQueue(),
+			followUp: this.agent.peekFollowUpQueue(),
+		});
+	}
+
+	#restoreQueuedMessagesFromDisk(): void {
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile) return;
+		if (this.agent.peekSteeringQueue().length > 0 || this.agent.peekFollowUpQueue().length > 0) return;
+		const snapshot = loadQueuedMessages(sessionFile);
+		if (!snapshot) return;
+		if (snapshot.steering.length === 0 && snapshot.followUp.length === 0) return;
+		this.agent.replaceQueues(snapshot.steering, snapshot.followUp);
 	}
 
 	/** Current session ID */

@@ -1782,12 +1782,13 @@ export async function buildSessionOptions(
 	// (handled by caller before createAgentSession)
 
 	// System prompt
-	if (
-		launchAgent &&
-		parsed.systemPrompt === undefined &&
-		parsed.systemPromptTemplate === undefined &&
-		!restoringSession
-	) {
+	// A resumed session restores `model` and `thinkingLevel` from its transcript, which is
+	// why those two keep their `!restoringSession` gates. The persona body, tool list,
+	// skills and spawns are NOT persisted, so gating them here left every `omp --resume
+	// --agent <name>` running the default OMP prompt with the default tool set and no role
+	// at all (`roleMounted: false` in `actor context`). Nothing is restored to conflict
+	// with, so the launch agent mounts exactly as it does on a first run.
+	if (launchAgent && parsed.systemPrompt === undefined && parsed.systemPromptTemplate === undefined) {
 		options.customSystemPrompt = launchAgent.systemPrompt;
 	} else {
 		applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
@@ -1795,7 +1796,7 @@ export async function buildSessionOptions(
 			options.systemPromptTemplate = resolvedSystemPromptTemplate;
 		}
 	}
-	if (resolvedAppendPrompt && parsed.systemPrompt === undefined && launchAgent && !restoringSession) {
+	if (resolvedAppendPrompt && parsed.systemPrompt === undefined && launchAgent) {
 		options.appendSystemPrompt = resolvedAppendPrompt;
 	}
 	// Replan-driven title refresh resolves the override from this same field on
@@ -1808,9 +1809,6 @@ export async function buildSessionOptions(
 	if (launchAgent) {
 		options.agentName = launchAgent.name;
 		options.rootAgentName = launchAgent.name;
-	}
-
-	if (launchAgent && !restoringSession) {
 		options.agentDisplayName = launchAgent.name;
 		if (launchAgent.automationAuthor) {
 			options.automationAuthor = launchAgent.automationAuthor;
@@ -1845,7 +1843,7 @@ export async function buildSessionOptions(
 		options.toolNames = parsed.tools && parsed.tools.length > 0 ? parsed.tools : [];
 	} else if (parsed.tools) {
 		options.toolNames = parsed.tools;
-	} else if (launchAgent && !restoringSession) {
+	} else if (launchAgent) {
 		const tools = rootAgentToolNames(launchAgent);
 		if (tools) options.toolNames = tools;
 	}

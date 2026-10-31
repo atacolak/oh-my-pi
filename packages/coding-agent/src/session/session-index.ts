@@ -272,7 +272,13 @@ export function finishSessionEpisode(input: {
 	const index = openSessionIndex();
 	if (!index) return;
 	try {
-		index.finishEpisode.run(input.endedAtMs, input.stepCount, input.endEntryId ?? null, input.outcome, input.episodeId);
+		index.finishEpisode.run(
+			input.endedAtMs,
+			input.stepCount,
+			input.endEntryId ?? null,
+			input.outcome,
+			input.episodeId,
+		);
 	} catch (error) {
 		logger.debug("Session episode finish failed", { episodeId: input.episodeId, error: String(error) });
 	}

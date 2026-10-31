@@ -34,6 +34,25 @@ export interface BucketRulesOptions {
 	agentName?: string;
 	/** Replace existing TTSR registrations before bucketing this complete rule snapshot. */
 	replaceTtsrRules?: boolean;
+	/**
+	 * Rules the session's profile declares, in declared order. Present (even empty) means
+	 * the profile owns its always-apply set: the bucket is exactly these rules, matched by
+	 * `rule.name` or the rule file's stem, and the legacy `agents` globs are not consulted.
+	 * Absent keeps the `agents`-scoped bucketing a bare `main` session relies on.
+	 *
+	 * `disabledRules` still wins — a disabled rule is not applied because a profile named
+	 * it, and an unknown name is simply absent from the bucket rather than an error.
+	 */
+	declaredRules?: readonly string[];
+}
+
+/** Where a rule sits in the profile's declaration, by rule name or by file stem. */
+function declaredRank(rule: Rule, order: ReadonlyMap<string, number>): number | undefined {
+	const byName = order.get(rule.name.trim().toLowerCase());
+	if (byName !== undefined) return byName;
+	const file = rule.path.split("/").pop() ?? "";
+	const stem = file.endsWith(".md") ? file.slice(0, -3) : file;
+	return stem ? order.get(stem.toLowerCase()) : undefined;
 }
 
 /**
@@ -53,17 +72,28 @@ export function bucketRules(
 		if (name.length > 0) disabled.add(name);
 	}
 
+	const declared = options.declaredRules;
+	const declaredOrder = new Map<string, number>();
+	if (declared) {
+		for (const raw of declared) {
+			const key = raw.trim().toLowerCase();
+			if (key.length > 0 && !declaredOrder.has(key)) declaredOrder.set(key, declaredOrder.size);
+		}
+	}
+
 	const includedRules: Rule[] = [];
 	for (const rule of rules) {
 		if (disabled.has(rule.name)) continue;
 		if (!includeBuiltin && rule._source?.provider === BUILTIN_DEFAULTS_PROVIDER_ID) continue;
-		if (!ruleAppliesToAgent(rule, options.agentName)) continue;
+		// A declaring profile replaces the `agents` globs rather than adding to them.
+		if (!declared && !ruleAppliesToAgent(rule, options.agentName)) continue;
 		includedRules.push(rule);
 	}
 
 	const replacedTtsrNames = options.replaceTtsrRules ? ttsrManager.replaceRules(includedRules) : undefined;
 	const rulebookRules: Rule[] = [];
 	const alwaysApplyRules: Rule[] = [];
+	const declaredPicked: Array<{ rank: number; rule: Rule }> = [];
 
 	for (const rule of includedRules) {
 		const hasTtsrCondition =
@@ -72,7 +102,13 @@ export function bucketRules(
 			rule.question !== undefined;
 		const isTtsrRule = hasTtsrCondition ? (replacedTtsrNames?.has(rule.name) ?? ttsrManager.addRule(rule)) : false;
 		if (isTtsrRule) continue;
-		if (rule.alwaysApply === true) {
+		if (declared) {
+			const rank = declaredRank(rule, declaredOrder);
+			if (rank !== undefined) {
+				declaredPicked.push({ rank, rule });
+				continue;
+			}
+		} else if (rule.alwaysApply === true) {
 			alwaysApplyRules.push(rule);
 			continue;
 		}
@@ -80,6 +116,11 @@ export function bucketRules(
 			rulebookRules.push(rule);
 		}
 	}
+
+	// Declared order is the profile's own ranking, so the bucket is rebuilt from it rather
+	// than from discovery order.
+	declaredPicked.sort((a, b) => a.rank - b.rank);
+	for (const picked of declaredPicked) alwaysApplyRules.push(picked.rule);
 
 	return { rulebookRules, alwaysApplyRules };
 }

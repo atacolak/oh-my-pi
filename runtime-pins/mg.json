@@ -1,8 +1,8 @@
 {
 	"tool": "mg",
 	"path": "/home/sf/.local/bin/mg",
-	"revision": "be458510bd18e778110a502480dd327b8bea1833",
-	"subject": "fix(studio): fit five tabs and unify header model source",
+	"revision": "7f3a8b61164be99a63029c941933dad60df907f4",
+	"subject": "fix(estate): drop left TL;DR and stop double-wrapping charter markdown",
 	"feature": "comments dock for bead threads",
 	"origin_revision": "5ac1138dd3372e3d28419f9a02b7015b3c66f6a3",
 	"originating_work": "mard-comments-dock-r55"

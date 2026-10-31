@@ -395,6 +395,8 @@ describe("hindsightBackend first-turn injection", () => {
 			"hindsight.apiUrl": "http://localhost:8888",
 			"hindsight.mentalModelsEnabled": true,
 		});
+		vi.spyOn(HindsightApi.prototype, "listMentalModels").mockResolvedValue({ items: [] } as never);
+		vi.spyOn(HindsightApi.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] } as never);
 		const session = makeFakeSession({ sessionId: "s-order" });
 		await hindsightBackend.start({
 			session: session as never,
@@ -432,6 +434,7 @@ describe("hindsightBackend first-turn injection", () => {
 		// Initial start may issue its own listMentalModels (read-only by default);
 		// stub it to return nothing so the initial snippet is undefined.
 		const listSpy = vi.spyOn(HindsightApi.prototype, "listMentalModels").mockResolvedValue({ items: [] } as never);
+		vi.spyOn(HindsightApi.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] } as never);
 		await hindsightBackend.start({
 			session: session as never,
 			settings,
@@ -479,6 +482,7 @@ describe("hindsightBackend first-turn injection", () => {
 			"hindsight.mentalModelsEnabled": true,
 		});
 		vi.spyOn(HindsightApi.prototype, "listMentalModels").mockResolvedValue({ items: [] } as never);
+		vi.spyOn(HindsightApi.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] } as never);
 		const parent = makeFakeSession({ sessionId: "alias-parent" });
 		await hindsightBackend.start({
 			session: parent as never,
@@ -541,6 +545,7 @@ describe("hindsightBackend.clear", () => {
 			"hindsight.mentalModelsEnabled": true,
 		});
 		vi.spyOn(HindsightApi.prototype, "listMentalModels").mockResolvedValue({ items: [] } as never);
+		vi.spyOn(HindsightApi.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] } as never);
 		const deleteSpy = vi.spyOn(HindsightApi.prototype, "deleteMentalModel").mockResolvedValue(true);
 		const session = makeFakeSession({ sessionId: "s-clear-mm" });
 		await hindsightBackend.start({
@@ -1331,6 +1336,7 @@ describe("hindsightBackend live bank routing", () => {
 				callOrder.push("createMentalModel");
 				return {} as never;
 			});
+		vi.spyOn(HindsightApi.prototype, "getKnowledgeBaseTree").mockResolvedValue({ roots: [] } as never);
 
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",

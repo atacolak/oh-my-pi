@@ -76,7 +76,8 @@ export function bucketRules(
 	const declaredOrder = new Map<string, number>();
 	if (declared) {
 		for (const raw of declared) {
-			const key = raw.trim().toLowerCase();
+			// A profile may name the rule or its file; both forms mean the same rule.
+			const key = raw.trim().toLowerCase().replace(/\.md$/, "");
 			if (key.length > 0 && !declaredOrder.has(key)) declaredOrder.set(key, declaredOrder.size);
 		}
 	}

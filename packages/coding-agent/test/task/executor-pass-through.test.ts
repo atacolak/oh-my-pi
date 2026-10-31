@@ -941,4 +941,38 @@ describe("runSubprocess follows the parent's MCP manager", () => {
 		expect(spy.mock.calls[0]?.[0]?.customTools).toEqual([kernelTool]);
 		expect(child.refreshed.at(-1)).not.toContain(toolOf("alpha"));
 	}, 20_000);
+
+	it("narrows a subagent's MCP tools to the servers its profile declares", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const parentTools = [
+			{ name: "mcp__youtube_list", mcpServerName: "youtube" },
+			{ name: "mcp__mail_search", mcpServerName: "mail" },
+		];
+		const mcpManager = {
+			getTools: () => parentTools,
+			addToolsChangedListener: () => () => {},
+		} as unknown as MCPManager;
+		const declaredTools = ["read", "mcp__youtube_list", "mcp__mail_search"];
+		const run = async (id: string, index: number, mcps: string[], names: string[]) =>
+			await runSubprocess({
+				...baseOptions,
+				id,
+				index,
+				mcpManager,
+				agent: {
+					...baseAgent,
+					tools: declaredTools,
+					mcps,
+					mcpLoad: { declared: true, names, eager: [], discoverable: [] },
+				},
+			});
+
+		expect((await run("mcp-allowlist-child", 0, ["youtube"], ["youtube"])).exitCode).toBe(0);
+		expect((await run("mcp-none-child", 1, [], [])).exitCode).toBe(0);
+
+		const allowed = spy.mock.calls[0]?.[0]?.toolNames;
+		expect(allowed).toEqual(["read", "mcp__youtube_list"]);
+		expect(spy.mock.calls[1]?.[0]?.toolNames).toEqual(["read"]);
+	}, 20_000);
 });

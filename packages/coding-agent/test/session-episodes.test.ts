@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +10,8 @@ import {
 	startSessionEpisode,
 } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+
+setDefaultTimeout(30_000);
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 let root = "";

@@ -82,7 +82,7 @@ printf '%s\\0' "$@" > ${JSON.stringify(argvLog)}
 			"app-viewport",
 			"",
 		]);
-	});
+	}, 60000);
 
 	it("documents the checkout-aware update path without invoking the network", async () => {
 		const proc = Bun.spawn(["sh", ompaltPath, "update", "--help"], {

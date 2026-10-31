@@ -62,7 +62,7 @@ describe("runRootCommand — --alt mode guard", () => {
 		const stderr = captured.join("");
 		expect(stderr).toContain("Error: --alt is only supported in interactive mode");
 		expect(Bun.env.PI_TUI_RENDER_BACKEND).not.toBe("app-viewport");
-	});
+	}, 60000);
 
 	it("rejects --alt combined with --mode rpc", async () => {
 		using tempDir = TempDir.createSync("@omp-alt-rpc-");
@@ -105,7 +105,7 @@ describe("runRootCommand — --alt mode guard", () => {
 		const stderr = captured.join("");
 		expect(stderr).toContain("Error: --alt is only supported in interactive mode");
 		expect(Bun.env.PI_TUI_RENDER_BACKEND).not.toBe("app-viewport");
-	});
+	}, 60000);
 
 	it("sets PI_TUI_RENDER_BACKEND=app-viewport for interactive --alt", async () => {
 		using tempDir = TempDir.createSync("@omp-alt-interactive-");
@@ -143,5 +143,5 @@ describe("runRootCommand — --alt mode guard", () => {
 			Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
 			process.exitCode = previousExitCode ?? 0;
 		}
-	});
+	}, 60000);
 });

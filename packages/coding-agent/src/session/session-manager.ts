@@ -128,7 +128,14 @@ import {
 	normalizeSessionWorkspace,
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
-import { recordSessionRecap, recordSessionTitle } from "./session-index";
+import {
+	finishSessionEpisode,
+	recordSessionEpisodeRecap,
+	recordSessionRecap,
+	recordSessionTitle,
+	startSessionEpisode,
+	type EpisodeTriggerKind,
+} from "./session-index";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
@@ -907,6 +914,8 @@ export class SessionManager {
 	readonly #blobs: BlobStore;
 
 	#sessionId = "";
+	/** Episode row of the run in flight, or of the run awaiting its settle recap. */
+	#episodeId: string | null = null;
 	/**
 	 * Parent-derived sibling family candidate stashed by the Task executor once
 	 * the child session exists. Session-scoped and non-persisted: the header
@@ -3507,7 +3516,54 @@ export class SessionManager {
 	recordRecap(recap: string): void {
 		if (this.#persist && this.#storage instanceof FileSessionStorage) {
 			recordSessionRecap(this.#sessionId, this.#cwd, recap);
+			// The recap settles the run that just ended, so it belongs on that row — not
+			// on the newest recap in the journal, which is the mistake that put one recap
+			// on every historical turn.
+			if (this.#episodeId) recordSessionEpisodeRecap(this.#episodeId, recap);
 		}
+	}
+
+	/**
+	 * Open an indexed row for the run that just started.
+	 *
+	 * Kept until the settle recap has landed: the recap fires about a second after
+	 * `agent_end`, so the id has to outlive the close.
+	 */
+	startAgentEpisode(trigger: {
+		kind?: EpisodeTriggerKind | null;
+		summary?: string | null;
+		focusTitle?: string | null;
+		startEntryId?: string | null;
+	}): void {
+		if (!(this.#persist && this.#storage instanceof FileSessionStorage)) return;
+		const episodeId = `episode:${crypto.randomUUID()}`;
+		this.#episodeId = episodeId;
+		startSessionEpisode({
+			episodeId,
+			sessionId: this.#sessionId,
+			cwd: this.#cwd,
+			startedAtMs: Date.now(),
+			focusTitle: trigger.focusTitle ?? null,
+			triggerKind: trigger.kind ?? null,
+			triggerSummary: trigger.summary ?? null,
+			startEntryId: trigger.startEntryId ?? null,
+		});
+	}
+
+	/** Close the open row with the facts only its end knows. */
+	finishAgentEpisode(input: {
+		stepCount: number;
+		endEntryId?: string | null;
+		outcome: "ok" | "error" | "aborted";
+	}): void {
+		if (!this.#episodeId) return;
+		finishSessionEpisode({
+			episodeId: this.#episodeId,
+			endedAtMs: Date.now(),
+			stepCount: input.stepCount,
+			endEntryId: input.endEntryId ?? null,
+			outcome: input.outcome,
+		});
 	}
 
 	/**

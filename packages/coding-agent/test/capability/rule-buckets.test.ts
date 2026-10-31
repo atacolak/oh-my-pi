@@ -195,6 +195,66 @@ describe("bucketRules", () => {
 	});
 });
 
+describe("bucketRules declared rules", () => {
+	const rule = (name: string, extra: Partial<Rule> = {}) =>
+		makeRule({ name, path: `/tmp/rules/${name}.md`, description: `${name} body`, ...extra });
+
+	it("applies exactly the declared set, in declared order, ignoring agents globs", () => {
+		// The profile owns its set: a rule scoped to another agent is still applied when
+		// the profile names it, and discovery order does not decide the prompt order.
+		const rules = [
+			rule("alpha", { agents: ["builder"], alwaysApply: true }),
+			rule("beta", { agents: ["scout"] }),
+			rule("gamma", { agents: ["builder"] }),
+		];
+		const { alwaysApplyRules, rulebookRules } = bucketRules(rules, new TtsrManager(), {
+			agentName: "lead",
+			declaredRules: ["gamma", "alpha"],
+		});
+		expect(alwaysApplyRules.map(r => r.name)).toEqual(["gamma", "alpha"]);
+		// An undeclared rule is not always-applied, but it stays discoverable.
+		expect(rulebookRules.map(r => r.name)).toEqual(["beta"]);
+	});
+
+	it("matches a declaration by the rule file's stem", () => {
+		const rules = [rule("mutation-and-healing", { alwaysApply: false })];
+		const { alwaysApplyRules } = bucketRules(rules, new TtsrManager(), {
+			declaredRules: ["mutation-and-healing.md"],
+		});
+		expect(alwaysApplyRules.map(r => r.name)).toEqual(["mutation-and-healing"]);
+	});
+
+	it("still honours disabledRules over a declaration", () => {
+		const rules = [rule("secret-management"), rule("telegraphic-comms")];
+		const { alwaysApplyRules } = bucketRules(rules, new TtsrManager(), {
+			declaredRules: ["secret-management", "telegraphic-comms"],
+			disabledRules: ["telegraphic-comms"],
+		});
+		expect(alwaysApplyRules.map(r => r.name)).toEqual(["secret-management"]);
+	});
+
+	it("applies nothing when the profile declares an empty list", () => {
+		// An empty declaration is a profile that applies none, not one that falls back.
+		const rules = [rule("secret-management", { alwaysApply: true })];
+		const { alwaysApplyRules } = bucketRules(rules, new TtsrManager(), { declaredRules: [] });
+		expect(alwaysApplyRules).toHaveLength(0);
+	});
+
+	it("keeps a declared rule with a condition in the interrupt manager", () => {
+		const rules = [rule("no-foo", { condition: ["FORBIDDEN"], alwaysApply: false })];
+		const mgr = new TtsrManager();
+		const { alwaysApplyRules } = bucketRules(rules, mgr, { declaredRules: ["no-foo"] });
+		expect(alwaysApplyRules).toHaveLength(0);
+		expect(mgr.checkDelta("contains FORBIDDEN token", { source: "text" }).map(r => r.name)).toEqual(["no-foo"]);
+	});
+
+	it("keeps the legacy agents-scoped bucket when nothing is declared", () => {
+		const rules = [rule("only-always", { alwaysApply: true, agents: ["lead"] }), rule("not-always")];
+		const { alwaysApplyRules } = bucketRules(rules, new TtsrManager(), { agentName: "lead" });
+		expect(alwaysApplyRules.map(r => r.name)).toEqual(["only-always"]);
+	});
+});
+
 describe("bucketRules agent scoping", () => {
 	it("scopes a scout-only TTSR rule to scout and leaves it inert for main", () => {
 		const rule = makeRule({

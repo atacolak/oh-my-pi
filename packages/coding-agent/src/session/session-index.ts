@@ -8,6 +8,10 @@
  *   file in the project directory (multi-hundred-ms on dirs with thousands of
  *   sessions). A title has no life beyond its session; `omp gc` drops rows of
  *   archived sessions.
+ * - `session_episodes`: one row per agent run — opened when the agent starts, closed
+ *   when it ends, and given the idle recap that settled it. A reader asking "what
+ *   happened in this run" gets an indexed row instead of reconstructing it from the
+ *   JSONL and guessing which recap belonged to which turn.
  * - `session_recaps`: append-only journal of idle recaps
  *   ({@link SessionManager.recordRecap}). Recaps are side-channel output that
  *   never enters the session JSONL or LLM context; this table is their only
@@ -46,6 +50,22 @@ CREATE TABLE IF NOT EXISTS session_recaps (
 	created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
 );
 CREATE INDEX IF NOT EXISTS idx_session_recaps_session ON session_recaps(session_id, created_at);
+CREATE TABLE IF NOT EXISTS session_episodes (
+	episode_id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	cwd TEXT NOT NULL,
+	started_at_ms INTEGER NOT NULL,
+	ended_at_ms INTEGER,
+	focus_title TEXT,
+	trigger_kind TEXT,
+	trigger_summary TEXT,
+	step_count INTEGER NOT NULL DEFAULT 0,
+	start_entry_id TEXT,
+	end_entry_id TEXT,
+	outcome TEXT NOT NULL DEFAULT 'running',
+	recap TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_episodes_session ON session_episodes(session_id, started_at_ms);
 `;
 
 interface SessionIndexHandle {
@@ -56,6 +76,10 @@ interface SessionIndexHandle {
 	upsertTitle: Statement;
 	selectTitle: Statement;
 	insertRecap: Statement;
+	insertEpisode: Statement;
+	finishEpisode: Statement;
+	attachEpisodeRecap: Statement;
+	reapEpisodes: Statement;
 }
 
 let handle: SessionIndexHandle | undefined;
@@ -68,6 +92,10 @@ function closeHandle(): void {
 		handle.upsertTitle.finalize();
 		handle.selectTitle.finalize();
 		handle.insertRecap.finalize();
+		handle.insertEpisode.finalize();
+		handle.finishEpisode.finalize();
+		handle.attachEpisodeRecap.finalize();
+		handle.reapEpisodes.finalize();
 		handle.db.close();
 	} catch {}
 	handle = undefined;
@@ -111,6 +139,23 @@ ON CONFLICT(session_id) DO UPDATE SET
 			`),
 			selectTitle: db.prepare("SELECT title FROM session_titles WHERE session_id = ? AND typeof(title) = 'text'"),
 			insertRecap: db.prepare("INSERT INTO session_recaps (session_id, cwd, recap) VALUES (?, ?, ?)"),
+			insertEpisode: db.prepare(`
+INSERT INTO session_episodes (
+	episode_id, session_id, cwd, started_at_ms, focus_title, trigger_kind, trigger_summary, start_entry_id, outcome
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running')
+			`),
+			finishEpisode: db.prepare(`
+UPDATE session_episodes SET ended_at_ms = ?, step_count = ?, end_entry_id = ?, outcome = ?
+WHERE episode_id = ?
+			`),
+			attachEpisodeRecap: db.prepare("UPDATE session_episodes SET recap = ? WHERE episode_id = ?"),
+			// A row still `running` when the next run starts never saw its `agent_end`:
+			// the process was killed or crashed. Closing it as `interrupted` with no end
+			// keeps the reader honest — it must not invent one.
+			reapEpisodes: db.prepare(`
+UPDATE session_episodes SET outcome = 'interrupted'
+WHERE session_id = ? AND outcome = 'running'
+			`),
 		};
 		failedPath = undefined;
 		return handle;
@@ -162,6 +207,133 @@ export function recordSessionRecap(sessionId: string, cwd: string, recap: string
 		index.insertRecap.run(sessionId, cwd, recap);
 	} catch (error) {
 		logger.debug("Session recap journal write failed", { sessionId, error: String(error) });
+	}
+}
+
+/** What started an episode. */
+export type EpisodeTriggerKind = "user" | "actor_mail" | "async_job" | "system";
+
+/**
+ * How an episode ended. `running` means the row is open; `interrupted` means it never
+ * closed — the process died before `agent_end`, and there is no end time to invent.
+ */
+export type EpisodeOutcome = "running" | "ok" | "error" | "aborted" | "interrupted";
+
+export interface SessionEpisodeStart {
+	/** Caller-minted id; the same id closes the row at `agent_end`. */
+	episodeId: string;
+	sessionId: string;
+	cwd: string;
+	/** Unix milliseconds. */
+	startedAtMs: number;
+	focusTitle?: string | null;
+	triggerKind?: EpisodeTriggerKind | null;
+	/** One line: what started this run. */
+	triggerSummary?: string | null;
+	/** Entry id the run began at, so a reader can anchor back to the transcript. */
+	startEntryId?: string | null;
+}
+
+/**
+ * Open an episode, reaping any row this session left open.
+ *
+ * The reap is what makes `running` truthful: a previous row still `running` when a new
+ * run starts belongs to a process that died, so it is closed as `interrupted` — with no
+ * `ended_at_ms` — before the new row is written.
+ */
+export function startSessionEpisode(input: SessionEpisodeStart): void {
+	const index = openSessionIndex();
+	if (!index) return;
+	try {
+		index.reapEpisodes.run(input.sessionId);
+		index.insertEpisode.run(
+			input.episodeId,
+			input.sessionId,
+			input.cwd,
+			input.startedAtMs,
+			input.focusTitle ?? null,
+			input.triggerKind ?? null,
+			input.triggerSummary ?? null,
+			input.startEntryId ?? null,
+		);
+	} catch (error) {
+		logger.debug("Session episode start failed", { sessionId: input.sessionId, error: String(error) });
+	}
+}
+
+/** Close an open episode with the facts only its end knows. */
+export function finishSessionEpisode(input: {
+	episodeId: string;
+	endedAtMs: number;
+	stepCount: number;
+	endEntryId?: string | null;
+	outcome: Exclude<EpisodeOutcome, "running" | "interrupted">;
+}): void {
+	const index = openSessionIndex();
+	if (!index) return;
+	try {
+		index.finishEpisode.run(input.endedAtMs, input.stepCount, input.endEntryId ?? null, input.outcome, input.episodeId);
+	} catch (error) {
+		logger.debug("Session episode finish failed", { episodeId: input.episodeId, error: String(error) });
+	}
+}
+
+/** Attach the idle recap that settled this exact episode. */
+export function recordSessionEpisodeRecap(episodeId: string, recap: string): void {
+	const index = openSessionIndex();
+	if (!index) return;
+	try {
+		index.attachEpisodeRecap.run(recap, episodeId);
+	} catch (error) {
+		logger.debug("Session episode recap failed", { episodeId, error: String(error) });
+	}
+}
+
+/** One indexed episode row. */
+export interface SessionEpisode {
+	episodeId: string;
+	sessionId: string;
+	cwd: string;
+	startedAtMs: number;
+	endedAtMs: number | null;
+	focusTitle: string | null;
+	triggerKind: string | null;
+	triggerSummary: string | null;
+	stepCount: number;
+	startEntryId: string | null;
+	endEntryId: string | null;
+	outcome: EpisodeOutcome;
+	recap: string | null;
+}
+
+/** Episodes of one session, oldest first. Best-effort like the writers. */
+export function listSessionEpisodes(sessionId: string): SessionEpisode[] {
+	const index = openSessionIndex();
+	if (!index) return [];
+	try {
+		using statement = index.db.prepare(
+			`SELECT episode_id, session_id, cwd, started_at_ms, ended_at_ms, focus_title, trigger_kind,
+				trigger_summary, step_count, start_entry_id, end_entry_id, outcome, recap
+			 FROM session_episodes WHERE session_id = ? ORDER BY started_at_ms ASC`,
+		);
+		return (statement.all(sessionId) as Array<Record<string, unknown>>).map(row => ({
+			episodeId: String(row.episode_id),
+			sessionId: String(row.session_id),
+			cwd: String(row.cwd),
+			startedAtMs: Number(row.started_at_ms),
+			endedAtMs: typeof row.ended_at_ms === "number" ? row.ended_at_ms : null,
+			focusTitle: typeof row.focus_title === "string" ? row.focus_title : null,
+			triggerKind: typeof row.trigger_kind === "string" ? row.trigger_kind : null,
+			triggerSummary: typeof row.trigger_summary === "string" ? row.trigger_summary : null,
+			stepCount: Number(row.step_count ?? 0),
+			startEntryId: typeof row.start_entry_id === "string" ? row.start_entry_id : null,
+			endEntryId: typeof row.end_entry_id === "string" ? row.end_entry_id : null,
+			outcome: String(row.outcome ?? "running") as EpisodeOutcome,
+			recap: typeof row.recap === "string" ? row.recap : null,
+		}));
+	} catch (error) {
+		logger.debug("Session episode read failed", { sessionId, error: String(error) });
+		return [];
 	}
 }
 

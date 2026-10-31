@@ -4445,7 +4445,12 @@ export class AgentSession implements SettingsScope {
 			// One indexed row per run. The trigger kind is left unset until the caller
 			// that knows it (a prompt source) can name it; inventing "user" here would
 			// mislabel mail- and job-driven runs.
-			this.sessionManager.startAgentEpisode({ focusTitle: this.sessionManager.getSessionName() ?? null });
+			// The leaf is the exact entry the run starts from, which is what makes an
+			// episode row joinable to its `.jsonl` slice without guessing by timestamp.
+			this.sessionManager.startAgentEpisode({
+				focusTitle: this.sessionManager.getSessionName() ?? null,
+				startEntryId: this.sessionManager.getLeafId(),
+			});
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
@@ -5733,6 +5738,7 @@ export class AgentSession implements SettingsScope {
 			this.sessionManager.finishAgentEpisode({
 				stepCount: this.#runToolCallIds.size,
 				outcome: this.#prunedTerminalFailure ? "error" : "ok",
+				endEntryId: this.sessionManager.getLeafId(),
 			});
 		}
 		// Tagged isTerminal so subscribers can tell final settles from scheduled

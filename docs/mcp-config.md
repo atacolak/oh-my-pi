@@ -95,6 +95,7 @@ Top-level keys:
 - `mcpServers` — map of server name to server config
 - `disabledServers` — active-profile user denylist; it hides a discovered server by name regardless of the source entry's `enabled` value
 - `enabledServers` — active-profile user allowlist; it can force-enable a same-named entry whose source says `enabled: false`, but `disabledServers` still wins
+- `hubs` — MCPHub origins, `{ "<key>": { "url": "https://mcp.example.com" } }`. One OAuth login is stored per hub origin, and the hub's catalog registers `<url>/mcp/<name>` HTTP servers automatically: live catalog when logged in, then the cached catalog, then the built-in defaults. `/mcp reauth <hub key or child server>` stores the token under the hub origin so every child shares the one login.
 
 The config writer accepts names up to 100 characters containing letters, numbers, `_`, `-`, `.`, `:`, and single spaces between non-space name segments. The bundled schema omits colons and spaces from its name pattern, so names such as `cloudflare:cloudflare-api` or `MaaS Slack` may be valid at runtime while an editor reports a schema error.
 

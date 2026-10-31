@@ -280,6 +280,30 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
+	it("mounts the agent persona, tools, skills and spawns when resuming", async () => {
+		// A resume restores `model` and `thinkingLevel` from the transcript, so those stay
+		// gated. The persona body, tools, skills and spawns are not persisted: gating them
+		// too left a resumed `--agent` session running the default OMP prompt with the
+		// default tool set under the agent's name.
+		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+		try {
+			const { options } = await optionsFor(
+				["--agent", "flag-probe", "--resume", "01a00000-0000-7000-8000-000000000000"],
+				cwd,
+			);
+			expect(options.customSystemPrompt).toContain("you are flag-probe");
+			expect(options.toolNames).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
+			expect(options.agentDisplayName).toBe("flag-probe");
+			expect(options.agentName).toBe("flag-probe");
+			expect(options.autoloadSkills).toEqual(["proof-skill"]);
+			expect(options.spawns).toBe("scout,reviewer");
+			// Restored from the transcript, so the launch agent must not overwrite them.
+			expect(options.thinkingLevel).toBeUndefined();
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("lets --tools --thinking --model --system-prompt win", async () => {
 		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
 		try {
@@ -308,15 +332,19 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
-	it("does not apply yaml when restoring a session", async () => {
+	it("applies the agent yaml when restoring a session", async () => {
+		// `model` and `thinkingLevel` come back from the transcript; the persona body,
+		// tools, skills and spawns do not. Skipping them on restore left a restarted
+		// `--agent` session running the default OMP prompt with the default tool set.
 		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
 		try {
 			const { options } = await optionsFor(["--agent", "flag-probe", "--continue"], cwd);
-			expect(options.toolNames).toBeUndefined();
-			expect(options.customSystemPrompt).toBeUndefined();
-			expect(options.agentDisplayName).toBeUndefined();
+			expect(options.toolNames).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
+			expect(options.customSystemPrompt).toContain("you are flag-probe");
+			expect(options.agentDisplayName).toBe("flag-probe");
 			expect(options.agentName).toBe("flag-probe");
 			expect(options.rootAgentName).toBe("flag-probe");
+			expect(options.thinkingLevel).toBeUndefined();
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}
@@ -340,9 +368,12 @@ describe("buildSessionOptions — --agent", () => {
 			const options = await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
 			expect(options.agentName).toBe("flag-probe");
 			expect(options.rootAgentName).toBe("flag-probe");
-			expect(options.agentDisplayName).toBeUndefined();
-			expect(options.toolNames).toBeUndefined();
-			expect(options.customSystemPrompt).toBeUndefined();
+			// The header names the agent this session belonged to, so resuming without a
+			// CLI `--agent` still has to mount that agent's persona rather than the default.
+			expect(options.agentDisplayName).toBe("flag-probe");
+			expect(options.toolNames).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
+			expect(options.customSystemPrompt).toContain("you are flag-probe");
+			expect(options.thinkingLevel).toBeUndefined();
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}

@@ -379,8 +379,10 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
-	it("rejects a conflicting restore-time --agent", async () => {
-		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+	it("switches the profile when a restore names a different --agent", async () => {
+		// An explicit `--agent` on a resume is how an actor's `<agent>.md` is changed across
+		// a recycle: the new profile mounts and is recorded, so the next resume keeps it.
+		const cwd = await writeProjectAgent(HIDDEN_PROBE_MD);
 		try {
 			authStorage = await AuthStorage.create(":memory:");
 			const registry = new ModelRegistry(authStorage);
@@ -390,13 +392,17 @@ describe("buildSessionOptions — --agent", () => {
 			});
 			const parsed = parseArgs(["--agent", "hidden-probe", "--continue"]);
 			parsed.cwd = cwd;
+			const recorded: string[] = [];
 			const sessionManager = {
 				getHeader: () => ({ rootAgent: "flag-probe" }),
-				setRootAgent: async () => {},
+				setRootAgent: async (name: string) => {
+					recorded.push(name);
+				},
 			};
-			await expect(buildSessionOptions(parsed, [], sessionManager as never, registry, settings)).rejects.toThrow(
-				/refusing conflicting --agent/,
-			);
+			const options = await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
+			expect(options.agentName).toBe("hidden-probe");
+			expect(options.agentDisplayName).toBe("hidden-probe");
+			expect(recorded).toEqual(["hidden-probe"]);
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}

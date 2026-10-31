@@ -1504,11 +1504,11 @@ export async function buildSessionOptions(
 	}
 
 	const persistedRootAgent = restoringSession ? sessionManager?.getHeader()?.rootAgent : undefined;
-	if (restoringSession && persistedRootAgent && parsed.agent && parsed.agent !== persistedRootAgent) {
-		throw new CliUsageError(
-			`Session was launched as --agent ${persistedRootAgent}; refusing conflicting --agent ${parsed.agent}.`,
-		);
-	}
+	// An explicit `--agent` on a resume is a deliberate profile switch, not a mistake: it
+	// is how an actor's `<agent>.md` is changed across a recycle. The new profile is
+	// recorded on the session below, so the following resume mounts the same one. Omitting
+	// `--agent` still resumes the persisted profile.
+	const switchedAgent = Boolean(parsed.agent && parsed.agent !== persistedRootAgent);
 	const launchAgentName = parsed.agent ?? persistedRootAgent;
 	let launchAgent: AgentDefinition | undefined;
 	try {
@@ -1523,7 +1523,7 @@ export async function buildSessionOptions(
 		throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
 	}
 
-	if (launchAgent && !restoringSession) {
+	if (launchAgent && (!restoringSession || switchedAgent)) {
 		await sessionManager?.setRootAgent(launchAgent.name);
 	}
 

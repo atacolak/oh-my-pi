@@ -857,6 +857,12 @@ export interface CreateAgentSessionOptions {
 	 * "main" for a top-level session / "sub" for a subagent.
 	 */
 	agentName?: string;
+	/**
+	 * Rules the session's profile declares, in declared order. Present (even empty) means
+	 * the profile owns its always-apply set and rule `agents` globs are not consulted;
+	 * absent keeps the `agents`-scoped bucketing a bare `main` session relies on.
+	 */
+	declaredRules?: readonly string[];
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
@@ -2273,6 +2279,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			builtinRules: ttsrSettings.builtinRules,
 			disabledRules: ttsrSettings.disabledRules,
 			agentName: resolvedAgentName,
+			...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 		});
 		if (existingSession.injectedTtsrRules.length > 0) {
 			ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
@@ -4098,6 +4105,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					disabledRules: ttsrSettings.disabledRules,
 					agentName: resolvedAgentName,
 					replaceTtsrRules: true,
+					...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 				});
 				rulebookRules = buckets.rulebookRules;
 				alwaysApplyRules = buckets.alwaysApplyRules;

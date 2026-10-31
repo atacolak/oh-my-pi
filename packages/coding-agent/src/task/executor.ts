@@ -4788,6 +4788,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					agentId: id,
 					agentDisplayName: agent.name,
 					agentName: agent.name,
+					...(agent.rules !== undefined ? { declaredRules: agent.rules } : {}),
 					enableLsp: lspEnabled,
 					enableIrc: options.enableIrc,
 					skipPythonPreflight,

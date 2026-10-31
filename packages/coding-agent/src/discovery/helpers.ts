@@ -303,6 +303,8 @@ export interface ParsedAgentFields {
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
+	/** Rules this profile always applies, in declared order (array or CSV of rule names). */
+	rules?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
 	hide?: boolean;
@@ -392,7 +394,11 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		?.map(s => s.trim())
 		.filter(Boolean);
 	const automationAuthor = parseAutomationAuthor(frontmatter.automationAuthor);
-
+	// `rules` names the rules this profile always applies. Declared order is kept: it is
+	// the order the prompt receives them in, so a profile can rank what it cares about.
+	const rules = parseArrayOrCSV(frontmatter.rules)
+		?.map(s => s.trim())
+		.filter(Boolean);
 	return {
 		name,
 		description,
@@ -408,6 +414,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		hide,
 		structured,
 		autoloadSkills,
+		rules,
 		readSummarize,
 		prewalk,
 		advisor,

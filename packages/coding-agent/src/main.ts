@@ -1853,6 +1853,10 @@ export async function buildSessionOptions(
 		if (agent) {
 			options.toolLoad = agent.toolLoad;
 			options.mcpLoad = agent.mcpLoad;
+			// The profile owns its always-apply rule set. `undefined` keeps the legacy
+			// `agents`-scoped bucketing a bare `main` session relies on; an empty list is a
+			// profile that deliberately applies none.
+			options.declaredRules = agent.rules;
 		}
 	}
 

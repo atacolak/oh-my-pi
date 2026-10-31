@@ -1,9 +1,10 @@
 {
 	"tool": "mg",
 	"path": "/home/sf/.local/bin/mg",
-	"revision": "2ef38b153376994233af3d2aceea2e441997f17c",
-	"subject": "test(studio): pin profile resolution and expose --profile-state --json",
+	"revision": "edbde85d2e783e7102024de4ed32467a6b644f1e",
+	"subject": "chore(ops): track comment-watch source under tools and ignore .systemd-ops",
 	"feature": "comments dock for bead threads",
 	"origin_revision": "5ac1138dd3372e3d28419f9a02b7015b3c66f6a3",
+	"pin_policy": "any mg build containing origin_revision; revision records the build verified at pin time",
 	"originating_work": "mard-comments-dock-r55"
 }

@@ -29,6 +29,12 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+## [18.14.1] - 2026-10-31
+
+### Added
+
+- Added `isFileLockHeld`, which reports whether a file lock is held without acquiring it ([#17428](https://github.com/can1357/oh-my-pi/pull/17428) by [@andrebrait](https://github.com/andrebrait))
+
 ## [18.14.0] - 2026-10-29
 
 ### Added

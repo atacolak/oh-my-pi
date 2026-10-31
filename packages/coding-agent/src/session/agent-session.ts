@@ -9128,6 +9128,9 @@ export class AgentSession implements SettingsScope {
 			model: this.model ?? undefined,
 			models: createExtensionModelQuery(this.#modelRegistry, this.settings, () => this.model ?? undefined),
 			isIdle: () => !this.isStreaming,
+			// The pass is not a turn: without this an extension sees a compacting session as
+			// idle and starts work the summarizer is about to strand.
+			isCompacting: () => this.isCompacting,
 			abort: () => {
 				void this.abort();
 			},

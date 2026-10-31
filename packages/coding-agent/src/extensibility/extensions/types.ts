@@ -770,6 +770,15 @@ export interface ExtensionContext {
 	models: ExtensionModelQuery;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
+	/**
+	 * True while a compaction pass is summarising the session.
+	 *
+	 * `isIdle()` alone cannot answer this: a pass summarizes without streaming a turn, so
+	 * a session that owns itself mid-compaction reads as idle and extensions act on it —
+	 * starting work the pass is about to strand. This is the host's own state, not a
+	 * flag an extension has to reconstruct from lifecycle events.
+	 */
+	isCompacting(): boolean;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */
@@ -2355,6 +2364,8 @@ export interface ExtensionActions {
 export interface ExtensionContextActions {
 	getModel: () => Model | undefined;
 	isIdle: () => boolean;
+	/** Optional so non-session hosts keep compiling; omitted means "never compacting". */
+	isCompacting?: () => boolean;
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;

@@ -357,7 +357,7 @@ describe("terminal notifications", () => {
 		expect(writes).toEqual(["\x07"]);
 	});
 
-	it("keeps the OSC fallback when the herdr binary is missing", () => {
+	it("claims Herdr delivery without needing the herdr binary", () => {
 		Bun.env.HERDR_ENV = "1";
 		Bun.env.HERDR_PANE_ID = "w6:p1";
 		mutableTerminal.notifyProtocol = NotifyProtocol.Osc99;

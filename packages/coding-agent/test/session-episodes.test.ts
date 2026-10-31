@@ -47,6 +47,28 @@ describe("session_episodes", () => {
 		expect(closed.stepCount).toBe(3);
 	});
 
+	it("stores the entry ids a reader needs to join the row to its transcript", () => {
+		// Without these a reader can only match by timestamp, which is the guess that put
+		// one recap on every historical turn.
+		startSessionEpisode({
+			episodeId: "ep-joined",
+			sessionId: "sid-join",
+			cwd: "/repo",
+			startedAtMs: 1_000,
+			startEntryId: "entry-start",
+		});
+		finishSessionEpisode({
+			episodeId: "ep-joined",
+			endedAtMs: 2_000,
+			stepCount: 1,
+			outcome: "ok",
+			endEntryId: "entry-end",
+		});
+		const row = listSessionEpisodes("sid-join")[0]!;
+		expect(row.startEntryId).toBe("entry-start");
+		expect(row.endEntryId).toBe("entry-end");
+	});
+
 	it("reaps a row the previous run left open instead of reporting it running", () => {
 		// The process died before agent_end: the row is still open when the next run
 		// starts. It must not keep claiming to run, and it must not be given an end.

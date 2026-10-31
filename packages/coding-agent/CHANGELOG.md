@@ -293,6 +293,7 @@
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
 - Agent `tools:` and `mcps:` frontmatter accept `{ eager, discoverable }` maps. Eager names stay top-level; discoverable names mount under `xd://`. An explicit `mcps:` list filters MCP tools by server (`mcps: []` disables them).
 - mcp.json `hubs` entries share one OAuth login per hub origin and auto-register `<hub>/mcp/<name>` HTTP servers.
+- Extension contexts expose `isCompacting()` so a plugin can tell a running compaction pass apart from an idle session.
 
 ### Fixed
 

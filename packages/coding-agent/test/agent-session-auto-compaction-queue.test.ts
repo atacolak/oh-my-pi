@@ -18,6 +18,7 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import * as imageLoading from "@oh-my-pi/pi-coding-agent/utils/image-loading";
 import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { activateTodoTool, createAssistantMessage } from "./helpers/agent-session-setup";
 import { flush as flushEventLoop, until } from "./helpers/fake-clock";
@@ -257,6 +258,63 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await compactPromise;
 
 		expect(compactingDuringAbort).toBe(true);
+	});
+
+	it("reports compaction on an extension context that reads idle for the whole pass", async () => {
+		// The pass summarizes without streaming a turn, so `isIdle()` stays true and a
+		// context created before it must still answer `isCompacting()` live — otherwise
+		// an extension starts work the summarizer is about to strand.
+		cfgCompactionKeepRecentTokens.set(session.settings, 1);
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "previous answer" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "stop",
+			usage: {
+				input: 1_000,
+				output: 100,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 1_100,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		});
+
+		// Print/RPC hosts wire the runner through initializeExtensions; a bare runner keeps
+		// the no-op defaults (isIdle true, isCompacting false) and would hide the defect.
+		await initializeExtensions(session, {
+			mode: "print",
+			reportSendError: (_action, error) => {
+				throw error;
+			},
+			reportRuntimeError: error => {
+				throw new Error(error.error);
+			},
+		});
+
+		const ctx = session.extensionRunner!.createContext();
+		expect(ctx.isIdle()).toBe(true);
+		expect(ctx.isCompacting()).toBe(false);
+
+		const gate = Promise.withResolvers<void>();
+		(globalThis as typeof globalThis & { __ompManualCompactGate?: Promise<void> }).__ompManualCompactGate =
+			gate.promise;
+
+		const compactPromise = session.compact();
+		while (!getRuntimeSignals().includes("before_compact:enter")) {
+			await Promise.resolve();
+		}
+
+		expect(ctx.isIdle()).toBe(true);
+		expect(ctx.isCompacting()).toBe(true);
+
+		gate.resolve();
+		await compactPromise;
+
+		expect(ctx.isCompacting()).toBe(false);
 	});
 
 	it("resumes a message queued during manual compaction once it completes (#5800)", async () => {

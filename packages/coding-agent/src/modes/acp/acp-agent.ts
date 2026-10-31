@@ -3017,6 +3017,7 @@ export class AcpAgent implements Agent {
 			{
 				getModel: () => record.session.model,
 				isIdle: () => !record.session.isStreaming,
+				isCompacting: () => record.session.isCompacting,
 				abort: () => {
 					void record.session.abort({ reason: USER_INTERRUPT_LABEL });
 				},

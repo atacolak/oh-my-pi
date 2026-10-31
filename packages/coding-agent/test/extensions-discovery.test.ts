@@ -103,6 +103,22 @@ describe("extensions discovery", () => {
 		expect(result.extensions.map(e => path.basename(e.path)).sort()).toEqual(["hcom.js"]);
 	});
 
+	it("keeps entry points whose stem merely contains test or spec", async () => {
+		for (const name of ["latest.ts", "test.ts", "inspector.js", "spec.ts"]) {
+			fs.writeFileSync(path.join(extensionsDir, name), extensionCode);
+		}
+
+		const result = await discoverForTest();
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.extensions.map(e => path.basename(e.path)).sort()).toEqual([
+			"inspector.js",
+			"latest.ts",
+			"spec.ts",
+			"test.ts",
+		]);
+	});
+
 	it("native extension-module discovery ignores .test.ts and .spec.ts files", async () => {
 		fs.writeFileSync(path.join(extensionsDir, "actors.ts"), extensionCode);
 		fs.writeFileSync(path.join(extensionsDir, "actors.test.ts"), extensionCode);

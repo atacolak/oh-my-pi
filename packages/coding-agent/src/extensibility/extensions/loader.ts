@@ -22,7 +22,7 @@ import { type ExtensionModule, extensionModuleCapability } from "../../capabilit
 import { type Hook, hookCapability } from "../../capability/hook";
 import { isServiceTierFamily, isServiceTierForFamily } from "../../config/service-tier";
 import { loadCapability } from "../../discovery";
-import { getExtensionNameFromPath } from "../../discovery/helpers";
+import { getExtensionNameFromPath, isExtensionTestFile } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
 import { getCodingAgentApi } from "../host-api";
@@ -578,13 +578,7 @@ export async function bindPreparedExtensions(
 }
 
 function isExtensionFile(name: string): boolean {
-	if (!name.endsWith(".ts") && !name.endsWith(".js")) {
-		return false;
-	}
-	// Test/spec files are not extension entry points even when they live in an
-	// extensions directory; loading them executes suite code at launch.
-	const stem = name.slice(0, name.lastIndexOf("."));
-	return !stem.endsWith(".test") && !stem.endsWith(".spec");
+	return (name.endsWith(".ts") || name.endsWith(".js")) && !isExtensionTestFile(name);
 }
 
 const CONFIGURED_EXTENSION_DIRECTORY_OPTIONS = {

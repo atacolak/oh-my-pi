@@ -1,9 +1,9 @@
 > [!NOTE]
 > ## `runtime` — Ata's daily OMP
 >
-> Daily composition of selected local capabilities on upstream OMP 18.14.1.
+> Daily composition of selected local capabilities on upstream OMP 18.14.2.
 >
-> - **Upstream base:** [OMP 18.14.1 (`c29f7c56`)](https://github.com/can1357/oh-my-pi/tree/c29f7c56f5530d805bb2887ade964aa55970d8e1)
+> - **Upstream base:** [OMP 18.14.2 (`7efd7721`)](https://github.com/can1357/oh-my-pi/tree/7efd77219374ca4e8767979809835e4aa90666ba)
 > - **Capabilities:**
 >   - [`cap/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-flag) — root agent launch via `--agent`
 >   - [`cap/agent-tool-mcp-surface`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-tool-mcp-surface) — lazy agent tool/MCP mounts + MCPHub discovery

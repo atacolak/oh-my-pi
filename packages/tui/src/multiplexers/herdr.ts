@@ -16,16 +16,14 @@ export const herdrMultiplexer = {
 	/**
 	 * Claim Herdr delivery when the process runs inside one of its panes.
 	 * Herdr already toasts Finished on Idle and NeedsAttention on Blocked from
-	 * `pane.report_agent` (`herdr-omp-agent-state`). Do not spawn
-	 * `herdr notification show` — that second card is the session title.
+	 * `pane.report_agent` (`herdr-omp-agent-state`), so `herdr notification show`
+	 * would only add a duplicate session-title card. Never spawn it.
 	 *
-	 * Still return true so {@link routeTerminalMultiplexerNotification} does not
-	 * fall through to OSC 9/99 (Herdr swallows those). Skip the spawn for done,
-	 * request, and none. Do not debounce. Idle reports stay with Herdr.
+	 * Claiming still returns true so {@link routeTerminalMultiplexerNotification}
+	 * does not fall through to OSC 9/99, which Herdr swallows.
 	 *
 	 * Pane-only detection: without a valid pane id, Herdr does not own delivery
-	 * and the existing terminal fallback stays. Missing binary must not fall
-	 * through either, because claiming delivery never needs the CLI.
+	 * and the existing terminal fallback stays.
 	 */
 	notifier: {
 		tier: "pane",

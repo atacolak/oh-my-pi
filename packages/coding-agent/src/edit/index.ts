@@ -26,11 +26,18 @@ import {
 } from "@oh-my-pi/pi-natives";
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import { extractUriScheme, InternalUrlRouter, type ResolveContext, sessionResolveContext } from "../internal-urls";
-import { createLspWritethrough, flushLspWritethroughBatch, type WritethroughCallback, writethroughNoop } from "../lsp";
+import {
+	createLspWritethrough,
+	fallbackLspClientOwner,
+	flushLspWritethroughBatch,
+	type WritethroughCallback,
+	writethroughNoop,
+} from "../lsp";
 import { type FileDiagnosticsResult } from "@oh-my-pi/pi-tui/tools/lsp";
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../lsp/client";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
+import { sessionWorkspaceDirectories } from "../session/session-workspace";
 import type { ToolSession } from "../tools";
 import { routeWriteThroughBridge } from "../tools/acp-bridge";
 import { approvalTargetKey } from "../tools/approval-targets";
@@ -175,9 +182,12 @@ function createEditWritethrough(session: ToolSession): WritethroughCallback {
 	const enableFormat = enableLsp && cfgLspFormatOnWrite.get(session.settings);
 	const deduplicate = enableDiagnostics && cfgLspDiagnosticsDeduplicate.get(session.settings);
 	return enableLsp
-		? createLspWritethrough(session.cwd, {
+		? createLspWritethrough(() => session.cwd, {
 				enableFormat,
 				enableDiagnostics,
+				additionalDirectories: () => session.additionalDirectories,
+				cwd: () => session.cwd,
+				owner: session.lspClientOwner ?? session.getLspClientOwner?.() ?? fallbackLspClientOwner(session),
 				transformDiagnostics: deduplicate
 					? (filePath, result) => getDiagnosticsLedger(session).reduce(filePath, result)
 					: undefined,
@@ -703,7 +713,7 @@ export class EditTool implements AgentTool<TInput> {
 			await deleteFileWithFallback(request.path, Bun.file(request.path));
 			if (this.session.enableLsp ?? true) {
 				await notifyWorkspaceWatchedFiles(
-					this.session.cwd,
+					sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 					[{ filePath: request.path, type: FileChangeType.Deleted }],
 					signal,
 				);
@@ -734,7 +744,7 @@ export class EditTool implements AgentTool<TInput> {
 			await deleteFileWithFallback(request.path, Bun.file(request.path));
 			if (this.session.enableLsp ?? true) {
 				await notifyWorkspaceWatchedFiles(
-					this.session.cwd,
+					sessionWorkspaceDirectories(this.session.cwd, this.session.additionalDirectories),
 					[
 						{ filePath: request.path, type: FileChangeType.Deleted },
 						{ filePath: request.moveTo, type: FileChangeType.Created },

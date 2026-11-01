@@ -6,6 +6,7 @@ import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import { logger, setProjectDir } from "@oh-my-pi/pi-utils";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
+import { releaseRemovedWorkspaceRoots } from "../lsp";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import { continuesConversation } from "../modes/utils/conversation-position";
 import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
@@ -72,9 +73,13 @@ async function fatalMoveFailure(text: string, runtime: SlashCommandRuntime): Pro
 /** A move rollback failed: re-align the workspace to wherever the session ended up and report it. */
 async function reportFailedRollback(runtime: SlashCommandRuntime, rollbackError: unknown): Promise<SlashCommandResult> {
 	const actual = runtime.sessionManager.getCwd();
+	let realigned = false;
 	try {
 		await rescopeHeadlessToCwd(runtime, actual);
-	} catch {
+		realigned = true;
+	} catch {}
+	await runtime.session.commitMovedWorkspaceRoots();
+	if (!realigned) {
 		return fatalMoveFailure(
 			`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
 			runtime,
@@ -103,7 +108,7 @@ async function relocateHeadlessSession(
 	}
 	const previousState = runtime.sessionManager.captureState();
 	try {
-		await runtime.session.moveSession(resolvedPath);
+		await runtime.session.moveSession(resolvedPath, undefined, { deferWorkspaceCleanup: true });
 	} catch (err) {
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
@@ -115,6 +120,7 @@ async function relocateHeadlessSession(
 		} catch (rollbackError) {
 			return reportFailedRollback(runtime, rollbackError);
 		}
+		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
 	try {
@@ -126,8 +132,10 @@ async function relocateHeadlessSession(
 		} catch (rollbackError) {
 			return reportFailedRollback(runtime, rollbackError);
 		}
+		await runtime.session.commitMovedWorkspaceRoots();
 		return usage(`Move failed: ${errorMessage(err)}`, runtime);
 	}
+	await runtime.session.commitMovedWorkspaceRoots();
 	await runtime.notifyConfigChanged?.();
 	await runtime.notifyTitleChanged?.();
 	return undefined;
@@ -859,6 +867,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			if (removed === null) {
 				await runtime.output(`Not a workspace directory: ${resolved}`);
 				return commandConsumed();
+			}
+			try {
+				await releaseRemovedWorkspaceRoots(
+					runtime.sessionManager.getCwd(),
+					removed,
+					runtime.session.getLspClientOwner(),
+					undefined,
+					[runtime.sessionManager.getCwd(), ...runtime.sessionManager.getAdditionalDirectories()],
+				);
+			} catch (err) {
+				logger.warn("Failed to stop language servers for a removed workspace directory", {
+					removed,
+					error: errorMessage(err),
+				});
 			}
 			await runtime.session.refreshBaseSystemPrompt();
 			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));

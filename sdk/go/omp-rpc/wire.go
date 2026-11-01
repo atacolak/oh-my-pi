@@ -2551,7 +2551,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.defaulted("isStreaming", &out.IsStreaming, `false`)
 	d.defaulted("isCompacting", &out.IsCompacting, `false`)
 	d.defaulted("steeringMode", &out.SteeringMode, `"one-at-a-time"`)
-	d.defaulted("followUpMode", &out.FollowUpMode, `"one-at-a-time"`)
+	d.defaulted("followUpMode", &out.FollowUpMode, `"all"`)
 	d.defaulted("interruptMode", &out.InterruptMode, `"immediate"`)
 	d.optional("sessionFile", &out.SessionFile)
 	d.optional("sessionName", &out.SessionName)

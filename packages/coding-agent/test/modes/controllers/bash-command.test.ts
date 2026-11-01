@@ -47,7 +47,7 @@ function createCwdContext(sourceDir: string, isStreaming = false, showImages = t
 			};
 		},
 	);
-	const pendingMessagesContainer = createContainer();
+	const pendingShellContainer = createContainer();
 	const present = vi.fn();
 	const ctx = {
 		session: {
@@ -71,7 +71,7 @@ function createCwdContext(sourceDir: string, isStreaming = false, showImages = t
 			}),
 		},
 		chatContainer: createContainer(),
-		pendingMessagesContainer,
+		pendingShellContainer,
 		pendingBashComponents: [],
 		settings: Settings.isolated({ "terminal.showImages": showImages }),
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
@@ -98,7 +98,7 @@ function createCwdContext(sourceDir: string, isStreaming = false, showImages = t
 		updateEditorBorderColor: vi.fn(),
 		reloadTodos: vi.fn(async () => {}),
 	} as unknown as InteractiveModeContext;
-	return { ctx, executeBash, pendingMessagesContainer, present, state };
+	return { ctx, executeBash, pendingShellContainer, present, state };
 }
 
 describe("bash shortcut command", () => {
@@ -233,7 +233,7 @@ describe("bash shortcut command", () => {
 	it("rejects simple cd while streaming before queuing a bash block", async () => {
 		const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-bash-cd-streaming-"));
 		try {
-			const { ctx, executeBash, pendingMessagesContainer, present, state } = createCwdContext(sourceDir, true);
+			const { ctx, executeBash, pendingShellContainer, present, state } = createCwdContext(sourceDir, true);
 			const controller = new CommandController(ctx);
 
 			await controller.handleBashCommand("cd child");
@@ -241,7 +241,7 @@ describe("bash shortcut command", () => {
 			expect(state.cwd).toBe(sourceDir);
 			expect(executeBash).not.toHaveBeenCalled();
 			expect(present).not.toHaveBeenCalled();
-			expect(pendingMessagesContainer.children).toHaveLength(0);
+			expect(pendingShellContainer.children).toHaveLength(0);
 			expect(ctx.pendingBashComponents).toHaveLength(0);
 			expect(ctx.showWarning).toHaveBeenCalledWith(expect.stringContaining("response"));
 		} finally {
@@ -254,7 +254,7 @@ describe("bash shortcut command", () => {
 		const childDir = path.join(sourceDir, "child");
 		await fs.mkdir(childDir);
 		try {
-			const { ctx, executeBash, pendingMessagesContainer, state } = createCwdContext(sourceDir, true);
+			const { ctx, executeBash, pendingShellContainer, state } = createCwdContext(sourceDir, true);
 			executeBash.mockImplementationOnce(async () => ({
 				output: "",
 				exitCode: 0,
@@ -272,7 +272,7 @@ describe("bash shortcut command", () => {
 
 			expect(state.cwd).toBe(sourceDir);
 			expect(ctx.applyCwdChange).not.toHaveBeenCalled();
-			expect(pendingMessagesContainer.children).toHaveLength(1);
+			expect(pendingShellContainer.children).toHaveLength(1);
 			expect(ctx.pendingBashComponents).toHaveLength(1);
 			expect(ctx.showWarning).not.toHaveBeenCalled();
 		} finally {

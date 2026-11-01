@@ -39,10 +39,17 @@ import {
 	type SettingTab,
 	type SettingsHost,
 	type SettingsDisplayEntry,
+	type SettingsUiScope,
 } from "./settings-defs";
 import type { TspPrefsControl, TspPrefsProps } from "@oh-my-pi/pi-wire";
 import { prefsSectionId } from "../components/settings-list";
-import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme";
+import {
+	detectTerminalBackground,
+	getCurrentThemeName,
+	getSelectListTheme,
+	getSettingsListTheme,
+	theme,
+} from "../theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../thinking";
 import { getTabBarTheme } from "../chrome/shared";
 import { type ComposerPreviewStatusSource, ComposerShapePreview } from "./composer-shape-preview";
@@ -637,6 +644,8 @@ export class SettingsSelectorComponent implements Component {
 	 */
 	#searchCorpora: { tab: SettingTab; corpus: FuzzyCorpus<SettingItem> }[] | null = null;
 	#textInputActive = false;
+	#scope: SettingsUiScope;
+	#projectLabel: string;
 	#hasSectionJump = false;
 	// Frame geometry from the last render, for mouse hit-testing (the
 	// fullscreen overlay paints from screen row 0, so mouse rows map 1:1).
@@ -647,13 +656,12 @@ export class SettingsSelectorComponent implements Component {
 	#sidebarWidth: number;
 	readonly #context: SettingsRuntimeContext;
 	readonly #callbacks: SettingsCallbacks;
-
 	constructor(context: SettingsRuntimeContext, callbacks: SettingsCallbacks) {
 		this.#context = context;
 		this.#callbacks = callbacks;
 		this.#sidebarWidth = settingsSidebarWidth(context.settings.entries);
-		// No label prefix (the frame title already says Settings) and no
-		// "(tab to cycle)" hint (folded into the footer hint line).
+		this.#projectLabel = context.settings.projectLabel();
+		this.#scope = context.settings.hasProjectConfig() ? "project" : "global";
 		const tabs = getSettingsTabs();
 		this.#tabs = tabs;
 		this.#tabBar = new TabBar("", tabs, getTabBarTheme());
@@ -661,7 +669,6 @@ export class SettingsSelectorComponent implements Component {
 		this.#tabBar.onTabChange = () => {
 			const tabId = this.#tabBar.getActiveTab().id as SettingTab | "plugins";
 			if (this.#searchList) {
-				// While searching, tabs act as jump targets into the result list.
 				const firstId = this.#searchFirstMatch.get(tabId);
 				if (firstId) this.#searchList.selectItem(firstId);
 				return;
@@ -669,8 +676,8 @@ export class SettingsSelectorComponent implements Component {
 			this.#switchToTab(tabId);
 		};
 
-		// Initialize with first tab
 		this.#switchToTab("appearance");
+		if (context.settings.hasProjectConfig()) this.#previewAppearanceForScope();
 	}
 
 	invalidate(): void {
@@ -704,17 +711,18 @@ export class SettingsSelectorComponent implements Component {
 		const cancel = editorKey("tui.select.cancel");
 		const tab = formatKeyHint("tab");
 		const switchTabs = `${formatKeyHints(["left", "right"])} to switch tabs`;
+		const scope = this.#scope === "project" ? "Alt+S to switch scope · Del to inherit" : "Alt+S to switch scope";
 		if (this.#searchList) {
-			return `${confirm} to change · ${tab} to jump tabs · ${cancel} to exit search`;
+			return `${confirm} to change · ${tab} to jump tabs · Alt+S to switch scope · ${cancel} to exit search`;
 		}
 		if (this.#currentTabId === "plugins") {
 			return `${tab} to switch tabs · ${cancel} to close`;
 		}
 		if (this.#currentList?.sectionFocused) {
-			return `${editorKeys("tui.select.up", "tui.select.down")} to jump sections · ${tab}/${confirm} to settings · ${switchTabs} · ${cancel} to close`;
+			return `${editorKeys("tui.select.up", "tui.select.down")} to jump sections · ${tab}/${confirm} to settings · ${switchTabs} · ${scope} · ${cancel} to close`;
 		}
 		const nav = this.#hasSectionJump ? `${tab} to jump sections · ${switchTabs}` : `${tab} to switch tabs`;
-		return `${confirm}/${formatKeyHint("space")} to change · ${nav} · Type to search · ${cancel} to close`;
+		return `${confirm}/${formatKeyHint("space")} to change · ${nav} · ${scope} · Type to search · ${cancel} to close`;
 	}
 
 	/** Single-line search banner: accent icon, editable query with live cursor, right-aligned match count. */
@@ -761,7 +769,8 @@ export class SettingsSelectorComponent implements Component {
 		}
 
 		const out: string[] = [];
-		out.push(topBorder(width, "Settings"));
+
+		out.push(topBorder(width, this.#overlayTitle()));
 		this.#tabRowStart = out.length;
 		this.#tabRowCount = tabLines.length;
 		for (const line of tabLines) {
@@ -1060,7 +1069,7 @@ export class SettingsSelectorComponent implements Component {
 		if (!def) return;
 		if (value === null) {
 			if (list.openSubmenu) list.handleInput(ESCAPE);
-			this.#context.settings.unset(def.path);
+			this.#clearSetting(def.path);
 			this.#callbacks.onChange(def.path, this.#context.settings.get(def.path));
 			if (def.tab === "appearance") this.#triggerStatusLinePreview();
 			this.#refreshItems();
@@ -1107,7 +1116,7 @@ export class SettingsSelectorComponent implements Component {
 					return;
 				}
 				const next = [...value];
-				this.#context.settings.set(def.path, next);
+				this.#writeSetting(def.path, next);
 				this.#callbacks.onChange(def.path, next);
 				list.updateValue(id, this.#formatMultiSelectValue(def, next));
 				this.#refreshItems();
@@ -1445,12 +1454,9 @@ export class SettingsSelectorComponent implements Component {
 		const def = getSettingDef(this.#context.settings.entries, path);
 		if (!def) return;
 		if (def.type === "boolean") {
-			const boolValue = newValue === "true";
-			this.#context.settings.set(path, boolValue);
-			this.#callbacks.onChange(path, boolValue);
+			this.#writeSetting(path, newValue === "true");
 		} else if (def.type === "enum") {
-			this.#context.settings.set(path, newValue);
-			this.#callbacks.onChange(path, newValue);
+			this.#writeSetting(path, newValue);
 		}
 		// Submenu/text types already persisted inside their own done callbacks.
 		if (def.tab === "appearance") {
@@ -1519,11 +1525,66 @@ export class SettingsSelectorComponent implements Component {
 		}
 	}
 
-	/**
-	 * Get the current value for a setting.
-	 */
+	#overlayTitle(): string {
+		if (this.#currentTabId === "plugins") return "Settings";
+		if (this.#scope === "global") return "Settings · global";
+		return `Settings · ${this.#projectLabel}`;
+	}
+
+	#scopedValue(path: string): unknown {
+		return this.#scope === "global"
+			? this.#context.settings.getGlobal(path)
+			: this.#context.settings.getProjectScoped(path);
+	}
+
+	#writeSetting(path: string, value: unknown): unknown {
+		if (
+			this.#scope === "project" &&
+			this.#context.settings.isCredential(path) &&
+			Bun.deepEquals(value, this.#context.settings.getProjectInherited(path)) &&
+			Bun.deepEquals(this.#scopedValue(path), this.#context.settings.getProjectInherited(path))
+		) {
+			return this.#context.settings.get(path);
+		}
+		const previous = this.#context.settings.get(path);
+		this.#context.settings.set(path, value, this.#scope);
+		const next = this.#context.settings.get(path);
+		if (!Bun.deepEquals(previous, next)) this.#callbacks.onChange(path, next);
+		return next;
+	}
+
+	#clearSetting(path: string): void {
+		const previous = this.#context.settings.get(path);
+		if (this.#scope === "project") {
+			if (!this.#context.settings.clearProject(path)) return;
+		} else {
+			this.#context.settings.unset(path);
+		}
+		const next = this.#context.settings.get(path);
+		if (!Bun.deepEquals(previous, next)) this.#callbacks.onChange(path, next);
+	}
+
+	#switchScope(): void {
+		this.#scope = this.#scope === "project" ? "global" : "project";
+		if (this.#searchList) this.#setSearchQuery(this.#searchQuery);
+		else if (this.#currentTabId !== "plugins") this.#switchToTab(this.#currentTabId);
+		this.#previewAppearanceForScope();
+	}
+
+	#previewAppearanceForScope(): void {
+		const dark = this.#scopedValue("theme.dark");
+		const light = this.#scopedValue("theme.light");
+		const appearance = detectTerminalBackground();
+		const name = appearance === "light" ? light : dark;
+		if (typeof name === "string" && name.length > 0) {
+			const preview = this.#context.availableThemes.includes(name) ? name : "dark";
+			void this.#callbacks.onThemePreview?.(preview);
+		}
+		this.#triggerStatusLinePreview();
+	}
+
 	#getCurrentValue(def: SettingDef): unknown {
-		return this.#context.settings.get(def.path);
+		return this.#scopedValue(def.path);
 	}
 
 	#isChanged(def: SettingDef, currentValue: unknown): boolean {
@@ -1681,15 +1742,12 @@ export class SettingsSelectorComponent implements Component {
 		return createSettingsTextField(
 			def.label,
 			def.description,
-			this.#formatTextInputEditValue(def.path, this.#context.settings.get(def.path)),
+			this.#formatTextInputEditValue(def.path, this.#scopedValue(def.path)),
 			def.secret,
 			value => {
-				// An empty field removes the persisted value, so the default (or an
-				// environment fallback) applies again instead of a pinned "".
-				if (value === "") this.#context.settings.unset(def.path);
+				if (value === "") this.#clearSetting(def.path);
 				else this.#setSettingValue(def.path, value);
-				this.#callbacks.onChange(def.path, this.#context.settings.get(def.path));
-				wrappedDone(this.#formatTextInputValue(def, this.#context.settings.get(def.path)));
+				wrappedDone(this.#formatTextInputValue(def, this.#scopedValue(def.path)));
 			},
 			() => wrappedDone(),
 			this.#context.requestRender,
@@ -1717,7 +1775,7 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	#createMultiSelect(def: SettingDef & { type: "multiselect" }, done: (value?: string) => void): Container {
-		const current: unknown = this.#context.settings.get(def.path);
+		const current: unknown = this.#scopedValue(def.path);
 		const initial = Array.isArray(current)
 			? current.filter((entry): entry is string => typeof entry === "string")
 			: [];
@@ -1728,10 +1786,9 @@ export class SettingsSelectorComponent implements Component {
 			initial,
 			def.ordered,
 			value => {
-				this.#context.settings.set(def.path, value);
-				this.#callbacks.onChange(def.path, value);
+				this.#writeSetting(def.path, value);
 			},
-			() => done(this.#formatMultiSelectValue(def, this.#context.settings.get(def.path))),
+			() => done(this.#formatMultiSelectValue(def, this.#scopedValue(def.path))),
 		);
 	}
 
@@ -1763,12 +1820,12 @@ export class SettingsSelectorComponent implements Component {
 	 * Set a setting value, handling type conversion.
 	 */
 	#setSettingValue(path: string, value: string): void {
-		const currentValue = this.#context.settings.get(path);
+		const currentValue = this.#scopedValue(path);
 		const schemaType = getSettingDef(this.#context.settings.entries, path)?.schemaType;
 		if (path === "compaction.thresholdPercent" && value === "default") {
-			this.#context.settings.set(path, -1);
+			this.#writeSetting(path, -1);
 		} else if (path === "compaction.thresholdTokens" && value === "default") {
-			this.#context.settings.set(path, -1);
+			this.#writeSetting(path, -1);
 		} else if (schemaType === "array") {
 			let parsed: unknown;
 			try {
@@ -1777,7 +1834,7 @@ export class SettingsSelectorComponent implements Component {
 				throw new Error(`Invalid array JSON for ${path}`);
 			}
 			if (!Array.isArray(parsed)) throw new Error(`Invalid array JSON for ${path}`);
-			this.#context.settings.set(path, parsed);
+			this.#writeSetting(path, parsed);
 		} else if (schemaType === "record") {
 			let parsed: unknown;
 			try {
@@ -1791,13 +1848,13 @@ export class SettingsSelectorComponent implements Component {
 			if (path === "providers.maxInFlightRequests") {
 				parsed = this.#context.settings.validateProviderLimits(parsed);
 			}
-			this.#context.settings.set(path, parsed);
+			this.#writeSetting(path, parsed);
 		} else if (typeof currentValue === "number") {
-			this.#context.settings.set(path, Number(value));
+			this.#writeSetting(path, Number(value));
 		} else if (typeof currentValue === "boolean") {
-			this.#context.settings.set(path, value === "true");
+			this.#writeSetting(path, value === "true");
 		} else {
-			this.#context.settings.set(path, value);
+			this.#writeSetting(path, value);
 		}
 	}
 
@@ -1825,16 +1882,12 @@ export class SettingsSelectorComponent implements Component {
 				const path = def.path;
 
 				if (def.type === "boolean") {
-					const boolValue = newValue === "true";
-					this.#context.settings.set(path, boolValue);
-					this.#callbacks.onChange(path, boolValue);
-
+					this.#writeSetting(path, newValue === "true");
 					if (tabId === "appearance") {
 						this.#triggerStatusLinePreview();
 					}
 				} else if (def.type === "enum") {
-					this.#context.settings.set(path, newValue);
-					this.#callbacks.onChange(path, newValue);
+					this.#writeSetting(path, newValue);
 				}
 				// Submenu/text types already persisted the value inside their own
 				// done callbacks before SettingsList re-dispatches here. Re-run the
@@ -1892,12 +1945,12 @@ export class SettingsSelectorComponent implements Component {
 	 */
 	#triggerStatusLinePreview(): void {
 		const statusLineSettings: StatusLinePreviewSettings = {
-			preset: this.#context.settings.get("statusLine.preset") as StatusLinePreset,
-			leftSegments: this.#context.settings.get("statusLine.leftSegments") as StatusLineSegmentId[],
-			rightSegments: this.#context.settings.get("statusLine.rightSegments") as StatusLineSegmentId[],
-			separator: this.#context.settings.get("statusLine.separator") as StatusLineSeparatorStyle,
-			sessionAccent: this.#context.settings.get("statusLine.sessionAccent") as boolean,
-			transparent: this.#context.settings.get("statusLine.transparent") as boolean,
+			preset: this.#scopedValue("statusLine.preset") as StatusLinePreset,
+			leftSegments: this.#scopedValue("statusLine.leftSegments") as StatusLineSegmentId[],
+			rightSegments: this.#scopedValue("statusLine.rightSegments") as StatusLineSegmentId[],
+			separator: this.#scopedValue("statusLine.separator") as StatusLineSeparatorStyle,
+			sessionAccent: this.#scopedValue("statusLine.sessionAccent") as boolean,
+			transparent: this.#scopedValue("statusLine.transparent") as boolean,
 		};
 		this.#callbacks.onStatusLinePreview?.(statusLineSettings);
 	}
@@ -1929,6 +1982,16 @@ export class SettingsSelectorComponent implements Component {
 		// An open submenu owns input entirely — Tab/arrows/typing belong to it.
 		if (activeList?.hasOpenSubmenu()) {
 			activeList.handleInput(data);
+			return;
+		}
+
+		if (data === "\x1bs") {
+			this.#switchScope();
+			return;
+		}
+		if (!this.#searchList && this.#scope === "project" && matchesKey(data, "delete")) {
+			const selected = this.#currentList?.getSelectedItem();
+			if (selected) this.#clearSetting(selected.id);
 			return;
 		}
 

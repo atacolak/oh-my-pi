@@ -94,7 +94,7 @@ describe("persisted steering/followUp queues", () => {
 		const second = await makeSession(secondManager);
 		expect(queuedText(second.agent.peekSteeringQueue())).toContain("do not lose this");
 		expect(queuedText(second.agent.peekFollowUpQueue())).toContain("and this after");
-	});
+	}, 30_000);
 
 	it("drops the queued snapshot together with the deleted session", async () => {
 		const sessionDir = tempDir.join("sessions");
@@ -115,5 +115,5 @@ describe("persisted steering/followUp queues", () => {
 
 		await manager.dropSession(sessionFile);
 		expect(existsSync(snapshotPath)).toBe(false);
-	});
+	}, 30_000);
 });

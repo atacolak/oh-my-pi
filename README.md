@@ -1,3 +1,15 @@
+> [!NOTE]
+> ## `cap/agent-flag` — root agent launch capability
+>
+> Root sessions can launch directly from discovered agent definitions through `--agent`.
+>
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR(s):** Status: fork-local
+> - **Role discovery:** `--agent-cwd` selects the agent-definition project without changing `--cwd`
+> - **Hidden roles:** `hide: true` keeps explicit automation identities out of ambient task rosters
+> - **Resume:** session header `rootAgent` restores `--agent` on continue/fork; an explicit `--agent` switches the profile and records it, missing privileged roles fail closed
+> - **Upstream base:** [OMP 18.15.0 (`3fedf8d5`)](https://github.com/can1357/oh-my-pi/tree/3fedf8d53267e32a6d7521ce725fdcc4a36fdc67)
+>
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

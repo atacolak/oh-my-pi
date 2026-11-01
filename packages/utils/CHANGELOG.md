@@ -25,6 +25,16 @@
 - Preserved project-dotenv ownership for the default profile when profile bootstrap normalizes and deletes profile environment variables.
 - Treated Bun unspaced `#` comments on unquoted dotenv values as comments when matching project-owned environment variables.
 - Did not treat `setProfile`'s mirrored `OMP_PROFILE` as an independent parent selector when the name came from `PI_PROFILE`.
+## [18.15.0] - 2026-11-01
+
+### Added
+
+- Added abortable `sleepUntil` for wall-clock deadline waits that include system sleep, with bounded timer slices to recheck deadlines after resume ([#17606](https://github.com/can1357/oh-my-pi/pull/17606) by [@zhiland](https://github.com/zhiland)).
+
+### Fixed
+
+- Importing pi-utils no longer installs process-wide signal and fatal handlers in embedding hosts; exit-time cleanup stays installed ([#17674](https://github.com/can1357/oh-my-pi/issues/17674)).
+
 ## [18.14.2] - 2026-10-31
 
 ### Added

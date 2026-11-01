@@ -918,6 +918,7 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 	// Process direct files
 	for (const match of directFiles) {
 		if (match.path.includes("/")) continue;
+		if (isExtensionTestFile(match.path)) continue;
 		discovered.add(path.join(dir, match.path));
 	}
 	// Track which subdirectories have package.json manifests with declared extensions
@@ -960,6 +961,13 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 		discovered.add(path.join(dir, preferredPath));
 	}
 	return [...discovered];
+}
+
+export function isExtensionTestFile(fileName: string): boolean {
+	const dot = fileName.lastIndexOf(".");
+	if (dot <= 0) return false;
+	const stem = fileName.slice(0, dot);
+	return stem.endsWith(".test") || stem.endsWith(".spec");
 }
 
 /**

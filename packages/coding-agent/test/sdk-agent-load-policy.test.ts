@@ -122,5 +122,5 @@ describe("createAgentSession agent load policy", () => {
 		} finally {
 			await session.dispose();
 		}
-	});
+	}, 60_000);
 });

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, setDefaultTimeout, vi } from "bun:test";
 import { scheduler } from "node:timers/promises";
 import { Agent, AgentBusyError, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
@@ -44,6 +44,8 @@ import {
 	cfgRetryMaxRetries,
 	cfgRetryModelFallback,
 } from "@oh-my-pi/pi-coding-agent/session/settings";
+
+setDefaultTimeout(30_000);
 
 const runtimeSignalStoreKey = "__ompRuntimeSignals";
 

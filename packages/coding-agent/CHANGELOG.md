@@ -8,6 +8,15 @@
 - Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
 - Resume and fork now restore a session's original `--agent` identity from the session header. An explicit `--agent` on resume switches the profile and records it, so the following resume keeps it (the session's model and thinking level still come from the transcript unless `--model` / `--thinking` are passed); a persisted privileged role that is missing from discovery fails closed.
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
+- Agent `tools:` and `mcps:` frontmatter accept `{ eager, discoverable }` maps. Eager names stay top-level; discoverable names mount under `xd://`. An explicit `mcps:` list filters MCP tools by server (`mcps: []` disables them).
+- mcp.json `hubs` entries share one OAuth login per hub origin and auto-register `<hub>/mcp/<name>` HTTP servers.
+- Extension contexts expose `isCompacting()` so a plugin can tell a running compaction pass apart from an idle session.
+
+### Fixed
+
+- Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
+- `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.
+
 ## [18.15.0] - 2026-11-01
 
 ### Added

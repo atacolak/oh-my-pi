@@ -250,6 +250,7 @@ import {
 	withoutAgentsMd,
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
+import type { NamedLoadSet } from "./task/tool-load-spec";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
@@ -841,6 +842,11 @@ export interface CreateAgentSessionOptions {
 	mountedToolNames?: string[];
 	/** Limit the session to explicitly supplied tool names, without discovered extras. */
 	restrictToolNames?: boolean;
+	/** Agent-profile eager/discoverable maps. Applied on new and restored sessions. */
+	toolLoad?: NamedLoadSet;
+	/** Agent-profile mcps: filter and load modes. Applied on new and restored sessions. */
+	mcpLoad?: NamedLoadSet;
+
 	/**
 	 * Permit only caller-supplied SDK custom tools inside a restricted session.
 	 * They must still be named in {@link toolNames}; discovered extensions, MCP,
@@ -880,6 +886,12 @@ export interface CreateAgentSessionOptions {
 	 * "main" for a top-level session / "sub" for a subagent.
 	 */
 	agentName?: string;
+	/**
+	 * Rules the session's profile declares, in declared order. Present (even empty) means
+	 * the profile owns its always-apply set and rule `agents` globs are not consulted;
+	 * absent keeps the `agents`-scoped bucketing a bare `main` session relies on.
+	 */
+	declaredRules?: readonly string[];
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
@@ -2411,6 +2423,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			builtinRules: ttsrSettings.builtinRules,
 			disabledRules: ttsrSettings.disabledRules,
 			agentName: resolvedAgentName,
+			...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 		});
 		if (existingSession.injectedTtsrRules.length > 0) {
 			ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
@@ -4239,6 +4252,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					disabledRules: ttsrSettings.disabledRules,
 					agentName: resolvedAgentName,
 					replaceTtsrRules: true,
+					...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 				});
 				rulebookRules = buckets.rulebookRules;
 				alwaysApplyRules = buckets.alwaysApplyRules;
@@ -5191,6 +5205,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
+		if (options.toolLoad || options.mcpLoad) {
+			session.setAgentLoadPolicy(options.toolLoad, options.mcpLoad);
+			const enabled = session.getEnabledToolNames();
+			const mounted = (options.toolLoad?.discoverable ?? []).filter(name => enabled.includes(name));
+			await session.setActiveToolPresentation(enabled, mounted);
+		}
+
 		credentialNoticeSession = session;
 		// Hashline snapshots are session-scoped: /new and switchSession fire the
 		// change callbacks, so clear the tool-side store there — stale tags would

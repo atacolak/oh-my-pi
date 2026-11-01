@@ -247,6 +247,9 @@
 
 ## [18.2.10] - 2026-09-22
 - Persisted `steer()` / `followUp()` queues in the session artifact directory and restored them when the session is resumed, so mid-turn user messages survive a process restart
+### Fixed
+
+- Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
 
 ## [18.15.0] - 2026-11-01
 

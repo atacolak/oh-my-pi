@@ -5,6 +5,11 @@
 ### Fixed
 
 - `Agent` now defaults `followUpMode` to `all`, so every follow-up queued at a yield boundary is delivered in the same next turn instead of one per turn. Pass `followUpMode: "one-at-a-time"` to keep the previous behavior.
+## [18.15.0] - 2026-11-01
+
+### Fixed
+
+- Fixed OpenAI remote compaction (`/responses/compact`) replaying backend-only `internal_chat_message_metadata_passthrough` metadata that Codex rejects as an unknown parameter ([#17590](https://github.com/can1357/oh-my-pi/pull/17590) by [@briankeefe](https://github.com/briankeefe))
 
 ## [18.14.2] - 2026-10-31
 

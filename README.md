@@ -1,15 +1,27 @@
 > [!NOTE]
-> ## `cap/agent-flag` — root agent launch capability
+> ## `runtime` — Ata's daily OMP
 >
-> Root sessions can launch directly from discovered agent definitions through `--agent`.
+> Daily composition of selected local capabilities on upstream OMP 18.15.0.
 >
-> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
-> - **Upstream PR(s):** Status: fork-local
-> - **Role discovery:** `--agent-cwd` selects the agent-definition project without changing `--cwd`
-> - **Hidden roles:** `hide: true` keeps explicit automation identities out of ambient task rosters
-> - **Resume:** session header `rootAgent` restores `--agent` on continue/fork; an explicit `--agent` switches the profile and records it, missing privileged roles fail closed
 > - **Upstream base:** [OMP 18.15.0 (`3fedf8d5`)](https://github.com/can1357/oh-my-pi/tree/3fedf8d53267e32a6d7521ce725fdcc4a36fdc67)
+> - **Capabilities:**
+>   - [`cap/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-flag) — root agent launch via `--agent`
+>   - [`cap/agent-tool-mcp-surface`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-tool-mcp-surface) — lazy agent tool/MCP mounts + MCPHub discovery
+>   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
+>   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
+>   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — skip colocated test files as extension entry points
+>   - [`cap/followup-draft`](https://github.com/atacolak/oh-my-pi/tree/cap/followup-draft) — followUpMode default all
+>   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
+>   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retention + locked scope seam
+>   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — nested project LSP roots
+>   - [`cap/persist-queued-messages`](https://github.com/atacolak/oh-my-pi/tree/cap/persist-queued-messages) — queued steer/followUp prompts persist with the session
+>   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — default retry chain for unowned models
+>   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped `/settings`
+>   - [`cap/todo-passive-phase`](https://github.com/atacolak/oh-my-pi/tree/cap/todo-passive-phase) — passive todo phases
+>   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — app viewport + `ompalt` launcher
 >
+> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

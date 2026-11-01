@@ -138,10 +138,10 @@ import {
 	loadSystemPromptTemplateFile,
 	resolvePromptInput,
 } from "./system-prompt";
-import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { discoverAgents, getAgent } from "./task/discovery";
-import type { AgentDefinition } from "./task/types";
+import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
+import type { AgentDefinition } from "./task/types";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
 import { registerLocalInferenceApi } from "./tiny/local-inference-api";

@@ -246,6 +246,8 @@
 - `/shake thinking` now reports the number of tokens freed.
 
 ## [18.2.10] - 2026-09-22
+- Persisted `steer()` / `followUp()` queues in the session artifact directory and restored them when the session is resumed, so mid-turn user messages survive a process restart
+
 ## [18.15.0] - 2026-11-01
 
 ### Added

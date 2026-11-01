@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { glob } from "@oh-my-pi/pi-natives";
 import {
 	isEnoent,
 	logger,
@@ -2053,6 +2054,18 @@ function commandBasename(command: string): string {
  * binary. Callers use it to gate rust-analyzer-only requests such as
  * `rust-analyzer/reloadWorkspace` (see {@link reloadServer}).
  */
+/**
+ * The `Cargo.toml` files rust-analyzer can discover under `root`, sorted and joined, so a reload
+ * can tell whether the crate set changed since initialize (gitignored dirs such as `target/` skipped).
+ */
+export async function listCargoManifests(root: string, signal?: AbortSignal): Promise<string> {
+	const { matches } = await glob({ pattern: "**/Cargo.toml", path: root, gitignore: true, cache: false, signal });
+	return matches
+		.map(match => match.path)
+		.sort()
+		.join("\n");
+}
+
 export function isRustAnalyzerClient(client: LspClient): boolean {
 	return (
 		commandBasename(client.config.command) === "rust-analyzer" ||
@@ -2909,6 +2922,8 @@ export async function getOrCreateClient(
 			);
 
 			client.status = "ready";
+			if (isRustAnalyzerClient(client))
+				client.cargoManifests = listCargoManifests(client.cwd).catch(() => undefined);
 			// Publish only after init succeeds: pre-init clients are reachable
 			// solely through clientLocks, so concurrent callers (warmup vs first
 			// tool call) wait for init instead of using an unacknowledged client.

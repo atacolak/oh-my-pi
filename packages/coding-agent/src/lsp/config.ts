@@ -606,7 +606,7 @@ export function resolveServersForFile(
 	}
 
 	const selected = Object.fromEntries(resolved.map(server => [server.name, server.config]));
-	selectTypescriptServer(selected);
+	selectTypescriptServer(selected, boundary);
 	return resolved.filter(server => selected[server.name]);
 }
 

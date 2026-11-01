@@ -2279,6 +2279,13 @@
 			],
 			"type": "string"
 		},
+		"TodoPhaseKind": {
+			"enum": [
+				"continuing",
+				"passive"
+			],
+			"type": "string"
+		},
 		"GoalOp": {
 			"enum": [
 				"get",
@@ -2376,6 +2383,9 @@
 					"items": {
 						"$ref": "#/$defs/TodoItem"
 					}
+				},
+				"kind": {
+					"$ref": "#/$defs/TodoPhaseKind"
 				}
 			},
 			"required": [

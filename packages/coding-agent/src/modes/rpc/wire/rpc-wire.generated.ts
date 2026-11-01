@@ -383,6 +383,8 @@ export type MessageUpdates = "full" | "delta";
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
+export type TodoPhaseKind = "continuing" | "passive";
+
 export type GoalOp = "get" | "create" | "resume" | "pause" | "drop";
 
 export type GoalStatus = "active" | "paused" | "budget-limited" | "complete" | "dropped";
@@ -408,6 +410,7 @@ export interface TodoItem {
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+	kind?: TodoPhaseKind;
 }
 
 export interface ContextUsage {

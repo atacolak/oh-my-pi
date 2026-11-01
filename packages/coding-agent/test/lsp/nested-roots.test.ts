@@ -202,6 +202,52 @@ describe("nested LSP project roots", () => {
 		}
 	});
 
+	it("probes the nested workspace's typescript version, not the primary cwd", () => {
+		// #17659: a TypeScript 7 install outside an npm layout only reports itself
+		// from `tsc --version`, so the probe has to run in the project that owns
+		// the file. Probing the primary cwd instead keeps
+		// typescript-language-server for a project whose only working server is
+		// typescript-native.
+		if (process.platform === "win32") return;
+		const primary = TempDir.createSync("@omp-lsp-ts7-primary-");
+		const additional = TempDir.createSync("@omp-lsp-ts7-additional-");
+		try {
+			const bins = path.join(primary.path(), "tools");
+			fs.mkdirSync(bins, { recursive: true });
+			const tsc = path.join(bins, "tsc");
+			fs.writeFileSync(
+				tsc,
+				`#!/bin/sh\nif [ -f "$PWD/ts7.marker" ]; then printf 'Version 7.0.2\\n'; else printf 'Version 5.9.3\\n'; fi\n`,
+			);
+			fs.chmodSync(tsc, 0o755);
+
+			fs.writeFileSync(path.join(primary.path(), "package.json"), "{}\n");
+			fs.writeFileSync(path.join(additional.path(), "package.json"), "{}\n");
+			fs.writeFileSync(path.join(additional.path(), "ts7.marker"), "");
+			const filePath = path.join(additional.path(), "src", "index.ts");
+			fs.mkdirSync(path.dirname(filePath), { recursive: true });
+			fs.writeFileSync(filePath, "export const value = 1;\n");
+
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "tsc"
+					? tsc
+					: command === "typescript-language-server"
+						? "/usr/bin/typescript-language-server"
+						: null,
+			);
+
+			const config = loadConfig(primary.path());
+			expect(Object.keys(config.servers)).toEqual(["typescript-language-server"]);
+
+			const resolved = resolveServersForFile(config, filePath, [primary.path(), additional.path()]);
+			expect(resolved.map(server => server.name)).toEqual(["typescript-native"]);
+			expect(resolved[0]?.root).toBe(additional.path());
+		} finally {
+			primary.removeSync();
+			additional.removeSync();
+		}
+	});
+
 	it("roots dot-marker server definitions at the containing workspace", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-dot-marker-");
 		try {

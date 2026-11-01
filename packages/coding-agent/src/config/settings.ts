@@ -1353,6 +1353,7 @@ export class Settings {
 		}
 		cloned.#configOverlay = structuredClone(this.#configOverlay);
 		cloned.#configOverlayLayers = this.#configOverlayLayers.map(layer => structuredClone(layer));
+		// A soft-pinned default yields to a value the clone's own scope configures.
 		cloned.#softPins = new Set(this.#softPins);
 		const layers = { ...cloned.#ownLayers(), overrides: this.#buildOriginalOverrides() };
 		for (const setting of cloned.#settlePins(layers)) cloned.#softPins.delete(setting);

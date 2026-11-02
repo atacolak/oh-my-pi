@@ -1444,7 +1444,6 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 		modelRegistry: ctx.modelRegistry,
 		rootAgentName: ctx.rootAgentName,
 		automationAuthor: ctx.automationAuthor,
-
 		model: ctx.model,
 		isIdle: ctx.isIdle,
 		hasQueuedMessages: ctx.hasPendingMessages,
@@ -3763,7 +3762,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			localProtocolOptions,
 			rootAgentName: options.rootAgentName,
 			automationAuthor: options.automationAuthor,
-
 			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext, trackUserWait);

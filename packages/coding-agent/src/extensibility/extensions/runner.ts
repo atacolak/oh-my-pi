@@ -1659,7 +1659,6 @@ export class ExtensionRunner {
 			localProtocolOptions: this.localProtocolOptions,
 			rootAgentName: this.rootAgentName,
 			automationAuthor: this.automationAuthor,
-
 			memory: this.#getMemoryFn?.(),
 			// A getter, not a value: `createHandlerContext` scopes a handler via `Object.create(ctx)`, and
 			// `this` here is that receiver, so the overlay mounts through the handler's timeout-aware `ui`.

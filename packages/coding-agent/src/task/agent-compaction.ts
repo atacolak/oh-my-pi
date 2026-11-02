@@ -8,6 +8,8 @@
  */
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { CompactionThresholdPair } from "../config/compaction-threshold";
+import { type AnySetting, lookup } from "../config/registry";
+import type { Settings } from "../config/settings";
 import { type CompactionMethod, isCompactionMethod } from "../session/compaction-methods";
 
 export interface AgentCompactionPolicy {
@@ -90,4 +92,45 @@ export function agentCompactionSettings(
 		settings["compaction.modelThresholdsEnabled"] = false;
 	}
 	return Object.keys(settings).length > 0 ? settings : undefined;
+}
+
+/**
+ * Applies {@link agentCompactionSettings} to a session's settings. The profile overrides every
+ * settings file layer (global `config.yml`, project config, `--config` overlays) the way `model`,
+ * `thinking-level`, `tools`, `mcps` and `rules` do. It yields only to an operator layer — an
+ * environment value or a runtime override from an explicit CLI flag. `/compact <mode>` replaces
+ * the configured method order for its own invocation outside these layers.
+ */
+export function applyAgentCompactionPolicy(settings: Settings, policy: AgentCompactionPolicy | undefined): void {
+	const overrides = agentCompactionSettings(policy);
+	if (!overrides) return;
+	const entries = Object.entries(overrides);
+	const pinned = new Set<string>();
+	for (const [key] of entries) {
+		const setting = lookup(key);
+		if (setting && operatorConfigured(setting, settings)) pinned.add(key);
+	}
+	const thresholdPinned = THRESHOLD_SETTING_IDS.some(id => pinned.has(id));
+	for (const [key, value] of entries) {
+		if (pinned.has(key)) continue;
+		if (thresholdPinned && THRESHOLD_SETTING_IDS.includes(key)) continue;
+		lookup(key)?.override(settings, value);
+	}
+}
+
+/**
+ * Settings the profile writes as one threshold decision: a percentage and a fixed token trigger
+ * are alternatives, and either one disables the per-model entries. An explicit operator value for
+ * any of them keeps the profile from applying the other half and silently displacing it.
+ */
+const THRESHOLD_SETTING_IDS: readonly string[] = [
+	"compaction.thresholdPercent",
+	"compaction.thresholdTokens",
+	"compaction.modelThresholdsEnabled",
+];
+
+/** Whether the environment or a runtime override (an explicit CLI flag) supplies `setting`'s value. */
+function operatorConfigured(setting: AnySetting, settings: Settings): boolean {
+	const provenance = setting.provenance(settings);
+	return provenance === "env" || provenance === "runtime";
 }

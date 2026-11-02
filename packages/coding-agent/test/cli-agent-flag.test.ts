@@ -15,6 +15,14 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { buildSessionOptions } from "@oh-my-pi/pi-coding-agent/main";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { DEFAULT_COMPACTION_METHOD_ORDER } from "@oh-my-pi/pi-coding-agent/session/compaction-methods";
+import {
+	cfgCompactionEpisodeIndex,
+	cfgCompactionMethodOrder,
+	cfgCompactionModelThresholdsEnabled,
+	cfgCompactionThresholdPercent,
+	cfgCompactionThresholdTokens,
+} from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 
 const FLAG_PROBE_MD = [
@@ -64,14 +72,14 @@ const SCOUT_MD = [
 
 async function writeProjectAgent(content: string): Promise<string> {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-flag-"));
-	await fs.mkdir(path.join(cwd, ".omp", "agents"), { recursive: true });
-	const { frontmatter } = (() => {
-		const match = /^---\nname:\s+(\S+)/.exec(content);
-		return { frontmatter: match?.[1] ?? "agent" };
-	})();
-	const name = frontmatter.replace(/["']/g, "");
-	await fs.writeFile(path.join(cwd, ".omp", "agents", `${name}.md`), content);
+	await writeProjectAgentInto(cwd, content);
 	return cwd;
+}
+
+async function writeProjectAgentInto(cwd: string, content: string): Promise<void> {
+	await fs.mkdir(path.join(cwd, ".omp", "agents"), { recursive: true });
+	const name = /^---\nname:\s+(\S+)/.exec(content)?.[1]?.replace(/["']/g, "") ?? "agent";
+	await fs.writeFile(path.join(cwd, ".omp", "agents", `${name}.md`), content);
 }
 
 describe("parseArgs — --agent flag", () => {
@@ -452,6 +460,154 @@ describe("buildSessionOptions — --agent", () => {
 		} finally {
 			await fs.rm(roleRoot, { recursive: true, force: true });
 			await fs.rm(executionCwd, { recursive: true, force: true });
+		}
+	});
+});
+
+const COMPACTION_PROBE_MD = [
+	"---",
+	"name: compaction-probe",
+	'description: "Root compaction fixture."',
+	'model: "@default"',
+	"compaction:",
+	"  thresholdPercent: 80",
+	"  thresholdTokens: 400000",
+	"  methodOrder: [soft]",
+	"  episodeIndex: true",
+	"---",
+	"you are compaction-probe — a fixture for the root compaction policy.",
+].join("\n");
+
+const SWITCH_PROBE_MD = [
+	"---",
+	"name: switch-probe",
+	'description: "Root compaction switch fixture."',
+	'model: "@default"',
+	"compaction:",
+	"  thresholdTokens: 200000",
+	"  methodOrder: [soft]",
+	"---",
+	"you are switch-probe — a fixture for a resume that switches profiles.",
+].join("\n");
+
+describe("buildSessionOptions — root compaction policy", () => {
+	let authStorage: AuthStorage | undefined;
+
+	afterEach(() => {
+		authStorage?.close();
+		authStorage = undefined;
+	});
+
+	async function boot(
+		argv: string[],
+		cwd: string,
+		overrides: Readonly<Record<string, unknown>> = {},
+		sessionManager?: unknown,
+	): Promise<Settings> {
+		authStorage = await AuthStorage.create(":memory:");
+		const registry = new ModelRegistry(authStorage);
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"marketplace.autoUpdate": "off",
+			...overrides,
+		});
+		const parsed = parseArgs(argv);
+		parsed.cwd = cwd;
+		await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
+		return settings;
+	}
+
+	function expectProfilePolicy(settings: Settings): void {
+		expect(cfgCompactionThresholdTokens.get(settings)).toBe(400_000);
+		expect(cfgCompactionThresholdPercent.get(settings)).toBe(-1);
+		expect(cfgCompactionEpisodeIndex.get(settings)).toBe(true);
+		expect(cfgCompactionMethodOrder.get(settings)).toEqual(["soft"]);
+		expect(cfgCompactionModelThresholdsEnabled.get(settings)).toBe(false);
+	}
+
+	it("adopts the profile's compaction policy on a fresh --agent session", async () => {
+		const cwd = await writeProjectAgent(COMPACTION_PROBE_MD);
+		try {
+			expectProfilePolicy(await boot(["--agent", "compaction-probe"], cwd));
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("restores the same policy from the persisted root agent when --agent is omitted", async () => {
+		const cwd = await writeProjectAgent(COMPACTION_PROBE_MD);
+		try {
+			const settings = await boot(
+				["--continue"],
+				cwd,
+				{},
+				{
+					getHeader: () => ({ rootAgent: "compaction-probe" }),
+					setRootAgent: async () => {},
+				},
+			);
+			expectProfilePolicy(settings);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves a bare session on the configured defaults", async () => {
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-flag-bare-"));
+		try {
+			const settings = await boot([], cwd);
+			expect(cfgCompactionThresholdTokens.get(settings)).toBe(-1);
+			expect(cfgCompactionThresholdPercent.get(settings)).toBe(-1);
+			expect(cfgCompactionMethodOrder.get(settings)).toEqual(DEFAULT_COMPACTION_METHOD_ORDER);
+			expect(cfgCompactionModelThresholdsEnabled.get(settings)).toBe(true);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps an explicit compaction threshold over the profile", async () => {
+		const cwd = await writeProjectAgent(COMPACTION_PROBE_MD);
+		try {
+			const settings = await boot(["--agent", "compaction-probe"], cwd, {
+				"compaction.thresholdTokens": 90_000,
+			});
+			expect(cfgCompactionThresholdTokens.get(settings)).toBe(90_000);
+			expect(cfgCompactionEpisodeIndex.get(settings)).toBe(true);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps an explicit compaction method order over the profile", async () => {
+		const cwd = await writeProjectAgent(COMPACTION_PROBE_MD);
+		try {
+			const settings = await boot(["--agent", "compaction-probe"], cwd, {
+				"compaction.methodOrder": ["remote", "soft"],
+			});
+			expect(cfgCompactionMethodOrder.get(settings)).toEqual(["remote", "soft"]);
+			expect(cfgCompactionThresholdTokens.get(settings)).toBe(400_000);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("uses the switched profile's policy when --agent differs from the persisted root agent", async () => {
+		const cwd = await writeProjectAgent(COMPACTION_PROBE_MD);
+		await writeProjectAgentInto(cwd, SWITCH_PROBE_MD);
+		try {
+			const settings = await boot(
+				["--agent", "switch-probe", "--continue"],
+				cwd,
+				{},
+				{
+					getHeader: () => ({ rootAgent: "compaction-probe" }),
+					setRootAgent: async () => {},
+				},
+			);
+			expect(cfgCompactionThresholdTokens.get(settings)).toBe(200_000);
+			expect(cfgCompactionMethodOrder.get(settings)).toEqual(["soft"]);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
 		}
 	});
 });

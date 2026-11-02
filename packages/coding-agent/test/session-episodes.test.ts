@@ -119,7 +119,9 @@ describe("session_episodes", () => {
 				timestamp: new Date(0).toISOString(),
 				message: {
 					role: "assistant",
-					content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "bun test retry.test.ts" } }],
+					content: [
+						{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "bun test retry.test.ts" } },
+					],
 					api: "x",
 					provider: "x",
 					model: "x",

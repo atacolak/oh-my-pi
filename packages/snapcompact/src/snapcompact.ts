@@ -2583,13 +2583,7 @@ export async function compact<TMessage = Message>(
 	const episodes = options?.episodes?.trim();
 
 	let summary: string;
-	if (
-		frames.length === 0 &&
-		textHead.length === 0 &&
-		textTail.length === 0 &&
-		files.length === 0 &&
-		!episodes
-	) {
+	if (frames.length === 0 && textHead.length === 0 && textTail.length === 0 && files.length === 0 && !episodes) {
 		summary = "No prior history.";
 	} else {
 		summary = prompt.render(snapcompactSummaryPrompt, {

@@ -18,7 +18,10 @@ import {
 	resolveModelOverride,
 } from "../config/model-resolver";
 import { type OAuthAccountPools, validateAgentAccountPools } from "../config/account-pools";
-import { type CompactionThresholdPair, validateAgentCompactionThresholdOverrides } from "../config/compaction-threshold";
+import {
+	type CompactionThresholdPair,
+	validateAgentCompactionThresholdOverrides,
+} from "../config/compaction-threshold";
 import { agentCompactionThreshold } from "./agent-compaction";
 import { type ServiceTierInheritSettingValue, validateAgentServiceTierOverrides } from "../config/service-tier";
 import type { Settings } from "../config/settings";

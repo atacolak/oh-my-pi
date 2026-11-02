@@ -45,10 +45,7 @@ async function buildSearchIndex(): Promise<void> {
 		if (row.triggerSummary !== null && row.toolTargets !== null) continue;
 		const loaded = await loadWithCache(row, buckets);
 		if (!loaded) continue;
-		updateSessionEpisodeFacts(
-			row.episodeId,
-			deriveEpisodeFacts(loaded.entries, row.startEntryId, row.endEntryId),
-		);
+		updateSessionEpisodeFacts(row.episodeId, deriveEpisodeFacts(loaded.entries, row.startEntryId, row.endEntryId));
 	}
 	rebuildEpisodeSearchIndex();
 }

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
-import {
-	agentCompactionSettings,
-	agentCompactionThreshold,
-} from "@oh-my-pi/pi-coding-agent/task/agent-compaction";
+import { agentCompactionSettings, agentCompactionThreshold } from "@oh-my-pi/pi-coding-agent/task/agent-compaction";
 
 function agentMarkdown(compaction: string): string {
 	return `---\nname: probe\ndescription: probe agent\ncompaction:\n${compaction}\n---\n\nDo the thing.\n`;
@@ -47,7 +44,9 @@ describe("agent compaction frontmatter", () => {
 	it("drops malformed fields instead of throwing", () => {
 		const agent = parseAgent(
 			"probe.md",
-			agentMarkdown("  thresholdPercent: 150\n  thresholdTokens: nope\n  methodOrder: [not-a-method]\n  enabled: yes"),
+			agentMarkdown(
+				"  thresholdPercent: 150\n  thresholdTokens: nope\n  methodOrder: [not-a-method]\n  enabled: yes",
+			),
 			"project",
 		);
 		expect(agent.compaction).toEqual({});

@@ -25,6 +25,7 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	bankId: "personal",
 	bankIdPrefix: "",
 	scopeTags: [],
+	provenanceTags: [],
 	scoping: "per-project-tagged",
 	bankMission: "",
 	retainMission: null,

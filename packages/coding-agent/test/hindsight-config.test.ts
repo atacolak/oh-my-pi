@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { loadHindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
+import { loadHindsightConfig, resolveProvenanceTags } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 
 function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) {
 	const previous = new Map<string, string | undefined>();
@@ -55,5 +55,42 @@ describe("loadHindsightConfig scopeTags", () => {
 			"scope:coding",
 			"scope:coding",
 		]);
+	});
+});
+
+describe("loadHindsightConfig provenanceTags", () => {
+	it("defaults provenanceTags to an empty array", () => {
+		expect(load({}).provenanceTags).toEqual([]);
+	});
+
+	it("loads and trims configured provenanceTags", () => {
+		expect(load({ "hindsight.provenanceTags": [" role:builder ", "", 12, "team:infra"] }).provenanceTags).toEqual([
+			"role:builder",
+			"team:infra",
+		]);
+	});
+
+	it("parses HINDSIGHT_PROVENANCE_TAGS as a JSON array and prefers it over settings", () => {
+		expect(
+			load(
+				{ "hindsight.provenanceTags": ["role:builder"] },
+				{ HINDSIGHT_PROVENANCE_TAGS: '["team:infra","role:navigator"]' },
+			).provenanceTags,
+		).toEqual(["team:infra", "role:navigator"]);
+	});
+});
+
+describe("resolveProvenanceTags", () => {
+	it("merges configured tags with a lowercased role tag for the mounted profile", () => {
+		expect(resolveProvenanceTags({ provenanceTags: ["team:infra", "role:other"] }, " Builder ")).toEqual([
+			"team:infra",
+			"role:other",
+			"role:builder",
+		]);
+	});
+
+	it("returns deduped configured tags when no profile is mounted", () => {
+		expect(resolveProvenanceTags({ provenanceTags: [" team:infra ", "team:infra"] })).toEqual(["team:infra"]);
+		expect(resolveProvenanceTags({ provenanceTags: [] })).toEqual([]);
 	});
 });

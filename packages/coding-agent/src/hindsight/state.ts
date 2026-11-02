@@ -33,6 +33,17 @@ const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
 const MENTAL_MODEL_LOAD_TIMED_OUT = Symbol("mental-model-load-timed-out");
 
+/** Scope retain tags plus write-only provenance tags, deduped in order; undefined when both are empty. */
+function mergeRetainWriteTags(
+	retainTags: readonly string[] | undefined,
+	provenanceTags: readonly string[] | undefined,
+): string[] | undefined {
+	const merged = [
+		...new Set([...(retainTags ?? []), ...(provenanceTags ?? [])].map(tag => tag.trim()).filter(Boolean)),
+	];
+	return merged.length > 0 ? merged : undefined;
+}
+
 interface PendingRetainItem {
 	content: string;
 	context?: string;
@@ -68,8 +79,16 @@ export interface HindsightSessionStateOptions {
 	sessionId: string;
 	client: HindsightApi;
 	bankId: string;
-	/** Tags applied to every retain — non-empty in per-project-tagged mode. */
+	/** Fully resolved deterministic scope tags (no write-only provenance). */
+	resolvedTags?: string[];
+	/** Deterministic scope tags applied to every retain; provenance is merged only at write time. */
 	retainTags?: string[];
+	/**
+	 * Write-only provenance tags (actor/role) merged into every retain. Never
+	 * applied to recall filters or observation scopes, so provenance cannot
+	 * narrow what this session can recall.
+	 */
+	provenanceTags?: string[];
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	recallTags?: string[];
 	recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
@@ -128,7 +147,7 @@ export class HindsightRetainQueue {
 			timestamp: new Date(),
 			client: state.client,
 			bankId: state.bankId,
-			retainTags: state.retainTags,
+			retainTags: mergeRetainWriteTags(state.retainTags, state.provenanceTags),
 			banksSet: state.banksSet,
 			config: state.config,
 			observationScopes: state.observationScopes,
@@ -293,8 +312,16 @@ export class HindsightSessionState {
 	sessionId: string;
 	#client: HindsightApi;
 	#bankId: string;
-	/** Tags applied to every retain — non-empty in per-project-tagged mode. */
+	/** Fully resolved deterministic scope tags; seeds derive from these, never from write-only provenance. */
+	#resolvedTags?: string[];
+	/** Deterministic scope tags applied to every retain; provenance is merged only at write time. */
 	#retainTags?: string[];
+	/**
+	 * Write-only provenance tags for this state's own writes. Deliberately not
+	 * delegated through `aliasOf`: a subagent stamps its own role on retained
+	 * facts even though it shares the parent's scope and client.
+	 */
+	#provenanceTags?: string[];
 	/** Tag filter applied to every recall/reflect — non-empty in per-project-tagged mode. */
 	#recallTags?: string[];
 	#recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
@@ -360,7 +387,9 @@ export class HindsightSessionState {
 		this.#aliasOf = options.aliasOf;
 		this.#client = options.client;
 		this.#bankId = options.bankId;
+		this.#resolvedTags = options.resolvedTags;
 		this.#retainTags = options.retainTags;
+		this.#provenanceTags = options.provenanceTags;
 		this.#recallTags = options.recallTags;
 		this.#recallTagsMatch = options.recallTagsMatch;
 		this.#observationScopes = options.observationScopes;
@@ -420,6 +449,16 @@ export class HindsightSessionState {
 	set retainTags(value: string[] | undefined) {
 		if (this.aliasOf) this.aliasOf.retainTags = value;
 		else this.#retainTags = value;
+	}
+
+	/** Deterministic scope tags shared by the whole alias tree; write-only provenance is never included. */
+	get resolvedTags(): string[] | undefined {
+		return this.aliasOf ? this.aliasOf.resolvedTags : this.#resolvedTags;
+	}
+
+	/** Write-only provenance for this state; never inherited from the aliased parent. */
+	get provenanceTags(): string[] | undefined {
+		return this.#provenanceTags;
 	}
 
 	get recallTags(): string[] | undefined {
@@ -769,7 +808,7 @@ export class HindsightSessionState {
 			documentId,
 			context: this.config.retainContext,
 			metadata: { session_id: sessionId },
-			tags: this.retainTags,
+			tags: mergeRetainWriteTags(this.retainTags, this.provenanceTags),
 			observationScopes: this.observationScopes,
 			timestamp: sourceTimestamp,
 			async: false,

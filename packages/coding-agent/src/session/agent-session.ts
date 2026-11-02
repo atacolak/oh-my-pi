@@ -1125,6 +1125,7 @@ export class AgentSession implements SettingsScope {
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
+	#agentProfile: string | undefined;
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
@@ -2583,6 +2584,7 @@ export class AgentSession implements SettingsScope {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#agentProfile = config.agentProfile;
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -3193,6 +3195,11 @@ export class AgentSession implements SettingsScope {
 
 	getAgentId(): string | undefined {
 		return this.#agentId;
+	}
+
+	/** Mounted agent profile name (`--agent` / subagent definition); undefined when unprofiled. */
+	getAgentProfileName(): string | undefined {
+		return this.#agentProfile;
 	}
 
 	/** Dequeue the next HARD forced tool choice for the upcoming LLM call, dropping

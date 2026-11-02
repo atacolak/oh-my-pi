@@ -40,9 +40,10 @@ describe("resolveSeedsForScope", () => {
 		expect(userPrefs?.tags).toEqual([]);
 	});
 
-	it("per-project-tagged scoping bakes the scope's retainTags into projectTagged seeds and leaves untagged seeds bare", () => {
+	it("per-project-tagged scoping bakes the scope's resolvedTags into projectTagged seeds and leaves untagged seeds bare", () => {
 		const scope: BankScope = {
 			bankId: "omp",
+			resolvedTags: ["project:omp"],
 			retainTags: ["project:omp"],
 			recallTags: ["project:omp"],
 			recallTagsMatch: "any",
@@ -66,6 +67,25 @@ describe("resolveSeedsForScope", () => {
 		// so projectTagged seeds resolve to no tags. This is correct: the bank is
 		// already a per-project silo.
 		expect(projectConv?.tags).toEqual([]);
+	});
+
+	it("seeds never inherit write-only provenance tags from retainTags", () => {
+		const scope: BankScope = {
+			bankId: "omp",
+			resolvedTags: ["project:omp"],
+			retainTags: ["project:omp", "role:builder", "actor:HindsightProvenance"],
+			recallTags: ["project:omp"],
+			recallTagsMatch: "all_strict",
+			observationScopes: [["project:omp"]],
+		};
+		const seeds = resolveSeedsForScope(scope, "per-project-tagged");
+		const projectConv = seeds.find(s => s.id === "project-conventions-omp");
+		// Seed tags become the mental model's all_strict refresh filter. Provenance
+		// is write-only, so baking it in would leave seeded models unable to see
+		// the project's memories written by other actors.
+		expect(projectConv?.tags).toEqual(["project:omp"]);
+		expect(projectConv?.tags).not.toContain("role:builder");
+		expect(projectConv?.tags).not.toContain("actor:HindsightProvenance");
 	});
 });
 

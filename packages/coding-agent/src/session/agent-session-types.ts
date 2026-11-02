@@ -377,6 +377,11 @@ export interface AgentSessionConfig {
 	agentId?: string;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
+	/**
+	 * Mounted agent profile name (`--agent` for a root session, the agent
+	 * definition name for a subagent). Used for write-only memory provenance.
+	 */
+	agentProfile?: string;
 	/** Provider-facing session ID override. */
 	providerSessionId?: string;
 	/** OAuth account pools enforced on the session's key lookups; the session lifts them on dispose. */

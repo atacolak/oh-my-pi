@@ -22,13 +22,14 @@
  * The Hindsight refresh path filters source memories with `all_strict` tag
  * matching against the model's tags. A seed tagged with something we never
  * write at retain time will refresh empty. Therefore seed tags MUST be a
- * subset of the tags actually attached by `retainSession` / `enqueueRetain`
- * for the active scoping mode. In `per-project-tagged` we only carry
- * `project:<cwd>`; do not invent new tag axes here without first wiring the
- * retain side to emit them.
+ * subset of the deterministic scope tags carried by retained memories. In
+ * `per-project-tagged` we only carry `project:<cwd>`; do not invent new tag
+ * axes here without first wiring scope resolution to emit them.
  *
  * Seed tags are baked from `seeds.json` plus, for `projectTagged: true`
- * entries, the active scope's `retainTags` (i.e. `project:<cwd>`). In
+ * entries, the active scope's `resolvedTags` (i.e. `project:<cwd>`) — never
+ * `retainTags`, which carry write-only provenance such as `role:*` and
+ * `actor:*` that no other actor's memories would match. In
  * `per-project-tagged`, those project seeds also get project-suffixed ids so
  * each tag can own its conventions/decisions models in the shared bank.
  * Untagged seeds (e.g. `user-preferences`) read every memory in the bank — the
@@ -86,7 +87,7 @@ export interface MentalModelSeed {
 /**
  * Resolve the seed list that applies to the active bank scope. Per-project
  * seeds are skipped in `global` mode (where there is no project axis) and
- * `projectTagged` seeds inherit the scope's `retainTags`. In shared tagged
+ * `projectTagged` seeds inherit the scope's `resolvedTags`. In shared tagged
  * banks, project seeds use project-suffixed ids and accept matching legacy
  * bare ids as already present.
  */
@@ -126,7 +127,7 @@ function seedIdSuffixFromProjectTag(tag: string): string {
 }
 function collectSeedTags(seed: RawSeed, scope: BankScope): string[] {
 	const collected: string[] = [];
-	if (seed.projectTagged && scope.retainTags) collected.push(...scope.retainTags);
+	if (seed.projectTagged && scope.resolvedTags) collected.push(...scope.resolvedTags);
 	if (seed.extra_tags) collected.push(...seed.extra_tags);
 	return dedupe(collected);
 }

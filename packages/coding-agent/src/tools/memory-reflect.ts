@@ -3,6 +3,7 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { ensureBankExists } from "../hindsight/bank";
+import { mergeRecallTags } from "../hindsight/content";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import type { ToolSession } from ".";
@@ -12,6 +13,7 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 const memoryReflectSchema = type({
 	query: type("string").describe("question to answer"),
 	"context?": type("string").describe("optional context"),
+	"tags?": type("string[]").describe("additional tag filters merged with the session's recall scope"),
 });
 
 export type MemoryReflectParams = typeof memoryReflectSchema.infer;
@@ -82,7 +84,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 				const bankId = state.bankId;
 				const config = state.config;
 				const banksSet = state.banksSet;
-				const recallTags = state.recallTags;
+				const recallTags = mergeRecallTags(state.recallTags, params.tags);
 				const recallTagsMatch = state.recallTagsMatch;
 				await ensureBankExists(client, bankId, config, banksSet);
 				const response = await client.reflect(bankId, params.query, {

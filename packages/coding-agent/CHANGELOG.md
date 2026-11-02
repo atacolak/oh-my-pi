@@ -60,6 +60,9 @@
 ### Fixed
 
 - Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
+- Added `hindsight.provenanceTags` (`HINDSIGHT_PROVENANCE_TAGS`) plus an automatic `role:<agent-profile>` tag so retained memories carry write-only actor/role provenance; provenance is merged into retains only and never into recall filters or observation scopes, so stamping it cannot narrow recall.
+- Added optional `tags` to the `recall` and `reflect` tools; omitted keeps the session filter unchanged, provided tags merge additively with it.
+- Added a compact `[role:… actor:…]` provenance badge to recalled memory footers.
 - Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
 - Added `hindsight.retainUpdateMode` (`replace` | `append`, default `replace`) so full-session retain can append only newly accumulated turns to the same session document.
@@ -71,6 +74,7 @@
 
 ### Fixed
 
+- Fixed Hindsight project mental-model seeds inheriting write-only `actor:*`/`role:*` provenance tags; seed tags now derive from the scope's resolved tags.
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
 - Hindsight leave-path retain now waits for delayed backend startup before treating a missing live state as having nothing pending.
 - Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.

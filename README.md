@@ -9,7 +9,7 @@
 >   - [`cap/agent-tool-mcp-surface`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-tool-mcp-surface) — lazy agent tool/MCP mounts + MCPHub discovery
 >   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
 >   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
->   - [`cap/episode-compaction`](https://github.com/atacolak/oh-my-pi/tree/cap/episode-compaction) — EPISODES ledger, `episode://` routes, per-agent compaction frontmatter
+>   - [`cap/episode-compaction`](https://github.com/atacolak/oh-my-pi/tree/cap/episode-compaction) — EPISODES ledger, `episode://` routes, root/agent compaction frontmatter over config
 >   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — skip colocated test files as extension entry points
 >   - [`cap/followup-draft`](https://github.com/atacolak/oh-my-pi/tree/cap/followup-draft) — followUpMode default all
 >   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card

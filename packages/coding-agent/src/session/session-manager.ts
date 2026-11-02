@@ -131,6 +131,7 @@ import {
 } from "./session-workspace";
 import {
 	finishSessionEpisode,
+	listChapterRecapLines,
 	recordSessionEpisodeRecap,
 	recordSessionRecap,
 	recordSessionTitle,
@@ -3523,6 +3524,16 @@ export class SessionManager {
 		if (!recordSessionEpisodeRecap(episodeId, recap)) return false;
 		recordSessionRecap(this.#sessionId, this.#cwd, recap);
 		return true;
+	}
+
+	/**
+	 * Recaps already logged in this session under one chapter title, as `- `
+	 * bullet lines oldest first. The title is the chapter's identity, so a
+	 * retitled session reads nothing from the chapter it left.
+	 */
+	listChapterRecapLines(focusTitle: string, limit: number): string {
+		if (!(this.#persist && this.#storage instanceof FileSessionStorage)) return "";
+		return listChapterRecapLines(this.#sessionId, focusTitle, limit);
 	}
 
 	/** Episode row of the run in flight, or of the run whose settle recap is still pending. */

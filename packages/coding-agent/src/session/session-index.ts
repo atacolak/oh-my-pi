@@ -503,6 +503,34 @@ export function listSessionEpisodes(sessionId: string): SessionEpisode[] {
 	}
 }
 
+/**
+ * Recaps already logged under one chapter title, as `- ` bullet lines oldest
+ * first. At most `limit` trailing nonblank recaps; the title is the chapter
+ * identity, so a retitled session shares nothing with the chapter it left.
+ */
+export function listChapterRecapLines(sessionId: string, focusTitle: string, limit: number): string {
+	const index = openSessionIndex();
+	if (!index) return "";
+	const trailing = Math.max(1, Math.floor(limit));
+	try {
+		using statement = index.db.prepare(`
+SELECT recap FROM session_episodes
+WHERE session_id = ?1 AND focus_title = ?2 AND typeof(recap) = 'text'
+ORDER BY started_at_ms ASC, rowid ASC
+		`);
+		const rows = statement.all(sessionId, focusTitle) as Array<{ recap: string }>;
+		const lines: string[] = [];
+		for (const row of rows) {
+			const recap = row.recap.replace(/\s+/g, " ").trim();
+			if (recap.length > 0) lines.push(`- ${recap}`);
+		}
+		return lines.slice(-trailing).join("\n");
+	} catch (error) {
+		logger.debug("Session chapter recap read failed", { sessionId, focusTitle, error: String(error) });
+		return "";
+	}
+}
+
 /** Every indexed episode, oldest first. Used by the one-time search build. */
 export function listAllSessionEpisodes(): SessionEpisode[] {
 	const index = openSessionIndex();

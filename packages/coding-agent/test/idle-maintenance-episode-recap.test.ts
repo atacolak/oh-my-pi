@@ -45,19 +45,28 @@ interface Host {
 	setEpisode: (episodeId: string | null) => void;
 	ephemeralCalls: string[];
 	records: Array<{ episodeId: string; recap: string }>;
+	chapterQueries: Array<{ focusTitle: string; limit: number }>;
 	nextRecord: (count: number) => Promise<void>;
+}
+
+interface HostOptions {
+	/** Chapter title fallback; `undefined` leaves the session unnamed. */
+	sessionName?: string | undefined;
+	goal?: string;
+	priorRecaps?: string;
 }
 
 /**
  * A session that is busy for the whole test: idle never arrives, so only work
  * dispatched straight from `agent_end` can run.
  */
-function createHost(initialEpisodeId: string | null): Host {
+function createHost(initialEpisodeId: string | null, options: HostOptions = {}): Host {
 	const listeners = new Set<AgentSessionEventListener>();
 	let episodeId = initialEpisodeId;
 	const idleNeverArrives = Promise.withResolvers<void>();
 	const ephemeralCalls: string[] = [];
 	const records: Array<{ episodeId: string; recap: string }> = [];
+	const chapterQueries: Array<{ focusTitle: string; limit: number }> = [];
 	const recordWaiters = new Set<{ count: number; resolve: () => void }>();
 	const nextRecord = (count: number) => {
 		if (records.length >= count) return Promise.resolve();
@@ -71,7 +80,11 @@ function createHost(initialEpisodeId: string | null): Host {
 			get episodeId() {
 				return episodeId;
 			},
-			getSessionName: () => "test session",
+			getSessionName: () => ("sessionName" in options ? options.sessionName : "test session"),
+			listChapterRecapLines: (focusTitle: string, limit: number) => {
+				chapterQueries.push({ focusTitle, limit });
+				return options.priorRecaps ?? "";
+			},
 			recordEpisodeRecap: (episode: string, recap: string) => {
 				records.push({ episodeId: episode, recap });
 				for (const waiter of recordWaiters) {
@@ -98,7 +111,7 @@ function createHost(initialEpisodeId: string | null): Host {
 		waitForIdle: () => idleNeverArrives.promise,
 		waitForAdmittedSubmissions: () => idleNeverArrives.promise,
 		getContextUsage: () => undefined,
-		getGoalModeState: () => undefined,
+		getGoalModeState: () => (options.goal === undefined ? undefined : { goal: { objective: options.goal } }),
 		getTodoPhases: () => [],
 		runIdleCompaction: async () => {},
 		promptCacheEntry: undefined,
@@ -117,11 +130,20 @@ function createHost(initialEpisodeId: string | null): Host {
 		},
 		ephemeralCalls,
 		records,
+		chapterQueries,
 		nextRecord,
 	};
 }
 
 let maintenance: IdleMaintenance | undefined;
+
+/** The instruction block every recap request carries, verbatim. */
+const RECAP_INSTRUCTIONS = `<system-reminder>
+Side-channel episode log entry (not a reply to the user; do not address anyone).
+Write an impersonal logbook line (1–2 plain sentences, <=40 words, no markdown, no lists) recording ONLY what moved in the latest turn.
+Voice: neutral subjectless telegraph/changelog style — NEVER use first or second person ("I", "we", "you", "my") or narrate "user asked / assistant replied".
+Do NOT repeat the session chapter title or restate facts already logged in earlier recaps.
+State the concrete outcome, decision, or finding from this turn; add the next queued step or open question only if one exists.`;
 
 afterEach(() => {
 	maintenance?.dispose();
@@ -176,5 +198,37 @@ describe("idle maintenance episode recap", () => {
 
 		expect(host.ephemeralCalls).toHaveLength(0);
 		expect(host.records).toHaveLength(0);
+	});
+
+	it("asks for the log line inside the reminder wrapper with the chapter's earlier recaps", async () => {
+		const host = createHost("episode:one", {
+			goal: "Ship the recap prompt",
+			priorRecaps: "- moved the parser\n- fixed the guard",
+		});
+		maintenance = new IdleMaintenance(host.host, {});
+
+		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		await host.nextRecord(1);
+
+		expect(host.ephemeralCalls).toEqual([
+			`${RECAP_INSTRUCTIONS}
+Session chapter (already shown above; do not restate): Ship the recap prompt
+Earlier recaps in this chapter (already logged — do NOT repeat):
+- moved the parser
+- fixed the guard
+</system-reminder>`,
+		]);
+		expect(host.chapterQueries).toEqual([{ focusTitle: "Ship the recap prompt", limit: 5 }]);
+	});
+
+	it("leaves the chapter and recap blocks out when the session has neither", async () => {
+		const host = createHost("episode:one", { sessionName: undefined });
+		maintenance = new IdleMaintenance(host.host, {});
+
+		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		await host.nextRecord(1);
+
+		expect(host.ephemeralCalls).toEqual([`${RECAP_INSTRUCTIONS}\n</system-reminder>`]);
+		expect(host.chapterQueries).toHaveLength(0);
 	});
 });

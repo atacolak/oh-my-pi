@@ -61,6 +61,8 @@ export type IdleMaintenanceSession = SessionSettleHost &
 
 const RECAP_MIN_SECONDS = 1;
 const RECAP_MAX_SECONDS = 3600;
+/** Earlier chapter recaps the request carries: the trailing ones, oldest first. */
+const PRIOR_RECAP_LIMIT = 5;
 const COMPACTION_MIN_SECONDS = 60;
 const COMPACTION_MAX_SECONDS = 3600;
 /**
@@ -356,6 +358,20 @@ export class IdleMaintenance {
 	}
 
 	/**
+	 * The recap request: live chapter and active task anchor it, and the chapter's own earlier
+	 * recaps keep it from restating what is already logged. A new chapter shares no title with
+	 * the one before it, so it starts with no earlier lines.
+	 */
+	#recapPromptText(): string {
+		const chapter = this.#goalText() ?? "";
+		return prompt.render(idleRecapPrompt, {
+			goal: chapter,
+			priorRecaps: chapter ? this.#session.sessionManager.listChapterRecapLines(chapter, PRIOR_RECAP_LIMIT) : "",
+			task: nextActionableTask(this.#session.getTodoPhases())?.content ?? "",
+		});
+	}
+
+	/**
 	 * Generate the delayed idle recap with an ephemeral side-channel turn over the current conversation,
 	 * journal it, then hand it to the owner's `onRecap`. Live goal/title and the active todo task anchor the
 	 * request because the snapshot only carries conversation history. The generation test and the addressed
@@ -374,10 +390,7 @@ export class IdleMaintenance {
 				this.#complete(pending, "recap");
 				return;
 			}
-			const promptText = prompt.render(idleRecapPrompt, {
-				goal: this.#goalText() ?? "",
-				task: nextActionableTask(session.getTodoPhases())?.content ?? "",
-			});
+			const promptText = this.#recapPromptText();
 			const { replyText } = await session.runEphemeralTurn({ promptText, signal: run.signal });
 			if (this.#recapRun !== run || run.signal.aborted) return;
 			if (this.#isBlocked()) return;
@@ -416,10 +429,7 @@ export class IdleMaintenance {
 	async #runEpisodeRecap(episodeId: string): Promise<void> {
 		const session = this.#session;
 		if (!session.model) return;
-		const promptText = prompt.render(idleRecapPrompt, {
-			goal: this.#goalText() ?? "",
-			task: nextActionableTask(session.getTodoPhases())?.content ?? "",
-		});
+		const promptText = this.#recapPromptText();
 		const { replyText } = await session.runEphemeralTurn({
 			promptText,
 			signal: this.#recapLifetime.signal,

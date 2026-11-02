@@ -374,11 +374,33 @@ function isOverlayFocusTarget(owner: Component, component: Component | null): bo
 /**
  * Optional experimental app-owned transcript viewport seam. Components that
  * implement it identify the root-line range that may scroll inside the app
- * frame; siblings below that range are rendered as sticky chrome.
+ * frame; siblings below that range are rendered as sticky chrome. The last
+ * child reporting a range wins, so {@link AppViewportScrollEnd} can mark where
+ * the scrollable content stops without giving up the transcript's own range.
  */
 export interface AppViewportScrollRegion {
 	getAppViewportScrollRegionStart(): number | undefined;
 	getAppViewportScrollRegionEnd(): number | undefined;
+}
+
+/**
+ * Zero-height root that ends the app viewport scroll region at its own
+ * position: roots above it scroll with the transcript, roots below it are
+ * sticky chrome. Place it after the transcript and its scrollable tail (HUDs,
+ * deferred output) and before the compact reply band.
+ */
+export class AppViewportScrollEnd implements Component, AppViewportScrollRegion {
+	render(): readonly string[] {
+		return [];
+	}
+
+	getAppViewportScrollRegionStart(): number | undefined {
+		return 0;
+	}
+
+	getAppViewportScrollRegionEnd(): number | undefined {
+		return undefined;
+	}
 }
 
 /**

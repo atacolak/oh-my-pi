@@ -3560,6 +3560,7 @@ export class SessionManager {
 			stepCount: input.stepCount,
 			endEntryId: input.endEntryId ?? null,
 			outcome: input.outcome,
+			entries: this.#entries,
 		});
 	}
 

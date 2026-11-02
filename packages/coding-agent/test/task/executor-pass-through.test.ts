@@ -338,6 +338,31 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(persistedInits[0]).toMatchObject({ restrictToolNames: true, tools: ["read", "yield"] });
 	});
 
+	it("closes MCP access for a named agent that omits mcps:", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const parentMcp = { name: "mcp__youtube_list", mcpServerName: "youtube" };
+		const getTools = vi.fn(() => [parentMcp]);
+		const mcpManager = { getTools, addToolsChangedListener: () => () => {} } as unknown as MCPManager;
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "closed-world-mcp-child",
+			restrictToolNames: true,
+			mcpManager,
+			agent: { ...baseAgent, tools: ["read", "mcp__youtube_list"] },
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.mcpLoad?.declared).toBe(true);
+		expect(forwarded?.mcpLoad?.names).toEqual([]);
+		expect(forwarded?.enableMCP).toBe(false);
+		expect(forwarded?.mcpManager).toBeUndefined();
+		expect(forwarded?.toolNames).toEqual(["read"]);
+		expect(getTools).not.toHaveBeenCalled();
+	});
+
 	it("keeps parent MCP tools when a restricted agent declares mcp names", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));

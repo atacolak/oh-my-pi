@@ -36,7 +36,7 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - missing/non-string `name` or `description` => invalid (`null`), caller treats as parse failure
 - `main` and `sub` are reserved names (checked after trimming and lowercasing); definitions using them are invalid
 - `tools` accepts CSV or array; legacy tool aliases are normalized and mixed arrays retain their string entries. Omitted or YAML-null `tools` selects the default built-in toolset. Any other declaration with no tool names (including `tools: []`, empty CSV, or malformed scalar/array values) selects no built-ins. Structured children still receive the required `yield` tool; MCP, extension, and custom tools remain additive.
-- `tools` and `mcps` also accept `{ eager, discoverable }` maps. Eager names keep their top-level schema; discoverable names mount under `xd://`. A declared `mcps` list narrows MCP tools by server name for the session and its task spawns, and `mcps: []` keeps none. Omitted `mcps` leaves every connected server additive.
+- `tools` and `mcps` also accept `{ eager, discoverable }` maps. Eager names keep their top-level schema; discoverable names mount under `xd://`. A declared `mcps` list narrows MCP tools by server name for the session and its task spawns, and `mcps: []` keeps none. Omitted `mcps` on a named profile is closed-world: no server is discovered, connected, or mounted. Only a bare unnamed session (no `--agent` profile) defaults to every user MCP server.
 - `spawns` accepts `*`, CSV, or array
 - backward-compat behavior: if `spawns` missing but `tools` includes `task`, `spawns` becomes `*`
 - `output` is passed through as opaque schema data

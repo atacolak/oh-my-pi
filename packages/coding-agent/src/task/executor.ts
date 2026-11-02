@@ -91,6 +91,7 @@ import {
 	type TaskEffort,
 } from "@oh-my-pi/pi-tui/thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
+import { isMCPToolName } from "../tools/builtin-names";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../irc/messaging";
 import { LIST_STATUS_ORDER } from "@oh-my-pi/pi-tui/tools/irc";
@@ -113,6 +114,7 @@ import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
+import { mcpLoadForNamedProfile } from "./tool-load-spec";
 import type { WorkPoolYieldItem } from "./workpool-yield";
 import {
 	type AgentDefinition,
@@ -4354,6 +4356,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const childDepth = parentDepth + 1;
 	const restrictToolNames = options.restrictToolNames === true || preparedSession !== undefined;
 	const atMaxDepth = maxRecursionDepth >= 0 && childDepth >= maxRecursionDepth;
+	// A named profile is closed-world: omitting `mcps:` names no server, so the
+	// child never inherits the parent's MCP surface.
+	const mcpLoad = mcpLoadForNamedProfile(agent.mcpLoad);
 
 	// Add tools if specified. Unstructured runs never get `yield`, even when
 	// the frontmatter lists it.
@@ -4712,16 +4717,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				}
 			}
 
-			const enableMCP =
-				(!restrictToolNames || (agent.mcpLoad?.names.length ?? 0) > 0) && (options.enableMCP ?? true);
+			const enableMCP = (!restrictToolNames || mcpLoad.names.length > 0) && (options.enableMCP ?? true);
 			const mcpManager = enableMCP ? options.mcpManager : undefined;
-			if (agent.mcpLoad?.declared) {
-				const allowed = new Set(agent.mcpLoad.names);
+			if (mcpLoad.declared) {
+				const allowed = new Set(mcpLoad.names);
 				const parentMcp = mcpManager?.getTools() ?? [];
 				if (toolNames) {
 					toolNames = toolNames.filter(name => {
 						const tool = parentMcp.find(candidate => candidate.name === name);
-						if (!tool?.mcpServerName) return true;
+						if (!tool?.mcpServerName) return !isMCPToolName(name);
 						return allowed.has(tool.mcpServerName);
 					});
 					if (allowed.size > 0) {
@@ -4808,7 +4812,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					cacheWarming: false,
 					toolNames,
 					toolLoad: agent.toolLoad,
-					mcpLoad: agent.mcpLoad,
+					mcpLoad,
 
 					outputSchema,
 					outputSchemaMode: options.outputSchemaMode,

@@ -88,3 +88,21 @@ export function mcpServerAllowed(set: NamedLoadSet | undefined, serverName: stri
 	if (set.names.length === 0) return false;
 	return set.names.includes(serverName);
 }
+
+/**
+ * Effective MCP policy for a named agent profile. Profiles are closed-world:
+ * omitting `mcps:` allows no server, because a profile that says nothing about
+ * MCPs must not inherit the user's whole set. Only a bare unnamed session
+ * defaults open, and it never passes through this resolver.
+ */
+export function mcpLoadForNamedProfile(set: NamedLoadSet | undefined): NamedLoadSet {
+	return set ?? { declared: true, names: [], eager: [], discoverable: [] };
+}
+
+/**
+ * Server names a session may dial, or undefined when every discovered server is
+ * permitted. An empty set is a closed policy: nothing is discovered or connected.
+ */
+export function mcpServerAllowlist(set: NamedLoadSet | undefined): ReadonlySet<string> | undefined {
+	return set?.declared ? new Set(set.names) : undefined;
+}

@@ -90,7 +90,7 @@ describe("Hindsight recall failure notice", () => {
 		const outcome = state.recallForContext("query");
 		client.fail();
 
-		expect(await outcome).toEqual({ context: null, ok: false });
+		expect(await outcome).toEqual({ context: null, ok: false, delivered: [] });
 		expect(notices).toHaveLength(1);
 		const [notice] = notices;
 		expect(notice.level).toBe("warning");

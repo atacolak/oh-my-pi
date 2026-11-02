@@ -95,7 +95,7 @@ async function firstTurn(
 	const preparation = await mnemopiBackend.beforeAgentStartPrompt?.(state.session, PROMPT);
 	if (!preparation) throw new Error("no first-turn recall was prepared");
 	expect(preparation.commit()).toBe(true);
-	return { block: preparation.context, notice: preparation.notice };
+	return { block: preparation.contextEntry?.content, notice: preparation.notice };
 }
 
 function newSession(dir: TempDir): SessionManager {
@@ -214,7 +214,7 @@ describe("Mnemopi recall across a resume", () => {
 		};
 		const preparation = await live.beforeAgentStartPrompt("What background knowledge do we have?", undefined, budget);
 		expect(recalled).toContain("- background knowledge");
-		expect(preparation?.context).not.toContain("- background knowledge");
+		expect(preparation?.contextEntry?.content).not.toContain("- background knowledge");
 		expect(preparation?.commit()).toBe(true);
 		expect(live.editScopedMemory("forget", id).status).toBe("deleted");
 		const sessionFile = await writeTranscript(live.session.sessionManager);
@@ -307,7 +307,7 @@ describe("Mnemopi recall across a resume", () => {
 			const budget = (block: string) => `${block.slice(0, block.indexOf(runbook) + at)}…`;
 			const preparation = await live.beforeAgentStartPrompt(PROMPT, undefined, budget);
 			expect(preparation?.commit()).toBe(true);
-			const delivered = preparation?.context;
+			const delivered = preparation?.contextEntry?.content;
 			for (const id of ids) expect(live.editScopedMemory("forget", id).status).toBe("deleted");
 			const sessionFile = await writeTranscript(live.session.sessionManager);
 			// Resumed without the budget (as after raising the token limit), the block stays as delivered.
@@ -498,10 +498,10 @@ describe("Hindsight recall across a resume", () => {
 	async function hindsightFirstTurn(state: HindsightSessionState): Promise<string | undefined> {
 		const preparation = await state.beforeAgentStartPrompt(PROMPT);
 		expect(preparation?.commit()).toBe(true);
-		return preparation?.context;
+		return preparation?.contextEntry?.content;
 	}
 
-	it("reuses the transcript's recall for the same server, account, bank and tag filter only", async () => {
+	it("recalls afresh on resume instead of replaying the transcript's block", async () => {
 		const dir = tempDir();
 		const live = startHindsight(newSession(dir), "project", "The deploy host is alpha-7.");
 		const sent = await hindsightFirstTurn(live);
@@ -510,7 +510,9 @@ describe("Hindsight recall across a resume", () => {
 
 		const sessions = dir.join("sessions");
 		const resumed = startHindsight(await SessionManager.open(sessionFile, sessions), "project", "moved to beta-9");
-		expect(await hindsightFirstTurn(resumed)).toBe(sent);
+		// The block lives in the transcript, so a resumed process asks its own question
+		// of the bank instead of freezing the first process's answer forever.
+		expect(await hindsightFirstTurn(resumed)).toContain("moved to beta-9");
 
 		const elsewhere: Array<[bankId: string, scope: HindsightScope]> = [
 			["other", {}],

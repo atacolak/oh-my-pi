@@ -368,6 +368,17 @@ describe("formatMemories", () => {
 		expect(formatMemories([])).toBe("");
 	});
 
+	it("renders an episode link only when the memory carries a real episode id", () => {
+		const out = formatMemories([
+			{ text: "fact one", type: "world", metadata: { episode_id: "4a91c3f2-77aa-4d2f-9d6b-1e0f7c9a8b21" } },
+			{ text: "fact two", metadata: { session_id: "s-1" } },
+			{ text: "fact three" },
+		]);
+		expect(out).toContain("- fact one [world] [ep:4a91c3f2]");
+		// A document or session id is not an episode: no link, no false promise.
+		expect(out.match(/\[ep:/g)).toHaveLength(1);
+	});
+
 	it("surfaces actor/role provenance as a compact bracketed badge", () => {
 		const out = formatMemories([
 			{ text: "fact one", type: "world", tags: ["project:omp", "role:builder", "actor:HindsightProvenance"] },

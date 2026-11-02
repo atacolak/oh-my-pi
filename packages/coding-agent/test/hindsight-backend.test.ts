@@ -207,8 +207,8 @@ describe("hindsightBackend.start", () => {
 		expect(subState?.banksSet).toBe(parentState?.banksSet);
 		// Aliases must not subscribe to session events — the parent owns auto-recall/auto-retain.
 		expect(subState?.unsubscribe).toBeUndefined();
-		// hasRecalledForFirstTurn=true suppresses beforeAgentStartPrompt auto-recall on the sub.
-		expect(subState?.hasRecalledForFirstTurn).toBe(true);
+		// recallDelivered=true suppresses beforeAgentStartPrompt auto-recall on the sub.
+		expect(subState?.recallDelivered).toBe(true);
 	});
 
 	it("returns silently for subagent runs when no primary state has been registered", async () => {
@@ -270,12 +270,11 @@ describe("hindsightBackend first-turn injection", () => {
 			session as never,
 			"What do I know about this user?",
 		);
-		expect(block?.context).toContain("<memories>");
-		expect(block?.context).toContain("Can prefers concise communication");
-		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(false);
+		expect(block?.contextEntry?.content).toContain("<memories>");
+		expect(block?.contextEntry?.content).toContain("Can prefers concise communication");
+		expect(session.getHindsightSessionState()?.recallDelivered).toBe(false);
 		block?.commit();
-		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(true);
-		expect(session.getHindsightSessionState()?.lastRecallSnippet).toBe(block?.context);
+		expect(session.getHindsightSessionState()?.recallDelivered).toBe(true);
 	});
 
 	it("does not let agent_start preempt first-turn recall injection", async () => {
@@ -306,13 +305,13 @@ describe("hindsightBackend first-turn injection", () => {
 		session.emit({ type: "agent_start" });
 		for (let i = 0; i < 50; i++) await Promise.resolve();
 
-		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(false);
+		expect(session.getHindsightSessionState()?.recallDelivered).toBe(false);
 
 		// beforeAgentStartPrompt is the sole, awaited injection path.
 		const block = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "What is the canary phrase?");
-		expect(block?.context).toContain("PURPLE-OTTER-9931");
+		expect(block?.contextEntry?.content).toContain("PURPLE-OTTER-9931");
 		block?.commit();
-		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(true);
+		expect(session.getHindsightSessionState()?.recallDelivered).toBe(true);
 	});
 
 	it("forwards the turn's abort signal to recall and unwinds when aborted (#12668)", async () => {
@@ -363,7 +362,7 @@ describe("hindsightBackend first-turn injection", () => {
 		controller.abort();
 		const block = await pending;
 		expect(block).toBeUndefined();
-		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(false);
+		expect(session.getHindsightSessionState()?.recallDelivered).toBe(false);
 	});
 
 	it("names memory tools by their xd:// URL only when they are mounted as devices", async () => {
@@ -388,10 +387,10 @@ describe("hindsightBackend first-turn injection", () => {
 		expect(prompt).toContain("Use `retain` to store");
 	});
 
-	it("places the <mental_models> block above the <memories> recall block in developer instructions", async () => {
-		// Stable, curated semantic memory must come first so the LLM's prior is
-		// anchored on it; the volatile per-turn recall block follows. Ordering
-		// is part of the integration's behavioural contract.
+	it("keeps the per-turn <memories> recall block out of developer instructions", async () => {
+		// Developer instructions are system-prompt bytes: the provider prefix cache is
+		// keyed on them. Curated mental models are transcript-stable and belong here;
+		// a per-turn recall does not, it rides its own hidden turn entry.
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
@@ -409,17 +408,12 @@ describe("hindsightBackend first-turn injection", () => {
 		});
 		const state = session.getHindsightSessionState();
 		state!.mentalModelsSnippet = "<mental_models>\n# User Preferences\nprefers tabs\n</mental_models>";
-		state!.lastRecallSnippet = "<memories>\nrecalled fact\n</memories>";
 
 		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", "/tmp", settings, session as never);
-		// `<memories>` and `<mental_models>` are mentioned in the static memory instructions
-		// bullets too. Match the actual injected block opener (tag + newline)
-		// to disambiguate documentation prose from the injected payloads.
-		const mmIdx = prompt!.indexOf("<mental_models>\n");
-		const memIdx = prompt!.indexOf("<memories>\n");
-		expect(mmIdx).toBeGreaterThanOrEqual(0);
-		expect(memIdx).toBeGreaterThanOrEqual(0);
-		expect(mmIdx).toBeLessThan(memIdx);
+		// `<memories>` is also named in the static instructions prose; match the block
+		// opener (tag + newline) to disambiguate documentation from an injected payload.
+		expect(prompt).toContain("<mental_models>\n");
+		expect(prompt).not.toContain("<memories>\n");
 	});
 
 	it("reloadMentalModelsForSession refreshes the cached snippet and base prompt", async () => {
@@ -795,7 +789,7 @@ describe("hindsightBackend live bank routing", () => {
 	});
 
 	// Same setting written with the same value MUST NOT rebuild — a rebuild
-	// would reset `lastRetainedTurn` / `hasRecalledForFirstTurn` and force a
+	// would reset `lastRetainedTurn` / `recallDelivered` and force a
 	// fresh mental-model bootstrap for no observable reason.
 	it("applies hindsight.retainUpdateMode to the live state without rebuilding", async () => {
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);

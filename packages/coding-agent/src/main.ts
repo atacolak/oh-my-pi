@@ -137,6 +137,7 @@ import {
 } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { discoverAgents, getAgent } from "./task/discovery";
+import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
@@ -1747,7 +1748,9 @@ export async function buildSessionOptions(
 		const agent = getAgent(agents, options.agentName);
 		if (agent) {
 			options.toolLoad = agent.toolLoad;
-			options.mcpLoad = agent.mcpLoad;
+			// A named profile is closed-world for MCPs: omitting `mcps:` names no server,
+			// so the session neither dials nor mounts any user MCP.
+			options.mcpLoad = mcpLoadForNamedProfile(agent.mcpLoad);
 			// The profile owns its always-apply rule set. `undefined` keeps the legacy
 			// `agents`-scoped bucketing a bare `main` session relies on; an empty list is a
 			// profile that deliberately applies none.

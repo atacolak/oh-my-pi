@@ -248,7 +248,7 @@ import {
 	withoutAgentsMd,
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
-import type { NamedLoadSet } from "./task/tool-load-spec";
+import { mcpServerAllowlist, type NamedLoadSet } from "./task/tool-load-spec";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
@@ -2843,6 +2843,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Filter browser MCP only when Eval can expose the built-in browser prelude.
 			filterBrowser: initialBrowserPreludeAvailable,
 			extensionRoots: buildSessionExtensionRoots(),
+			// A declared `mcps:` policy decides which servers may be dialed at all;
+			// an empty policy must spawn nothing. Undefined keeps every discovered server.
+			serverAllowlist: mcpServerAllowlist(options.mcpLoad),
 		};
 		if (enableMCP && !mcpManager) {
 			if (deferMCPDiscoveryForUI) {

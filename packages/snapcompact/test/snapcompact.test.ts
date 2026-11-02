@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { AssistantMessage, Message, Model, ModelSpec, Usage } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -2028,4 +2029,51 @@ describe("data URL elision", () => {
 			`${snapcompact.DIM_ON}${"[".repeat(1200)} ${marker} ${"[".repeat(792)};base64,${snapcompact.DIM_OFF}`,
 		);
 	}, 2_000);
+});
+
+describe("episodes", () => {
+	const EPISODES =
+		"EPISODES\n===================\n- episode:abc · ok · 2 steps · Fix the retry loop\n- episode:def · ok · 1 step · Ship the search route";
+
+	it("renders episodes above HISTORY and leaves the archive frames byte-identical", async () => {
+		const preparation = makePreparation({
+			messagesToSummarize: [createUserMessage("A long first turn. ".repeat(500))],
+		});
+		const without = await snapcompact.compact(preparation, { frameSize: TEST_FRAME_SIZE, maxFrames: 5 });
+		const withEpisodes = await snapcompact.compact(preparation, {
+			frameSize: TEST_FRAME_SIZE,
+			maxFrames: 5,
+			episodes: EPISODES,
+		});
+
+		expect(withEpisodes.summary).toContain(EPISODES);
+		expect(withEpisodes.summary.indexOf("EPISODES\n===================")).toBeLessThan(
+			withEpisodes.summary.indexOf("HISTORY\n==================="),
+		);
+
+		const before = snapcompact.getPreservedArchive(without.preserveData)?.frames ?? [];
+		const after = snapcompact.getPreservedArchive(withEpisodes.preserveData)?.frames ?? [];
+		expect(before.length).toBeGreaterThan(0);
+		expect(after.map(frame => frame.data)).toEqual(before.map(frame => frame.data));
+	});
+
+	it("keeps the episodes text when a text-only reader re-renders the summary", async () => {
+		const first = await snapcompact.compact(
+			makePreparation({ messagesToSummarize: [createUserMessage("A long first turn. ".repeat(500))] }),
+			{ frameSize: TEST_FRAME_SIZE, maxFrames: 2, episodes: EPISODES },
+		);
+		const archive = snapcompact.getPreservedArchive(first.preserveData);
+		if (!archive) throw new Error("expected an archive");
+		const view = snapcompact.viewWithoutFrames(first.summary, archive);
+		expect(view.summary).toContain("episode:abc");
+	});
+
+	it("takes episodes as a plain option, with no dependency on the coding agent", () => {
+		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+			dependencies?: Record<string, string>;
+			devDependencies?: Record<string, string>;
+		};
+		const dependencies = { ...pkg.dependencies, ...pkg.devDependencies };
+		expect(Object.keys(dependencies)).not.toContain("@oh-my-pi/pi-coding-agent");
+	});
 });

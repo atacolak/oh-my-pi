@@ -2054,8 +2054,10 @@ export class SessionManager {
 			cwd: this.#cwd,
 			parentSession: options?.parentSession,
 			providerPromptCacheKey: options?.providerPromptCacheKey,
+			rootAgent: options?.rootAgent,
 			taskPromptCacheKey: options?.taskPromptCacheKey,
 		};
+
 		const workspace = normalizeSessionWorkspace({
 			cwd: this.#cwd,
 			directories: options?.additionalDirectories ?? [],
@@ -2519,7 +2521,9 @@ export class SessionManager {
 			parentSession: parentSessionId,
 			providerPromptCacheKey: SessionManager.getInheritedProviderPromptCacheKey(this.#header),
 			taskPromptCacheKey: this.#header.taskPromptCacheKey,
+			rootAgent: this.#header.rootAgent,
 		};
+
 		this.#sessionName = this.#header.title;
 		this.#titleSource = this.#header.titleSource;
 		this.#titleUpdatedAt = timestamp;
@@ -3507,17 +3511,23 @@ export class SessionManager {
 	}
 
 	/**
-	 * Journal an idle recap for this session in history.db. Recaps never enter
-	 * the session file or LLM context; in-memory sessions are not journaled.
+	 * Journal a recap for the episode it settled: the session journal row plus the
+	 * episode row itself. The episode id is explicit because the reply lands after
+	 * the run — often after the next one started — so whichever episode is current
+	 * by then is not the row this recap describes. An episode takes one recap.
+	 * Recaps never enter the session file or LLM context; in-memory sessions are
+	 * not journaled.
 	 */
-	recordRecap(recap: string): void {
-		if (this.#persist && this.#storage instanceof FileSessionStorage) {
-			recordSessionRecap(this.#sessionId, this.#cwd, recap);
-			// The recap settles the run that just ended, so it belongs on that row — not
-			// on the newest recap in the journal, which is the mistake that put one recap
-			// on every historical turn.
-			if (this.#episodeId) recordSessionEpisodeRecap(this.#episodeId, recap);
-		}
+	recordEpisodeRecap(episodeId: string, recap: string): boolean {
+		if (!(this.#persist && this.#storage instanceof FileSessionStorage)) return false;
+		if (!recordSessionEpisodeRecap(episodeId, recap)) return false;
+		recordSessionRecap(this.#sessionId, this.#cwd, recap);
+		return true;
+	}
+
+	/** Episode row of the run in flight, or of the run whose settle recap is still pending. */
+	get episodeId(): string | null {
+		return this.#episodeId;
 	}
 
 	/**
@@ -4014,6 +4024,15 @@ export class SessionManager {
 		return this.#header;
 	}
 
+	async setRootAgent(name: string): Promise<void> {
+		if (!this.#header) return;
+		const trimmed = name.trim();
+		if (!trimmed || this.#header.rootAgent === trimmed) return;
+		this.#header.rootAgent = trimmed;
+		this.#rewriteRequired = true;
+		await this.#rewriteAtomically();
+	}
+
 	static getInheritedProviderPromptCacheKey(header: SessionHeader | undefined): string | undefined {
 		return header?.taskPromptCacheKey !== undefined ? undefined : (header?.providerPromptCacheKey ?? header?.id);
 	}
@@ -4167,6 +4186,7 @@ export class SessionManager {
 			titleSource: this.#titleSource,
 			parentSession: this.#persist ? sourceSessionFile : undefined,
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
+			rootAgent: this.#header?.rootAgent,
 		};
 
 		const labels: LabelEntry[] = [];

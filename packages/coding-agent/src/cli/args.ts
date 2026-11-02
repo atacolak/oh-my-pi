@@ -32,6 +32,10 @@ export interface Args {
 	allowHome?: boolean;
 	provider?: string;
 	model?: string;
+	/** Discovered agent name for this root session (`--agent`). */
+	agent?: string;
+	/** Project root used only for resolving the named root agent. */
+	agentCwd?: string;
 	config?: string[];
 	smol?: string;
 	slow?: string;
@@ -88,6 +92,8 @@ export interface Args {
 	pluginDirs?: string[];
 	print?: boolean;
 	printThoughts?: boolean;
+	/** Experimental: use the app-viewport TUI render backend (interactive only). */
+	alt?: boolean;
 	export?: string;
 	noSkills?: boolean;
 	skills?: string[];
@@ -379,6 +385,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.print = true;
 		} else if (arg === "--print-thoughts") {
 			result.printThoughts = true;
+		} else if (arg === "--alt") {
+			result.alt = true;
 		} else if (arg === "--no-extensions") {
 			result.noExtensions = true;
 		} else if (arg === "--no-skills") {

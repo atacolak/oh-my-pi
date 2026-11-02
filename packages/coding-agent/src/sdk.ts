@@ -138,6 +138,7 @@ import {
 } from "./extensibility/skill-descriptions";
 import { resolvePath } from "./extensibility/utils";
 import {
+	buildSkillPromptMessage,
 	type LoadSkillsOptions,
 	loadSkills as loadSkillsInternal,
 	type Skill,
@@ -148,7 +149,7 @@ import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal }
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions, outRepliesActive } from "./internal-urls";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
-import { holdSharedLsp } from "./lsp/client";
+import { createLspClientOwner, holdSharedLsp, releaseLspClientOwner } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import {
 	deduplicateMCPToolsByName,
@@ -206,6 +207,7 @@ import {
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	replaceLlmImagesWithText,
+	SKILL_PROMPT_MESSAGE_TYPE,
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
@@ -248,10 +250,12 @@ import {
 	withoutAgentsMd,
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
+import { mcpServerAllowlist, type NamedLoadSet } from "./task/tool-load-spec";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
 import { isScoutSpawnable } from "./task/spawn-policy";
+import type { AutomationAuthorPolicy } from "./task/types";
 import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import {
 	AUTO_THINKING,
@@ -563,6 +567,8 @@ export interface CreateAgentSessionOptions {
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
 	spawns?: string;
+	/** Skill names to inject as hidden autoload prompts before the first turn. */
+	autoloadSkills?: string[];
 	/** User-authorized model agents inherited from the parent session for nested delegation. */
 	inheritedSessionAgents?: readonly AgentDefinition[];
 
@@ -836,6 +842,11 @@ export interface CreateAgentSessionOptions {
 	mountedToolNames?: string[];
 	/** Limit the session to explicitly supplied tool names, without discovered extras. */
 	restrictToolNames?: boolean;
+	/** Agent-profile eager/discoverable maps. Applied on new and restored sessions. */
+	toolLoad?: NamedLoadSet;
+	/** Agent-profile mcps: filter and load modes. Applied on new and restored sessions. */
+	mcpLoad?: NamedLoadSet;
+
 	/**
 	 * Permit only caller-supplied SDK custom tools inside a restricted session.
 	 * They must still be named in {@link toolNames}; discovered extensions, MCP,
@@ -866,11 +877,21 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Resolved root `--agent` name. Distinct from IRC display name. */
+	rootAgentName?: string;
+	/** Effective durable authoring grant from the resolved root AgentDefinition. */
+	automationAuthor?: AutomationAuthorPolicy;
 	/**
 	 * Agent definition name used to evaluate rule `agents` scoping. Defaults to
 	 * "main" for a top-level session / "sub" for a subagent.
 	 */
 	agentName?: string;
+	/**
+	 * Rules the session's profile declares, in declared order. Present (even empty) means
+	 * the profile owns its always-apply set and rule `agents` globs are not consulted;
+	 * absent keeps the `agents`-scoped bucketing a bare `main` session relies on.
+	 */
+	declaredRules?: readonly string[];
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
@@ -1433,6 +1454,8 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 	return {
 		sessionManager: ctx.sessionManager,
 		modelRegistry: ctx.modelRegistry,
+		rootAgentName: ctx.rootAgentName,
+		automationAuthor: ctx.automationAuthor,
 		model: ctx.model,
 		isIdle: ctx.isIdle,
 		hasQueuedMessages: ctx.hasPendingMessages,
@@ -2399,6 +2422,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			builtinRules: ttsrSettings.builtinRules,
 			disabledRules: ttsrSettings.disabledRules,
 			agentName: resolvedAgentName,
+			...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 		});
 		if (existingSession.injectedTtsrRules.length > 0) {
 			ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
@@ -2544,6 +2568,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// mutation (any tool) bumped it in the meantime.
 		const fileMutationVersions = new Map<string, number>();
 		const disposeCallbacks = new Set<() => void>();
+		const lspClientOwner = createLspClientOwner();
+		disposeCallbacks.add(() => releaseLspClientOwner(lspClientOwner));
 		const activeToolNames = new Set<string>();
 		const toolRegistry = new Map<string, Tool & Pick<ToolDefinition, "defaultInactive">>();
 		const setActiveToolNames = (names: Iterable<string>): void => {
@@ -2575,6 +2601,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				return sessionManager.getAdditionalDirectories();
 			},
 			enableLsp,
+			lspClientOwner,
 			lspReadOnly,
 			enableIrc: restrictToolNames ? false : options.enableIrc,
 			/**
@@ -2830,6 +2857,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Filter browser MCP only when Eval can expose the built-in browser prelude.
 			filterBrowser: initialBrowserPreludeAvailable,
 			extensionRoots: buildSessionExtensionRoots(),
+			// A declared `mcps:` policy decides which servers may be dialed at all;
+			// an empty policy must spawn nothing. Undefined keeps every discovered server.
+			serverAllowlist: mcpServerAllowlist(options.mcpLoad),
 		};
 		if (enableMCP && !mcpManager) {
 			if (deferMCPDiscoveryForUI) {
@@ -3725,6 +3755,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				...(options.parentAgentId ? { parentId: options.parentAgentId } : {}),
 			}),
 			createAnnotationsAPI,
+			options.rootAgentName,
+			options.automationAuthor,
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());
@@ -3747,6 +3779,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			settings,
 			localProtocolOptions,
+			rootAgentName: options.rootAgentName,
+			automationAuthor: options.automationAuthor,
 			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext, trackUserWait);
@@ -4222,6 +4256,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					disabledRules: ttsrSettings.disabledRules,
 					agentName: resolvedAgentName,
 					replaceTtsrRules: true,
+					...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 				});
 				rulebookRules = buckets.rulebookRules;
 				alwaysApplyRules = buckets.alwaysApplyRules;
@@ -5085,6 +5120,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			interactivePrompts: options.interactivePrompts,
 			rebindModelAfterDiscovery: options.model === undefined || options.rebindModelAfterDiscovery === true,
 			toolRegistry,
+			lspClientOwner,
 			reconcileBrowserMcpFilter: mcpManager
 				? async enabled => {
 						await mcpManager.reconcileBrowserFilter(enabled);
@@ -5152,6 +5188,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			obfuscator,
 			agentId: resolvedAgentId,
 			agentKind,
+			agentProfile: options.agentName,
 			providerSessionId: options.providerSessionId,
 			accountPoolScope,
 			providerPromptCacheKeySource,
@@ -5174,6 +5211,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
+		if (options.toolLoad || options.mcpLoad) {
+			session.setAgentLoadPolicy(options.toolLoad, options.mcpLoad);
+			const enabled = session.getEnabledToolNames();
+			const mounted = (options.toolLoad?.discoverable ?? []).filter(name => enabled.includes(name));
+			await session.setActiveToolPresentation(enabled, mounted);
+		}
+
 		credentialNoticeSession = session;
 		// Hashline snapshots are session-scoped: /new and switchSession fire the
 		// change callbacks, so clear the tool-side store there — stale tags would
@@ -5602,7 +5646,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				for (const server of startupLspServers) server.status = "connecting";
 				void (async () => {
 					try {
-						const result = await logger.time("warmupLspServers", warmupLspServers, cwd);
+						const result = await logger.time(
+							"warmupLspServers",
+							warmupLspServers,
+							cwd,
+							undefined,
+							lspClientOwner,
+						);
 						const serversByName = new Map(result.servers.map(server => [server.name, server] as const));
 						for (const server of startupLspServers) {
 							const next = serversByName.get(server.name);
@@ -5648,6 +5698,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				modelRegistry,
 				agentDir,
 				taskDepth,
+				hindsightCloseRetainBaselineTurns: session.hindsightCloseRetainBaselineTurns,
+				hindsightLoadedMessageCount: session.hindsightLoadedMessageCount,
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 			});
@@ -5730,9 +5782,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// reference is intentionally discarded (the listener retains it).
 		if (!restrictToolNames) {
 			if (cfgAutolearnEnabled.get(settings) && taskDepth === 0) {
-				await logger.time("startMemoryStartupTask", startMemoryBackend);
+				const start = logger.time("startMemoryStartupTask", startMemoryBackend);
+				session.trackMemoryBackendStart(start);
+				await start;
 			} else {
-				void logger.time("startMemoryStartupTask", startMemoryBackend);
+				session.trackMemoryBackendStart(logger.time("startMemoryStartupTask", startMemoryBackend));
 			}
 			if (taskDepth === 0) {
 				new AutoLearnController({
@@ -5835,6 +5889,26 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				if (owningSession.isDisposed) return;
 				await owningSession.refreshMCPTools(ownedMCPManager.getTools());
 			});
+		}
+
+		if (options.autoloadSkills?.length && skills.length > 0) {
+			for (const name of options.autoloadSkills) {
+				const skill = skills.find(entry => entry.name === name);
+				if (!skill) {
+					logger.warn("Autoload skill not found", { name });
+					continue;
+				}
+				const { message } = await buildSkillPromptMessage(skill, { args: "" }, "autoload");
+				await session.sendCustomMessage(
+					{
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: message,
+						display: false,
+						details: { name: skill.name, path: skill.filePath },
+					},
+					{ triggerTurn: false },
+				);
+			}
 		}
 
 		if (ownedMcpManager && !deferMCPDiscoveryForUI) {

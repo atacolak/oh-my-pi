@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,6 +11,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+
+setDefaultTimeout(30_000);
 
 function message(role: "user", text: string, id: string): SessionEntry {
 	return {

@@ -151,6 +151,12 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	"--model": (result, value) => {
 		result.model = value;
 	},
+	"--agent": (result, value) => {
+		result.agent = value;
+	},
+	"--agent-cwd": (result, value) => {
+		result.agentCwd = value;
+	},
 	"--smol": (result, value) => {
 		result.smol = value;
 	},
@@ -341,6 +347,7 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--plan-yolo",
 	"--print",
 	"--print-thoughts",
+	"--alt",
 	"--no-extensions",
 	"--no-skills",
 	"--no-rules",

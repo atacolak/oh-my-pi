@@ -13,7 +13,7 @@
  *   happened in this run" gets an indexed row instead of reconstructing it from the
  *   JSONL and guessing which recap belonged to which turn.
  * - `session_recaps`: append-only journal of idle recaps
- *   ({@link SessionManager.recordRecap}). Recaps are side-channel output that
+ *   ({@link SessionManager.recordEpisodeRecap}). Recaps are side-channel output that
  *   never enters the session JSONL or LLM context; this table is their only
  *   durable record. `omp gc` drops rows of archived sessions.
  *
@@ -185,7 +185,7 @@ INSERT INTO session_episodes (
 UPDATE session_episodes SET ended_at_ms = ?, step_count = ?, end_entry_id = ?, outcome = ?
 WHERE episode_id = ?
 			`),
-			attachEpisodeRecap: db.prepare("UPDATE session_episodes SET recap = ? WHERE episode_id = ?"),
+			attachEpisodeRecap: db.prepare("UPDATE session_episodes SET recap = ? WHERE episode_id = ? AND recap IS NULL"),
 			// A row still `running` when the next run starts never saw its `agent_end`:
 			// the process was killed or crashed. Closing it as `interrupted` with no end
 			// keeps the reader honest — it must not invent one.
@@ -431,15 +431,21 @@ export function updateSessionEpisodeFacts(episodeId: string, facts: EpisodeFacts
 	}
 }
 
-/** Attach the idle recap that settled this exact episode. */
-export function recordSessionEpisodeRecap(episodeId: string, recap: string): void {
+/**
+ * Attach the idle recap that settled this exact episode. An episode takes one
+ * recap: the first reply wins, so a replayed `agent_end` or a reloaded reporter
+ * cannot add a second. Returns whether this call is the one that landed it.
+ */
+export function recordSessionEpisodeRecap(episodeId: string, recap: string): boolean {
 	const index = openSessionIndex();
-	if (!index) return;
+	if (!index) return false;
 	try {
-		index.attachEpisodeRecap.run(recap, episodeId);
-		syncEpisodeSearchRow(index, episodeId);
+		const landed = index.attachEpisodeRecap.run(recap, episodeId).changes > 0;
+		if (landed) syncEpisodeSearchRow(index, episodeId);
+		return landed;
 	} catch (error) {
 		logger.debug("Session episode recap failed", { episodeId, error: String(error) });
+		return false;
 	}
 }
 

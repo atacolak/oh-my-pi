@@ -2727,6 +2727,24 @@ impl TodoStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoPhaseKind {
+	#[serde(rename = "continuing")]
+	Continuing,
+	#[serde(rename = "passive")]
+	Passive,
+}
+
+impl TodoPhaseKind {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Continuing => "continuing",
+			Self::Passive => "passive",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalOp {
 	#[serde(rename = "get")]
 	Get,
@@ -2897,6 +2915,8 @@ pub struct TodoItem {
 pub struct TodoPhase {
 	pub name: String,
 	pub tasks: Vec<TodoItem>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub kind: Option<TodoPhaseKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5993,7 +6013,7 @@ fn default_session_state_steering_mode() -> QueueMode {
 }
 
 fn default_session_state_follow_up_mode() -> QueueMode {
-	serde_json::from_str("\"one-at-a-time\"").expect("valid wire default")
+	serde_json::from_str("\"all\"").expect("valid wire default")
 }
 
 fn default_session_state_interrupt_mode() -> InterruptMode {

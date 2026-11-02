@@ -31,12 +31,13 @@ import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
+import type { AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { type AgentCompactionPolicy, parseAgentCompaction } from "../task/agent-compaction";
-import { normalizeToolNames } from "../tools/builtin-names";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
 import { buildPluginDirRoot } from "./plugin-dir-roots";
+import { parseNamedLoadSet, type NamedLoadSet } from "../task/tool-load-spec";
 
 /**
  * Standard paths for each config source.
@@ -291,18 +292,23 @@ export function parseModelList(value: unknown): string[] | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
-/** Parsed agent fields from frontmatter (excludes source/filePath/systemPrompt) */
 export interface ParsedAgentFields {
 	name: string;
 	description: string;
 	tools?: string[];
+	toolLoad?: NamedLoadSet;
+	mcps?: string[];
+	mcpLoad?: NamedLoadSet;
 	spawns?: string[] | "*";
 	model?: string[];
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
+	/** Rules this profile always applies, in declared order (array or CSV of rule names). */
+	rules?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
+	hide?: boolean;
 	/** `true` = keep `yield` and the output schema when `task.structured` is off. */
 	structured?: boolean;
 	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
@@ -311,6 +317,8 @@ export interface ParsedAgentFields {
 	advisor?: boolean | string;
 	/** Per-agent compaction policy from the `compaction:` block. */
 	compaction?: AgentCompactionPolicy;
+	/** Root-only durable authoring grant. Independent from `spawns`. */
+	automationAuthor?: AutomationAuthorPolicy;
 }
 
 /**
@@ -335,18 +343,10 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		return null;
 	}
 
-	// Only absent or null tools select defaults; malformed restrictions must not widen access.
-	const rawTools = frontmatter.tools;
-	let tools = rawTools == null ? undefined : (parseArrayOrCSV(rawTools) ?? []);
-	if (tools?.length === 0 && !(Array.isArray(rawTools) && rawTools.length === 0)) {
-		const valueType = Array.isArray(rawTools) ? "array" : typeof rawTools;
-		logger.warn("Agent tools declaration names no tools; using an empty built-in allowlist", {
-			agent: name,
-			valueType,
-		});
-	}
-	if (tools) tools = normalizeToolNames(tools);
-
+	const toolLoad = parseNamedLoadSet(frontmatter.tools, { agent: name, field: "tools", normalize: true });
+	const tools = toolLoad?.declared ? toolLoad.names : undefined;
+	const mcpLoad = parseNamedLoadSet(frontmatter.mcps, { agent: name, field: "mcps", normalize: false });
+	const mcps = mcpLoad?.declared ? mcpLoad.names : undefined;
 	// Parse spawns field (array, "*", or CSV)
 	let spawns: string[] | "*" | undefined;
 	if (frontmatter.spawns === "*") {
@@ -378,6 +378,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const thinkingLevel = parseConfiguredThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
 	const blocking = parseBoolean(frontmatter.blocking);
+	const hide = parseBoolean(frontmatter.hide);
 	const structured = parseBoolean(frontmatter.structured);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
 	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
@@ -395,22 +396,57 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
+	const automationAuthor = parseAutomationAuthor(frontmatter.automationAuthor);
+	// `rules` names the rules this profile always applies. Declared order is kept: it is
+	// the order the prompt receives them in, so a profile can rank what it cares about.
+	const rules = parseArrayOrCSV(frontmatter.rules)
+		?.map(s => s.trim())
+		.filter(Boolean);
 	return {
 		name,
 		description,
 		tools,
+		toolLoad,
+		mcps,
+		mcpLoad,
 		spawns,
 		model,
 		output,
 		thinkingLevel,
 		blocking,
+		hide,
 		structured,
 		autoloadSkills,
+		rules,
 		readSummarize,
 		prewalk,
 		advisor,
 		compaction: parseAgentCompaction(frontmatter.compaction),
+		automationAuthor,
 	};
+}
+
+function parseAutomationAuthor(value: unknown): AutomationAuthorPolicy | undefined {
+	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const jurisdiction = record.jurisdiction;
+	if (jurisdiction !== "descendants" && jurisdiction !== "scope") return undefined;
+	const allowed = record.allowedAgents;
+	let allowedAgents: string[] | "*";
+	if (allowed === "*") {
+		allowedAgents = "*";
+	} else if (
+		Array.isArray(allowed) &&
+		allowed.length > 0 &&
+		allowed.every(item => typeof item === "string" && item.trim().length > 0)
+	) {
+		allowedAgents = allowed.map(item => String(item).trim());
+	} else {
+		return undefined;
+	}
+	return { allowedAgents, jurisdiction };
 }
 
 async function globIf(
@@ -886,6 +922,7 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 	// Process direct files
 	for (const match of directFiles) {
 		if (match.path.includes("/")) continue;
+		if (isExtensionTestFile(match.path)) continue;
 		discovered.add(path.join(dir, match.path));
 	}
 	// Track which subdirectories have package.json manifests with declared extensions
@@ -928,6 +965,13 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 		discovered.add(path.join(dir, preferredPath));
 	}
 	return [...discovered];
+}
+
+export function isExtensionTestFile(fileName: string): boolean {
+	const dot = fileName.lastIndexOf(".");
+	if (dot <= 0) return false;
+	const stem = fileName.slice(0, dot);
+	return stem.endsWith(".test") || stem.endsWith(".spec");
 }
 
 /**

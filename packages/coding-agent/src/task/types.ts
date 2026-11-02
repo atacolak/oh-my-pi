@@ -13,6 +13,13 @@ import { $env, isRecord } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { AgentCompactionPolicy } from "./agent-compaction";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { NamedLoadSet } from "./tool-load-spec";
+
+/** Durable automation-authoring grant carried by a root AgentDefinition. Independent from `spawns`. */
+export interface AutomationAuthorPolicy {
+	allowedAgents: string[] | "*";
+	jurisdiction: "descendants" | "scope";
+}
 
 const parseNumber = (value: string | undefined, defaultValue: number): number => {
 	if (value) {
@@ -318,14 +325,28 @@ export interface AgentDefinition {
 	description: string;
 	systemPrompt: string;
 	tools?: string[];
+	toolLoad?: NamedLoadSet;
+	mcps?: string[];
+	mcpLoad?: NamedLoadSet;
 	spawns?: string[] | "*";
+	/** Root-only durable authoring grant. Absent means no `automation_author` authority. */
+	automationAuthor?: AutomationAuthorPolicy;
+
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;
 	output?: unknown;
 	blocking?: boolean;
+	/** Omit this definition from ambient agent rosters while preserving exact-name resolution. */
+	hide?: boolean;
 	/** `true` = task spawns keep the `yield` tool and this agent's `output` schema even when `task.structured` is off. */
 	structured?: boolean;
 	autoloadSkills?: string[];
+	/**
+	 * Rules this profile always applies, in declared order. Present (even empty) means the
+	 * profile owns its always-apply set and rule `agents` globs are not consulted; absent
+	 * keeps the legacy `agents`-scoped bucketing.
+	 */
+	rules?: string[];
 	/** When `false`, the agent's `read` tool returns verbatim file content instead of structural summaries. */
 	readSummarize?: boolean;
 	/** Prewalk hand-off for the spawned session: `true` = switch to the default prewalk target at the first edit/write, string = custom target model pattern. */

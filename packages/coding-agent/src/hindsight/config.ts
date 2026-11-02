@@ -18,6 +18,7 @@ import {
 	cfgHindsightMentalModelAutoSeed,
 	cfgHindsightMentalModelMaxRenderChars,
 	cfgHindsightMentalModelsEnabled,
+	cfgHindsightProvenanceTags,
 	cfgHindsightRecallBudget,
 	cfgHindsightRecallContextTurns,
 	cfgHindsightRecallMaxQueryChars,
@@ -31,7 +32,10 @@ import {
 	cfgHindsightRetainMission,
 	cfgHindsightRetainMode,
 	cfgHindsightRetainOverlapTurns,
+	cfgHindsightRetainStrategy,
 	cfgHindsightRetainTimeoutMs,
+	cfgHindsightRetainUpdateMode,
+	cfgHindsightScopeTags,
 	cfgHindsightScoping,
 } from "./settings";
 
@@ -44,6 +48,13 @@ export interface HindsightConfig {
 	bankId: string | null;
 	bankIdPrefix: string;
 	scoping: HindsightScoping;
+	scopeTags: string[];
+	/**
+	 * Write-only provenance tags merged into every retain. They never reach recall
+	 * filters or observation scopes, so stamping an actor or role cannot narrow
+	 * what the session can recall.
+	 */
+	provenanceTags: string[];
 	bankMission: string;
 	retainMission: string | null;
 
@@ -54,6 +65,10 @@ export interface HindsightConfig {
 	retainEveryNTurns: number;
 	retainOverlapTurns: number;
 	retainContext: string;
+	/** How full-session retains update the existing document. Default replace. */
+	retainUpdateMode: "replace" | "append";
+	/** Per-item Hindsight extraction strategy. Null/empty omits the request field. */
+	retainStrategy: string | null;
 
 	recallBudget: "low" | "mid" | "high";
 	recallMaxTokens: number;
@@ -94,6 +109,14 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 		bankId: cfgHindsightBankId.get(settings) ?? null,
 		bankIdPrefix: cfgHindsightBankIdPrefix.get(settings) ?? "",
 		scoping: cfgHindsightScoping.get(settings),
+		scopeTags: [...cfgHindsightScopeTags.get(settings)]
+			.filter((item): item is string => typeof item === "string")
+			.map(item => item.trim())
+			.filter(Boolean),
+		provenanceTags: [...cfgHindsightProvenanceTags.get(settings)]
+			.filter((item): item is string => typeof item === "string")
+			.map(item => item.trim())
+			.filter(Boolean),
 		bankMission: cfgHindsightBankMission.get(settings) ?? "",
 		retainMission: cfgHindsightRetainMission.get(settings) ?? null,
 
@@ -104,6 +127,8 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 		retainEveryNTurns: cfgHindsightRetainEveryNTurns.get(settings),
 		retainOverlapTurns: cfgHindsightRetainOverlapTurns.get(settings),
 		retainContext: cfgHindsightRetainContext.get(settings),
+		retainUpdateMode: cfgHindsightRetainUpdateMode.get(settings),
+		retainStrategy: cfgHindsightRetainStrategy.get(settings)?.trim() || null,
 
 		recallBudget: cfgHindsightRecallBudget.get(settings),
 		recallMaxTokens: cfgHindsightRecallMaxTokens.get(settings),
@@ -125,6 +150,23 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 	};
 
 	return config;
+}
+
+/**
+ * Write-only provenance tags for one session's retains: operator-configured
+ * tags plus `role:<profile>` for the mounted agent profile.
+ *
+ * The profile is lowercased like rule scoping, so two spellings of one agent
+ * cannot split provenance into two literal tag values. Provenance is merged
+ * into retains only — never into recall filters or observation scopes.
+ */
+export function resolveProvenanceTags(
+	config: Pick<HindsightConfig, "provenanceTags">,
+	agentProfile?: string | null,
+): string[] {
+	const profile = agentProfile?.trim().toLowerCase();
+	const tags = profile ? [...config.provenanceTags, `role:${profile}`] : [...config.provenanceTags];
+	return [...new Set(tags.map(tag => tag.trim()).filter(Boolean))];
 }
 
 /** Whether the caller has enough config to talk to a Hindsight server. */

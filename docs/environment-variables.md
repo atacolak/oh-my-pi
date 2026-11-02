@@ -534,7 +534,12 @@ Boolean values follow the setting-backed flag rules above: an empty value is ign
 Integer values use the base-10 `parseInt` prefix (`5000ms` reads as `5000`, `2.5` as `2`);
 empty and non-numeric values are ignored, and the parsed integer is not clamped. Enum values
 must match one of the listed lowercase values (surrounding whitespace is ignored); invalid values
-are ignored.
+are ignored. Array values are JSON arrays of strings, e.g.
+`HINDSIGHT_PROVENANCE_TAGS='["team:infra","repo:omp"]'`.
+
+`HINDSIGHT_PROVENANCE_TAGS` (and the automatic `role:<agent-profile>` tag) is write-only:
+it is attached to retained memories but never merged into recall filters or observation
+consolidation scopes, so stamping provenance cannot narrow what a session recalls.
 
 | Variable                           | Setting overridden              | Accepted value / built-in default                                                 |
 | ---------------------------------- | ------------------------------- | --------------------------------------------------------------------------------- |
@@ -542,7 +547,10 @@ are ignored.
 | `HINDSIGHT_API_TOKEN`              | `hindsight.apiToken`            | Non-empty string; unset by default                                                |
 | `HINDSIGHT_BANK_ID`                | `hindsight.bankId`              | Non-empty string; unset by default, so the selected scoping mode derives the bank |
 | `HINDSIGHT_BANK_MISSION`           | `hindsight.bankMission`         | Non-empty string; default empty string                                            |
+| `HINDSIGHT_PROVENANCE_TAGS`        | `hindsight.provenanceTags`      | JSON array of write-only tags; default `[]` (see the note below)                  |
 | `HINDSIGHT_RETAIN_MODE`            | `hindsight.retainMode`          | `full-session` or `last-turn`; default `full-session`                             |
+| `HINDSIGHT_RETAIN_UPDATE_MODE`     | `hindsight.retainUpdateMode`    | `replace` or `append`; default `replace`                                          |
+| `HINDSIGHT_RETAIN_STRATEGY`        | `hindsight.retainStrategy`      | Non-empty strategy; unset omits the request field and uses the bank default       |
 | `HINDSIGHT_RECALL_BUDGET`          | `hindsight.recallBudget`        | `low`, `mid`, or `high`; default `mid`                                            |
 | `HINDSIGHT_AUTO_RECALL`            | `hindsight.autoRecall`          | Boolean; default `true`                                                           |
 | `HINDSIGHT_AUTO_RETAIN`            | `hindsight.autoRetain`          | Boolean; default `true`                                                           |

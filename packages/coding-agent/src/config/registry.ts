@@ -720,6 +720,17 @@ export class Setting<T, Id extends string = string> extends Derived<T> {
 		else settingsOf(scope).writeValue(this, this.#normalize(value), "global");
 	}
 
+	/** Persists `value` to the native project config (`.omp/config.yml`). */
+	setProject(scope: ScopeLike, value: T): void {
+		if (value === undefined) settingsOf(scope).unsetProjectValue(this);
+		else settingsOf(scope).writeValue(this, this.#normalize(value), "project");
+	}
+
+	/** Removes the key from the native project config. */
+	unsetProject(scope: ScopeLike): boolean {
+		return settingsOf(scope).unsetProjectValue(this);
+	}
+
 	/**
 	 * Runtime-only override (not persisted); `undefined` removes it ({@link clearOverride}).
 	 *

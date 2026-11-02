@@ -38,7 +38,12 @@ function toolCalls(message: AgentMessage): readonly ToolCall[] {
 	return (message as AssistantMessage).content.filter((block): block is ToolCall => block.type === "toolCall");
 }
 
-function sliceEntries(
+/**
+ * Entries of the run an episode row describes: after its start entry (the
+ * leaf the run began from) through its end entry, inclusive. An absent end
+ * entry means the run is still open and the slice runs to the end.
+ */
+export function episodeSliceEntries(
 	entries: readonly SessionEntry[],
 	startEntryId: string | null,
 	endEntryId: string | null,
@@ -63,7 +68,7 @@ export function deriveEpisodeFacts(
 	startEntryId: string | null,
 	endEntryId: string | null,
 ): EpisodeFacts {
-	const slice = sliceEntries(entries, startEntryId, endEntryId);
+	const slice = episodeSliceEntries(entries, startEntryId, endEntryId);
 	let triggerSummary: string | null = null;
 	const targets: string[] = [];
 	const seen = new Set<string>();

@@ -131,6 +131,8 @@ import {
 } from "./session-workspace";
 import {
 	finishSessionEpisode,
+	getSessionEpisode,
+	listChapterRecapLines,
 	recordSessionEpisodeRecap,
 	recordSessionRecap,
 	recordSessionTitle,
@@ -3525,16 +3527,36 @@ export class SessionManager {
 		return true;
 	}
 
+	/**
+	 * Recaps already logged in this session under one chapter title, as `- `
+	 * bullet lines oldest first. The title is the chapter's identity, so a
+	 * retitled session reads nothing from the chapter it left.
+	 */
+	listChapterRecapLines(focusTitle: string, limit: number): string {
+		if (!(this.#persist && this.#storage instanceof FileSessionStorage)) return "";
+		return listChapterRecapLines(this.#sessionId, focusTitle, limit);
+	}
+
 	/** Episode row of the run in flight, or of the run whose settle recap is still pending. */
 	get episodeId(): string | null {
 		return this.#episodeId;
 	}
 
 	/**
+	 * Chapter title the episode row was opened under, or null when the row is not
+	 * indexed (in-memory sessions). Reading the chapter back from the row keeps
+	 * the recap request keyed on the same identity the EPISODES section groups by,
+	 * so the two can never disagree about what a chapter is.
+	 */
+	episodeChapterTitle(episodeId: string): string | null {
+		return getSessionEpisode(episodeId)?.focusTitle ?? null;
+	}
+
+	/**
 	 * Open an indexed row for the run that just started.
 	 *
-	 * The id stays readable after {@link finishAgentEpisode}: the settle event that
-	 * closes the row is where its recap is addressed from.
+	 * Kept until the settle recap has landed: the recap fires about a second after
+	 * `agent_end`, so the id has to outlive the close.
 	 */
 	startAgentEpisode(trigger: {
 		kind?: EpisodeTriggerKind | null;
@@ -3570,6 +3592,7 @@ export class SessionManager {
 			stepCount: input.stepCount,
 			endEntryId: input.endEntryId ?? null,
 			outcome: input.outcome,
+			entries: this.#entries,
 		});
 	}
 

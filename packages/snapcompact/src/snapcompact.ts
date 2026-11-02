@@ -675,6 +675,12 @@ export interface Options<TMessage = Message> extends SerializeOptions {
 	frameSize?: number;
 	/** Upper limit on archive frames; clamped to (and defaulting to) {@link MAX_FRAMES_DEFAULT}. */
 	maxFrames?: number;
+	/**
+	 * Plain-text episode index assembled by the host and rendered above HISTORY.
+	 * It is summary text, never archive source: the planner rasterizes only the
+	 * serialized conversation, so an EPISODES section cannot become frames.
+	 */
+	episodes?: string;
 }
 
 /** Result of rendering one frame. */
@@ -2318,6 +2324,7 @@ export function viewWithoutThinking(summary: string, archive: Archive, details?:
 						frameCount: 0,
 						truncatedChars,
 						includedPreviousSummary: text.startsWith(PREVIOUS_SUMMARY_HEAD),
+						episodes: summaryEpisodesSection(summary),
 						files: files.length > 0 ? files : undefined,
 						includeThinking: false,
 					}),
@@ -2332,8 +2339,21 @@ export function viewWithoutThinking(summary: string, archive: Archive, details?:
 	};
 }
 
+const EPISODES_SECTION_HEAD = "EPISODES\n===================\n";
 const FILES_SECTION_HEAD = "FILES\n===================\n";
 const HISTORY_SECTION_HEAD = "HISTORY\n===================";
+
+/** The EPISODES section of a snapcompact summary as it was rendered, or `undefined` when it lists none. */
+function summaryEpisodesSection(summary: string): string | undefined {
+	const start = summary.indexOf(EPISODES_SECTION_HEAD);
+	if (start < 0) return undefined;
+	const historyStart = summary.lastIndexOf(HISTORY_SECTION_HEAD);
+	const filesStart = summary.indexOf(FILES_SECTION_HEAD, start);
+	const end = filesStart >= 0 && filesStart < historyStart ? filesStart : historyStart;
+	if (end <= start) return undefined;
+	const episodes = summary.slice(start + EPISODES_SECTION_HEAD.length, end).replace(TRAILING_LINE_BREAKS, "");
+	return episodes.length > 0 ? episodes : undefined;
+}
 
 /** The FILES section of a snapcompact summary as it was rendered, or `undefined` when it lists none. */
 function summaryFileSection(summary: string): string | undefined {
@@ -2433,6 +2453,7 @@ export function viewWithoutFrames(
 			frameCount: 0,
 			truncatedChars: textArchive.truncatedChars,
 			includedPreviousSummary: source.startsWith(PREVIOUS_SUMMARY_HEAD),
+			episodes: summaryEpisodesSection(summary),
 			files: summaryFileSection(summary),
 			includeThinking: summaryIncludesThinking(summary) && !dropThinking,
 		}),
@@ -2559,9 +2580,10 @@ export async function compact<TMessage = Message>(
 
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	const files = formatFileList(readFiles, modifiedFiles, fileOps.read);
+	const episodes = options?.episodes?.trim();
 
 	let summary: string;
-	if (frames.length === 0 && textHead.length === 0 && textTail.length === 0 && files.length === 0) {
+	if (frames.length === 0 && textHead.length === 0 && textTail.length === 0 && files.length === 0 && !episodes) {
 		summary = "No prior history.";
 	} else {
 		summary = prompt.render(snapcompactSummaryPrompt, {
@@ -2575,6 +2597,7 @@ export async function compact<TMessage = Message>(
 			lineRepeated: high.lineRepeat > 1,
 			truncatedChars,
 			includedPreviousSummary,
+			episodes: episodes ? episodes : undefined,
 			files: files.length > 0 ? files : undefined,
 			includeThinking: options?.includeThinking !== false,
 		});

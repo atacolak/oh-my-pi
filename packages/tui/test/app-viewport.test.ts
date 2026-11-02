@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { type AppViewportScrollRegion, type Component, CURSOR_MARKER, type Focusable, TUI } from "@oh-my-pi/pi-tui";
+import {
+	type AppViewportScrollRegion,
+	AppViewportScrollEnd,
+	type Component,
+	CURSOR_MARKER,
+	type Focusable,
+	TUI,
+} from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
 afterEach(() => {
@@ -210,6 +217,29 @@ describe("TUI app viewport backend", () => {
 			}
 		});
 	});
+	it("scrolls the roots between the transcript and the scroll end with it", async () => {
+		await withEnv("PI_TUI_RENDER_BACKEND", "app-viewport", async () => {
+			const term = new VirtualTerminal(40, 6);
+			const tui = new TUI(term);
+			tui.addChild(new TranscriptComponent(Array.from({ length: 12 }, (_value, index) => `row-${index}`)));
+			tui.addChild(new StaticLines(["todo-0", "todo-1", "todo-2"]));
+			tui.addChild(new AppViewportScrollEnd());
+			tui.addChild(new StaticLines(["draft-0", "draft-1"]));
+
+			try {
+				tui.start();
+				await flushRender(term);
+				expect(viewportContent(term)).toEqual(["row-11", "todo-0", "todo-1", "todo-2", "draft-0", "draft-1"]);
+
+				term.sendInput("\x1b[<64;1;1M");
+				await flushRender(term);
+				expect(viewportContent(term)).toEqual(["row-8", "row-9", "row-10", "row-11", "draft-0", "draft-1"]);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
 	it("positions the hardware cursor in sticky chrome", async () => {
 		await withEnv("PI_TUI_RENDER_BACKEND", "app-viewport", async () => {
 			const term = new VirtualTerminal(40, 5);

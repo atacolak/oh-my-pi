@@ -54,6 +54,8 @@ interface HostOptions {
 	sessionName?: string | undefined;
 	goal?: string;
 	priorRecaps?: string;
+	/** Chapter recorded on the episode row; absent means the row is not indexed. */
+	episodeChapter?: string | null;
 }
 
 /**
@@ -81,6 +83,7 @@ function createHost(initialEpisodeId: string | null, options: HostOptions = {}):
 				return episodeId;
 			},
 			getSessionName: () => ("sessionName" in options ? options.sessionName : "test session"),
+			episodeChapterTitle: () => options.episodeChapter ?? null,
 			listChapterRecapLines: (focusTitle: string, limit: number) => {
 				chapterQueries.push({ focusTitle, limit });
 				return options.priorRecaps ?? "";
@@ -202,7 +205,7 @@ describe("idle maintenance episode recap", () => {
 
 	it("asks for the log line inside the reminder wrapper with the chapter's earlier recaps", async () => {
 		const host = createHost("episode:one", {
-			goal: "Ship the recap prompt",
+			episodeChapter: "Ship the recap prompt",
 			priorRecaps: "- moved the parser\n- fixed the guard",
 		});
 		maintenance = new IdleMaintenance(host.host, {});
@@ -219,6 +222,35 @@ Earlier recaps in this chapter (already logged — do NOT repeat):
 </system-reminder>`,
 		]);
 		expect(host.chapterQueries).toEqual([{ focusTitle: "Ship the recap prompt", limit: 5 }]);
+	});
+
+	it("keys the chapter on the episode row, not the goal objective", async () => {
+		// A goal-mode objective is not the label the row was opened under: keying
+		// the lookup on it reads no earlier recaps at all.
+		const host = createHost("episode:one", {
+			goal: "An objective that is not the chapter",
+			episodeChapter: "the row chapter",
+			priorRecaps: "- earlier",
+		});
+		maintenance = new IdleMaintenance(host.host, {});
+
+		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		await host.nextRecord(1);
+
+		expect(host.chapterQueries).toEqual([{ focusTitle: "the row chapter", limit: 5 }]);
+		expect(host.ephemeralCalls[0]).toContain(
+			"Session chapter (already shown above; do not restate): the row chapter",
+		);
+	});
+
+	it("falls back to the live title when the run has no indexed row", async () => {
+		const host = createHost("episode:one", { goal: "An objective", priorRecaps: "- earlier" });
+		maintenance = new IdleMaintenance(host.host, {});
+
+		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		await host.nextRecord(1);
+
+		expect(host.chapterQueries).toEqual([{ focusTitle: "test session", limit: 5 }]);
 	});
 
 	it("leaves the chapter and recap blocks out when the session has neither", async () => {

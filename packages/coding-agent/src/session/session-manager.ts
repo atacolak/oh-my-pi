@@ -131,6 +131,7 @@ import {
 } from "./session-workspace";
 import {
 	finishSessionEpisode,
+	getSessionEpisode,
 	listChapterRecapLines,
 	recordSessionEpisodeRecap,
 	recordSessionRecap,
@@ -3539,6 +3540,16 @@ export class SessionManager {
 	/** Episode row of the run in flight, or of the run whose settle recap is still pending. */
 	get episodeId(): string | null {
 		return this.#episodeId;
+	}
+
+	/**
+	 * Chapter title the episode row was opened under, or null when the row is not
+	 * indexed (in-memory sessions). Reading the chapter back from the row keeps
+	 * the recap request keyed on the same identity the EPISODES section groups by,
+	 * so the two can never disagree about what a chapter is.
+	 */
+	episodeChapterTitle(episodeId: string): string | null {
+		return getSessionEpisode(episodeId)?.focusTitle ?? null;
 	}
 
 	/**

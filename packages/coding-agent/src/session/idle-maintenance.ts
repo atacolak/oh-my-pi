@@ -52,7 +52,6 @@ export type IdleMaintenanceSession = SessionSettleHost &
 		| "waitForIdle"
 		| "waitForAdmittedSubmissions"
 		| "getContextUsage"
-		| "getGoalModeState"
 		| "getTodoPhases"
 		| "runIdleCompaction"
 		| "promptCacheEntry"
@@ -358,12 +357,12 @@ export class IdleMaintenance {
 	}
 
 	/**
-	 * The recap request: live chapter and active task anchor it, and the chapter's own earlier
+	 * The recap request: the chapter and active task anchor it, and the chapter's own earlier
 	 * recaps keep it from restating what is already logged. A new chapter shares no title with
 	 * the one before it, so it starts with no earlier lines.
 	 */
-	#recapPromptText(): string {
-		const chapter = this.#goalText() ?? "";
+	#recapPromptText(episodeId: string | null): string {
+		const chapter = this.#chapterTitle(episodeId);
 		return prompt.render(idleRecapPrompt, {
 			goal: chapter,
 			priorRecaps: chapter ? this.#session.sessionManager.listChapterRecapLines(chapter, PRIOR_RECAP_LIMIT) : "",
@@ -372,12 +371,24 @@ export class IdleMaintenance {
 	}
 
 	/**
+	 * The chapter this run belongs to, read back from the episode row it closed so the request can
+	 * never key on a label the row was not opened under. A goal-mode objective is not a chapter:
+	 * it differs from the title the row carries, and a key that disagrees with the row silently
+	 * reads no earlier recaps at all. A session with no indexed row (in-memory) falls back to the
+	 * live title, which is what a row would have carried.
+	 */
+	#chapterTitle(episodeId: string | null): string {
+		const indexed = episodeId ? this.#session.sessionManager.episodeChapterTitle(episodeId) : null;
+		return (indexed ?? this.#session.sessionManager.getSessionName() ?? "").trim();
+	}
+
+	/**
 	 * Generate the delayed idle recap with an ephemeral side-channel turn over the current conversation,
-	 * journal it, then hand it to the owner's `onRecap`. Live goal/title and the active todo task anchor the
-	 * request because the snapshot only carries conversation history. The generation test and the addressed
-	 * write both read the `agent_end` snapshot, never the whole session tail, which by then belongs to a
-	 * later run. Quiet and unblocked state is re-read when the reply lands, so a reply for a stretch that
-	 * has since ended is never announced.
+	 * journal it, then hand it to the owner's `onRecap`. The chapter captured with the run and the active
+	 * todo task anchor the request because the snapshot only carries conversation history. The generation
+	 * test and the addressed write both read the `agent_end` snapshot, never the whole session tail, which
+	 * by then belongs to a later run. Quiet and unblocked state is re-read when the reply lands, so a reply
+	 * for a stretch that has since ended is never announced.
 	 */
 	async #runRecap(): Promise<void> {
 		const pending = this.#pending;
@@ -390,7 +401,7 @@ export class IdleMaintenance {
 				this.#complete(pending, "recap");
 				return;
 			}
-			const promptText = this.#recapPromptText();
+			const promptText = this.#recapPromptText(pending.episodeId);
 			const { replyText } = await session.runEphemeralTurn({ promptText, signal: run.signal });
 			if (this.#recapRun !== run || run.signal.aborted) return;
 			if (this.#isBlocked()) return;
@@ -429,7 +440,7 @@ export class IdleMaintenance {
 	async #runEpisodeRecap(episodeId: string): Promise<void> {
 		const session = this.#session;
 		if (!session.model) return;
-		const promptText = this.#recapPromptText();
+		const promptText = this.#recapPromptText(episodeId);
 		const { replyText } = await session.runEphemeralTurn({
 			promptText,
 			signal: this.#recapLifetime.signal,
@@ -448,12 +459,6 @@ export class IdleMaintenance {
 		if (pending.recap || pending.compaction || this.#pending !== pending) return;
 		this.#pending = undefined;
 		this.#check++;
-	}
-
-	#goalText(): string | undefined {
-		const goal = this.#session.getGoalModeState()?.goal.objective.trim();
-		if (goal) return goal;
-		return this.#session.sessionManager.getSessionName()?.trim() || undefined;
 	}
 }
 

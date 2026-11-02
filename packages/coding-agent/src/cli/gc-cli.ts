@@ -1082,17 +1082,24 @@ function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { d
 		const hasHistory = tableExists(db, "history") && tableHasColumn(db, "history", "session_id");
 		const hasRecaps = tableExists(db, "session_recaps");
 		const hasTitles = tableExists(db, "session_titles");
-		if (!hasHistory && !hasRecaps && !hasTitles) return { deleted: 0, ftsRebuilt: false };
+		const hasEpisodes = tableExists(db, "session_episodes");
+		if (!hasHistory && !hasRecaps && !hasTitles && !hasEpisodes) return { deleted: 0, ftsRebuilt: false };
 		const hasFts = hasHistory && tableExists(db, "history_fts");
 		using deleteStmt = hasHistory ? db.prepare("DELETE FROM history WHERE session_id = ?") : undefined;
 		// Recaps and titles are session-scoped side output with no life beyond their session.
 		using deleteRecapsStmt = hasRecaps ? db.prepare("DELETE FROM session_recaps WHERE session_id = ?") : undefined;
 		using deleteTitlesStmt = hasTitles ? db.prepare("DELETE FROM session_titles WHERE session_id = ?") : undefined;
+		// Episode rows are session-scoped like the rest of the index: an archived session's
+		// runs are not something a later reader can open.
+		using deleteEpisodesStmt = hasEpisodes
+			? db.prepare("DELETE FROM session_episodes WHERE session_id = ?")
+			: undefined;
 		let deleted = 0;
 		const tx = db.transaction((ids: string[]) => {
 			for (const id of ids) {
 				deleteRecapsStmt?.run(id);
 				deleteTitlesStmt?.run(id);
+				deleteEpisodesStmt?.run(id);
 				if (!deleteStmt) continue;
 				const result = deleteStmt.run(id) as SqliteRunResult;
 				deleted += sqliteNumber(result.changes);

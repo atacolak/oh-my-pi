@@ -4475,6 +4475,15 @@ export class AgentSession implements SettingsScope {
 			this.#advisors.onPrimaryAgentStart();
 			this.#emitRunState("running");
 			this.#maintenance.noteTurnStarted();
+			// One indexed row per run. The trigger kind is left unset until the caller
+			// that knows it (a prompt source) can name it; inventing "user" here would
+			// mislabel mail- and job-driven runs.
+			// The leaf is the exact entry the run starts from, which is what makes an
+			// episode row joinable to its `.jsonl` slice without guessing by timestamp.
+			this.sessionManager.startAgentEpisode({
+				focusTitle: this.sessionManager.getSessionName() ?? null,
+				startEntryId: this.sessionManager.getLeafId(),
+			});
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
@@ -5756,6 +5765,15 @@ export class AgentSession implements SettingsScope {
 	): Promise<void> {
 		this.#settledAgentEnd = event;
 		this.#emitRunState("idle");
+		// A settle that will continue (retry, reminder, compaction) is not the end of the
+		// run, so only a terminal one closes the episode row.
+		if (options?.willContinue !== true) {
+			this.sessionManager.finishAgentEpisode({
+				stepCount: this.#runToolCallIds.size,
+				outcome: this.#prunedTerminalFailure ? "error" : "ok",
+				endEntryId: this.sessionManager.getLeafId(),
+			});
+		}
 		// Tagged isTerminal so subscribers can tell final settles from scheduled
 		// continuations, and `yielded` so they can tell the agent's own follow-up
 		// work (retries, reminders, compaction) from a finished turn that only

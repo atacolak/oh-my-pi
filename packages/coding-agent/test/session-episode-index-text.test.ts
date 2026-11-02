@@ -38,6 +38,44 @@ describe("formatEpisodeIndex", () => {
 		expect(text?.split("\n")).toHaveLength(1);
 	});
 
+	it("groups consecutive episodes that share a focus title under one chapter header", () => {
+		const episodes = [
+			episode({ episodeId: "episode:1", focusTitle: "Ship search", startedAtMs: 1_000 }),
+			episode({ episodeId: "episode:2", focusTitle: "Ship search", startedAtMs: 2_000 }),
+			episode({ episodeId: "episode:3", focusTitle: "Fix recap", startedAtMs: 3_000 }),
+			episode({ episodeId: "episode:4", focusTitle: "Fix recap", startedAtMs: 4_000 }),
+		];
+		const text = formatEpisodeIndex(episodes)!;
+		const lines = text.split("\n");
+		expect(lines.filter(line => line === "### Ship search")).toHaveLength(1);
+		expect(lines.filter(line => line === "### Fix recap")).toHaveLength(1);
+		expect(lines.indexOf("### Ship search")).toBeLessThan(lines.indexOf("### Fix recap"));
+		expect(lines.indexOf("episode:2")).toBeLessThan(lines.indexOf("### Fix recap"));
+	});
+
+	it("starts a new chapter on a title change and never merges non-consecutive duplicates", () => {
+		const episodes = [
+			episode({ episodeId: "episode:1", focusTitle: "A", startedAtMs: 1_000 }),
+			episode({ episodeId: "episode:2", focusTitle: "B", startedAtMs: 2_000 }),
+			episode({ episodeId: "episode:3", focusTitle: "A", startedAtMs: 3_000 }),
+		];
+		const text = formatEpisodeIndex(episodes)!;
+		const lines = text.split("\n");
+		expect(lines.filter(line => line === "### A")).toHaveLength(2);
+		expect(lines.filter(line => line === "### B")).toHaveLength(1);
+		expect(lines.indexOf("### A")).toBeLessThan(lines.indexOf("### B"));
+		expect(lines.lastIndexOf("### A")).toBeGreaterThan(lines.indexOf("### B"));
+	});
+
+	it("leaves untitled episodes as flat lines with no synthetic header", () => {
+		const text = formatEpisodeIndex([
+			episode({ focusTitle: null }),
+			episode({ episodeId: "episode:x", focusTitle: null }),
+		])!;
+		expect(text).not.toContain("###");
+		expect(text.split("\n")).toHaveLength(2);
+	});
+
 	it("keeps only the newest twelve episodes", () => {
 		const episodes = Array.from({ length: 13 }, (_, index) =>
 			episode({ episodeId: `episode:${index}`, startedAtMs: index * 1_000 }),

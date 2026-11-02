@@ -8,6 +8,8 @@
  */
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { CompactionThresholdPair } from "../config/compaction-threshold";
+import { lookup } from "../config/registry";
+import type { Settings } from "../config/settings";
 import { type CompactionMethod, isCompactionMethod } from "../session/compaction-methods";
 
 export interface AgentCompactionPolicy {
@@ -90,4 +92,18 @@ export function agentCompactionSettings(
 		settings["compaction.modelThresholdsEnabled"] = false;
 	}
 	return Object.keys(settings).length > 0 ? settings : undefined;
+}
+
+/**
+ * Applies {@link agentCompactionSettings} to a session's settings. A key already configured by an
+ * environment variable or any settings layer keeps its value, so an explicit compaction setting
+ * beats the profile's frontmatter.
+ */
+export function applyAgentCompactionPolicy(settings: Settings, policy: AgentCompactionPolicy | undefined): void {
+	const overrides = agentCompactionSettings(policy);
+	if (!overrides) return;
+	for (const [key, value] of Object.entries(overrides)) {
+		const setting = lookup(key);
+		if (setting && !setting.isConfigured(settings)) setting.override(settings, value);
+	}
 }

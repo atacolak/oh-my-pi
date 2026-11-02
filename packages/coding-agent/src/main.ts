@@ -138,6 +138,7 @@ import {
 	loadSystemPromptTemplateFile,
 	resolvePromptInput,
 } from "./system-prompt";
+import { applyAgentCompactionPolicy } from "./task/agent-compaction";
 import { discoverAgents, getAgent } from "./task/discovery";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
@@ -1860,6 +1861,7 @@ export async function buildSessionOptions(
 			// `agents`-scoped bucketing a bare `main` session relies on; an empty list is a
 			// profile that deliberately applies none.
 			options.declaredRules = agent.rules;
+			applyAgentCompactionPolicy(activeSettings, agent.compaction);
 		}
 	}
 

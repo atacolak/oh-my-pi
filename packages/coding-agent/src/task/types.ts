@@ -11,6 +11,7 @@ import { type BaseType, type FluentType, type } from "@oh-my-pi/omptype";
 import { $env, isRecord } from "@oh-my-pi/pi-utils";
 
 import type { AgentSessionEvent } from "../session/agent-session";
+import type { AgentCompactionPolicy } from "./agent-compaction";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 const parseNumber = (value: string | undefined, defaultValue: number): number => {
@@ -331,6 +332,8 @@ export interface AgentDefinition {
 	prewalk?: boolean | string;
 	/** Advisor for spawned sessions of this agent: `true` = advise with the default advisor-role model, string = advise with that model pattern (optional `:level` suffix). Absent/`false` = no advisor. */
 	advisor?: boolean | string;
+	/** Per-agent compaction policy from the `compaction:` frontmatter block. */
+	compaction?: AgentCompactionPolicy;
 	source: AgentSource;
 	filePath?: string;
 }

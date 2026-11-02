@@ -32,6 +32,7 @@ import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { type AgentCompactionPolicy, parseAgentCompaction } from "../task/agent-compaction";
 import { normalizeToolNames } from "../tools/builtin-names";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
@@ -308,6 +309,8 @@ export interface ParsedAgentFields {
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
 	advisor?: boolean | string;
+	/** Per-agent compaction policy from the `compaction:` block. */
+	compaction?: AgentCompactionPolicy;
 }
 
 /**
@@ -406,6 +409,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		readSummarize,
 		prewalk,
 		advisor,
+		compaction: parseAgentCompaction(frontmatter.compaction),
 	};
 }
 

@@ -104,6 +104,7 @@ import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { isCompletionProbeEnabled, startCompletionProbe } from "./completion-probe";
+import { agentCompactionSettings } from "./agent-compaction";
 import { appendToolResult, createTaskWidgetInputs, TOOLS_SOURCE_LABEL } from "./widget-inputs";
 import { TextTap } from "../job-widgets/text-tap";
 import { TOOLS_SOURCE_ID } from "../job-widgets/types";
@@ -4327,6 +4328,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const subagentSettings = createSubagentSettings(
 		settings,
 		{
+			...agentCompactionSettings(agent.compaction),
 			...compactionThresholdSettings(options.compactionThresholdOverride),
 			...(agent.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
 			// Isolated runs must not expose roots outside the worktree.

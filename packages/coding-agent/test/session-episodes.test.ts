@@ -121,7 +121,7 @@ describe("session_episodes", () => {
 					api: "x",
 					provider: "x",
 					model: "x",
-					usage: {},
+					usage: {} as never,
 					stopReason: "toolUse",
 					timestamp: 0,
 				},

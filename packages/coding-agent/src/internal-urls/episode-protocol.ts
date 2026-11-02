@@ -13,7 +13,8 @@
  * - `episode://<id>/<call_id>` — the untruncated arguments AND output of that
  *   call, for recovery.
  */
-import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage, ToolCall, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import episodePromptDoc from "../prompts/internal-urls/episode.md" with { type: "text" };
 import { episodeSliceEntries } from "../session/episode-facts";
 import { loadEpisodeEntries, searchEpisodes } from "../session/episode-store";

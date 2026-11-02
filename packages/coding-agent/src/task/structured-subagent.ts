@@ -18,10 +18,8 @@ import {
 	resolveModelOverride,
 } from "../config/model-resolver";
 import { type OAuthAccountPools, validateAgentAccountPools } from "../config/account-pools";
-import {
-	type CompactionThresholdPair,
-	validateAgentCompactionThresholdOverrides,
-} from "../config/compaction-threshold";
+import { type CompactionThresholdPair, validateAgentCompactionThresholdOverrides } from "../config/compaction-threshold";
+import { agentCompactionThreshold } from "./agent-compaction";
 import { type ServiceTierInheritSettingValue, validateAgentServiceTierOverrides } from "../config/service-tier";
 import type { Settings } from "../config/settings";
 import { isProviderEnabled, isUserSourceEnabled } from "../capability";
@@ -556,9 +554,14 @@ export async function resolveEffectiveSubagentPolicy(
 	const compactionThresholdOverrides = validateAgentCompactionThresholdOverrides(
 		cfgTaskAgentCompactionThresholdOverrides.get(request.session.settings),
 	);
+	// The operator's per-agent entry outranks the agent definition's own block;
+	// the definition's threshold is what the child would otherwise run with, so
+	// it is the fallback stamped onto the session for cold revival.
 	const compactionThresholdOverride = Object.hasOwn(compactionThresholdOverrides, agentName)
 		? compactionThresholdOverrides[agentName]
-		: undefined;
+		: agent.compaction
+			? agentCompactionThreshold(agent.compaction)
+			: undefined;
 	const agentAccountPools = validateAgentAccountPools(cfgTaskAgentAccountPools.get(request.session.settings));
 	const oauthAccountPools = Object.hasOwn(agentAccountPools, agentName) ? agentAccountPools[agentName] : undefined;
 	const hasPreparedSeance = preparedSeance !== undefined;

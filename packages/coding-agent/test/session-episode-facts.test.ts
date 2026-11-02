@@ -7,9 +7,15 @@ function message(role: "user" | "assistant" | "toolResult", content: unknown, id
 	const entryId = id ?? `e${++seq}`;
 	const base = { type: "message" as const, id: entryId, parentId: null, timestamp: new Date(0).toISOString() };
 	if (role === "toolResult") {
-		return { ...base, message: { role, toolCallId: "c1", toolName: "bash", content, isError: false, timestamp: 0 } };
+		return {
+			...base,
+			message: { role, toolCallId: "c1", toolName: "bash", content, isError: false, timestamp: 0 },
+		} as SessionEntry;
 	}
-	return { ...base, message: { role, content, api: "x", provider: "x", model: "x", usage: {}, stopReason: "stop", timestamp: 0 } };
+	return {
+		...base,
+		message: { role, content, api: "x", provider: "x", model: "x", usage: {}, stopReason: "stop", timestamp: 0 },
+	} as SessionEntry;
 }
 
 const text = (value: string) => [{ type: "text", text: value }];

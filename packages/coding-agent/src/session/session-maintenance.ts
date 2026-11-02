@@ -126,6 +126,7 @@ import {
 	type CompactionSettings,
 	cfgCompactionAutoContinue,
 	cfgCompactionEnabled,
+	cfgCompactionEpisodeIndex,
 	cfgCompactionMethodOrder,
 	cfgContextPromotionEnabled,
 	cfgSnapcompactShape,
@@ -4017,6 +4018,7 @@ export class SessionMaintenance {
 	 * Undefined when the session has no indexed episodes.
 	 */
 	#episodeIndexText(): string | undefined {
+		if (!cfgCompactionEpisodeIndex.get(this.#host.settings)) return undefined;
 		return formatEpisodeIndex(listSessionEpisodes(this.#host.sessionManager.getSessionId()));
 	}
 

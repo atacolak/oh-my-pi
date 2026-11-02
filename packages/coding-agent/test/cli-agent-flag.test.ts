@@ -578,6 +578,19 @@ describe("buildSessionOptions — root compaction policy", () => {
 		}
 	});
 
+	it("keeps an explicit compaction method order over the profile", async () => {
+		const cwd = await writeProjectAgent(COMPACTION_PROBE_MD);
+		try {
+			const settings = await boot(["--agent", "compaction-probe"], cwd, {
+				"compaction.methodOrder": ["remote", "soft"],
+			});
+			expect(cfgCompactionMethodOrder.get(settings)).toEqual(["remote", "soft"]);
+			expect(cfgCompactionThresholdTokens.get(settings)).toBe(400_000);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("uses the switched profile's policy when --agent differs from the persisted root agent", async () => {
 		const cwd = await writeProjectAgent(COMPACTION_PROBE_MD);
 		await writeProjectAgentInto(cwd, SWITCH_PROBE_MD);

@@ -70,6 +70,21 @@ export const cfgHindsightScopeTags = register({
 	},
 });
 
+export const cfgHindsightProvenanceTags = register({
+	id: "hindsight.provenanceTags",
+	env: "HINDSIGHT_PROVENANCE_TAGS",
+	type: "array",
+	default: [] as string[],
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Provenance Tags",
+		description:
+			"Write-only tags attached to retained memories; never matched by recall or observation scopes. The mounted agent profile adds role:<profile> automatically.",
+		condition: "hindsightActive",
+	},
+});
+
 export const cfgHindsightScoping = register({
 	id: "hindsight.scoping",
 	env: "HINDSIGHT_SCOPING",

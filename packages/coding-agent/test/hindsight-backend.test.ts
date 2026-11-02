@@ -44,6 +44,7 @@ interface FakeSessionDeps {
 	hindsightLoadedMessageCount?: number;
 	settings?: Settings;
 	xdevEntries?: Array<{ name: string; summary: string }>;
+	agentProfile?: string;
 }
 
 function makeFakeSession(deps: FakeSessionDeps) {
@@ -93,6 +94,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
+		getAgentProfileName: () => deps.agentProfile,
 		refreshBaseSystemPrompt: vi.fn().mockResolvedValue(undefined),
 		settleMemoryBackend: async () => {},
 		getHindsightSessionState: () => hindsightState,

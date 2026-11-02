@@ -451,6 +451,7 @@ describe("Hindsight recall across a resume", () => {
 		retainOverlapTurns: 2,
 		retainContext: "omp",
 		scopeTags: [],
+	provenanceTags: [],
 		retainUpdateMode: "replace",
 		retainStrategy: null,
 		recallBudget: "mid",

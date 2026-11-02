@@ -15,7 +15,7 @@ import hindsightInstructions from "../prompts/system/hindsight-instructions.md" 
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, computeBankScope } from "./bank";
 import { createHindsightClient } from "./client";
-import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig } from "./config";
+import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig, resolveProvenanceTags } from "./config";
 import { HindsightSessionState } from "./state";
 import { countRetainableUserTurns } from "./transcript";
 
@@ -47,7 +47,9 @@ export const hindsightBackend: MemoryBackend = {
 					sessionId,
 					client: parent.client,
 					bankId: parent.bankId,
+					resolvedTags: parent.resolvedTags,
 					retainTags: parent.retainTags,
+					provenanceTags: resolveProvenanceTags(parent.config, session.getAgentProfileName()),
 					recallTags: parent.recallTags,
 					recallTagsMatch: parent.recallTagsMatch,
 					observationScopes: parent.observationScopes,
@@ -286,7 +288,9 @@ async function installPrimaryState(
 		sessionId,
 		client,
 		bankId: scope.bankId,
+		resolvedTags: scope.resolvedTags,
 		retainTags: scope.retainTags,
+		provenanceTags: resolveProvenanceTags(config, session.getAgentProfileName()),
 		recallTags: scope.recallTags,
 		recallTagsMatch: scope.recallTagsMatch,
 		observationScopes: scope.observationScopes,

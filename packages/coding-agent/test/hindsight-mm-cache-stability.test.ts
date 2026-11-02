@@ -24,6 +24,7 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		bankId: null,
 		bankIdPrefix: "",
 		scopeTags: [],
+		provenanceTags: [],
 		scoping: "global",
 		bankMission: "",
 		retainMission: null,

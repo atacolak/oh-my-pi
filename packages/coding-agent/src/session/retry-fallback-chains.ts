@@ -540,6 +540,7 @@ export function resolveRetryFallbackChainKey(
 	}
 	return undefined;
 }
+
 /**
  * Parse one configured chain entry. A `provider/*` entry keeps the failing
  * model's id and swaps the provider (google-antigravity/x → google/x); an

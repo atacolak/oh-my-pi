@@ -159,6 +159,7 @@ export const stateDefs = {
 		"artifactId?": "string",
 		"artifactElidedBytes?": "number.integer",
 		"artifactError?": JSON_OBJECT,
+		"minimized?": JSON_OBJECT,
 		"workingDir?": "string",
 		"images?": "ImageContent[]",
 	},

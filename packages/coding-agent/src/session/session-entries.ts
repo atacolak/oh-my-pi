@@ -309,6 +309,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	spawns?: string;
 	/** The agent's `readSummarize` setting (`false` = read summarization disabled); absent uses the session default. */
 	readSummarize?: boolean;
+	/** The agent's `modelFallback` setting (`false` = the spawn never fell back to another model); absent inherits `retry.modelFallback`. */
+	modelFallback?: boolean;
 	/** Effective advisor for this subagent: `"on"` = advisor-role model, else an explicit model pattern; absent = unadvised. */
 	advisor?: string;
 	/** Effective thresholds for a child with an explicit compaction override. */

@@ -168,6 +168,7 @@ async function createPersistedSession(
 		retryFallback?: RetryFallbackRole;
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 		perCallModel?: boolean;
+		modelFallback?: boolean;
 		resolvedModel?: string;
 		perCallModelIdentity?: string;
 		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
@@ -191,6 +192,7 @@ async function createPersistedSession(
 		perCallModel: contract?.perCallModel,
 		perCallModelIdentity: contract?.perCallModelIdentity,
 		perCallThinkingLevel: contract?.perCallThinkingLevel,
+		modelFallback: contract?.modelFallback,
 		...(contract?.compactionThreshold !== undefined
 			? { compactionThreshold: contract.compactionThreshold }
 			: undefined),
@@ -565,6 +567,40 @@ describe("persisted subagent revival", () => {
 		const ref = createRef(sessionFile);
 		const reviver = await createFactory(cwd)(ref);
 		expect(reviver).toBeUndefined();
+	});
+
+	it("keeps a revived `model-fallback: false` agent off client and server fallbacks", async () => {
+		// The pin belongs to the agent definition, so a parked worker must not
+		// regain fallback when it is cold-revived, even though no per-call grant
+		// exists to carry it.
+		const cwd = makeTempDir("@pi-revive-model-fallback-");
+		const captured: CreateAgentSessionOptions[] = [];
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			if (options) captured.push(options);
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+
+		const pinnedFile = await createPersistedSession(cwd, undefined, undefined, undefined, {
+			agent: "pinned",
+			modelFallback: false,
+		});
+		const pinnedRef = createRef(pinnedFile);
+		const pinnedReviver = await createFactory(cwd)(pinnedRef);
+		if (!pinnedReviver) throw new Error("Expected a persisted reviver");
+		await pinnedReviver(pinnedRef);
+
+		expect(captured[0]?.disableModelFallback).toBe(true);
+		expect(captured[0]?.disableServerSideFallback).toBe(true);
+
+		const inheritingFile = await createPersistedSession(cwd, undefined, undefined, undefined, { agent: "pinned" });
+		const inheritingRef = createRef(inheritingFile);
+		const inheritingReviver = await createFactory(cwd)(inheritingRef);
+		if (!inheritingReviver) throw new Error("Expected a persisted reviver");
+		await inheritingReviver(inheritingRef);
+
+		// Absent inherits the global `retry.modelFallback`, so revival sets neither flag.
+		expect(captured[1]?.disableModelFallback).toBeUndefined();
+		expect(captured[1]?.disableServerSideFallback).toBeUndefined();
 	});
 
 	it("restores the persisted agent definition name on cold revival so agent-scoped rules keep matching", async () => {

@@ -3676,6 +3676,7 @@ export class SessionManager {
 		restrictToolNames?: boolean;
 		spawns?: string;
 		readSummarize?: boolean;
+		modelFallback?: boolean;
 		advisor?: string;
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 		isolated?: boolean;
@@ -4738,6 +4739,7 @@ export interface PersistedSessionInit {
 	restrictToolNames?: boolean;
 	spawns?: string;
 	readSummarize?: boolean;
+	modelFallback?: boolean;
 	advisor?: string;
 	compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 	isolated?: boolean;
@@ -4769,6 +4771,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			outputSchemaMode: entry.outputSchemaMode,
 			restrictToolNames: entry.restrictToolNames,
 			readSummarize: entry.readSummarize,
+			modelFallback: entry.modelFallback,
 			spawns: entry.spawns,
 			advisor: entry.advisor,
 			isolated: entry.isolated,

@@ -1,4 +1,5 @@
 import { logger, sanitizeText, truncate } from "@oh-my-pi/pi-utils";
+import type { MemoryWriteScope } from "../memory-backend/global-scope";
 import {
 	findPersistedRecall,
 	MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
@@ -61,6 +62,7 @@ function mergeRetainWriteTags(
 interface PendingRetainItem {
 	content: string;
 	context?: string;
+	scope: MemoryWriteScope;
 	timestamp: Date;
 	/** Bank routing captured at enqueue so a later primary rebuild cannot reroute this item. */
 	client: HindsightApi;
@@ -69,6 +71,13 @@ interface PendingRetainItem {
 	observationScopes?: string[][];
 	banksSet: Set<string>;
 	config: HindsightConfig;
+}
+
+interface RetainFailure {
+	count: number;
+	/** `undefined` when the scope has no project tags and every item went in one request. */
+	scope: MemoryWriteScope | undefined;
+	errorText: string;
 }
 
 interface RecallOutcome {
@@ -98,7 +107,7 @@ export interface HindsightSessionStateOptions {
 	bankId: string;
 	/** Fully resolved deterministic scope tags (no write-only provenance). */
 	resolvedTags?: string[];
-	/** Deterministic scope tags applied to every retain; provenance is merged only at write time. */
+	/** Tags on project-scoped retains (transcripts and tool writes) — non-empty in per-project-tagged mode. Global tool writes omit them; provenance is merged only at write time. */
 	retainTags?: string[];
 	/**
 	 * Write-only provenance tags (actor/role) merged into every retain. Never
@@ -160,7 +169,7 @@ export class HindsightRetainQueue {
 		return this.#items.length;
 	}
 
-	enqueue(content: string, context?: string): void {
+	enqueue(content: string, context?: string, scope: MemoryWriteScope = "project"): void {
 		if (this.#closed) {
 			throw new Error("Hindsight retain queue is closed.");
 		}
@@ -168,17 +177,23 @@ export class HindsightRetainQueue {
 		// Storing it would let the next recall retrieve and re-deliver the block.
 		const stripped = stripMemoryTags(content).trim();
 		if (!hasSubstantiveContent(stripped)) return;
+		if (scope === "global") this.#state.assertGlobalRetainAvailable();
 		const state = this.#state;
+		// Global items are retained untagged, which every project's `any`-match recall surfaces. They also carry no
+		// project observation scopes: Hindsight tags a request's generated document(s) with the union of item tags, so
+		// a project tag or scope on a global item would make document-level reads treat it as project-scoped.
+		const global = scope === "global";
 		this.#items.push({
 			content: stripped,
 			context,
+			scope,
 			timestamp: new Date(),
 			client: state.client,
 			bankId: state.bankId,
-			retainTags: mergeRetainWriteTags(state.retainTags, state.provenanceTags),
+			retainTags: global ? undefined : mergeRetainWriteTags(state.retainTags, state.provenanceTags),
 			banksSet: state.banksSet,
 			config: state.config,
-			observationScopes: state.observationScopes,
+			observationScopes: global ? undefined : state.observationScopes,
 		});
 		if (this.#items.length >= RETAIN_FLUSH_BATCH_SIZE) {
 			void this.flush();
@@ -241,22 +256,31 @@ export class HindsightRetainQueue {
 			return;
 		}
 
-		let index = 0;
-		while (index < items.length) {
-			let end = index + 1;
-			while (end < items.length && sameRetainRoute(items[index]!, items[end]!)) {
-				end += 1;
-			}
-			await this.#flushRoute(sessionId, items.slice(index, end));
-			index = end;
+		// Route identity is a key, not a run of adjacent items: a global item between two project items must not split
+		// them into separate requests. Each group is one request, and its order decides the combined notice wording,
+		// so project-tagged groups stay ahead of global ones.
+		const routes: PendingRetainItem[][] = [];
+		for (const item of items) {
+			const route = routes.find(group => sameRetainRoute(group[0]!, item));
+			if (route) route.push(item);
+			else routes.push([item]);
 		}
+		routes.sort((a, b) => Number(a[0]?.retainTags === undefined) - Number(b[0]?.retainTags === undefined));
+		// One notice per flush, even when several requests failed.
+		const failures: RetainFailure[] = [];
+		for (const route of routes) {
+			const failure = await this.#flushRoute(sessionId, route);
+			if (failure) failures.push(failure);
+		}
+		if (failures.length > 0) this.#notifyRetainFailures(failures);
 	}
 
-	async #flushRoute(sessionId: string, items: PendingRetainItem[]): Promise<void> {
+	async #flushRoute(sessionId: string, items: PendingRetainItem[]): Promise<RetainFailure | undefined> {
 		const route = items[0];
-		if (!route) return;
+		if (!route) return undefined;
 
 		try {
+			// Best-effort and self-catching, so it never rejects.
 			await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
 			const metadata = this.#state.buildRetainMetadata();
 			const batch: MemoryItemInput[] = items.map(item => ({
@@ -274,25 +298,40 @@ export class HindsightRetainQueue {
 					providerSessionId: sessionId,
 					bankId: route.bankId,
 					items: items.length,
+					tags: route.retainTags,
 				});
 			}
+			return undefined;
 		} catch (err) {
 			const errorText = err instanceof Error ? err.message : String(err);
 			logger.warn("Hindsight retain queue: batch flush failed", {
 				providerSessionId: sessionId,
 				bankId: route.bankId,
 				items: items.length,
+				scope: route.scope,
 				error: errorText,
 			});
-			this.#notifyRetainFailure(items.length, errorText);
+			// `undefined` keeps the wording for an untagged batch that carried every item.
+			const scope: MemoryWriteScope | undefined = route.retainTags
+				? "project"
+				: route.scope === "global"
+					? "global"
+					: undefined;
+			return { count: items.length, scope, errorText };
 		}
 	}
 
-	#notifyRetainFailure(count: number, errorText: string): void {
-		const noun = count === 1 ? "memory" : "memories";
+	#notifyRetainFailures(failures: RetainFailure[]): void {
+		const what = failures
+			.map(({ count, scope }) => {
+				const noun = count === 1 ? "memory" : "memories";
+				return `${count} ${scope === "global" ? `global ${noun}` : noun}`;
+			})
+			.join(" and ");
+		const errorText = [...new Set(failures.map(failure => failure.errorText))].join("; ");
 		this.#state.session.emitNotice(
 			"warning",
-			`Memory retention failed for ${count} ${noun}: ${noticeErrorText(errorText)}`,
+			`Memory retention failed for ${what}: ${noticeErrorText(errorText)}`,
 			HINDSIGHT_NOTICE_SOURCE,
 		);
 	}
@@ -343,7 +382,7 @@ export class HindsightSessionState {
 	#bankId: string;
 	/** Fully resolved deterministic scope tags; seeds derive from these, never from write-only provenance. */
 	#resolvedTags?: string[];
-	/** Deterministic scope tags applied to every retain; provenance is merged only at write time. */
+	/** Tags on project-scoped retains (transcripts and tool writes) — non-empty in per-project-tagged mode. Global tool writes omit them; provenance is merged only at write time. */
 	#retainTags?: string[];
 	/**
 	 * Write-only provenance tags for this state's own writes. Deliberately not
@@ -681,8 +720,29 @@ export class HindsightSessionState {
 		return retentionPrefixKey(messages, this.#loadedMessageCount) !== this.#loadedPrefixKey;
 	}
 
-	enqueueRetain(content: string, context?: string): void {
-		this.retainQueue.enqueue(content, context);
+	/**
+	 * Whether `scope: "global"` is enabled (`hindsight.globalScope`, off by default) and has a destination every
+	 * project recalls: untagged memories in the shared bank. `per-project` scoping recalls only the project's own bank,
+	 * so a global write there would never surface. Reads this state's config, which a subagent alias copies from its
+	 * parent, so tool exposure and enforcement agree even after the live settings change.
+	 */
+	isGlobalRetainAvailable(): boolean {
+		return this.config.globalScope && this.config.scoping !== "per-project";
+	}
+
+	/** Throws, naming the reason, unless {@link isGlobalRetainAvailable}. */
+	assertGlobalRetainAvailable(): void {
+		if (!this.config.globalScope) {
+			throw new Error("Hindsight global scope is off; set hindsight.globalScope to true to enable it.");
+		}
+		if (this.config.scoping === "per-project") {
+			throw new Error("Hindsight global scope requires global or per-project-tagged scoping.");
+		}
+	}
+
+	/** Queues a tool-initiated retain; `scope: "global"` retains it untagged (see {@link assertGlobalRetainAvailable}). */
+	enqueueRetain(content: string, context?: string, scope: MemoryWriteScope = "project"): void {
+		this.retainQueue.enqueue(content, context, scope);
 	}
 
 	async flushRetainQueue(): Promise<void> {

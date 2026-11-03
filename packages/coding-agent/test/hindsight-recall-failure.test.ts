@@ -12,6 +12,7 @@ const config = {
 	scopeTags: [],
 	provenanceTags: [],
 	scoping: "global",
+	globalScope: false,
 	bankMission: "",
 	retainMission: null,
 	autoRecall: true,

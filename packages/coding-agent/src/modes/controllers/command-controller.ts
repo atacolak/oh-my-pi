@@ -1937,6 +1937,7 @@ export class CommandController {
 					output: result.output,
 					truncation: meta?.truncation,
 					artifactError: meta?.artifactError,
+					minimized: result.minimized,
 					images: result.images,
 					showImages: cfgTerminalShowImages.get(this.ctx.settings),
 				});

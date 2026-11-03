@@ -15,8 +15,19 @@ import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { createAssistantMessage, createUserMessage } from "./helpers";
 
+function providerText(context: Context | undefined): string {
+	if (!context) return "";
+	return context.messages
+		.map(message =>
+			typeof message.content === "string"
+				? message.content
+				: message.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join(" "),
+		)
+		.join("\n");
+}
+
 describe("Agent", () => {
-	it("classifies agent-authored steering as a parent steering message", async () => {
+	it("lets an agent-authored steer land after the whole batch", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
 		const agentRef = {} as { current: Agent };
@@ -66,22 +77,22 @@ describe("Agent", () => {
 		await agent.prompt("start");
 		unsubscribe();
 
-		expect(executed).toEqual(["first"]);
-		const skipped = events.find(
+		// A steer never cancels calls the assistant already emitted: both run and
+		// the message injects at the batch boundary before the next turn.
+		expect(executed).toEqual(["first", "second"]);
+		const second = events.find(
 			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
 				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
 		);
-		expect(skipped).toBeDefined();
-		const skippedContent = skipped?.result.content[0];
-		expect(skippedContent?.type).toBe("text");
-		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-		expect(skippedContent.text).toContain("Skipped due to pending parent steering message");
-		expect(skippedContent.text).toContain("After the steering message is handled on the next step");
-		expect(skippedContent.text).not.toContain("pending system advisory");
-		expect(skippedContent.text).not.toContain("queued user message");
+		expect(second?.isError).toBe(false);
+		const secondContent = second?.result.content[0];
+		expect(secondContent?.type).toBe("text");
+		if (secondContent?.type !== "text") throw new Error("second tool result must be text");
+		expect(secondContent.text).toBe("ok:second");
+		expect(providerText(mock.calls[1]?.context)).toContain("parent steering");
 	});
 
-	it("classifies user-attributed custom steering as a queued user message", async () => {
+	it("injects user-attributed custom steering after the batch, one at a time", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
 		const agentRef = {} as { current: Agent };
@@ -140,17 +151,24 @@ describe("Agent", () => {
 		await agent.prompt("start");
 		unsubscribe();
 
-		expect(executed).toEqual(["first"]);
-		const skipped = events.find(
-			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
-				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
+		expect(executed).toEqual(["first", "second"]);
+		const failed = events.find(
+			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				e.type === "tool_execution_end" && e.isError === true,
 		);
-		expect(skipped).toBeDefined();
-		const skippedContent = skipped?.result.content[0];
-		expect(skippedContent?.type).toBe("text");
-		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-		expect(skippedContent.text).toContain("Skipped due to queued user message");
-		expect(skippedContent.text).not.toContain("pending system advisory");
+		expect(failed).toBeUndefined();
+		const messages = agent.state.messages;
+		const secondResultIndex = messages.findIndex(m => m.role === "toolResult" && m.toolCallId === "tool-2");
+		expect(secondResultIndex).toBeGreaterThan(-1);
+		const customIndex = messages.findIndex(
+			m => m.role === "custom" && m.customType === "visible-user-steer" && m.content === "visible custom steering",
+		);
+		const normalIndex = messages.findIndex(m => m.role === "user" && m.content === "normal user steering");
+		// One at a time: the custom steer lands at the batch boundary, the plain
+		// user steer only after the turn that handled it.
+		expect(customIndex).toBeGreaterThan(secondResultIndex);
+		expect(normalIndex).toBeGreaterThan(customIndex);
+		expect(messages.slice(customIndex + 1, normalIndex).some(m => m.role === "assistant")).toBe(true);
 	});
 	it("continue() re-executes a trailing assistant's unpaired tool calls before the next model call", async () => {
 		const toolSchema = type({ value: type("string") });
@@ -198,18 +216,10 @@ describe("Agent", () => {
 		expect(result.content).toContainEqual({ type: "text", text: "ok:again" });
 	});
 
-	it("classifies one-at-a-time steering from the next queued mixed source", async () => {
+	it("injects one-at-a-time steering sources in queue order", async () => {
 		const cases = [
-			{
-				order: ["system", "agent"] as const,
-				expected: "pending system advisory",
-				unexpected: "pending parent steering message",
-			},
-			{
-				order: ["agent", "system"] as const,
-				expected: "pending parent steering message",
-				unexpected: "pending system advisory",
-			},
+			{ order: ["system", "agent"] as const, first: "advisor steering", second: "parent steering" },
+			{ order: ["agent", "system"] as const, first: "parent steering", second: "advisor steering" },
 		];
 
 		for (const scenario of cases) {
@@ -276,17 +286,26 @@ describe("Agent", () => {
 			await agent.prompt("start");
 			unsubscribe();
 
-			expect(executed).toEqual(["first"]);
-			const skipped = events.find(
-				(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
-					event.type === "tool_execution_end" && event.toolCallId === "tool-2",
+			expect(executed).toEqual(["first", "second"]);
+			const failed = events.find(
+				(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+					e.type === "tool_execution_end" && e.isError === true,
 			);
-			expect(skipped).toBeDefined();
-			const skippedContent = skipped?.result.content[0];
-			expect(skippedContent?.type).toBe("text");
-			if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-			expect(skippedContent.text).toContain(`Skipped due to ${scenario.expected}`);
-			expect(skippedContent.text).not.toContain(scenario.unexpected);
+			expect(failed).toBeUndefined();
+			const messages = agent.state.messages;
+			const secondResultIndex = messages.findIndex(m => m.role === "toolResult" && m.toolCallId === "tool-2");
+			expect(secondResultIndex).toBeGreaterThan(-1);
+			const firstIndex = messages.findIndex(m =>
+				m.role === "custom" ? m.content === scenario.first : m.role === "user" && m.content === scenario.first,
+			);
+			const secondIndex = messages.findIndex(m =>
+				m.role === "custom" ? m.content === scenario.second : m.role === "user" && m.content === scenario.second,
+			);
+			// One at a time: both land after the batch, in queue order, with a turn
+			// between them.
+			expect(firstIndex).toBeGreaterThan(secondResultIndex);
+			expect(secondIndex).toBeGreaterThan(firstIndex);
+			expect(messages.slice(firstIndex + 1, secondIndex).some(m => m.role === "assistant")).toBe(true);
 		}
 	});
 

@@ -1283,9 +1283,9 @@ they do not write global `config.yml`. `set_auto_compaction` and
    - `"one-at-a-time"`: dequeue one delivery group per queue drain, keeping hidden companions with their user message
    - `"all"`: dequeue the entire queue at once
 - `set_interrupt_mode`
-   - `"immediate"`: queued steering raises a cooperative signal for foreground tools, allowing auto-backgroundable work to step aside; it does not hard-kill or skip non-interruptible tools
+   - `"immediate"`: queued steering raises a cooperative signal for foreground tools, allowing auto-backgroundable work to step aside; it does not hard-kill non-interruptible tools
    - `"wait"`: omit that cooperative steering signal and let side-effecting work finish before injecting steering at the tool-batch boundary
-   - In both modes, interruptible waits are cancelled or skipped when steering arrives. This setting is not equivalent to `abort`.
+   - In both modes a steer ends a running interruptible wait; every tool call the assistant already emitted still executes and steering injects when the batch settles. This setting is not equivalent to `abort`.
 
 ## Extension UI Sub-Protocol
 

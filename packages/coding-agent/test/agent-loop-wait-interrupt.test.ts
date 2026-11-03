@@ -326,8 +326,18 @@ describe("agent-loop wait wake delivery", () => {
 			});
 		}
 
-		it(`still skips another interruptible tool for a queued ${source} wake`, async () => {
+		it(`does not cancel already-emitted siblings for a queued ${source} wake`, async () => {
 			const { result, ordinaryExecute, execute } = await run(source, "queued at admission", { ordinaryTool: true });
+			if (source === "parent") {
+				// A steer never cancels a call the assistant already emitted: the
+				// sibling runs and the message injects at the batch boundary.
+				expect(result.isError).toBe(false);
+				expect(result.result.details).not.toHaveProperty("__synthetic");
+				expect(ordinaryExecute).toHaveBeenCalledTimes(1);
+				expect(execute).not.toHaveBeenCalled();
+				return;
+			}
+			// Peer and background wakes still skip not-yet-started interruptible work.
 			expect(result.isError).toBe(true);
 			expect(result.result.details).toMatchObject({ __synthetic: true, executed: false });
 			expect(ordinaryExecute).not.toHaveBeenCalled();

@@ -6,6 +6,10 @@
 
 - Added `Agent.queuedMessageGate`, a synchronous `QueuedMessageGate` consulted before every queued-message delivery batch (it can drop candidates) and told when claimed messages go back undelivered
 
+### Changed
+
+- A queued steering message no longer cancels the tool calls the assistant already emitted in the same step: calls that have not started yet run normally and the message injects at the batch boundary, while a running interruptible wait still aborts and a steer can still auto-background foreground work
+
 ## [18.16.0] - 2026-11-02
 
 ### Changed

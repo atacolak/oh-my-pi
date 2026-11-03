@@ -298,10 +298,10 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Peeks whether steering messages are queued, without consuming them.
 	 *
 	 * Polled while a tool batch runs (in "wait" mode, only when the batch holds an
-	 * interruptible tool) to decide whether to abort in-flight and skip
-	 * not-yet-started *interruptible* waits, unless they handle queued interrupts;
-	 * every other already-emitted call still executes and the message injects
-	 * at the batch boundary. The queue keeps
+	 * interruptible tool) to decide whether to abort the running *interruptible*
+	 * waits, unless they handle queued interrupts. Calls the assistant already
+	 * emitted but that have not started yet execute normally, and the message
+	 * injects at the batch boundary. The queue keeps
 	 * owning its messages until the loop reaches the next injection boundary and
 	 * dequeues via {@link getSteeringMessages} — so callers can still cancel or
 	 * restore queued messages while in-flight tools settle, and an external

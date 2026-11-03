@@ -1364,7 +1364,9 @@ describe("AgentSession queued steer delivery", () => {
 				}
 				await session.waitForIdle();
 
-				expect(executed).toEqual(mode === "immediate" ? ["first"] : ["first", "second"]);
+				// A promotion never cancels a sibling call the assistant already
+				// emitted; under "immediate" the running call still aborts.
+				expect(executed).toEqual(["first", "second"]);
 				expect(session.interruptMode).toBe(mode);
 				expect(session.steeringMode).toBe("one-at-a-time");
 				expect(session.followUpMode).toBe("one-at-a-time");

@@ -143,8 +143,14 @@ export interface AgentOptions {
 
 	/**
 	 * When to interrupt tool execution for steering messages.
-	 * - "immediate": check after each tool call (default)
-	 * - "wait": defer steering until the current turn completes
+	 * - "immediate": cut running interruptible waits short and raise the
+	 *   cooperative soft signal for other running tools (default)
+	 * - "wait": defer steering until the current turn completes; running
+	 *   interruptible waits are still cut short
+	 *
+	 * Either way a steer only ends the running interruptible wait: calls the
+	 * assistant already emitted in that batch still execute, and the message
+	 * injects at the batch boundary.
 	 */
 	interruptMode?: "immediate" | "wait";
 

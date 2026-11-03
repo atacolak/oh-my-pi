@@ -610,7 +610,8 @@ describe("regressions: agent loop telemetry/run summary", () => {
 		// reach the `interruptState.triggered` early-return inside `runTool` for
 		// the second and third call (only interruptible waits are skipped there).
 		// Pre-fix that path called `recordSkippedTool` AND the tail sweep called
-		// it again, double-counting.
+		// it again, double-counting. Queued asides still take that path; steering
+		// only interrupts the running call.
 		const fastTool: AgentTool = {
 			name: "fast",
 			label: "fast",
@@ -624,7 +625,7 @@ describe("regressions: agent loop telemetry/run summary", () => {
 				return { content: [{ type: "text", text: "ok" }], details: {} };
 			},
 		};
-		const state = { firstDone: false, drained: false };
+		const state = { firstDone: false };
 		const mock = createMockModel({
 			responses: [
 				{
@@ -646,15 +647,10 @@ describe("regressions: agent loop telemetry/run summary", () => {
 				convertToLlm: identityConverter,
 				telemetry: { tracer },
 				interruptMode: "immediate",
-				// Peek triggers `interruptState.triggered` after the first call
-				// completes; the remaining two exclusive calls hit the early-return
-				// inside `runTool`. The boundary dequeue drains the message once.
-				hasSteeringMessages: () => state.firstDone && !state.drained,
-				getSteeringMessages: async () => {
-					if (!state.firstDone || state.drained) return [];
-					state.drained = true;
-					return [createUserMessage("stop")];
-				},
+				// A queued aside triggers `interruptState.triggered` after the first
+				// call completes; the remaining two exclusive calls hit the
+				// early-return inside `runTool`.
+				hasQueuedAsides: () => state.firstDone,
 			},
 			undefined,
 			mock.stream,

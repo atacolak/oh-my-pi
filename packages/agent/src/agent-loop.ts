@@ -3308,6 +3308,13 @@ async function executeToolCalls(
 	// side-effecting foreground tool (e.g. `bash`) — those get the cooperative
 	// `steeringSignal` above, and the message injects at the next boundary.
 	const nonInterruptibleSignal: AbortSignal = signal ?? new AbortController().signal;
+	// A call the assistant already emitted keeps this signal when queued
+	// steering was detected before the call started: the steer must not cancel
+	// work the model already generated, so the call runs with external and
+	// peer-IRC cancellation only and the message injects at the batch boundary.
+	const deferredSteeringSignal: AbortSignal = signal
+		? AbortSignal.any([signal, ircAbortController.signal])
+		: ircAbortController.signal;
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
 		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
@@ -3439,12 +3446,13 @@ async function executeToolCalls(
 			}
 		}
 		if (steeringQueued) {
-			// Queued steering hard-aborts only interruptible waits and (unless
-			// interruptMode is "wait") raises the cooperative soft signal for
-			// everything else: the boundary dequeue
-			// below injects the message as soon as running tools finish (or
-			// background themselves). Not-yet-started interruptible tools are
-			// skipped unless they can drain the queued wake. Idempotent — a
+			// Queued steering hard-aborts only running interruptible waits and
+			// (unless interruptMode is "wait") raises the cooperative soft signal
+			// for everything else: the boundary dequeue below injects the message
+			// as soon as running tools finish (or background themselves). Calls the
+			// assistant already emitted but that have not started yet still execute;
+			// only peer IRC, asides and background completions skip those, and
+			// receivers that drain the wake are never skipped. Idempotent — a
 			// second steer poll after the abort is a no-op.
 			if (!steeringAbortController.signal.aborted) {
 				interruptState.triggered = true;
@@ -3508,18 +3516,30 @@ async function executeToolCalls(
 	};
 
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
-		// A pending interrupt preempts not-yet-started interruptible tools,
-		// except receivers that drain the wake with an already-aborted signal.
-		// Non-interruptible work is never skipped, whatever the source: the
-		// expensive part — generating the call — is already paid, the tool
-		// itself is cheap, and a skip only makes the model re-emit the same
-		// call after the steer lands (#10439). The same guarantee is what keeps
-		// a batched `todo`/`write` queued behind an aborted wait alive (#7493)
-		// and lets a subagent's already-emitted terminal `yield` commit when
-		// the parent steers mid-stream (#10645). The steer still injects at the
-		// batch boundary; the cooperative soft signal lets long-running tools
-		// step aside on their own.
-		if (interruptState.triggered && record.interruptible && !record.handlesToolInterrupt) {
+		// A pending interrupt preempts not-yet-started interruptible tools, except
+		// receivers that drain the wake with an already-aborted signal and calls
+		// whose batch was interrupted by queued steering. A steer must not cancel
+		// work the assistant already emitted: those sibling calls keep running with
+		// the steering-free signal and the message injects at the batch boundary
+		// (#10439). Non-interruptible work is never skipped, whatever the source:
+		// the expensive part — generating the call — is already paid, the tool
+		// itself is cheap, and a skip only makes the model re-emit the same call
+		// after the interrupt lands. The same guarantee is what keeps a batched
+		// `todo`/`write` queued behind an aborted wait alive (#7493) and lets a
+		// subagent's already-emitted terminal `yield` commit when the parent steers
+		// mid-stream (#10645). The cooperative soft signal still lets long-running
+		// tools step aside on their own.
+		const steeringSource =
+			interruptState.source === "user" ||
+			interruptState.source === "agent" ||
+			interruptState.source === "system" ||
+			interruptState.source === "unknown";
+		const defersSteering =
+			interruptState.triggered && record.interruptible && !record.handlesToolInterrupt && steeringSource;
+		if (defersSteering) {
+			record.signal = deferredSteeringSignal;
+		}
+		if (interruptState.triggered && record.interruptible && !record.handlesToolInterrupt && !defersSteering) {
 			// Skip both span emission and the collector orphan record here. The
 			// tail sweep below (after `Promise.allSettled`) is the single path
 			// that handles "no result message was produced" — it calls
@@ -3789,18 +3809,20 @@ async function executeToolCalls(
 
 	// While tool calls are in flight, queued steering or interrupting IRC would
 	// otherwise wait out the tools' own window. Poll only non-consuming queues:
-	// detection hard-aborts interruptible waits (running or not yet started),
-	// and steering/IRC additionally soft-signal cooperative tools
-	// (auto-background bash), so the boundary dequeue below injects the message
-	// promptly. In "wait" mode only a batch holding an interruptible wait needs
-	// the watch; checkSteering is idempotent (no-op once triggered).
+	// detection hard-aborts running interruptible waits (peer IRC and asides also
+	// skip ones not yet started; steering lets them run), and steering/IRC
+	// additionally soft-signal cooperative tools (auto-background bash), so the
+	// boundary dequeue below injects the message promptly. In "wait" mode only a
+	// batch holding an interruptible wait needs the watch; checkSteering is
+	// idempotent (no-op once triggered).
 	const hasAsidePeek =
 		hasIrcInterrupts !== undefined || hasBackgroundCompletions !== undefined || hasQueuedAsides !== undefined;
 	const watchSteeringWhileRunning =
 		(softInterrupts || records.some(record => record.interruptible)) &&
 		(hasSteeringMessages !== undefined || hasAsidePeek);
-	// Live-taken steering is already pending: interrupt before any call starts
-	// so interruptible tools skip or drain the queued wake without blocking.
+	// Live-taken steering is already pending: interrupt before any call starts so
+	// running interruptible waits drain the queued wake without blocking and the
+	// already-emitted batch still executes.
 	if (liveSteering.length > 0) await checkSteering();
 	const eventDrivenSteeringWatch =
 		watchSteeringWhileRunning && config.waitForSteeringMessages !== undefined && hasSteeringMessages !== undefined;
@@ -3950,7 +3972,8 @@ async function executeToolCalls(
  *
  * `source` names the state that prevented execution — either an assistant-side
  * turn termination (`assistant_stop_*`) or a mid-batch interrupt that skipped a
- * still-pending call to service queued steering/peer input (`interrupt_skipped`).
+ * still-pending call to service a peer IRC, queued aside or background
+ * completion (`interrupt_skipped`). A steer never skips those calls.
  * `upstreamError` is the provider-reported message when the turn ended with
  * `stopReason === "error"`.
  */

@@ -2593,7 +2593,10 @@ describe("agentLoop with AgentMessage", () => {
 		expect(assistantEnd.message.content.some(block => block.type === "toolCall")).toBe(false);
 	});
 
-	it("should skip remaining interruptible waits when steering is queued", async () => {
+	it("runs remaining interruptible waits when steering is queued and injects the steer after the batch", async () => {
+		// A steer no longer cancels the calls the assistant already emitted in the
+		// same step: the first call observes the interrupt, the second still runs,
+		// and the message lands once the whole batch has produced its results.
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -2651,26 +2654,16 @@ describe("agentLoop with AgentMessage", () => {
 			events.push(event);
 		}
 
-		// Only the first wait should execute; the second is skipped after steering is queued.
-		expect(executed).toEqual(["first"]);
+		// Both already-emitted calls execute; neither is replaced by a synthetic
+		// cancellation result.
+		expect(executed).toEqual(["first", "second"]);
 
 		const toolEnds = events.filter(
 			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> => e.type === "tool_execution_end",
 		);
 		expect(toolEnds.length).toBe(2);
-		expect(toolEnds[0].isError).toBe(false);
-		expect(toolEnds[1].isError).toBe(true);
-		expect(toolEnds[1].result.details).toEqual({
-			__synthetic: true,
-			source: "interrupt_skipped",
-			executed: false,
-		});
-		const skippedContent = toolEnds[1].result.content[0];
-		expect(skippedContent?.type).toBe("text");
-		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-		expect(skippedContent.text).toContain("Skipped due to queued user message");
-		expect(skippedContent.text).toContain("Do not count this skipped result as completed work");
-		expect(skippedContent.text).toContain("retry the skipped tool if it is still needed");
+		expect(toolEnds.map(end => end.isError)).toEqual([false, false]);
+		expect(toolEnds.map(end => end.result.details)).toEqual([{ value: "first" }, { value: "second" }]);
 
 		// Queued message should appear in events after the tool results and before the next model call.
 		const eventSequence = events.flatMap(event => {
@@ -2770,7 +2763,102 @@ describe("agentLoop with AgentMessage", () => {
 		expect(sawInterruptInContext).toBe(true);
 	});
 
-	it("should skip remaining interruptible waits with system advisory wording when advisor steering is queued", async () => {
+	it("runs already-emitted interruptible siblings when a steer lands mid-batch and injects it after the batch", async () => {
+		// The model emitted [first, second, third] in one assistant message. A steer
+		// lands while `first` runs: the running interruptible call still aborts, but
+		// the sibling calls the model already emitted execute normally instead of
+		// being replaced by synthetic "Skipped due to queued user message" results.
+		const toolSchema = type({ value: "string" });
+		const executed: string[] = [];
+		let firstObservedAbort: boolean | undefined;
+		let steerReady = false;
+		let drained = false;
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "step",
+			label: "Step",
+			description: "Interruptible work",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			interruptible: true,
+			async execute(_toolCallId, params, signal) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					steerReady = true;
+					const aborted = Promise.withResolvers<void>();
+					if (signal?.aborted) aborted.resolve();
+					else signal?.addEventListener("abort", () => aborted.resolve(), { once: true });
+					await aborted.promise;
+					firstObservedAbort = signal?.aborted === true;
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const queuedUserMessage = createUserMessage("interrupt");
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "step", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "step", arguments: { value: "second" } },
+						{ type: "toolCall", id: "tool-3", name: "step", arguments: { value: "third" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			interruptMode: "immediate",
+			hasSteeringMessages: () => steerReady && !drained,
+			getSteeringMessages: async () => {
+				if (!steerReady || drained) return [];
+				drained = true;
+				return [queuedUserMessage];
+			},
+		};
+
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("start")], context, config, undefined, mock.stream)) {
+			events.push(event);
+		}
+
+		// A running interruptible call still aborts, so the steer never blocks.
+		expect(firstObservedAbort).toBe(true);
+		// Calls already emitted in that step run normally, with no synthetic results.
+		expect(executed).toEqual(["first", "second", "third"]);
+		const toolEnds = events.filter(
+			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> => e.type === "tool_execution_end",
+		);
+		expect(toolEnds.map(e => e.isError)).toEqual([false, false, false]);
+		expect(toolEnds.map(e => e.result.details)).toEqual([
+			{ value: "first" },
+			{ value: "second" },
+			{ value: "third" },
+		]);
+
+		// The steer still lands at the batch boundary, after every result.
+		const eventSequence = events.flatMap(event => {
+			if (event.type !== "message_start") return [];
+			if (event.message.role === "toolResult") return [`tool:${event.message.toolCallId}`];
+			if (event.message.role === "user" && typeof event.message.content === "string") {
+				return [event.message.content];
+			}
+			return [];
+		});
+		expect(eventSequence.indexOf("tool:tool-3")).toBeLessThan(eventSequence.indexOf("interrupt"));
+		const sawInterruptInContext = mock.calls[1]?.context.messages.some(
+			m => m.role === "user" && typeof m.content === "string" && m.content === "interrupt",
+		);
+		expect(sawInterruptInContext).toBe(true);
+	});
+
+	it("runs remaining interruptible waits before injecting a queued system advisory", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -2838,21 +2926,14 @@ describe("agentLoop with AgentMessage", () => {
 			events.push(event);
 		}
 
-		expect(executed).toEqual(["first"]);
+		// A system advisory never cancels calls the assistant already emitted.
+		expect(executed).toEqual(["first", "second"]);
 
 		const toolEnds = events.filter(
 			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> => e.type === "tool_execution_end",
 		);
 		expect(toolEnds.length).toBe(2);
-		expect(toolEnds[0].isError).toBe(false);
-		expect(toolEnds[1].isError).toBe(true);
-		const skippedContent = toolEnds[1].result.content[0];
-		expect(skippedContent?.type).toBe("text");
-		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-		expect(skippedContent.text).toContain("Skipped due to pending system advisory");
-		expect(skippedContent.text).not.toContain("queued user message");
-		expect(skippedContent.text).toContain("Do not count this skipped result as completed work");
-		expect(skippedContent.text).toContain("retry the skipped tool if it is still needed");
+		expect(toolEnds.map(end => end.isError)).toEqual([false, false]);
 
 		const advisorInjected = events.some(
 			event =>
@@ -2934,6 +3015,80 @@ describe("agentLoop with AgentMessage", () => {
 		expect(observedReason).toBe(TOOL_INTERRUPT_ABORT_REASON);
 		expect(resolvedByTimeout).toBe(false);
 		expect(drained).toBe(true);
+		expect(
+			events.some(e => e.type === "message_start" && e.message.role === "user" && e.message.content === "interrupt"),
+		).toBe(true);
+	});
+
+	it("auto-backgrounds a long foreground wait on a steer instead of waiting for it to finish", async () => {
+		const toolSchema = type({});
+		let steerReady = false;
+		let drained = false;
+		let steeringSignal: AbortSignal | undefined;
+		let softAborted = false;
+
+		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
+			name: "bash",
+			label: "Bash",
+			description: "Foreground command that detaches when asked to step aside",
+			parameters: toolSchema,
+			async execute() {
+				steerReady = true;
+				const stepping = Promise.withResolvers<void>();
+				if (steeringSignal?.aborted) {
+					softAborted = true;
+					stepping.resolve();
+				} else {
+					steeringSignal?.addEventListener(
+						"abort",
+						() => {
+							softAborted = true;
+							stepping.resolve();
+						},
+						{ once: true },
+					);
+				}
+				await stepping.promise;
+				return { content: [{ type: "text", text: "moved to background" }], details: {} };
+			},
+		};
+
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "bash", arguments: {} }] },
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			interruptMode: "immediate",
+			getToolContext: toolCall => {
+				steeringSignal = toolCall?.steeringSignal;
+				return { toolCall } as AgentToolContext;
+			},
+			hasSteeringMessages: () => steerReady && !drained,
+			getSteeringMessages: async () => {
+				if (!steerReady || drained) return [];
+				drained = true;
+				return [createUserMessage("interrupt")];
+			},
+		};
+
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("start")], context, config, undefined, mock.stream)) {
+			events.push(event);
+		}
+
+		// The cooperative signal made the foreground command step aside; the loop
+		// never had to wait out the command's own window.
+		expect(softAborted).toBe(true);
+		expect(drained).toBe(true);
+		const toolEnd = events.find(
+			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> => e.type === "tool_execution_end",
+		);
+		expect(toolEnd?.isError).toBe(false);
 		expect(
 			events.some(e => e.type === "message_start" && e.message.role === "user" && e.message.content === "interrupt"),
 		).toBe(true);
@@ -4098,9 +4253,10 @@ describe("agentLoop with AgentMessage", () => {
 			events.push(event);
 		}
 
-		// The interrupt fired (second tool skipped), but no user message appeared.
+		// The interrupt fired, but no user message appeared; the remaining
+		// already-emitted call still executed.
 		expect(steerReady).toBe(true);
-		expect(executed).toEqual(["first"]);
+		expect(executed).toEqual(["first", "second"]);
 		const userInjected = events.some(
 			e => e.type === "message_start" && e.message.role === "user" && e.message.content !== "start",
 		);
@@ -4660,9 +4816,11 @@ describe("agentLoop event-driven steering watch", () => {
 			// drain
 		}
 
-		// The watcher woke on the event and stopped the batch before the second call.
-		expect(executed).toEqual(["first"]);
+		// The watcher woke on the event without polling, and the second call the
+		// assistant already emitted still ran before the steer was injected.
+		expect(executed).toEqual(["first", "second"]);
 		expect(waitCalls).toBeGreaterThan(0);
+		expect(drained).toBe(true);
 	});
 
 	it("does not miss steering queued between the state check and subscription", async () => {
@@ -4759,7 +4917,7 @@ describe("agentLoop event-driven steering watch", () => {
 
 		expect(waitTimedOut).toBe(false);
 		expect(drained).toBe(true);
-		expect(executed).not.toContain("second");
+		expect(executed).toContain("second");
 	});
 
 	it("completes cleanly when canceling a rejecting wait after queued steering", async () => {
@@ -6314,7 +6472,7 @@ describe("agentLoop passive additionalContext", () => {
 		expect(secondRequest?.messages.some(message => message.role === "developer")).toBe(false);
 	});
 
-	it("does not inject beforeToolCall context from steering-skipped calls", async () => {
+	it("does not inject beforeToolCall context from aside-skipped calls", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -6333,8 +6491,6 @@ describe("agentLoop passive additionalContext", () => {
 			},
 		};
 		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
-		const queuedUserMessage = createUserMessage("interrupt");
-		let queuedDelivered = false;
 		let secondRequest: Context | undefined;
 		const mock = createMockModel({
 			responses: [
@@ -6354,14 +6510,7 @@ describe("agentLoop passive additionalContext", () => {
 			model: mock.model,
 			convertToLlm: developerConverter,
 			interruptMode: "immediate",
-			hasSteeringMessages: () => executed.length >= 1 && !queuedDelivered,
-			getSteeringMessages: async () => {
-				if (executed.length >= 1 && !queuedDelivered) {
-					queuedDelivered = true;
-					return [queuedUserMessage];
-				}
-				return [];
-			},
+			hasQueuedAsides: () => executed.length >= 1,
 			beforeToolCall: async ({ args }) => ({
 				additionalContext: `guidance for ${args.value}`,
 			}),
@@ -6369,7 +6518,7 @@ describe("agentLoop passive additionalContext", () => {
 
 		await agentLoop([createUserMessage("start")], context, config, undefined, mock.stream).result();
 
-		// The second call is skipped before execution: its prepared context is
+		// The aside still skips the not-yet-started call: its prepared context is
 		// dropped while the executed call's context is still delivered.
 		expect(executed).toEqual(["first"]);
 		const developers = (secondRequest?.messages ?? []).filter(message => message.role === "developer");

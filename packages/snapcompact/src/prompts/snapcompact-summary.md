@@ -19,7 +19,7 @@ Reading HISTORY:
 {{/if}}{{#if truncatedChars}}- About {{truncatedChars}} characters of older middle history dropped to fit archive budget.
 {{/if}}- If an exact earlier detail matters and a section is unclear, re-derive from workspace (re-read files, re-run commands), rather than guess.
 
-{{!-- viewWithoutFrames (snapcompact.ts) reads these sections back out of a rendered summary: keep EPISODES_SECTION_HEAD, FILES_SECTION_HEAD and HISTORY_SECTION_HEAD in step with these headings. --}}
+{{!-- viewWithoutFrames (snapcompact.ts) reads these sections back out of a rendered summary, and viewSummary tells this template's summaries from others by their closing HISTORY heading: keep EPISODES_SECTION_HEAD, FILES_SECTION_HEAD and HISTORY_SECTION_HEAD in step with these headings. --}}
 {{#if episodes}}EPISODES
 ===================
 {{episodes}}

@@ -15,6 +15,7 @@ import {
 	cfgHindsightBankIdPrefix,
 	cfgHindsightBankMission,
 	cfgHindsightDebug,
+	cfgHindsightGlobalScope,
 	cfgHindsightMentalModelAutoSeed,
 	cfgHindsightMentalModelMaxRenderChars,
 	cfgHindsightMentalModelsEnabled,
@@ -55,6 +56,8 @@ export interface HindsightConfig {
 	 * what the session can recall.
 	 */
 	provenanceTags: string[];
+	/** Whether `retain`/`learn` may store `scope: "global"` items untagged; opt-in through `hindsight.globalScope`. */
+	globalScope: boolean;
 	bankMission: string;
 	retainMission: string | null;
 
@@ -117,6 +120,7 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 			.filter((item): item is string => typeof item === "string")
 			.map(item => item.trim())
 			.filter(Boolean),
+		globalScope: cfgHindsightGlobalScope.get(settings),
 		bankMission: cfgHindsightBankMission.get(settings) ?? "",
 		retainMission: cfgHindsightRetainMission.get(settings) ?? null,
 

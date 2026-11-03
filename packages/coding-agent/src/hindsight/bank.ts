@@ -38,7 +38,7 @@ export interface BankScope {
 	bankId: string;
 	/** Fully resolved deterministic tags in stable order. */
 	resolvedTags?: string[];
-	/** Deterministic scope tags applied to every retain; write-only provenance is merged later. */
+	/** Tags applied to project-scoped retains; global tool writes omit them. Undefined when scoping does not use tags. */
 	retainTags?: string[];
 	/** Tag filter applied to recall and reflect. */
 	recallTags?: string[];

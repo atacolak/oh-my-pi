@@ -179,9 +179,10 @@ export class HindsightRetainQueue {
 		if (!hasSubstantiveContent(stripped)) return;
 		if (scope === "global") this.#state.assertGlobalRetainAvailable();
 		const state = this.#state;
-		// Global items are retained untagged, which every project's `any`-match recall surfaces. They also carry no
+		// Global items drop project tags, which every project's `any`-match recall surfaces. They also carry no
 		// project observation scopes: Hindsight tags a request's generated document(s) with the union of item tags, so
-		// a project tag or scope on a global item would make document-level reads treat it as project-scoped.
+		// a project tag or scope on a global item would make document-level reads treat it as project-scoped. The
+		// write-only provenance stamp still rides along: it never reaches recall filters, so it cannot narrow a read.
 		const global = scope === "global";
 		this.#items.push({
 			content: stripped,
@@ -190,7 +191,9 @@ export class HindsightRetainQueue {
 			timestamp: new Date(),
 			client: state.client,
 			bankId: state.bankId,
-			retainTags: global ? undefined : mergeRetainWriteTags(state.retainTags, state.provenanceTags),
+			retainTags: global
+				? mergeRetainWriteTags(undefined, state.provenanceTags)
+				: mergeRetainWriteTags(state.retainTags, state.provenanceTags),
 			banksSet: state.banksSet,
 			config: state.config,
 			observationScopes: global ? undefined : state.observationScopes,

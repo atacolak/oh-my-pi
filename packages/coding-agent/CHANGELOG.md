@@ -5,6 +5,7 @@
 ### Added
 
 - Persisted `steer()` / `followUp()` queues in the session artifact directory and restored them when the session is resumed, so mid-turn user messages survive a process restart
+
 ## [18.16.0] - 2026-11-02
 
 ### Added

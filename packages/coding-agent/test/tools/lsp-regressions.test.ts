@@ -12,6 +12,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { rejectionOf, trackUnhandled } from "../helpers/rejection";
@@ -4272,7 +4273,7 @@ describe("lsp regressions", () => {
 		}
 	});
 
-	it("request action sends raw LSP method with auto-built textDocument/position params", async () => {
+	it("request action distinguishes auto-built document params from explicit JSON null", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-request-");
 		try {
 			const filePath = path.join(tempDir.path(), "src", "lib.rs");
@@ -4312,7 +4313,7 @@ describe("lsp regressions", () => {
 			const captured: Array<{ method: string; params: unknown }> = [];
 			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_c, method, requestParams) => {
 				captured.push({ method, params: requestParams });
-				return { expansion: "macro_rules!" };
+				return method === "rust-analyzer/reloadWorkspace" ? null : { expansion: "macro_rules!" };
 			});
 
 			const tool = new LspTool(makeLspSession(tempDir.path()));
@@ -4338,6 +4339,21 @@ describe("lsp regressions", () => {
 			expect(output).toContain("rust-analyzer/expandMacro");
 			expect(output).toContain('"expansion"');
 			expect(output).toContain("macro_rules!");
+			const validated = validateToolArguments(tool, {
+				type: "toolCall",
+				id: "request-null",
+				name: "lsp",
+				arguments: {
+					action: "request",
+					file: filePath,
+					query: "rust-analyzer/reloadWorkspace",
+					payload: "null",
+					timeout: 5,
+				},
+			});
+			const nullResult = await tool.execute("request-null", lspSchema.assert(validated));
+			expect(captured[1]).toEqual({ method: "rust-analyzer/reloadWorkspace", params: null });
+			expect(nullResult.content).toEqual([{ type: "text", text: "test-rs ← rust-analyzer/reloadWorkspace:\nnull" }]);
 		} finally {
 			vi.restoreAllMocks();
 			tempDir.removeSync();

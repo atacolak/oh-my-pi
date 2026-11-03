@@ -27,6 +27,7 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	scopeTags: [],
 	provenanceTags: [],
 	scoping: "per-project-tagged",
+	globalScope: false,
 	bankMission: "",
 	retainMission: null,
 	autoRecall: true,

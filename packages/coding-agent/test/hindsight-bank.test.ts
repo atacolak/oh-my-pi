@@ -47,6 +47,7 @@ const baseConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	scopeTags: [],
 	provenanceTags: [],
 	scoping: "global",
+	globalScope: false,
 	bankMission: "",
 	retainMission: null,
 	autoRecall: true,

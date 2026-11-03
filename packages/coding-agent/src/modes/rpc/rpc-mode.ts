@@ -17,7 +17,6 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { $env, isRecord, logger, Snowflake, toError } from "@oh-my-pi/pi-utils";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -65,7 +64,6 @@ import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { EventBus } from "../../utils/event-bus";
 import { selectRpcEntries } from "./rpc-compat";
-import { calculateTokensPerSecond } from "../../utils/token-rate";
 import {
 	formatPersistenceDurabilityFailure,
 	formatPersistenceFailure,
@@ -74,6 +72,7 @@ import {
 import { initializeExtensions } from "../runtime-init";
 import { cfgSpellingAutocomplete } from "../settings";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
+import { type RpcClientConn, RpcClientConnection, RpcClientRegistry } from "./client-connection";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
 import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
@@ -90,8 +89,8 @@ import {
 	watchAndReportPromptResult,
 } from "./rpc-prompt-results";
 import { RpcSessionEventForwarder } from "./rpc-session-events";
-import { isSessionSettled } from "../../session/session-settle";
 import { RpcSessionSettleWatcher, watchedScheduledTurnProbe } from "./rpc-session-settle";
+import { getRpcSessionState } from "./rpc-state";
 import { RpcSubagentRegistry, readRpcSubagentTranscript, resolveOwnedLiveSubagent } from "./rpc-subagents";
 import type {
 	RpcAbortAndRestoreQueueResult,
@@ -110,7 +109,6 @@ import type {
 	RpcOpenSessionResult,
 	RpcRemoveQueuedMessageResult,
 	RpcResponse,
-	RpcSessionState,
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 
@@ -198,18 +196,26 @@ export type * from "./rpc-types";
 export type PendingExtensionRequest = {
 	resolve: (response: RpcExtensionUIResponse) => void;
 	reject: (error: Error) => void;
+	/** Client that received the request; set when the pending map knows its UI owner. */
+	conn?: RpcClientConn;
 };
 
 /** Pending extension UI request map that can fail closed when the RPC client disconnects. */
 export class RpcPendingExtensionRequests extends Map<string, PendingExtensionRequest> {
 	#closedError: Error | undefined;
+	#resolveOwner: (() => RpcClientConn | undefined) | undefined;
+
+	constructor(resolveOwner?: () => RpcClientConn | undefined) {
+		super();
+		this.#resolveOwner = resolveOwner;
+	}
 
 	override set(id: string, request: PendingExtensionRequest): this {
 		if (this.#closedError) {
 			request.reject(this.#closedError);
 			return this;
 		}
-		return super.set(id, request);
+		return super.set(id, { ...request, conn: request.conn ?? this.#resolveOwner?.() });
 	}
 
 	/** Reject every active and future extension UI request. */
@@ -220,6 +226,14 @@ export class RpcPendingExtensionRequests extends Map<string, PendingExtensionReq
 		for (const request of requests) {
 			request.reject(this.#closedError);
 		}
+	}
+
+	/** Reject only the requests one client owned; other clients keep their pending dialogs. */
+	rejectFor(conn: RpcClientConn, message: string): void {
+		const error = new Error(message);
+		const requests = Array.from(this.entries()).filter(([, request]) => request.conn === conn);
+		for (const [id] of requests) this.delete(id);
+		for (const [, request] of requests) request.reject(error);
 	}
 }
 
@@ -1429,6 +1443,17 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		if (isRecord(obj) && obj.type === "response" && obj.command === "negotiate_protocol" && obj.success === true)
 			frameEncoder.setProtocolVersion(2);
 	};
+	const clients = new RpcClientRegistry();
+	const stdioClient = new RpcClientConnection({ id: "stdio", send: output });
+	clients.register(stdioClient);
+	// Extension UI goes to one UI-capable client; every other frame keeps its transport-wide sink.
+	const uiOutput: RpcOutput = frame => {
+		if (isRecord(frame) && frame.type === "extension_ui_request") {
+			clients.sendUi(frame);
+			return;
+		}
+		output(frame);
+	};
 	const emitRpcTitles = shouldEmitRpcTitles();
 
 	const success = <T extends RpcCommand["type"]>(
@@ -1464,8 +1489,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	});
 	const sessionEvents = new RpcSessionEventForwarder(output);
 
-	const pendingExtensionRequests = new RpcPendingExtensionRequests();
-	const hostToolBridge = new RpcHostToolBridge(output);
+	const pendingExtensionRequests = new RpcPendingExtensionRequests(() => clients.activeUiConn());
+	const hostToolBridge = new RpcHostToolBridge(stdioClient);
 	const hostUriBridge = new RpcHostUriBridge(output);
 	// Live frames go straight to `output`, so `set_event_filter` (session events only) never drops them.
 	const liveBridge = new RpcLiveBridge(session, output, createLiveSession);
@@ -1713,7 +1738,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// Wire up UI context for tool execution (ask tool, etc.) and extensions.
 	// A single shared instance routes all responses received on stdin to the
 	// correct waiting promise regardless of which code path created the request.
-	const rpcUiContext = new RpcExtensionUIContext(pendingExtensionRequests, output);
+	const rpcUiContext = new RpcExtensionUIContext(pendingExtensionRequests, uiOutput);
 	setToolUIContext?.(rpcUiContext, true);
 	const setAskDialog = (command: RpcCommand & { type: "set_ask_dialog" }): RpcResponse => {
 		rpcUiContext.askDialogEnabled = command.enabled === true;
@@ -2251,48 +2276,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			case "get_state": {
 				// A goal exit triggered by the last turn restores tools asynchronously; report after it.
 				await goalController.settled();
-				const queuedMessages = session.getQueuedMessages();
-				const state: RpcSessionState = {
-					model: session.model,
-					thinkingLevel: session.thinkingLevel,
-					isStreaming: session.isStreaming,
-					isCompacting: session.isCompacting,
-					steeringMode: session.steeringMode,
-					followUpMode: session.followUpMode,
-					interruptMode: session.interruptMode,
-					sessionFile: session.sessionFile,
-					sessionId: session.sessionId,
-					sessionName: session.sessionName,
-					autoCompactionEnabled: session.autoCompactionEnabled,
-					queuedMessageCount: session.queuedMessageCount,
-					hasPendingAsyncWork: session.hasPendingAsyncWork(),
-					// A scheduled goal continuation will start a turn: not settled.
-					isSettled: isSessionSettled(session, goalTurnScheduled),
-					queuedMessages: {
-						steering: [...queuedMessages.steering],
-						followUp: [...queuedMessages.followUp],
-						liveSteered: queuedMessages.liveSteered,
-					},
-					todoPhases: session.getTodoPhases(),
-					fastModeEnabled: session.isFastModeEnabled(),
-					tokensPerSecond: calculateTokensPerSecond(session.messages, session.isStreaming),
-					fastModeActive: session.isFastModeActive(),
-					slowModeSupported: session.isSlowModeSupported(),
-					slowModeEnabled: session.isSlowModeEnabled(),
-					slowModeScope: session.getSlowModeScope(),
-					usageLimit: session.getUsageLimitState(),
-					messageCount: session.messages.length,
-					systemPrompt: session.systemPrompt,
-					dumpTools: session.agent.state.tools.map(tool => ({
-						name: tool.name,
-						description: tool.description,
-						parameters: toolWireSchema(tool),
-						examples: tool.examples,
-					})),
-					contextUsage: session.getContextUsage(),
-					goal: session.getGoalModeState() ?? null,
-				};
-				return success(id, "get_state", state);
+				return success(id, "get_state", getRpcSessionState(session, goalTurnScheduled));
 			}
 
 			case "set_fast_mode": {
@@ -2751,7 +2735,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				if (!knownProvider) {
 					return error(id, "login", `Unknown OAuth provider: ${command.providerId}`);
 				}
-				const uiCtx = new RpcExtensionUIContext(pendingExtensionRequests, output);
+				const uiCtx = new RpcExtensionUIContext(pendingExtensionRequests, uiOutput);
 				// Track whether onAuth has fired. Providers that require interactive
 				// input before a browser URL cannot be satisfied headlessly; after
 				// onAuth, prompt input is the pasted OAuth code/redirect URL path.
@@ -2760,7 +2744,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					await session.modelRegistry.authStorage.oauth.login(command.providerId, {
 						onAuth: info => {
 							authEmitted = true;
-							output({
+							uiOutput({
 								type: "extension_ui_request",
 								id: Snowflake.next() as string,
 								method: "open_url",
@@ -2922,8 +2906,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		errorResponse: error,
 		trackBackgroundTask: task => shutdownCoordinator.track(task),
 		pendingExtensionRequests,
-		onHostToolResult: frame => hostToolBridge.handleResult(frame),
-		onHostToolUpdate: frame => hostToolBridge.handleUpdate(frame),
+		onHostToolResult: frame => hostToolBridge.handleResult(frame, stdioClient),
+		onHostToolUpdate: frame => hostToolBridge.handleUpdate(frame, stdioClient),
 		onHostUriResult: frame => hostUriBridge.handleResult(frame),
 	};
 
@@ -2946,7 +2930,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	// stdin closed — RPC client is gone. Fail pending side-channel requests
 	// first so active/queued commands can settle, then drain accepted work.
 	pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");
-	hostToolBridge.close("RPC client disconnected before host tool execution completed");
+	stdioClient.close();
+	// Dropping the connection drops its tools from the merged union the session can call.
+	await session.refreshRpcHostTools(
+		hostToolBridge.removeClient(stdioClient, "RPC client disconnected before host tool execution completed"),
+	);
 	hostUriBridge.clear("RPC client disconnected before host URI request completed");
 	dictationBridge.dispose();
 	await liveBridge.stop();

@@ -5,6 +5,7 @@
 ### Fixed
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
+
 ## [18.16.0] - 2026-11-02
 
 ### Added

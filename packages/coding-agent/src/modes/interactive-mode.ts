@@ -366,6 +366,8 @@ import type {
 } from "./types";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { ConversationPosition } from "./utils/conversation-position";
+import type { RpcSessionSocket } from "./rpc/rpc-socket";
+import type { ServedSessionSocket } from "./rpc/rpc-command-surface";
 import { materializeImageChipLinks, UiHelpers } from "./utils/ui-helpers";
 
 import {
@@ -1994,6 +1996,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#subagentSessionCosts = new WeakMap<object, AgentCostSnapshot>();
 	#subagentCostHydratedRoot?: string;
 	#mcpStatusOrder: string[] = [];
+	#servedSessionSocket: ServedSessionSocket | undefined;
 	#mcpPendingServers = new Set<string>();
 	#mcpConnectedServers = new Set<string>();
 	#mcpFailedServers = new Map<string, { error: string; sourcePath?: string }>();
@@ -7846,7 +7849,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		return "deny";
 	}
 
+	/**
+	 * Publish this terminal session's command surface on its attach endpoint.
+	 * The session owns the listener: a client disconnect detaches only that
+	 * client, never the session or a running turn.
+	 */
+	async attachSessionSocket(socket: RpcSessionSocket | undefined): Promise<void> {
+		if (!socket || this.#servedSessionSocket) return;
+		const { serveInteractiveSessionSocket } = await import("./rpc/rpc-command-surface");
+		this.#servedSessionSocket = await serveInteractiveSessionSocket({ session: this.session, socket });
+	}
+
 	stop(): void {
+		void this.#servedSessionSocket?.close();
+		this.#servedSessionSocket = undefined;
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
 		this.#appearanceRefreshRequest = undefined;

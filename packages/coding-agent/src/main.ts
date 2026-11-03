@@ -83,6 +83,7 @@ import type { InteractiveMode } from "./modes/interactive-mode";
 import { formatSessionContinuationNotice } from "./modes/persistence-failure";
 import type { PrintModeOptions } from "./modes/print-mode";
 import type { RpcModeOptions } from "./modes/rpc/rpc-mode";
+import type { RpcSessionSocket } from "./modes/rpc/rpc-socket";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "@oh-my-pi/pi-tui/setup/setup-version";
 import type * as SetupWizardModule from "./modes/setup";
@@ -662,6 +663,7 @@ async function runInteractiveMode(
 	startupGoal?: string,
 	startupRestore?: () => Promise<RestoreOutcome>,
 	refreshScopedModelsAfterLogin?: () => Promise<void>,
+	sessionSocket?: RpcSessionSocket,
 ): Promise<void> {
 	const InteractiveModeConstructor = await loadInteractiveModeConstructor();
 	let mode: InteractiveMode;
@@ -683,6 +685,8 @@ async function runInteractiveMode(
 		startupLease?.dispose();
 		throw error;
 	}
+
+	await mode.attachSessionSocket(sessionSocket);
 
 	let setupWizard: typeof SetupWizardModule | undefined;
 	let setupScenes: SetupScene[] = [];
@@ -2809,10 +2813,10 @@ export async function runRootCommand(
 			}
 
 			// The live session is fully initialized here, before any mode owns stdio or
-			// the terminal. An RPC session also publishes an attach endpoint; the
+			// the terminal. RPC and terminal sessions publish an attach endpoint; the
 			// listener starts when the runner wires its command surface.
 			const sessionSocket =
-				mode === "rpc" || mode === "rpc-ui"
+				mode === "rpc" || mode === "rpc-ui" || isInteractive
 					? (await import("./modes/rpc/rpc-socket")).createAgentSessionSocket(session)
 					: undefined;
 
@@ -2882,6 +2886,7 @@ export async function runRootCommand(
 						initialArgs.goal,
 						parsedArgs.restore ? () => restoreSession(session, { eventBus, subagentEventBus }) : undefined,
 						refreshScopedModelsAfterLogin,
+						sessionSocket,
 					);
 				} finally {
 					startupLease?.dispose();

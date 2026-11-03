@@ -100,6 +100,13 @@ export class RpcClientRegistry {
 		return undefined;
 	}
 
+	/** Every open client, in registration order. */
+	broadcast(frame: RpcClientFrame): void {
+		for (const conn of this.#connections) {
+			if (conn.isOpen) conn.send(frame);
+		}
+	}
+
 	sendUi(frame: RpcClientFrame): boolean {
 		const conn = this.activeUiConn();
 		if (!conn) return false;

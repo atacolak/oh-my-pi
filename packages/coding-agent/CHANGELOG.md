@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Interactive sessions now publish an owner-only attach endpoint (`~/.omp/run/<session-id>.sock` plus a JSON discovery sidecar) that serves the same RPC command surface as `--mode rpc`, so external clients can attach, negotiate, prompt or steer, receive session events and register host tools; the endpoint moves when the session switches, and a client disconnect detaches only that client instead of ending the session
+
 ## [18.16.0] - 2026-11-02
 
 ### Added

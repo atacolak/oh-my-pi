@@ -4780,6 +4780,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 									assertPerCallModelApproved(dispatchModel, perCallModelGrants, modelRegistry);
 									if (spawnEffortCeiling) assertModelSupportsEffortCeiling(dispatchModel, spawnEffortCeiling);
 								},
+							}
+						: {}),
+					...(perCallModelGrants || agent.modelFallback === false
+						? {
 								disableModelFallback: true,
 								disableServerSideFallback: true,
 							}

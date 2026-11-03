@@ -298,6 +298,8 @@ export interface ParsedAgentFields {
 	tools?: string[];
 	spawns?: string[] | "*";
 	model?: string[];
+	/** `false` = the agent disables client- and server-side model fallback for its sessions. */
+	modelFallback?: boolean;
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
@@ -378,6 +380,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 
 	const thinkingLevel = parseConfiguredThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
+	const modelFallback = parseBoolean(frontmatter.modelFallback);
 	const blocking = parseBoolean(frontmatter.blocking);
 	const hide = parseBoolean(frontmatter.hide);
 	const structured = parseBoolean(frontmatter.structured);
@@ -405,6 +408,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		tools,
 		spawns,
 		model,
+		modelFallback,
 		output,
 		thinkingLevel,
 		blocking,

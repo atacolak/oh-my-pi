@@ -334,6 +334,8 @@ export interface AgentDefinition {
 
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;
+	/** `false` = this agent's sessions never fall back to another model, client- or server-side. Absent inherits `retry.modelFallback`. */
+	modelFallback?: boolean;
 	output?: unknown;
 	blocking?: boolean;
 	/** Omit this definition from ambient agent rosters while preserving exact-name resolution. */

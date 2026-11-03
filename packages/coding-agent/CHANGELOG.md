@@ -311,6 +311,7 @@
 - Fixed project saves leaving live status-line cached settings on the rejected local value after adopting a newer disk edit.
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
+- Agent definitions accept `model-fallback: false` to pin that agent's sessions to their resolved model: root `--agent` launches, resume restores, and spawned subagents (including cold-revived ones) skip both client-side retry fallback and server-side fallback for that agent, while omitting the key keeps `retry.modelFallback` in charge.
 
 ## [18.16.0] - 2026-11-02
 

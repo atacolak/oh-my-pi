@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { parseAgentFields } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
+import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { resolveBuiltinToolPlan, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
@@ -231,6 +232,28 @@ describe("parseAgentFields", () => {
 	test("returns undefined readSummarize when field absent", () => {
 		expect(parseAgentFields({ name: "scout", description: "desc" })?.readSummarize).toBeUndefined();
 	});
+	test("parses modelFallback from boolean and boolean-string frontmatter", () => {
+		expect(parseAgentFields({ name: "pinned", description: "desc", modelFallback: false })?.modelFallback).toBe(
+			false,
+		);
+		expect(parseAgentFields({ name: "pinned", description: "desc", modelFallback: "false" })?.modelFallback).toBe(
+			false,
+		);
+		expect(
+			parseAgentFields({ name: "pinned", description: "desc", modelFallback: "sometimes" })?.modelFallback,
+		).toBeUndefined();
+		expect(parseAgentFields({ name: "pinned", description: "desc" })?.modelFallback).toBeUndefined();
+	});
+
+	test("reads model-fallback from markdown frontmatter", () => {
+		const agent = parseAgent(
+			"pinned.md",
+			["---", "name: pinned", 'description: "desc"', "model-fallback: false", "---", "body"].join("\n"),
+			"project",
+		);
+		expect(agent.modelFallback).toBe(false);
+	});
+
 	test("parses prewalk from boolean frontmatter", () => {
 		expect(parseAgentFields({ name: "worker", description: "desc", prewalk: true })?.prewalk).toBe(true);
 		expect(parseAgentFields({ name: "worker", description: "desc", prewalk: false })?.prewalk).toBe(false);

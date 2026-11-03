@@ -1817,6 +1817,10 @@ export async function buildSessionOptions(
 		if (launchAgent.automationAuthor) {
 			options.automationAuthor = launchAgent.automationAuthor;
 		}
+		if (launchAgent.modelFallback === false) {
+			options.disableModelFallback = true;
+			options.disableServerSideFallback = true;
+		}
 
 		options.autoloadSkills = launchAgent.autoloadSkills;
 		if (launchAgent.spawns !== undefined) {

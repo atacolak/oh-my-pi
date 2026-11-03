@@ -220,6 +220,25 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(spy.mock.calls[1]?.[0]?.toolNames).toBeUndefined();
 	});
 
+	it("disables client and server fallback for a spawned agent that declares model-fallback: false", async () => {
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const fields = parseAgentFields({ name: "pinned", description: "desc", modelFallback: false });
+		if (!fields) throw new Error("agent fields did not parse");
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "pinned-child",
+			agent: { ...baseAgent, ...fields },
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.disableModelFallback).toBe(true);
+		expect(forwarded?.disableServerSideFallback).toBe(true);
+		expect(forwarded?.assertDispatchModel).toBeUndefined();
+	});
+
 	it("grants wait only to unrestricted subagents that can start background work, and requires write for peers", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));

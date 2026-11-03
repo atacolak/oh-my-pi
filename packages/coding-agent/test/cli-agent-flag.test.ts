@@ -43,6 +43,10 @@ const HIDDEN_PROBE_MD = FLAG_PROBE_MD.replace("name: flag-probe", "name: hidden-
 	"thinking-level: medium",
 	"thinking-level: medium\nhide: true",
 );
+const NO_FALLBACK_PROBE_MD = FLAG_PROBE_MD.replace(
+	"name: flag-probe",
+	"name: no-fallback-probe\nmodel-fallback: false",
+);
 const AUTHOR_PROBE_MD = [
 	"---",
 	"name: runtime-maintainer",
@@ -307,6 +311,52 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.spawns).toBe("scout,reviewer");
 			// Restored from the transcript, so the launch agent must not overwrite them.
 			expect(options.thinkingLevel).toBeUndefined();
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("disables client and server fallback for an agent declaring model-fallback: false", async () => {
+		const cwd = await writeProjectAgent(NO_FALLBACK_PROBE_MD);
+		try {
+			const { options } = await optionsFor(["--agent", "no-fallback-probe"], cwd);
+			expect(options.disableModelFallback).toBe(true);
+			expect(options.disableServerSideFallback).toBe(true);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("restores the pinned fallback policy from the persisted root agent", async () => {
+		const cwd = await writeProjectAgent(NO_FALLBACK_PROBE_MD);
+		try {
+			authStorage = await AuthStorage.create(":memory:");
+			const registry = new ModelRegistry(authStorage);
+			const settings = Settings.isolated({
+				"async.enabled": false,
+				"marketplace.autoUpdate": "off",
+			});
+			const parsed = parseArgs(["--continue"]);
+			parsed.cwd = cwd;
+			const sessionManager = {
+				getHeader: () => ({ rootAgent: "no-fallback-probe" }),
+				setRootAgent: async () => {},
+			};
+			const options = await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
+			expect(options.rootAgentName).toBe("no-fallback-probe");
+			expect(options.disableModelFallback).toBe(true);
+			expect(options.disableServerSideFallback).toBe(true);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves the fallback flags unset when the agent omits model-fallback", async () => {
+		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+		try {
+			const { options } = await optionsFor(["--agent", "flag-probe"], cwd);
+			expect(options.disableModelFallback).toBeUndefined();
+			expect(options.disableServerSideFallback).toBeUndefined();
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}

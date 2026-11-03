@@ -1,26 +1,19 @@
 > [!NOTE]
-> ## `runtime` — Ata's daily OMP
+> ## `cap/episode-compaction` — episode index, idle recap journal, episode context
 >
-> Daily composition of selected local capabilities on upstream OMP 18.15.0.
+> Durable local capability: each agent run is an **episode** with a row in `history.db` and its idle recap journaled beside it, so "what happened in this run" is an indexed lookup instead of a JSONL reconstruction.
 >
-> - **Upstream base:** [OMP 18.15.0 (`3fedf8d5`)](https://github.com/can1357/oh-my-pi/tree/3fedf8d53267e32a6d7521ce725fdcc4a36fdc67)
-> - **Capabilities:**
->   - [`cap/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-flag) — root agent launch via `--agent`
->   - [`cap/agent-tool-mcp-surface`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-tool-mcp-surface) — lazy agent tool/MCP mounts + MCPHub discovery
->   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
->   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
->   - [`cap/extensions`](https://github.com/atacolak/oh-my-pi/tree/cap/extensions) — skip colocated test files as extension entry points
->   - [`cap/followup-draft`](https://github.com/atacolak/oh-my-pi/tree/cap/followup-draft) — followUpMode default all
->   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
->   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retention + locked scope seam
->   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — nested project LSP roots
->   - [`cap/persist-queued-messages`](https://github.com/atacolak/oh-my-pi/tree/cap/persist-queued-messages) — queued steer/followUp prompts persist with the session
->   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — default retry chain for unowned models
->   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped `/settings`
->   - [`cap/todo-passive-phase`](https://github.com/atacolak/oh-my-pi/tree/cap/todo-passive-phase) — passive todo phases
->   - [`cap/viewport`](https://github.com/atacolak/oh-my-pi/tree/cap/viewport) — app viewport + `ompalt` launcher
+> - **Episode index:** `session_episodes` opens on agent start and closes with the idle recap that settled it; `session_recaps` is the append-only recap journal. Consecutive same-title runs group into **chapters**.
+> - **Context:** a completed episode is recapped as soon as its run ends (not only when the session goes quiet), and recent episodes render as an `EPISODES` section above the snapcompact `HISTORY` archive.
+> - **`episode://`:** overview, per-call detail, and search internal-URL routes.
+> - **Per-agent compaction policy:** a named agent profile's `compaction` frontmatter overrides config files; a root profile's block applies to the root session.
+> - **Readback:** `viewWithoutFrames`/`viewSummary` keep `EPISODES`/`FILES`/`HISTORY` headings in step; `viewSummary` merges an extension's own summary text with the template's view.
 >
-> Rebuild from `main` + current `cap/*` tips. Do not implement features here.
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR(s):** Status: fork-local (the idle-recap gate landed upstream as [#16978](https://github.com/can1357/oh-my-pi/pull/16978))
+> - **Upstream base:** [OMP 18.16.0 (`650f3a10`)](https://github.com/can1357/oh-my-pi/tree/650f3a108229ee11bf68ba3377f4e8c3391cd424)
+>
+> Not stacked on other capabilities; merged into `runtime` independently.
 
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">

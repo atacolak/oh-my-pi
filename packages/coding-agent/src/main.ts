@@ -2808,6 +2808,14 @@ export async function runRootCommand(
 				postmortem.register("settings-file-watcher", () => settingsInstance.stopWatching(), { exitOnly: true });
 			}
 
+			// The live session is fully initialized here, before any mode owns stdio or
+			// the terminal. An RPC session also publishes an attach endpoint; the
+			// listener starts when the runner wires its command surface.
+			const sessionSocket =
+				mode === "rpc" || mode === "rpc-ui"
+					? (await import("./modes/rpc/rpc-socket")).createAgentSessionSocket(session)
+					: undefined;
+
 			if (mode === "rpc" || mode === "rpc-ui") {
 				// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
@@ -2819,6 +2827,7 @@ export async function runRootCommand(
 					subagentEventBus,
 					mcpManager,
 					input: rpcInput,
+					sessionSocket,
 				});
 			} else if (isInteractive) {
 				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);

@@ -89,6 +89,7 @@ import {
 	watchAndReportPromptResult,
 } from "./rpc-prompt-results";
 import { RpcSessionEventForwarder } from "./rpc-session-events";
+import type { RpcSessionSocket, RpcSessionSocketSurface } from "./rpc-socket";
 import { RpcSessionSettleWatcher, watchedScheduledTurnProbe } from "./rpc-session-settle";
 import { getRpcSessionState } from "./rpc-state";
 import { RpcSubagentRegistry, readRpcSubagentTranscript, resolveOwnedLiveSubagent } from "./rpc-subagents";
@@ -1394,6 +1395,12 @@ export interface RpcModeOptions {
 	createDictationController?: RpcDictationControllerFactory;
 	/** The session's MCP manager, so `/mcp` builtins resolve and reconnect live servers. */
 	mcpManager?: MCPManager;
+	/**
+	 * Session endpoint published for external attachment. Constructed at the
+	 * shared `main.ts` mount point; this runner supplies the command surface and
+	 * starts it. Absent in embedded hosts and tests that serve stdio only.
+	 */
+	sessionSocket?: RpcSessionSocket;
 }
 
 /**
@@ -1408,6 +1415,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		input = claimRpcInput(),
 		createLiveSession,
 		createDictationController,
+		sessionSocket,
 	} = options;
 	// Signal to RPC clients that the server is ready to accept commands
 	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
@@ -1525,7 +1533,15 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	const withSessionChange = async <T>(change: () => Promise<T>): Promise<T> => {
 		sessionChangesInProgress++;
 		try {
-			return await change();
+			const result = await change();
+			// The endpoint is named by the session it publishes; a switch or resume to
+			// another session must move it, while attached connections stay attached.
+			try {
+				await sessionSocket?.rebind();
+			} catch (rebindError) {
+				logger.warn("RPC session socket rebind failed", { error: String(rebindError) });
+			}
+			return result;
 		} finally {
 			sessionChangesInProgress--;
 		}
@@ -1744,8 +1760,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		rpcUiContext.askDialogEnabled = command.enabled === true;
 		return success(command.id, "set_ask_dialog", { enabled: rpcUiContext.askDialogEnabled });
 	};
-	const onPromptError = (id: string | undefined, command: string) => (promptError: Error) =>
-		output(error(id, command, promptError.message));
+	const onPromptError = (id: string | undefined, command: string, conn?: RpcClientConn) => (promptError: Error) =>
+		(conn ? (frame: RpcResponse) => conn.send(frame) : output)(error(id, command, promptError.message));
 
 	// Read stdin from now on: `session_start` may be waiting on a dialog only the client can answer. Until the
 	// command loop below exists, a dialog answer and the ask-dialog opt-in are handled at once and every other
@@ -1912,6 +1928,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	const dispatchOrderedUserInput = (
 		command: OrderedUserInput,
 		ticket: RpcPromptTicket | undefined,
+		conn?: RpcClientConn,
 	): Promise<OrderedInputOutcome> =>
 		inputGate.enqueue(async () => {
 			const sessionId = session.sessionId;
@@ -1946,7 +1963,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					message: text,
 					streamingBehavior: command.streamingBehavior,
 					results: promptResults,
-					onError: onPromptError(command.id, "prompt"),
+					onError: onPromptError(command.id, "prompt", conn),
 					extensionUserMessageTracker,
 					images,
 					isCurrent,
@@ -2019,7 +2036,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 						onPromptAdmitted,
 					}),
 				results: promptResults,
-				onError: onPromptError(command.id, command.type),
+				onError: onPromptError(command.id, command.type, conn),
 				extensionUserMessageTracker,
 			});
 			return "admitted";
@@ -2036,7 +2053,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	};
 
 	// Handle a single command
-	const handleCommandImpl = async (command: RpcCommand): Promise<RpcResponse> => {
+	const handleCommandImpl = async (command: RpcCommand, conn?: RpcClientConn): Promise<RpcResponse> => {
 		const id = command.id;
 
 		switch (command.type) {
@@ -2053,11 +2070,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			case "prompt": {
 				// Taken before any dispatch so a builtin that schedules a turn (e.g. `/retry`)
 				// cannot start its run ahead of the prompt's event-stream position.
-				const ticket = promptResults.begin(id);
+				const ticket = promptResults.begin(id, conn ? frame => conn.send(frame) : undefined);
 				try {
 					// Ack after admission, including hooks and skill image preparation, so a
 					// queue edit sent after this response finds the message.
-					const outcome = await dispatchOrderedUserInput(command, ticket);
+					const outcome = await dispatchOrderedUserInput(command, ticket, conn);
 					if (outcome === "local") {
 						promptResults.discard(ticket);
 						return success(id, "prompt", { agentInvoked: false });
@@ -2076,7 +2093,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "steer":
 			case "follow_up": {
-				await dispatchOrderedUserInput(command, undefined);
+				await dispatchOrderedUserInput(command, undefined, conn);
 				return success(id, command.type);
 			}
 
@@ -2123,8 +2140,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				goalController.stopForHostAbort();
 				abortBuiltinCommands("RPC command aborted by host");
 				await session.abort({ reason: USER_INTERRUPT_LABEL });
-				const ticket = promptResults.begin(id);
-				void dispatchOrderedUserInput(command, ticket).then(
+				const ticket = promptResults.begin(id, conn ? frame => conn.send(frame) : undefined);
+				void dispatchOrderedUserInput(command, ticket, conn).then(
 					outcome => {
 						if (outcome === "cancelled") promptResults.settle(ticket);
 						else if (outcome === "local") promptResults.completeLocal(ticket);
@@ -2132,7 +2149,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					(cause: unknown) => {
 						// Already acknowledged: owe the late same-id error and a failed prompt_result.
 						const promptError = cause instanceof Error ? cause : new Error(String(cause));
-						onPromptError(id, "abort_and_prompt")(promptError);
+						onPromptError(id, "abort_and_prompt", conn)(promptError);
 						promptResults.fail(ticket, promptError.message);
 					},
 				);
@@ -2349,7 +2366,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "set_host_tools": {
 				const tools = normalizeHostToolDefinitions(command.tools);
-				const rpcTools = hostToolBridge.setTools(tools);
+				const rpcTools = hostToolBridge.setTools(tools, conn);
 				await session.refreshRpcHostTools(rpcTools);
 				return success(id, "set_host_tools", { toolNames: tools.map(tool => tool.name) });
 			}
@@ -2879,9 +2896,13 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		}
 	};
 
-	const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
-		if (!Object.hasOwn(SESSION_CHANGE_TYPES, command.type)) return handleCommandImpl(command);
-		return withSessionChange(() => handleCommandImpl(command));
+	const handleCommand = async (command: RpcCommand, conn?: RpcClientConn): Promise<RpcResponse> => {
+		const run = () => handleCommandImpl(command, conn);
+		const response = Object.hasOwn(SESSION_CHANGE_TYPES, command.type) ? await withSessionChange(run) : await run();
+		// The stdio dispatcher owns its response sink; a socket client gets its own
+		// answer here, so two clients can reuse an id without crossing wires.
+		conn?.send(response);
+		return response;
 	};
 
 	// Deferred shutdown (pi.shutdown() from an extension) must not kill the
@@ -2916,6 +2937,43 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		afterSerialCommand: () => shutdownCoordinator.checkShutdownRequested(),
 		acceptInput: command => inputGate.accept(command),
 	});
+
+	// One attached socket client: its own connection identity, response sink, and
+	// host-tool registration. Closing it detaches only these, never the session.
+	const socketSurface = (conn: RpcClientConn): RpcSessionSocketSurface => {
+		clients.register(conn);
+		return {
+			dispatch: frame => {
+				if (isRpcHostToolResult(frame)) {
+					hostToolBridge.handleResult(frame, conn);
+					return;
+				}
+				if (isRpcHostToolUpdate(frame)) {
+					hostToolBridge.handleUpdate(frame, conn);
+					return;
+				}
+				if (isRpcHostUriResult(frame)) {
+					hostUriBridge.handleResult(frame);
+					return;
+				}
+				if (isRpcExtensionUIResponse(frame)) {
+					pendingExtensionRequests.get(frame.id)?.resolve(frame);
+					return;
+				}
+				void handleCommand(frame as RpcCommand, conn);
+			},
+			close: reason => {
+				clients.unregister(conn);
+				void session.refreshRpcHostTools(hostToolBridge.removeClient(conn, reason));
+			},
+		};
+	};
+	if (sessionSocket) {
+		await sessionSocket.listen(socketSurface);
+		// `--session` grows a switch/resume path that is not a "session change"
+		// command here; the process-level wake-up asks the endpoint to republish.
+		process.on("SIGUSR2", () => void sessionSocket.rebind().catch(() => {}));
+	}
 
 	// Startup is over: run the frames held back meanwhile, then every later frame, through the dispatcher.
 	// Side-channel frames dispatch immediately, ordinary commands serialize through inputDispatcher, and bash

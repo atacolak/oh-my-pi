@@ -86,6 +86,7 @@ import type { InteractiveMode } from "./modes/interactive-mode";
 import { formatSessionContinuationNotice } from "./modes/persistence-failure";
 import type { PrintModeOptions } from "./modes/print-mode";
 import type { RpcModeOptions } from "./modes/rpc/rpc-mode";
+import type { RpcSessionSocket } from "./modes/rpc/rpc-socket";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "@oh-my-pi/pi-tui/setup/setup-version";
 import type * as SetupWizardModule from "./modes/setup";
@@ -669,6 +670,7 @@ async function runInteractiveMode(
 	startupGoal?: string,
 	startupRestore?: () => Promise<RestoreOutcome>,
 	refreshScopedModelsAfterLogin?: () => Promise<void>,
+	sessionSocket?: RpcSessionSocket,
 ): Promise<void> {
 	const InteractiveModeConstructor = await loadInteractiveModeConstructor();
 	let mode: InteractiveMode;
@@ -690,6 +692,8 @@ async function runInteractiveMode(
 		startupLease?.dispose();
 		throw error;
 	}
+
+	await mode.attachSessionSocket(sessionSocket);
 
 	let setupWizard: typeof SetupWizardModule | undefined;
 	let setupScenes: SetupScene[] = [];
@@ -2954,6 +2958,14 @@ export async function runRootCommand(
 				postmortem.register("settings-file-watcher", () => settingsInstance.stopWatching(), { exitOnly: true });
 			}
 
+			// The live session is fully initialized here, before any mode owns stdio or
+			// the terminal. RPC and terminal sessions publish an attach endpoint; the
+			// listener starts when the runner wires its command surface.
+			const sessionSocket =
+				mode === "rpc" || mode === "rpc-ui" || isInteractive
+					? (await import("./modes/rpc/rpc-socket")).createAgentSessionSocket(session)
+					: undefined;
+
 			if (mode === "rpc" || mode === "rpc-ui") {
 				// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
@@ -2965,6 +2977,7 @@ export async function runRootCommand(
 					subagentEventBus,
 					mcpManager,
 					input: rpcInput,
+					sessionSocket,
 				});
 			} else if (isInteractive) {
 				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
@@ -3019,6 +3032,7 @@ export async function runRootCommand(
 						initialArgs.goal,
 						parsedArgs.restore ? () => restoreSession(session, { eventBus, subagentEventBus }) : undefined,
 						refreshScopedModelsAfterLogin,
+						sessionSocket,
 					);
 				} finally {
 					startupLease?.dispose();

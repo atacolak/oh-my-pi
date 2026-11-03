@@ -254,8 +254,6 @@
 - Fixed the first LSP diagnostics request returning no results while a newly started language server is still analyzing.
 - `/shake thinking` now reports the number of tokens freed.
 
-## [18.2.10] - 2026-09-22
-- Persisted `steer()` / `followUp()` queues in the session artifact directory and restored them when the session is resumed, so mid-turn user messages survive a process restart
 ### Fixed
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.

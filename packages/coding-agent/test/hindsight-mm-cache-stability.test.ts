@@ -86,7 +86,7 @@ describe("HindsightSessionState mental-model freeze", () => {
 			} as never,
 			banksSet: new Set(),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 		return { state, listeners, listMentalModels };
 	}
@@ -130,7 +130,7 @@ describe("SessionMemory mental-model boundary reload", () => {
 			session: stateSession as never,
 			banksSet: new Set(),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 		const publishBoundary = async (commitIf?: () => boolean) => {
 			await publicationGate;
@@ -152,7 +152,6 @@ describe("SessionMemory mental-model boundary reload", () => {
 			setHindsightSessionState: () => {},
 			getMnemopiSessionState: () => undefined,
 			takeMnemopiSessionState: () => undefined,
-			setBaseSystemPrompt: () => {},
 			refreshBaseSystemPrompt: publishReset,
 			replaceMemoryTools: async () => {},
 			rebaseHindsightCloseRetainBaseline: () => {},
@@ -271,7 +270,7 @@ describe("SessionMemory mental-model boundary reload", () => {
 			session: stateSession as never,
 			banksSet: new Set(["b"]),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 
 		const bootstrap = state.runMentalModelLoad({ bankId: "b" });

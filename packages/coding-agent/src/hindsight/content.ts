@@ -22,6 +22,8 @@ export interface RecallResultLike {
 	mentioned_at?: string | null;
 	/** Tags carried by the recalled memory; actor/role entries render as a provenance badge. */
 	tags?: readonly string[];
+	/** Memory metadata as retained; `episode_id` links the memory to its session episode. */
+	metadata?: Record<string, unknown> | null;
 }
 
 const MEMORIES_REGEX = /<memories>[\s\S]*?<\/memories>/g;
@@ -33,12 +35,12 @@ const RETENTION_PROTOCOL_MARKER_REGEX = /^\[(?:role:\s*[-_a-zA-Z0-9]+|[-_a-zA-Z0
 /**
  * Strip `<memories>`, `<mental_models>`, and legacy memory blocks.
  *
- * Both `<memories>` (per-turn recall) and `<mental_models>` (curated semantic
- * memory) are injected into the system prompt. If either leaks into the
- * retention transcript, every retain becomes a tighter feedback loop —
- * paraphrased memories feed the next consolidation, which feeds the next
- * mental-model refresh, which feeds the next retain. Always strip before
- * retaining.
+ * `<memories>` rides a hidden turn entry and `<mental_models>` the developer
+ * instructions; both are context the model was handed, not knowledge it gained.
+ * If either leaks into a retention transcript or a `retain` call, every retain
+ * becomes a tighter feedback loop — paraphrased memories feed the next
+ * consolidation, which feeds the next mental-model refresh, which feeds the next
+ * retain. Always strip before retaining.
  */
 export function stripMemoryTags(content: string): string {
 	return content
@@ -90,15 +92,46 @@ function provenanceBadge(tags: readonly string[] | undefined): string {
 	return labels.length > 0 ? ` [${labels.join(" ")}]` : "";
 }
 
+/**
+ * Identity of one recalled memory as the model read it, for session dedupe.
+ *
+ * The key pairs the server id (when there is one) with the text, so a refresh
+ * never repeats what the transcript already shows while a memory whose content
+ * changed under the same id is delivered as the new fact it is. Results without
+ * an id still dedupe on their text.
+ */
+export function recallMemoryKey(memory: { id?: string | null; text: string }): string {
+	const text = Bun.hash(memory.text.trim()).toString(36);
+	const id = memory.id?.trim();
+	return id ? `id:${id}:${text}` : `text:${text}`;
+}
+
+/** Characters of an episode id rendered in a recall footer; enough to address it, short enough to read. */
+const EPISODE_SHORT_CHARS = 8;
+
+/**
+ * `[ep:<short id>]` footer for a recalled memory's session episode.
+ *
+ * Only a real episode id earns the link: a footer is a promise that
+ * `episode://<id>` resolves, and a document or session id would not.
+ */
+function episodeBadge(metadata: Record<string, unknown> | null | undefined): string {
+	const episodeId = metadata?.episode_id;
+	if (typeof episodeId !== "string") return "";
+	const short = episodeId.trim().slice(0, EPISODE_SHORT_CHARS);
+	return short ? ` [ep:${short}]` : "";
+}
+
 /** Format recall results into a bullet list for context injection. */
 export function formatMemories(results: RecallResultLike[]): string {
 	if (results.length === 0) return "";
 	return results
 		.map(r => {
 			const typeStr = r.type ? ` [${r.type}]` : "";
+			const episodeStr = episodeBadge(r.metadata);
 			const provenanceStr = provenanceBadge(r.tags);
 			const dateStr = r.mentioned_at ? ` (${r.mentioned_at})` : "";
-			return `- ${r.text}${typeStr}${provenanceStr}${dateStr}`;
+			return `- ${r.text}${typeStr}${episodeStr}${provenanceStr}${dateStr}`;
 		})
 		.join("\n\n");
 }

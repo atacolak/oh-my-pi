@@ -25,6 +25,7 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	bankIdPrefix: "",
 	scopeTags: [],
 	provenanceTags: [],
+	globalScope: false,
 	scoping: "per-project-tagged",
 	bankMission: "",
 	retainMission: null,
@@ -87,7 +88,7 @@ describe("Hindsight retain strategy request bodies", () => {
 		await state.retainSession([{ role: "user", content: "remember this decision" }]);
 		const item = firstItem(bodies[0]);
 		expect(item).not.toHaveProperty("strategy");
-		expect(item.metadata).toEqual({ session_id: "sess-unset" });
+		expect(item.metadata).toEqual({ session_id: "sess-unset", memory_document_id: "sess-unset" });
 		expect(item.tags).toEqual(["scope:coding", "project:speech-core"]);
 		expect(JSON.stringify(item)).not.toContain("strategy:");
 	});
@@ -115,7 +116,7 @@ describe("Hindsight retain strategy request bodies", () => {
 		expect(item.strategy).toBe("personal_chat");
 		expect(item.tags).toEqual(["scope:coding", "project:speech-core"]);
 		expect(item.tags).not.toContain("strategy:personal_chat");
-		expect(item.metadata).toEqual({ session_id: "sess-1" });
+		expect(item.metadata).toEqual({ session_id: "sess-1", memory_document_id: "sess-1" });
 		expect(item.observation_scopes).toEqual([["scope:coding", "project:speech-core"]]);
 	});
 

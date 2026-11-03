@@ -57,7 +57,8 @@ export const hindsightBackend: MemoryBackend = {
 					session,
 					banksSet: parent.banksSet,
 					lastRetainedTurn: 0,
-					hasRecalledForFirstTurn: true,
+					recallDelivered: true,
+					episodeIdFor: options.episodeIdFor,
 					aliasOf: parent,
 				}),
 			);
@@ -81,6 +82,7 @@ export const hindsightBackend: MemoryBackend = {
 			new Set(),
 			session.hindsightCloseRetainBaselineTurns ?? options.hindsightCloseRetainBaselineTurns,
 			session.hindsightLoadedMessageCount ?? options.hindsightLoadedMessageCount,
+			options.episodeIdFor,
 		);
 	},
 
@@ -90,15 +92,13 @@ export const hindsightBackend: MemoryBackend = {
 
 		const state = session?.getHindsightSessionState();
 		const primary = state?.aliasOf ?? state;
-		const recallSnippet = primary?.lastRecallSnippet;
 		const mentalModelsSnippet = primary?.mentalModelsSnippet;
 
-		// Order: static instructions → mental models (stable, curated) → recall
-		// (volatile per turn). Stable context first so the LLM's prior is
-		// anchored on curated knowledge.
+		// Only transcript-stable context belongs here: the developer instructions are
+		// system-prompt bytes, and a per-turn recall in them would invalidate the
+		// provider prefix cache. Recall rides its own hidden turn entry instead.
 		const parts = [prompt.render(hindsightInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) })];
 		if (mentalModelsSnippet) parts.push(mentalModelsSnippet);
-		if (recallSnippet) parts.push(recallSnippet);
 		return parts.join("\n\n");
 	},
 
@@ -113,7 +113,7 @@ export const hindsightBackend: MemoryBackend = {
 		const preparation = await state.beforeAgentStartPrompt(promptText, signal);
 		if (!preparation) return undefined;
 		return {
-			context: preparation.context,
+			contextEntry: preparation.contextEntry,
 			commit: () => session.getHindsightSessionState() === state && preparation.commit(),
 		};
 	},
@@ -256,6 +256,7 @@ async function installPrimaryState(
 	banksSet: Set<string>,
 	closeRetainBaselineTurns?: number,
 	loadedMessageCount?: number,
+	episodeIdFor?: (sessionId: string) => string | null,
 ): Promise<HindsightSessionState | undefined> {
 	const sessionId = session.hindsightDocumentId || session.sessionManager.getSessionId() || session.sessionId;
 	if (!sessionId) return undefined;
@@ -300,7 +301,8 @@ async function installPrimaryState(
 		closeRetainBaselineTurns: closeRetainBaselineTurns ?? countRetainableUserTurns(session.sessionManager),
 		loadedMessageCount,
 		lastRetainedTurn: 0,
-		hasRecalledForFirstTurn: false,
+		recallDelivered: false,
+		episodeIdFor,
 	});
 
 	const displaced = session.setHindsightSessionState(state);

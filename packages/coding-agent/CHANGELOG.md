@@ -60,6 +60,8 @@
 ### Fixed
 
 - Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
+- Added optional `episode_id` metadata and an `[ep:<short id>]` recalled-memory footer for runtimes composed with the session-episode substrate; without it no episode is stamped and no footer is rendered.
+- Added `memory_document_id` to Hindsight retain metadata so a stored memory names the document it landed in.
 - Added `hindsight.provenanceTags` (`HINDSIGHT_PROVENANCE_TAGS`) plus an automatic `role:<agent-profile>` tag so retained memories carry write-only actor/role provenance; provenance is merged into retains only and never into recall filters or observation scopes, so stamping it cannot narrow recall.
 - Added optional `tags` to the `recall` and `reflect` tools; omitted keeps the session filter unchanged, provided tags merge additively with it.
 - Added a compact `[role:… actor:…]` provenance badge to recalled memory footers.
@@ -69,11 +71,15 @@
 
 ### Changed
 
+- Recalled `<memories>` now ride a TUI-hidden context entry delivered with the turn instead of being appended to the system prompt, so recall no longer changes the provider prefix-cache key; the same delivery serves Mnemopi.
+- Hindsight recall is per context epoch instead of per session: a committed compaction or a genuine retitle refreshes it against the current transcript, and a resumed session recalls afresh instead of replaying its frozen first-turn block.
+- Hindsight refreshes never repeat memories the transcript already holds, and the persisted recall record seeds that dedupe across resume.
 - Hindsight now retains any remaining below-cadence session tail on clean close (`AgentSession.dispose` / session-memory teardown), independent of `retainUpdateMode`.
 - Hindsight now retains a below-cadence tail when leaving a conversation through `/new`, `/clear`, `/resume`, `/tree`, fork, or branch, and when bank routing rebuilds mid-session.
 
 ### Fixed
 
+- Fixed Hindsight tool-initiated retains storing a recalled `<memories>` block verbatim, which let a memory feed on itself.
 - Fixed Hindsight project mental-model seeds inheriting write-only `actor:*`/`role:*` provenance tags; seed tags now derive from the scope's resolved tags.
 - Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
 - Hindsight leave-path retain now waits for delayed backend startup before treating a missing live state as having nothing pending.

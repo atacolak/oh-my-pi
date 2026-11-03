@@ -3114,6 +3114,7 @@ export class TUI extends Container {
 
 		const target = this.#inputTarget();
 		if (target?.handleInput) {
+			// Filter out key release events unless component opts in
 			if (isKeyRelease(data) && !target.wantsKeyRelease) {
 				return;
 			}

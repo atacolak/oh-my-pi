@@ -11,12 +11,22 @@ import {
 	createAgentSessionSocket,
 	type RpcSessionSocket,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-socket";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { closeSessionIndex } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	type SubagentLifecyclePayload,
+	type SubagentProgressPayload,
+	TASK_SUBAGENT_EVENT_CHANNEL,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+	TASK_SUBAGENT_PROGRESS_CHANNEL,
+} from "@oh-my-pi/pi-coding-agent/task";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { IpcConnection } from "@oh-my-pi/pi-natives";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { getProjectDir, setProjectDir, Snowflake, withTimeout } from "@oh-my-pi/pi-utils";
@@ -97,7 +107,10 @@ interface InteractiveFixture {
 	dispose(): Promise<void>;
 }
 
-async function createInteractiveFixture(responses: MockHandler[]): Promise<InteractiveFixture> {
+async function createInteractiveFixture(
+	responses: MockHandler[],
+	subagentEventBus?: EventBus,
+): Promise<InteractiveFixture> {
 	const dir = path.join(os.tmpdir(), `omp-interactive-socket-${Snowflake.next()}`);
 	fs.mkdirSync(dir, { recursive: true });
 	const mock = createMockModel({ responses });
@@ -118,7 +131,17 @@ async function createInteractiveFixture(responses: MockHandler[]): Promise<Inter
 	});
 	session.subscribe(() => {});
 	const socket = createAgentSessionSocket(session, { endpointDir: dir });
-	const mode = new InteractiveMode(session, "test");
+	const mode = new InteractiveMode(
+		session,
+		"test",
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		subagentEventBus,
+	);
 	await mode.attachSessionSocket(socket);
 	return {
 		session,
@@ -137,6 +160,42 @@ async function createInteractiveFixture(responses: MockHandler[]): Promise<Inter
 }
 
 const frameOf = (peer: SocketPeer, id: string): Promise<Frame> => peer.next(frame => frame.id === id);
+
+function subagentLifecycle(
+	sessionFile: string,
+	status: SubagentLifecyclePayload["status"] = "started",
+	id = "SubagentA",
+): SubagentLifecyclePayload {
+	return { id, index: 0, agent: "task", agentSource: "bundled", status, sessionFile };
+}
+
+function subagentProgress(sessionFile: string, id = "SubagentA"): SubagentProgressPayload {
+	return {
+		index: 0,
+		agent: "task",
+		agentSource: "bundled",
+		task: "Do work",
+		assignment: "Implement work",
+		sessionFile,
+		progress: {
+			index: 0,
+			id,
+			agent: "task",
+			agentSource: "bundled",
+			status: "running",
+			task: "Do work",
+			assignment: "Implement work",
+			description: "Worker",
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 0,
+			requests: 0,
+			tokens: 0,
+			cost: 0,
+			durationMs: 0,
+		},
+	};
+}
 
 describe("an interactive session's published endpoint", () => {
 	let originalProject: string;
@@ -159,6 +218,8 @@ describe("an interactive session's published endpoint", () => {
 		vi.restoreAllMocks();
 		resetSettingsForTest();
 		setProjectDir(originalProject);
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
 		AgentStorage.close();
 		HistoryStorage.close();
 		closeSessionIndex();
@@ -293,6 +354,143 @@ describe("an interactive session's published endpoint", () => {
 			expect((state.data as Record<string, unknown>).sessionId).toBe(fixture.session.sessionId);
 		} finally {
 			peer.close();
+		}
+	}, 30_000);
+
+	it("lists live subagents and serves one's transcript to an attached client", async () => {
+		const subagentEventBus = new EventBus();
+		fixture = await createInteractiveFixture([], subagentEventBus);
+		const transcriptFile = path.join(fixture.dir, "SubagentA.jsonl");
+		await Bun.write(
+			transcriptFile,
+			`${JSON.stringify({ type: "session", id: "sub", timestamp: "2026-06-09T00:00:00.000Z", cwd: fixture.dir })}\n${JSON.stringify(
+				{
+					type: "message",
+					id: "m1",
+					parentId: null,
+					timestamp: "2026-06-09T00:00:00.000Z",
+					message: { role: "user", content: [{ type: "text", text: "subagent transcript line" }] },
+				},
+			)}\n`,
+		);
+		subagentEventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, subagentLifecycle(transcriptFile));
+
+		const peer = await SocketPeer.connect(fixture.endpoint);
+		try {
+			await peer.next(frame => frame.type === "ready");
+
+			peer.send({ id: "list", type: "get_subagents" });
+			expect(await frameOf(peer, "list")).toMatchObject({
+				success: true,
+				data: { subagents: [{ id: "SubagentA", status: "running", sessionFile: transcriptFile }] },
+			});
+
+			peer.send({ id: "transcript", type: "get_subagent_messages", subagentId: "SubagentA" });
+			expect(await frameOf(peer, "transcript")).toMatchObject({
+				success: true,
+				data: {
+					messages: [{ role: "user", content: [{ type: "text", text: "subagent transcript line" }] }],
+				},
+			});
+		} finally {
+			peer.close();
+		}
+	}, 30_000);
+
+	it("delivers a steer and a cancel to a live subagent from an attached client", async () => {
+		const subagentEventBus = new EventBus();
+		fixture = await createInteractiveFixture([], subagentEventBus);
+		const transcriptFile = path.join(fixture.dir, "SubagentA.jsonl");
+		const prompts: Array<{ text: unknown; streamingBehavior: unknown }> = [];
+		const lifecycleCalls: string[] = [];
+		subagentEventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, subagentLifecycle(transcriptFile));
+		AgentRegistry.global().register({
+			id: "SubagentA",
+			displayName: "SubagentA",
+			kind: "sub",
+			session: {
+				subscribe: () => () => {},
+				prompt: async (text: unknown, options: { streamingBehavior?: unknown }) => {
+					prompts.push({ text, streamingBehavior: options.streamingBehavior });
+					return true;
+				},
+				abort: async () => {
+					lifecycleCalls.push("abort");
+				},
+				dispose: async () => {
+					lifecycleCalls.push("dispose");
+				},
+			} as never,
+			sessionFile: transcriptFile,
+			status: "running",
+		});
+
+		const peer = await SocketPeer.connect(fixture.endpoint);
+		try {
+			await peer.next(frame => frame.type === "ready");
+
+			peer.send({ id: "steer", type: "steer_subagent", subagentId: "SubagentA", message: "  tighten the loop  " });
+			expect(await frameOf(peer, "steer")).toMatchObject({ success: true, command: "steer_subagent" });
+			expect(prompts).toEqual([{ text: "  tighten the loop  ", streamingBehavior: "steer" }]);
+
+			peer.send({ id: "cancel", type: "cancel_subagent", subagentId: "SubagentA" });
+			expect(await frameOf(peer, "cancel")).toMatchObject({ success: true, data: { cancelled: true } });
+			expect(lifecycleCalls).toEqual(["abort", "dispose"]);
+		} finally {
+			peer.close();
+		}
+	}, 30_000);
+
+	it("filters subagent stream frames per attached client", async () => {
+		const subagentEventBus = new EventBus();
+		fixture = await createInteractiveFixture([], subagentEventBus);
+		const transcriptFile = path.join(fixture.dir, "SubagentA.jsonl");
+		const subscriber = await SocketPeer.connect(fixture.endpoint);
+		const observer = await SocketPeer.connect(fixture.endpoint);
+		const listed = (seen: Frame[]) => seen.filter(frame => frame.type?.startsWith("subagent_")).length;
+		try {
+			await subscriber.next(frame => frame.type === "ready");
+			await observer.next(frame => frame.type === "ready");
+
+			subscriber.send({ id: "subscribe-events", type: "set_subagent_subscription", level: "events" });
+			expect(await frameOf(subscriber, "subscribe-events")).toMatchObject({
+				success: true,
+				data: { level: "events" },
+			});
+
+			subagentEventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, subagentLifecycle(transcriptFile));
+			subagentEventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, subagentProgress(transcriptFile));
+			subagentEventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, { id: "SubagentA", event: { type: "agent_start" } });
+			await subscriber.next(frame => frame.type === "subagent_event");
+			expect(listed(subscriber.seen)).toBe(3);
+
+			observer.send({ id: "observer-state", type: "get_state" });
+			await frameOf(observer, "observer-state");
+			expect(listed(observer.seen)).toBe(0);
+
+			observer.send({ id: "subscribe-progress", type: "set_subagent_subscription", level: "progress" });
+			expect(await frameOf(observer, "subscribe-progress")).toMatchObject({
+				success: true,
+				data: { level: "progress" },
+			});
+
+			subagentEventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, subagentProgress(transcriptFile));
+			await observer.next(frame => frame.type === "subagent_progress");
+			subscriber.send({ id: "subscriber-before-off", type: "get_state" });
+			await frameOf(subscriber, "subscriber-before-off");
+			const deliveredWhileSubscribed = listed(subscriber.seen);
+			expect(deliveredWhileSubscribed).toBe(4);
+
+			subscriber.send({ id: "subscribe-off", type: "set_subagent_subscription", level: "off" });
+			expect(await frameOf(subscriber, "subscribe-off")).toMatchObject({ success: true, data: { level: "off" } });
+			subagentEventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, subagentProgress(transcriptFile));
+			await observer.next(frame => listed(observer.seen) === 2);
+			subscriber.send({ id: "subscriber-state", type: "get_state" });
+			await frameOf(subscriber, "subscriber-state");
+			expect(listed(subscriber.seen)).toBe(deliveredWhileSubscribed);
+		} finally {
+			subscriber.close();
+			observer.close();
 		}
 	}, 30_000);
 });

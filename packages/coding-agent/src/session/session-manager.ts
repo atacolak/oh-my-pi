@@ -121,6 +121,7 @@ import { loadPinnedSessionIds, sortPinnedFirst } from "./session-pins";
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
+	type SessionReservation,
 	type SessionStorage,
 	type SessionStorageWriter,
 	SessionWriteConflictError,
@@ -2374,6 +2375,7 @@ export class SessionManager {
 		// write does, so inspecting a session never counts as owning it.
 		this.#sessionClaim?.release?.();
 		this.#sessionClaim = undefined;
+		this.#releaseOwnershipReservation();
 
 		const resolvedSessionFile = path.resolve(sessionFile);
 		const loaded = loadedSession ?? (await loadSessionFile(resolvedSessionFile, this.#storage));
@@ -2959,6 +2961,7 @@ export class SessionManager {
 		const claim = this.#sessionClaim;
 		claim?.release?.();
 		if (claim) claim.release = undefined;
+		this.#releaseOwnershipReservation();
 		// A prior `flushSync` can self-conflict with this manager's own
 		// unconfirmed deferred publish; drain despite the latch so that
 		// publish can still confirm before we give up on the transcript.
@@ -4411,6 +4414,10 @@ export class SessionManager {
 			throwIfMissing: options?.throwIfMissing,
 			newSession: { parentSession: options?.parentSession },
 		});
+		// Installed after the initial switch so opening a file never releases the
+		// bootstrap reservation it is about to hand over.
+		manager.#ownershipPolicy = options?.ownershipPolicy ?? "branch";
+		manager.#ownershipReservation = options?.ownershipReservation;
 		return manager;
 	}
 

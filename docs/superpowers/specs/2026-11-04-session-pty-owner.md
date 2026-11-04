@@ -181,6 +181,8 @@ A future bridge has a clean hook: inject a shared interactive UI request broker 
 6. **Strict writer reservation** — extend `session-storage.ts` holder accounting and `session-manager.ts` conflict policy solely for broker-owned native resumes. Release on startup failure/real quit, not mirror close. Revalidate on session switches, while intentional fork/new commands keep their explicit transition semantics.
 Consume broker-provided owner environment context into process-local module state and remove it from `process.env` before normal startup. Descendant tool processes must not inherit a role marker that makes a later, unrelated `omp` invocation skip the mirror/owner decision.
 
+The hidden owner route must not inherit physical-terminal parent-death/IPC-disconnect monitoring. `cli.ts:412-417` installs a watchdog inside `runIpcSubprocessWorker`; use normal worker dispatch/reentry, with the broker as the actual independent parent, not that helper with a mirror-owned IPC transport.
+
 
 ### Direct `InteractiveMode` call-site impact
 

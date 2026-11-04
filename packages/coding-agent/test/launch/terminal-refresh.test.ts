@@ -190,9 +190,10 @@ describe("a terminal refresh on a live session", () => {
 		const realNow = performance.now.bind(performance);
 		let clockOffsetMs = 0;
 		spyOn(performance, "now").mockImplementation(() => realNow() + clockOffsetMs);
-		const uiContext = mode.getToolUIContext();
-		expect(uiContext).toBeDefined();
-		const approval = uiContext!.approve({
+		const approve = mode.getToolUIContext()?.approve;
+		expect(approve).toBeDefined();
+		if (!approve) throw new Error("interactive mode exposes no approval prompt");
+		const approval = approve({
 			full: "Allow tool: write\nPath: /tmp/out.txt",
 			compact: "Allow tool: write\nPath: /tmp/out.txt",
 		});

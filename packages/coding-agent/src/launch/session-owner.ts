@@ -48,9 +48,7 @@ function parseSessionOwnerContext(raw: string): SessionOwnerContext {
  * Read and erase the broker-injected launch context. Erasing before normal
  * startup keeps the role out of every descendant environment.
  */
-export function consumeSessionOwnerContext(
-	env: Record<string, string | undefined>,
-): SessionOwnerContext | undefined {
+export function consumeSessionOwnerContext(env: Record<string, string | undefined>): SessionOwnerContext | undefined {
 	const raw = env[SESSION_OWNER_CONTEXT_ENV];
 	delete env[SESSION_OWNER_CONTEXT_ENV];
 	if (raw === undefined) return undefined;

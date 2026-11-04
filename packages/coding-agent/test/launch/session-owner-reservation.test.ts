@@ -107,7 +107,7 @@ describe("strict session reservation", () => {
 			expect((failure as Error).message).toContain(sessionId);
 			expect(manager.getSessionFile()).toBe(sessionPath);
 			// A strict owner never reports a clean close after losing the journal.
-			expect((await rejectionOf(manager.close())) as Error).toBe(failure);
+			expect(await rejectionOf(manager.close())).toBe(failure);
 		} finally {
 			await holder.close();
 		}

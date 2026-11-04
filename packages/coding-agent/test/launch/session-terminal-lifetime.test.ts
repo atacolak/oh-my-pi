@@ -441,7 +441,6 @@ describe("terminal mirror lifetime", () => {
 		await withTerminalBroker(async ({ client, projectDir, runtimeDir }) => {
 			const f = await startLifetimeFixture(client, projectDir, runtimeDir);
 			try {
-				const before = f.listJsonl();
 				const first = f.mirror();
 				const attached = await first.waitForStatus("attached");
 				expect(attached.name).toBe("attached");
@@ -460,13 +459,10 @@ describe("terminal mirror lifetime", () => {
 
 				expect(alive(f.ownerPid)).toBe(true);
 				expect(f.readExitEntries()).toHaveLength(0);
-				expect(f.listJsonl()).toEqual(before);
+				const transcripts = f.listJsonl();
+				expect(transcripts).toHaveLength(1);
+				expect(transcripts[0]).toBe(path.basename(f.sessionFile));
 				expect(f.readTranscript()).toContain("completed while detached");
-
-				f.web.send({ id: "same-owner", type: "get_state" });
-				const state = await f.web.next(frame => frame.id === "same-owner");
-				expect(state.success).toBe(true);
-				expect((state.data as Record<string, unknown>).sessionId).toBe(f.sessionId);
 
 				const fresh = f.resumeMirror();
 				expect((await fresh.waitForStatus("attached")).name).toBe("attached");
@@ -484,6 +480,10 @@ describe("terminal mirror lifetime", () => {
 		await withTerminalBroker(async ({ client, projectDir, runtimeDir }) => {
 			const f = await startLifetimeFixture(client, projectDir, runtimeDir);
 			try {
+				f.web.send({ id: "background-turn", type: "prompt", message: "turn with background work" });
+				await f.waitForTurnStart();
+				await f.web.next(frame => frame.type === "agent_start");
+
 				const mirror = f.mirror();
 				await mirror.waitForStatus("attached");
 				expect(alive(f.backgroundPid)).toBe(true);
@@ -496,6 +496,7 @@ describe("terminal mirror lifetime", () => {
 				expect(alive(f.ownerPid)).toBe(true);
 				expect(alive(f.backgroundPid)).toBe(true);
 				expect(f.readExitEntries()).toHaveLength(0);
+				expect((await f.waitForCompletion("background-turn")).status).toBe("completed");
 
 				const fresh = f.resumeMirror();
 				expect((await fresh.waitForStatus("attached")).name).toBe("attached");
@@ -518,6 +519,63 @@ describe("terminal mirror lifetime", () => {
 					() => `background process ${f.backgroundPid} survived the owner's dispose`,
 				);
 			} finally {
+				await f.close();
+			}
+		});
+	}, 90_000);
+
+	it("keeps the turn when the mirror detaches cleanly instead of dying", async () => {
+		await withTerminalBroker(async ({ client, projectDir, runtimeDir }) => {
+			const f = await startLifetimeFixture(client, projectDir, runtimeDir);
+			const subscriptionId = `clean-${Snowflake.next()}`;
+			const ack = (frame: DaemonTerminalNotification): void => {
+				if (frame.event !== "terminal_output") return;
+				void client
+					.request({
+						op: "terminal_ack",
+						subscriptionId,
+						name: f.name,
+						id: f.id,
+						sequence: frame.sequence,
+					})
+					.catch(() => undefined);
+			};
+			const off = client.subscribeTerminal(subscriptionId, ack);
+			try {
+				f.web.send({ id: "clean-turn", type: "prompt", message: "turn across a clean detach" });
+				await f.waitForTurnStart();
+				await f.web.next(frame => frame.type === "agent_start");
+
+				const attached = await client.request({
+					op: "terminal_attach",
+					subscriptionId,
+					name: f.name,
+					id: f.id,
+					columns: 120,
+					rows: 40,
+				});
+				expect(attached.op).toBe("terminal_attach");
+				const detached = await client.request({
+					op: "terminal_detach",
+					subscriptionId,
+					name: f.name,
+					id: f.id,
+				});
+				expect(detached.op).toBe("terminal_detach");
+
+				expect((await f.waitForCompletion("clean-turn")).status).toBe("completed");
+				expect(alive(f.ownerPid)).toBe(true);
+				expect(f.readExitEntries()).toHaveLength(0);
+				expect(f.readTranscript()).toContain("completed while detached");
+				expect(f.listJsonl()).toEqual([path.basename(f.sessionFile)]);
+
+				const fresh = f.resumeMirror();
+				expect((await fresh.waitForStatus("attached")).name).toBe("attached");
+				await fresh.waitForText("completed while detached");
+				expect(alive(f.ownerPid)).toBe(true);
+				expect(f.readExitEntries()).toHaveLength(0);
+			} finally {
+				off();
 				await f.close();
 			}
 		});

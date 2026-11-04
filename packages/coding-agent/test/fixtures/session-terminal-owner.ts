@@ -18,6 +18,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { consumeSessionOwnerContext } from "../../src/launch/session-owner";
+import { MAIN_AGENT_ID } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
@@ -57,6 +58,7 @@ const session = new AgentSession({
 		streamFn: mock.stream,
 	}),
 	sessionManager,
+	agentId: MAIN_AGENT_ID,
 	settings: Settings.isolated({ "compaction.enabled": false }),
 	modelRegistry,
 	toolRegistry: new Map(),
@@ -77,7 +79,7 @@ backgroundJobs.register("task", "lifetime background process", async ({ signal }
 	else signal.addEventListener("abort", kill, { once: true });
 	await backgroundProcess.exited;
 	return "background process released";
-});
+}, { ownerId: MAIN_AGENT_ID });
 
 const socket = createAgentSessionSocket(session, { endpointDir });
 const mode = new InteractiveMode(

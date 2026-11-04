@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import { IpcConnection } from "@oh-my-pi/pi-natives";
 import { withTimeout } from "@oh-my-pi/pi-utils";
-import { createDaemonBrokerClient } from "../../src/launch/client";
+import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
 import { runTerminalMirror, type TerminalMirrorResult } from "../../src/launch/terminal-mirror";
 
 interface MirrorConfig {
@@ -15,6 +15,7 @@ interface MirrorConfig {
 	id: string;
 	subscriptionId: string;
 	statusFile: string;
+	outputFile?: string;
 	endpoint?: string;
 	sessionId?: string;
 	generation?: string;
@@ -66,17 +67,45 @@ async function refreshRenderer(): Promise<void> {
 	}
 }
 
-const client = await createDaemonBrokerClient(config.projectDir, { runtimeDir: config.runtimeDir });
 status("connecting");
+const client = await createDaemonBrokerClient(config.projectDir, { runtimeDir: config.runtimeDir });
+const observed: DaemonBrokerClient = {
+	get projectDir() {
+		return client.projectDir;
+	},
+	async request(operation, signal) {
+		const result = await client.request(operation, signal);
+		if (operation.op === "terminal_attach") status("attached");
+		return result;
+	},
+	subscribeTerminal: (subscriptionId, sink) => client.subscribeTerminal(subscriptionId, sink),
+	onCompletion: (owner, sink) => client.onCompletion(owner, sink),
+	close: () => client.close(),
+};
+
 let result: TerminalMirrorResult;
 try {
 	result = await runTerminalMirror({
-		client,
+		client: observed,
 		name: config.name,
 		id: config.id,
 		subscriptionId: config.subscriptionId,
 		size: () => ({ columns: config.columns ?? 120, rows: config.rows ?? 40 }),
 		refresh: config.refresh ? refreshRenderer : undefined,
+		output: config.outputFile
+			? {
+					write(data) {
+						fs.appendFileSync(config.outputFile!, data);
+						return process.stdout.write(data);
+					},
+					onDrain(listener) {
+						process.stdout.on("drain", listener);
+						return () => {
+							process.stdout.off("drain", listener);
+						};
+					},
+				}
+			: undefined,
 	});
 } catch (error) {
 	status("failed", { message: error instanceof Error ? error.message : String(error) });

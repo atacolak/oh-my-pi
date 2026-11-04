@@ -17,13 +17,17 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { consumeSessionOwnerContext } from "../../src/launch/session-owner";
+import { MAIN_AGENT_ID } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
-const [controlDir, endpointDir, sessionDir, generation] = process.argv.slice(2);
-if (!controlDir || !endpointDir || !sessionDir || !generation) {
-	throw new Error("usage: session-terminal-owner <controlDir> <endpointDir> <sessionDir> <generation>");
+const [controlDir, endpointDir, sessionDir] = process.argv.slice(2);
+if (!controlDir || !endpointDir || !sessionDir) {
+	throw new Error("usage: session-terminal-owner <controlDir> <endpointDir> <sessionDir>");
 }
+const owner = consumeSessionOwnerContext(process.env);
+if (!owner) throw new Error("session terminal owner fixture requires the broker launch context");
 fs.mkdirSync(controlDir, { recursive: true });
 fs.mkdirSync(endpointDir, { recursive: true });
 fs.mkdirSync(sessionDir, { recursive: true });
@@ -36,10 +40,12 @@ const cwd = process.cwd();
 await Settings.init({ inMemory: true, cwd });
 await initTheme();
 const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+const modelRegistry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
+modelRegistry.getApiKey = async () => "test-key";
 const mock = createMockModel({
 	handler: () => {
 		emit("turn-started", { pid: process.pid });
-		return { delayMs: 1_200, content: ["completed while detached"] };
+		return { delayMs: 3_000, content: ["completed while detached"] };
 	},
 });
 const sessionManager = SessionManager.create(cwd, sessionDir);
@@ -52,8 +58,9 @@ const session = new AgentSession({
 		streamFn: mock.stream,
 	}),
 	sessionManager,
+	agentId: MAIN_AGENT_ID,
 	settings: Settings.isolated({ "compaction.enabled": false }),
-	modelRegistry: new ModelRegistry(authStorage, path.join(cwd, "models.yml")),
+	modelRegistry,
 	toolRegistry: new Map(),
 	ownedAsyncJobManager: backgroundJobs,
 });
@@ -62,17 +69,22 @@ const backgroundProcess = Bun.spawn(["/bin/sh", "-c", "exec sleep 300"], {
 	cwd,
 	stdio: ["ignore", "ignore", "ignore"],
 });
-backgroundJobs.register("task", "lifetime background process", async ({ signal }) => {
-	const kill = (): void => {
-		try {
-			backgroundProcess.kill("SIGKILL");
-		} catch {}
-	};
-	if (signal.aborted) kill();
-	else signal.addEventListener("abort", kill, { once: true });
-	await backgroundProcess.exited;
-	return "background process released";
-});
+backgroundJobs.register(
+	"task",
+	"lifetime background process",
+	async ({ signal }) => {
+		const kill = (): void => {
+			try {
+				backgroundProcess.kill("SIGKILL");
+			} catch {}
+		};
+		if (signal.aborted) kill();
+		else signal.addEventListener("abort", kill, { once: true });
+		await backgroundProcess.exited;
+		return "background process released";
+	},
+	{ ownerId: MAIN_AGENT_ID },
+);
 
 const socket = createAgentSessionSocket(session, { endpointDir });
 const mode = new InteractiveMode(
@@ -85,11 +97,14 @@ const mode = new InteractiveMode(
 	undefined,
 	new Composer(),
 );
-await mode.attachSessionSocket(socket, { generation });
+await mode.attachSessionSocket(socket, { generation: owner.id });
 await mode.init({ suppressWelcomeIntro: true });
 
 emit("ready", {
 	pid: process.pid,
+	id: owner.id,
+	generation: owner.id,
+	projectDir: owner.projectDir,
 	sessionId: session.sessionId,
 	sessionFile: sessionManager.getSessionFile(),
 	endpoint: socket.endpoint,

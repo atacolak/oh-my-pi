@@ -12,7 +12,17 @@ import {
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { rejectionOf } from "../helpers/rejection";
 import { TERMINAL } from "./session-attach-fixture";
+import { sessionAttachEndpoint, type SessionAttachProbe } from "../../src/launch/session-attach";
 import * as owner from "../../src/launch/session-owner";
+
+function sequenceProbe(sequence: SessionAttachProbe[]): (sessionId: string) => Promise<SessionAttachProbe> {
+	let index = 0;
+	return async () => {
+		const probe = sequence[Math.min(index, sequence.length - 1)]!;
+		index++;
+		return probe;
+	};
+}
 
 function userTurn(content: string) {
 	return { role: "user" as const, content, timestamp: Date.now() };
@@ -157,6 +167,84 @@ describe("strict session reservation", () => {
 		});
 
 		expect(outcome).toEqual({ kind: "attach", terminal: TERMINAL });
+		expect(isSessionLeaseHeld(sessionId)).toBe(false);
+	});
+
+	it("diverts to an owner that published after the reservation", async () => {
+		using tempDir = TempDir.createSync("@omp-session-reservation-");
+		const { sessionId, sessionPath } = await createSession(tempDir);
+
+		const outcome = await owner.reserveSessionOwnerTarget(sessionId, sessionPath, {
+			probe: sequenceProbe([
+				{ status: "absent", sessionId, leaseHeld: false },
+				{ status: "live", sessionId, terminal: TERMINAL },
+			]),
+		});
+
+		expect(outcome).toEqual({ kind: "attach", terminal: TERMINAL });
+		expect(isSessionLeaseHeld(sessionId)).toBe(false);
+	});
+
+	it("diverts to a refuse for an owner that became unreachable after the reservation", async () => {
+		using tempDir = TempDir.createSync("@omp-session-reservation-");
+		const { sessionId, sessionPath } = await createSession(tempDir);
+
+		const outcome = await owner.reserveSessionOwnerTarget(sessionId, sessionPath, {
+			probe: sequenceProbe([
+				{ status: "absent", sessionId, leaseHeld: false },
+				{ status: "unreachable", sessionId, endpoint: sessionAttachEndpoint(sessionId) },
+			]),
+		});
+
+		expect(outcome).toEqual({ kind: "refuse", code: "owner-unreachable" });
+		expect(isSessionLeaseHeld(sessionId)).toBe(false);
+	});
+
+	it("diverts to a refuse when ownership becomes unknown after the reservation", async () => {
+		using tempDir = TempDir.createSync("@omp-session-reservation-");
+		const { sessionId, sessionPath } = await createSession(tempDir);
+
+		const outcome = await owner.reserveSessionOwnerTarget(sessionId, sessionPath, {
+			probe: sequenceProbe([
+				{ status: "absent", sessionId, leaseHeld: false },
+				{ status: "unknown", sessionId, reason: "publication is unreadable" },
+			]),
+		});
+
+		expect(outcome).toEqual({ kind: "refuse", code: "ownership-unknown" });
+		expect(isSessionLeaseHeld(sessionId)).toBe(false);
+	});
+
+	it("diverts to a refuse when the terminal stays unavailable after the reservation", async () => {
+		using tempDir = TempDir.createSync("@omp-session-reservation-");
+		const { sessionId, sessionPath } = await createSession(tempDir);
+
+		const outcome = await owner.reserveSessionOwnerTarget(sessionId, sessionPath, {
+			probe: sequenceProbe([
+				{ status: "absent", sessionId, leaseHeld: false },
+				{ status: "live", sessionId },
+			]),
+		});
+
+		expect(outcome).toEqual({ kind: "refuse", code: "terminal-unavailable" });
+		expect(isSessionLeaseHeld(sessionId)).toBe(false);
+	});
+
+	it("keeps the reservation when the post-reservation probe sees only itself", async () => {
+		using tempDir = TempDir.createSync("@omp-session-reservation-");
+		const { sessionId, sessionPath } = await createSession(tempDir);
+
+		const outcome = await owner.reserveSessionOwnerTarget(sessionId, sessionPath, {
+			probe: sequenceProbe([
+				{ status: "absent", sessionId, leaseHeld: false },
+				{ status: "absent", sessionId, leaseHeld: true },
+			]),
+		});
+
+		expect(outcome.kind).toBe("reserved");
+		if (outcome.kind !== "reserved") throw new Error("expected a reservation");
+		expect(isSessionLeaseHeld(sessionId)).toBe(true);
+		outcome.reservation.release();
 		expect(isSessionLeaseHeld(sessionId)).toBe(false);
 	});
 

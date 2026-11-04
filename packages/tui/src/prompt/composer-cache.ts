@@ -253,11 +253,11 @@ export class ComposerCache {
 	 */
 	#putShared(cwd: string, kind: EntryKind, value: unknown): void {
 		const project = path.resolve(cwd);
-		const json = JSON.stringify(value);
 		const ownKey = `${project}\0${kind}`;
 		const anyKey = `${ANY_PROJECT}\0${kind}`;
-		if (this.#known.get(ownKey) === json && this.#known.get(anyKey) === json) return;
 		try {
+			const json = JSON.stringify(value);
+			if (this.#known.get(ownKey) === json && this.#known.get(anyKey) === json) return;
 			this.#db.transaction(() => {
 				this.#upsert.run(project, kind, json);
 				this.#upsert.run(ANY_PROJECT, kind, json);

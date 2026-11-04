@@ -511,7 +511,7 @@ git commit -m "fix(session): reserve cold resume ownership without silent transc
 **Acceptance / anti-gameable verification:** SIGKILL the outer mirror process during a real delayed mock-model turn; same session PID completes via its open RPC socket, no exit diagnostic, writer lease remains held, and reattachment restores a draft/open gate. True quit subsequently produces the ordinary exit diagnostic and releases the lease.
 **Risk:** accidentally sharing the pane process group, parent-death linkage or terminal fd makes the apparent detach split meaningless under actual pane death.
 
-- [ ] **Step 1: write real-process tests and fixture**
+- [x] **Step 1: write real-process tests and fixture**
 
 The new fixture builds a persisted `AgentSession` with `createMockModel`, `Agent`, `convertToLlm`, isolated settings and a real `RpcSessionSocket`, following `rpc-interactive-socket.test.ts:100-135`; unlike that fixture, use a real session directory, start the actual interactive renderer in a broker PTY and expose no production test hooks. It enters through the hidden owner worker from Stage 4. Test control uses a test-only extension/fixture command with a promise-backed gate and marker output, not a live model/provider. All processes and artifacts belong to `TempDir` and are cleaned in `finally`.
 
@@ -543,12 +543,12 @@ it("keeps the same mind and Web connection after the mirror is killed", async ()
 
 `waitForCompletion` correlates the real `prompt_result` and succeeds only on completion of the original delayed turn; fixture output contains the exact marker `completed while detached`. The reattached test mirror renders output into the repo virtual terminal or headless real-terminal harness so `waitForText` checks screen state, not a daemon log. `Process` is the existing native process API already used by the broker. Add a persisted gate/draft test and a true `/exit` disposal test.
 
-- [ ] **Step 2: RED verification**
+- [x] **Step 2: RED verification**
 
 Run: `bun test packages/coding-agent/test/launch/terminal-mirror.test.ts packages/coding-agent/test/launch/session-terminal-lifetime.test.ts`
 Expected before mirror implementation: module/start path absent. Once raw forwarding exists, a version which forwards kernel hangup or tears down on close must fail the PID/Web/exit-entry assertions. Capture that failure if encountered; do not fake an OS signal with `mode.stop()`.
 
-- [ ] **Step 3: implement mirror, no second UI parser**
+- [x] **Step 3: implement mirror, no second UI parser**
 
 `runTerminalMirror` takes a broker client, subscribed terminal identity and real/injectable local input/output descriptors. It installs raw stdin, forwards unchanged strings via `{op:"send",name,id,data}`, writes `terminal_output.data` in sequence, and acknowledges after local stdout drain. On resize, send `terminal_resize`; on stream exit, return the owner's status. Install disconnect/signal handlers whose cleanup is idempotent:
 
@@ -566,16 +566,18 @@ const detach = async (): Promise<void> => {
 
 For reconnect, subscribe first, then call the transport-local `terminal_refresh` on the verified session endpoint. If refresh fails, detach only this mirror. Do not replay logs or startup prompts to fake a restored display.
 
-- [ ] **Step 4: PASS verification**
+- [x] **Step 4: PASS verification**
 
 Run the Step 2 command. Expected: PASS including real SIGKILL, same PID, completed turn, surviving socket, original JSONL only, pending gate and real quit. Lead runs recorded RPC baseline once this stage lands.
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 ```bash
 git add packages/coding-agent/src/launch/terminal-mirror.ts packages/coding-agent/test/launch/terminal-mirror.test.ts packages/coding-agent/test/fixtures/session-terminal-owner.ts packages/coding-agent/test/launch/session-terminal-lifetime.test.ts
 git commit -m "feat(session): mirror persistent PTYs across terminal process death"
 ```
+
+**Acceptance evidence (builder, `e67b346ea2`):** `bun test test/launch/session-terminal-lifetime.test.ts` is 4 pass / 0 fail: SIGKILL mid-turn with the owner completing and a fresh mirror repainting the transcript, background work across a mirror death reaped only by `/exit`, a clean `terminal_detach` mid-turn as the abrupt-drop control, and a second mirror after a kill. The composer-status fix `d4546da91f` is a prerequisite unrelated to mirror death: `InteractiveMode.init()` → `syncComposerShape()` schedules the coalesced 1s status persist, and the payload serialized while the first turn is in flight carries `statusLine.model`, whose mock `calls[0].options` is `{...config}` and therefore contains that same model, so `JSON.stringify` throws; without the fix the uncaught throw exits the owner. Mirror kill and clean detach appear in neither the scheduling stack (`init:2577` → `syncComposerShape:4368` → `#scheduleComposerStatusPersist:4467`) nor the throw stack (`#persistComposerStatus` → `writeStatus` → `#putShared`), so terminal-subscription loss is not the trigger. `packages/tui/test/composer-cache.test.ts` pins a non-serializable write leaving the cache usable and the last good row intact. `test/launch/` is 152 pass / 0 fail and `test/rpc-*.test.ts test/session/rpc-*.test.ts` is 349 pass / 0 fail (counts include the generation's newer tests); `bunx tsgo -p packages/coding-agent/tsconfig.json --noEmit` is clean.
 
 ## 8. Stage 8 / Task 8: CLI cutover, branch-wide acceptance and operator docs
 

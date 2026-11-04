@@ -387,12 +387,15 @@ class RaceWriter {
 				"}",
 			].join("\n"),
 		);
-		const child = Bun.spawn([process.execPath, script, sessionId, sessionPath, runDir, strict ? "strict" : "legacy"], {
-			stdin: "pipe",
-			stdout: "pipe",
-			stderr: "pipe",
-			env: process.env,
-		});
+		const child = Bun.spawn(
+			[process.execPath, script, sessionId, sessionPath, runDir, strict ? "strict" : "legacy"],
+			{
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "pipe",
+				env: process.env,
+			},
+		);
 		return new RaceWriter(child);
 	}
 

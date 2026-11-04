@@ -47,7 +47,10 @@ describe("SessionManager draft", () => {
 		expect(await fileExists(draftPath)).toBe(false);
 	});
 
-	it("removes any stale draft when saving an empty string", async () => {
+	// P0: an empty overwrite used to unlink the only copy of a typed draft. The
+	// live sidecar still goes away (close-time GC keys on it), but the text now
+	// waits in the bounded recovery ring and comes back on the next resume.
+	it("keeps the last non-empty draft recoverable when saving an empty string", async () => {
 		using tempDir = TempDir.createSync("@pi-session-draft-empty-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
 		session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
@@ -56,6 +59,10 @@ describe("SessionManager draft", () => {
 		await session.saveDraft("first attempt");
 		await session.saveDraft("");
 
+		const artifactsDir = session.getArtifactsDir();
+		expect(artifactsDir).not.toBeNull();
+		expect(await fileExists(path.join(artifactsDir!, "draft.txt"))).toBe(false);
+		expect(await session.consumeDraft()).toBe("first attempt");
 		expect(await session.consumeDraft()).toBeNull();
 	});
 

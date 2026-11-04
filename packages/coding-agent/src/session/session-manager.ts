@@ -145,6 +145,16 @@ import {
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
+/** Bounded ring of drafts that an empty overwrite or a composer clear pushed aside. */
+export const DRAFT_HISTORY_FILENAME = "draft-history.jsonl";
+/** Newest recoverable drafts kept beyond `draft.txt`; the ring never grows past this. */
+export const DRAFT_HISTORY_LIMIT = 5;
+
+/** Composer text handed back on resume. `archivedAt` is set when it came from the recovery ring. */
+export interface RecoveredDraft {
+	text: string;
+	archivedAt?: number;
+}
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
 /**
  * Read-back-and-retry passes one full rewrite makes after meeting another
@@ -2252,6 +2262,61 @@ export class SessionManager {
 		return artifactsDir ? path.join(artifactsDir, "draft.txt") : null;
 	}
 
+	#draftHistoryPath(): string | null {
+		const artifactsDir = this.getArtifactsDir();
+		return artifactsDir ? path.join(artifactsDir, DRAFT_HISTORY_FILENAME) : null;
+	}
+
+	/** Newest-last ring entries; a torn or foreign line is skipped, never fatal. */
+	async #readDraftHistory(): Promise<RecoveredDraft[]> {
+		const historyPath = this.#draftHistoryPath();
+		if (!historyPath) return [];
+		let content: string;
+		try {
+			content = await this.#storage.readText(historyPath);
+		} catch (err) {
+			if (isEnoent(err)) return [];
+			throw err;
+		}
+		const history: RecoveredDraft[] = [];
+		for (const line of content.split("\n")) {
+			if (line.trim().length === 0) continue;
+			try {
+				const parsed = JSON.parse(line) as { text?: unknown; archivedAt?: unknown };
+				if (typeof parsed?.text !== "string" || parsed.text.length === 0) continue;
+				history.push({
+					text: parsed.text,
+					archivedAt: typeof parsed.archivedAt === "number" ? parsed.archivedAt : undefined,
+				});
+			} catch {}
+		}
+		return history;
+	}
+
+	async #writeDraftHistory(history: readonly RecoveredDraft[]): Promise<void> {
+		const historyPath = this.#draftHistoryPath();
+		if (!historyPath) return;
+		const bounded = history.slice(-DRAFT_HISTORY_LIMIT);
+		if (bounded.length === 0) {
+			try {
+				await this.#storage.unlink(historyPath);
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+			}
+			return;
+		}
+		await this.#storage.writeTextAtomic(historyPath, `${bounded.map(entry => JSON.stringify(entry)).join("\n")}\n`);
+	}
+
+	/** Park `text` as the newest recoverable draft; the common consecutive duplicate is ignored. */
+	async #archiveDraft(text: string): Promise<void> {
+		if (text.length === 0) return;
+		const history = await this.#readDraftHistory();
+		if (history.at(-1)?.text === text) return;
+		history.push({ text, archivedAt: Date.now() });
+		await this.#writeDraftHistory(history);
+	}
+
 	#draftOnlySessionMarkerPath(): string | null {
 		const artifactsDir = this.getArtifactsDir();
 		return artifactsDir ? path.join(artifactsDir, DRAFT_ONLY_SESSION_MARKER) : null;
@@ -3391,6 +3456,17 @@ export class SessionManager {
 		if (!draftPath || !this.#persist) return;
 
 		if (text.length === 0) {
+			// An empty overwrite (composer cleared by Escape/Ctrl+C, or a teardown
+			// snapshot after one) must never erase a draft that had content: park the
+			// live sidecar in the bounded ring first, then remove it so close-time GC
+			// still sees no pending draft.
+			let existing: string | null = null;
+			try {
+				existing = await this.#storage.readText(draftPath);
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+			}
+			if (existing !== null && existing.length > 0) await this.#archiveDraft(existing);
 			try {
 				await this.#storage.unlink(draftPath);
 			} catch (err) {
@@ -3410,13 +3486,40 @@ export class SessionManager {
 			await this.#writeDraftOnlySessionMarker();
 			this.#draftOnlySessionCleanupArmed = true;
 		}
-		await this.#storage.writeText(draftPath, text);
+		await this.#storage.writeTextAtomic(draftPath, text);
 	}
 
-	async consumeDraft(): Promise<string | null> {
-		const draftPath = this.#draftPath();
-		if (!draftPath) return null;
+	/** Forget the persisted draft and its recovery ring: a submitted message owns that text now. */
+	async discardDraft(): Promise<void> {
+		if (!this.#persist) return;
+		for (const target of [this.#draftPath(), this.#draftHistoryPath()]) {
+			if (!target) continue;
+			try {
+				await this.#storage.unlink(target);
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+			}
+		}
+	}
 
+	/**
+	 * Composer text to restore on resume. `draft.txt` is the live source; when it
+	 * is missing or empty, the newest entry of the bounded recovery ring wins and
+	 * `archivedAt` marks it as recovered rather than live.
+	 */
+	async consumeDraftEntry(): Promise<RecoveredDraft | null> {
+		const draftPath = this.#draftPath();
+		const live = draftPath ? await this.#consumeLiveDraft(draftPath) : null;
+		if (live && live.text.length > 0) return live;
+
+		const history = await this.#readDraftHistory();
+		const archived = history.at(-1);
+		if (!archived) return null;
+		await this.#writeDraftHistory(history.slice(0, -1));
+		return archived;
+	}
+
+	async #consumeLiveDraft(draftPath: string): Promise<RecoveredDraft | null> {
 		let draft: string;
 		try {
 			draft = await this.#storage.readText(draftPath);
@@ -3433,7 +3536,11 @@ export class SessionManager {
 		if (this.#entries.every(isDraftOnlyMetadataEntry) && this.#hasDraftOnlySessionMarker())
 			this.#draftOnlySessionCleanupArmed = true;
 
-		return draft;
+		return { text: draft };
+	}
+
+	async consumeDraft(): Promise<string | null> {
+		return (await this.consumeDraftEntry())?.text ?? null;
 	}
 
 	/** The source that set the session name: "user" (manual/RPC) or "auto" (generated title). */

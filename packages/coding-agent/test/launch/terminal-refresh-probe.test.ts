@@ -21,7 +21,7 @@ const PROBE_READY_TIMEOUT_MS = 30_000;
 const DRAFT = "draft λ草";
 const APPROVE_KEY = "\x11";
 const CURSOR_QUERY = "\x1b[6n";
-const CURSOR_REPLY_PREFIX = "\x1b[36;";
+const CURSOR_REPLY = /\x1b\[\d+;\d+R/g;
 
 type Event = Record<string, unknown>;
 
@@ -245,20 +245,10 @@ describe("a renderer refresh across a real broker PTY mirror swap", () => {
 				peer.send({ id: "during", type: "get_state" });
 				expect((await peer.next(frame => frame.id === "during")).success).toBe(true);
 
-				let answered = 0;
-				const answerQueries = (): void => {
-					while (answered < occurrences(second.text, CURSOR_QUERY)) {
-						answered++;
-						void send(`${CURSOR_REPLY_PREFIX}1R`).catch(() => undefined);
-					}
-				};
-				answerQueries();
-
 				await send("λ");
 				await send("\x1b[200~paste λ\x1b[201~");
 				await Bun.sleep(650);
 				await send(APPROVE_KEY);
-				answerQueries();
 
 				const settled = await waitForEvent(eventsFile, "gate-settled");
 				expect(settled.value).toBe("once");
@@ -271,9 +261,8 @@ describe("a renderer refresh across a real broker PTY mirror swap", () => {
 				expect(stdin).toContain("λ");
 				expect(occurrences(stdin, "\x1b[200~paste λ\x1b[201~")).toBe(1);
 				expect(occurrences(stdin, APPROVE_KEY)).toBe(1);
-				expect(occurrences(stdin, CURSOR_REPLY_PREFIX)).toBeLessThanOrEqual(
-					occurrences(second.text, CURSOR_QUERY),
-				);
+				expect(occurrences(second.text, CURSOR_QUERY)).toBe(0);
+				expect(stdin.match(CURSOR_REPLY) ?? []).toHaveLength(0);
 				expect(second.exits).toHaveLength(0);
 
 				peer.send({ id: "after", type: "get_state" });

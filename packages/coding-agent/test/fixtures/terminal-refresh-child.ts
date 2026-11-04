@@ -72,7 +72,9 @@ await mode.init({ suppressWelcomeIntro: true });
 mode.editor.setText(draft);
 const context = mode.getToolUIContext();
 if (!context) throw new Error("no tool UI context");
-const approval = context.approve({
+const approve = context.approve;
+if (!approve) throw new Error("no approval prompt");
+const approval = approve({
 	full: "Allow tool: write\nPath: /tmp/probe.txt",
 	compact: "Allow tool: write\nPath: /tmp/probe.txt",
 });

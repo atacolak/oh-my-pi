@@ -15,7 +15,7 @@
 >   - [`cap/herdr-idle-toast`](https://github.com/atacolak/oh-my-pi/tree/cap/herdr-idle-toast) — herdr idle toast without session-title card
 >   - [`cap/hindsight`](https://github.com/atacolak/oh-my-pi/tree/cap/hindsight) — Hindsight retention, scope/provenance seam, hidden recall delivery
 >   - [`cap/nested-lsp-roots`](https://github.com/atacolak/oh-my-pi/tree/cap/nested-lsp-roots) — nested project LSP roots
->   - [`cap/omp-daemon-socket`](https://github.com/atacolak/oh-my-pi/tree/cap/omp-daemon-socket) — session PTY owner + attach socket serving the RPC surface, per-client host-tool routing, TUI detach on hangup, generation-fenced terminal stream protocol (sequenced PTY output to subscribers)
+>   - [`cap/omp-daemon-socket`](https://github.com/atacolak/oh-my-pi/tree/cap/omp-daemon-socket) — session PTY owner + attach socket serving the RPC surface, per-client host-tool routing, TUI detach on hangup, generation-fenced terminal stream protocol (sequenced PTY output to subscribers), renderer refresh for an attaching terminal
 >   - [`cap/persist-queued-messages`](https://github.com/atacolak/oh-my-pi/tree/cap/persist-queued-messages) — queued steer/followUp prompts persist with the session
 >   - [`cap/retry-fallback-unowned`](https://github.com/atacolak/oh-my-pi/tree/cap/retry-fallback-unowned) — default retry chain for unowned models
 >   - [`cap/settings-project-scope`](https://github.com/atacolak/oh-my-pi/tree/cap/settings-project-scope) — project-scoped `/settings`

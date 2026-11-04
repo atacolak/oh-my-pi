@@ -232,7 +232,12 @@ describe("a terminal refresh on a live session", () => {
 			const start = spyOn(mode.ui, "start");
 			const sessionId = fixture.session.sessionId;
 
-			peer.send({ type: "terminal_refresh", id: "wrong-session", sessionId: "someone-else", generation: GENERATION });
+			peer.send({
+				type: "terminal_refresh",
+				id: "wrong-session",
+				sessionId: "someone-else",
+				generation: GENERATION,
+			});
 			expect(await peer.next(frame => frame.id === "wrong-session")).toMatchObject({
 				type: "terminal_refresh_error",
 			});

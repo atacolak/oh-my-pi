@@ -39,11 +39,7 @@ import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./h
 import type { RpcClientConn } from "./client-connection";
 import { RpcClientConnection, RpcClientRegistry } from "./client-connection";
 import { isRpcHostUriResult } from "./host-uris";
-import {
-	MAX_RPC_FRAME_BYTES,
-	MAX_RPC_REASSEMBLED_BYTES,
-	RpcFrameEncoder,
-} from "./rpc-frame";
+import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
 import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
 import { RpcBtwController } from "./rpc-btw";
 import { RpcDictationBridge, type RpcDictationControllerFactory } from "./rpc-dictation";
@@ -263,7 +259,6 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	})();
 }
 
-
 /** Starts prompts, steers, follow-ups and `steer_subagent` after earlier ordinary commands, without
  * awaiting admission. Control frames, `bash` and `predict_word` dispatch immediately (see
  * dispatchRpcInputFrame). `acceptInput` runs synchronously in {@link dispatch}, before the
@@ -412,7 +407,6 @@ function shouldEmitRpcTitles(): boolean {
 	const normalized = raw.trim().toLowerCase();
 	return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
-
 
 export function requestRpcSelect(
 	pendingRequests: Map<string, PendingExtensionRequest>,
@@ -1147,11 +1141,14 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// Provider-scoped online refresh so the just-persisted credential
 			// re-runs discovery instead of reusing a fresh authoritative cache
 			// row (#5780).
-			await session.modelRegistry.refreshProvider(
-				knownProvider.storeCredentialsAs ?? knownProvider.id,
-				"online",
-			);
-			return { id: command.id, type: "response", command: "login", success: true, data: { providerId: command.providerId } };
+			await session.modelRegistry.refreshProvider(knownProvider.storeCredentialsAs ?? knownProvider.id, "online");
+			return {
+				id: command.id,
+				type: "response",
+				command: "login",
+				success: true,
+				data: { providerId: command.providerId },
+			};
 		} catch (err: unknown) {
 			return error(command.id, "login", err instanceof Error ? err.message : String(err));
 		}

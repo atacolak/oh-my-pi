@@ -60,11 +60,7 @@ export async function withTerminalBroker(body: (fixture: TerminalBrokerFixture) 
 	}
 }
 
-export function terminalSpec(
-	projectDir: string,
-	script: string,
-	overrides: Partial<DaemonSpec> = {},
-): DaemonSpec {
+export function terminalSpec(projectDir: string, script: string, overrides: Partial<DaemonSpec> = {}): DaemonSpec {
 	return {
 		name: `mind-${Snowflake.next()}`,
 		application: process.execPath,

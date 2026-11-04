@@ -126,7 +126,7 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId, { ack: true });
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdin.setEncoding("utf8");' +
 					'process.stdout.write("FIRST\\x1b[31mλ\\x1b[0m\\r\\n");' +
 					'process.stdin.on("data", chunk => process.stdout.write("INPUT:" + chunk));',
@@ -161,10 +161,10 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId, { ack: true });
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'const report = () => process.stdout.write("SIZE:" + process.stdout.columns + "x" + process.stdout.rows + "\\n");' +
 					'process.stdout.on("resize", report);' +
-					'report();' +
+					"report();" +
 					'process.stdin.on("data", () => {});',
 				{ ready: { log: "SIZE:93x31", timeoutMs: 5_000 } },
 			);
@@ -206,9 +206,9 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId, { ack: true });
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdin.setEncoding("utf8");' +
-					'let n = 0;' +
+					"let n = 0;" +
 					'setInterval(() => process.stdout.write("TICK:" + (++n) + "\\n"), 50);' +
 					'process.stdout.write("READY\\n");' +
 					'process.stdin.on("data", chunk => process.stdout.write("GOT:" + chunk));',
@@ -264,7 +264,7 @@ describe("broker terminal streams", () => {
 			const firstCapture = captureTerminal(client, firstSubscription, { ack: true });
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdin.setEncoding("utf8");' +
 					'process.stdin.on("data", chunk => process.stdout.write("GOT:" + chunk));',
 			);
@@ -318,18 +318,18 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId);
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdin.setEncoding("utf8");' +
-					'let ticks = 0;' +
+					"let ticks = 0;" +
 					'setInterval(() => process.stdout.write("TICK:" + (++ticks) + "\\n"), 50);' +
 					'process.stdout.write("READY\\n");' +
 					'process.stdin.on("data", chunk => {' +
 					'if (chunk.includes("go")) {' +
 					'const block = "x".repeat(65536);' +
-					'for (let i = 0; i < 48; i++) process.stdout.write(block);' +
+					"for (let i = 0; i < 48; i++) process.stdout.write(block);" +
 					'process.stdout.write("BURST_DONE\\n");' +
-					'}' +
-					'});',
+					"}" +
+					"});",
 				{ ready: { log: "READY", timeoutMs: 5_000 } },
 			);
 			try {
@@ -382,24 +382,24 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId, { ack: true });
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdin.setEncoding("utf8");' +
 					'let buf = "";' +
-					'let probe = 0;' +
+					"let probe = 0;" +
 					'process.stdin.on("data", chunk => {' +
-					'buf += chunk;' +
-					'for (;;) {' +
-					'const match = /\\x1b\\[(\\d+);(\\d+)R/.exec(buf);' +
-					'if (!match) break;' +
-					'buf = buf.slice(match.index + match[0].length);' +
+					"buf += chunk;" +
+					"for (;;) {" +
+					"const match = /\\x1b\\[(\\d+);(\\d+)R/.exec(buf);" +
+					"if (!match) break;" +
+					"buf = buf.slice(match.index + match[0].length);" +
 					'process.stdout.write("REPORT:" + probe + ":" + match[1] + ";" + match[2] + "\\n");' +
-					'}' +
+					"}" +
 					'if (chunk.includes("p")) {' +
-					'probe += 1;' +
+					"probe += 1;" +
 					'process.stdout.write("PROBE" + probe + "\\x1b[6n");' +
-					'}' +
+					"}" +
 					'if (chunk.includes("s")) process.stdout.write("SYNC" + probe + "\\n");' +
-					'});' +
+					"});" +
 					'process.stdout.write("PROBE0\\x1b[6n");',
 				{ ready: { log: "PROBE0", timeoutMs: 5_000 } },
 			);
@@ -463,7 +463,7 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId, { ack: true });
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdout.write("READY\\n");' +
 					'process.stdin.on("data", () => {});',
 				{ ready: { log: "READY", timeoutMs: 5_000 } },
@@ -523,9 +523,9 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId, { ack: true });
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdout.write("BYE\\n");' +
-					'setTimeout(() => process.exit(3), 50);' +
+					"setTimeout(() => process.exit(3), 50);" +
 					'process.stdin.on("data", () => {});',
 				{ ready: { log: "BYE", timeoutMs: 5_000 } },
 			);
@@ -558,7 +558,7 @@ describe("broker terminal streams", () => {
 			const capture = captureTerminal(client, subscriptionId);
 			const spec = terminalSpec(
 				projectDir,
-				'process.stdin.setRawMode(true);' +
+				"process.stdin.setRawMode(true);" +
 					'process.stdout.write("READY\\n");' +
 					'process.stdin.on("data", () => {});',
 				{ ready: { log: "READY", timeoutMs: 5_000 } },

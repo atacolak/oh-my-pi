@@ -889,9 +889,7 @@ class DaemonBroker {
 		}
 		for (const subscription of this.#terminalSubscriptions.values()) {
 			if (subscription.name === spec.name) {
-				throw new Error(
-					`Terminal ${spec.name} is already attached by subscription ${subscription.subscriptionId}`,
-				);
+				throw new Error(`Terminal ${spec.name} is already attached by subscription ${subscription.subscriptionId}`);
 			}
 		}
 		let installed: TerminalSubscription | undefined;
@@ -989,10 +987,7 @@ class DaemonBroker {
 		};
 	}
 
-	#terminalAck(
-		operation: Extract<DaemonOperation, { op: "terminal_ack" }>,
-		socket: IpcConnection,
-	): DaemonRpcResult {
+	#terminalAck(operation: Extract<DaemonOperation, { op: "terminal_ack" }>, socket: IpcConnection): DaemonRpcResult {
 		const result: DaemonRpcResult = {
 			op: "terminal_ack",
 			subscriptionId: operation.subscriptionId,

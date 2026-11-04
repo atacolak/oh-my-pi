@@ -312,6 +312,7 @@
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
 - Agent definitions accept `model-fallback: false` to pin that agent's sessions to their resolved model: root `--agent` launches, resume restores, and spawned subagents (including cold-revived ones) skip both client-side retry fallback and server-side fallback for that agent, while omitting the key keeps `retry.modelFallback` in charge.
 - Interactive sessions now publish an owner-only attach endpoint (`~/.omp/run/<session-id>.sock` plus a JSON discovery sidecar) that serves the same RPC command surface as `--mode rpc`, so external clients can attach, negotiate, prompt or steer, receive session events and register host tools; the endpoint moves when the session switches, and a client disconnect detaches only that client instead of ending the session
+- An attaching terminal can now refresh a live session's renderer: TUI modes and probes are re-armed and the component tree repaints with scrollback cleared, while the session, its socket, the draft, pending dialogs, and any running turn stay in place. The request is transport-local and fenced to the session id and broker generation, so a stale or foreign refresh is refused instead of disturbing another terminal
 
 ## [18.16.0] - 2026-11-02
 

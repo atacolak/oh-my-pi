@@ -19,7 +19,11 @@ import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { wordCompletionQuery } from "@oh-my-pi/pi-tui/prompt/word-completion";
-import type { WordCompletionEngine, WordCompletionMethod, WordCompletionQuery } from "@oh-my-pi/pi-tui/prompt/word-completion";
+import type {
+	WordCompletionEngine,
+	WordCompletionMethod,
+	WordCompletionQuery,
+} from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import * as path from "node:path";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -972,7 +976,7 @@ export class RpcCommandSurface {
 					this.#pendingExtensionRequests.get(frame.id)?.resolve(frame as RpcExtensionUIResponse);
 					return;
 				}
-					const command = frame as RpcCommand;
+				const command = frame as RpcCommand;
 				// Accept at read time, exactly like stdio: an abort or session change read
 				// after this frame invalidates it even while it waits in the ordered tail.
 				this.#inputGate.accept(command);
@@ -994,7 +998,7 @@ export class RpcCommandSurface {
 				: await run();
 		// The stdio dispatcher owns its response sink; a socket client gets its own
 		// answer here, so two clients can reuse an id without crossing wires.
-			conn?.send(response);
+		conn?.send(response);
 		return response;
 	}
 
@@ -1037,7 +1041,8 @@ export class RpcCommandSurface {
 			const session = this.#session;
 			const sessionId = session.sessionId;
 			const isShuttingDown = this.#host?.isShuttingDown() ?? false;
-			const isCurrent = () => this.#inputGate.isCurrent(command) && !isShuttingDown && session.sessionId === sessionId;
+			const isCurrent = () =>
+				this.#inputGate.isCurrent(command) && !isShuttingDown && session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
 			let text = command.message;
 			let images = command.images;
@@ -1155,9 +1160,7 @@ export class RpcCommandSurface {
 
 	#onPromptError(id: string | undefined, command: string, conn?: RpcClientConn) {
 		return (promptError: Error) =>
-			(conn ? (frame: RpcResponse) => conn.send(frame) : this.#output)(
-				rpcError(id, command, promptError.message),
-			);
+			(conn ? (frame: RpcResponse) => conn.send(frame) : this.#output)(rpcError(id, command, promptError.message));
 	}
 
 	async #handleCommandImpl(command: RpcCommand, conn?: RpcClientConn): Promise<RpcResponse> {
@@ -1171,7 +1174,11 @@ export class RpcCommandSurface {
 		switch (command.type) {
 			case "negotiate_protocol": {
 				if (command.protocolVersion !== 2)
-					return rpcError(id, "negotiate_protocol", `Unsupported RPC protocol version: ${command.protocolVersion}`);
+					return rpcError(
+						id,
+						"negotiate_protocol",
+						`Unsupported RPC protocol version: ${command.protocolVersion}`,
+					);
 				return rpcSuccess(id, "negotiate_protocol", { protocolVersion: 2 });
 			}
 
@@ -1337,8 +1344,7 @@ export class RpcCommandSurface {
 						requireIdle: true,
 					});
 				} catch (err) {
-					if (err instanceof SessionBusyError)
-						return rpcError(id, "navigate_tree", err.message, "session_busy");
+					if (err instanceof SessionBusyError) return rpcError(id, "navigate_tree", err.message, "session_busy");
 					throw err;
 				} finally {
 					await host!.goal.endSessionChange();
@@ -1467,12 +1473,7 @@ export class RpcCommandSurface {
 						),
 					);
 				} catch (err) {
-					return rpcError(
-						id,
-						"get_entries",
-						err instanceof Error ? err.message : String(err),
-						"unknown_since",
-					);
+					return rpcError(id, "get_entries", err instanceof Error ? err.message : String(err), "unknown_since");
 				}
 			}
 
@@ -1951,11 +1952,7 @@ export class RpcCommandSurface {
 					return rpcError(id, "predict_word_feedback", INVALID_TEXT_CURSOR_ERROR);
 				}
 				if (typeof command.suggestion !== "string" || typeof command.accepted !== "boolean") {
-					return rpcError(
-						id,
-						"predict_word_feedback",
-						"suggestion must be a string and accepted a boolean",
-					);
+					return rpcError(id, "predict_word_feedback", "suggestion must be a string and accepted a boolean");
 				}
 				const method = cfgSpellingAutocomplete.get(session.settings);
 				if (method !== "off") {

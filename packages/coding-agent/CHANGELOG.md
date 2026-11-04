@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- Agent profiles that declare a tool under `tools.discoverable` now mount it under `xd://` instead of leaving it top-level, even when the profile also lists it; `todo`/`ask`/`grep`/`web_search` stay top-level only by default, and a discoverable `write` becomes the device-only transport.
+- A cleared composer can no longer erase the draft a person typed. The composer draft is now written continuously (~175 ms after typing stops, atomically), an empty overwrite (Escape/Ctrl+C clear, or a teardown snapshot after one) parks the last body in a bounded 5-entry `draft-history.jsonl` instead of unlinking the only copy, and resume restores that archived draft into the editor with a visible "Restored an unsent draft" warning. Submitting a prompt clears the sidecar and the ring, so a sent message never reappears on resume.
 - A declared `tools:` list is now closed for extension tools registered after the session starts: an unnamed tool no longer becomes active (or an `xd://` device).
 - A declared `tools:` list now closes the pre-construction path too: an extension tool registered before the session is built (`become_actor`, `initiative_*`, host tools) no longer bypasses the declaration and lands top-level. MCP-origin tools keep the separate `mcps:` exemption, and caller-injected SDK custom tools stay active.
 - A named agent profile is closed-world for MCP: omitting `mcps:` now allows zero servers instead of inheriting every user server, and the allowlist is applied before discovery, so a profile that names no server spawns none (previously all servers were dialed and only their tools were filtered). Only a bare unnamed `omp` session still defaults to the user's servers.

@@ -34,6 +34,104 @@ export interface SessionAttachProbeOptions {
 }
 
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
+const DEFAULT_REFRESH_TIMEOUT_MS = 5_000;
+
+/**
+ * The socket a session owner publishes: one endpoint per session id under the
+ * profile-independent run directory. The owner's terminal generation is not
+ * part of the path, so a refreshed owner is reached without rediscovery.
+ */
+export function sessionAttachEndpoint(sessionId: string, endpointDir?: string): string {
+	assertSessionId(sessionId);
+	return ipcEndpoint(endpointDir ?? path.join(getBaseConfigRoot(), "run"), sessionId);
+}
+
+export interface SessionTerminalRefreshOptions {
+	endpointDir?: string;
+	timeoutMs?: number;
+}
+
+let refreshSequence = 0;
+
+/**
+ * Ask the live owner at `sessionId` to repaint the subscriber that is now
+ * attached. Both the session id and the terminal generation are verified, so a
+ * reply from a replaced owner never counts as a completed refresh.
+ */
+export async function requestSessionTerminalRefresh(
+	sessionId: string,
+	generation: string,
+	options: SessionTerminalRefreshOptions = {},
+): Promise<void> {
+	assertSessionId(sessionId);
+	if (typeof generation !== "string" || generation.length === 0) {
+		throw new TypeError("Session terminal refresh requires an owner generation");
+	}
+	const endpoint = sessionAttachEndpoint(sessionId, options.endpointDir);
+	const timeoutMs = options.timeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS;
+	const connection = await IpcConnection.connect(endpoint, { framing: "lines", timeoutMs });
+	const settled = Promise.withResolvers<void>();
+	settled.promise.catch(() => {});
+	const requestId = `terminal-refresh-${process.pid}-${++refreshSequence}`;
+
+	try {
+		connection.start(
+			line => {
+				let frame: unknown;
+				try {
+					frame = JSON.parse(line);
+				} catch {
+					return;
+				}
+				if (!isRecord(frame)) return;
+				if (frame.type === "ready") {
+					connection.send(
+						JSON.stringify({ id: requestId, type: "terminal_refresh", sessionId, generation }),
+					);
+					return;
+				}
+				if (frame.id !== requestId) return;
+				if (frame.type === "terminal_refreshed") {
+					if (frame.sessionId !== sessionId) {
+						settled.reject(
+							new Error(
+								`Session terminal refresh answered for "${String(frame.sessionId)}" instead of "${sessionId}"`,
+							),
+						);
+						return;
+					}
+					if (frame.generation !== generation) {
+						settled.reject(
+							new Error(
+								`Session terminal refresh answered for generation "${String(frame.generation)}" instead of "${generation}"`,
+							),
+						);
+						return;
+					}
+					settled.resolve();
+					return;
+				}
+				if (frame.type === "terminal_refresh_error") {
+					const message =
+						typeof frame.message === "string" && frame.message.length > 0
+							? frame.message
+							: `Session terminal refresh refused for generation "${generation}"`;
+					settled.reject(new Error(message));
+				}
+			},
+			reason => {
+				settled.reject(new Error(reason ?? `session endpoint ${endpoint} closed during refresh`));
+			},
+		);
+		await withTimeout(
+			settled.promise,
+			timeoutMs,
+			`session endpoint ${endpoint} did not refresh generation "${generation}"`,
+		);
+	} finally {
+		connection.destroy();
+	}
+}
 
 export function decideSessionAttach(probe: SessionAttachProbe): SessionAttachDecision {
 	switch (probe.status) {
@@ -59,7 +157,7 @@ export async function probeSessionAttach(
 	assertSessionId(sessionId);
 	const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 	const endpointDir = options.endpointDir ?? path.join(getBaseConfigRoot(), "run");
-	const endpoint = ipcEndpoint(endpointDir, sessionId);
+	const endpoint = sessionAttachEndpoint(sessionId, endpointDir);
 	const sidecarPath = path.join(endpointDir, `${sessionId}.json`);
 
 	const publication = await readPublication(sidecarPath, sessionId);

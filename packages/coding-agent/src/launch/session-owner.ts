@@ -127,10 +127,10 @@ export async function reserveSessionOwnerTarget(
 
 	// The reservation itself now answers `owner-busy`, so only a publication
 	// that appeared in the window may divert: a reachable owner is attached to
-	// and an unreachable one is refused rather than shadowed. Anything else is
-	// this reservation, which the caller keeps.
+	// and an unreachable or ambiguous one is refused rather than shadowed.
+	// Anything else is this reservation, which the caller keeps.
 	const after = decideSessionAttach(await probe(sessionId));
-	if (after.kind === "attach" || (after.kind === "refuse" && after.code === "terminal-unavailable")) {
+	if (after.kind === "attach" || (after.kind === "refuse" && after.code !== "owner-busy")) {
 		reservation.release();
 		return after;
 	}

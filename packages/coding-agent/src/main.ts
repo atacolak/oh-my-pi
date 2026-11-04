@@ -79,7 +79,12 @@ import {
 } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { SessionAttachTerminal } from "./launch/session-attach";
-import { describeSessionAttachRefusal, gateSessionTarget, resolveStartupSessionGate } from "./launch/session-attach-gate";
+import {
+	describeSessionAttachRefusal,
+	gateSessionTarget,
+	resolveStartupSessionGate,
+	type ResolvedSessionTarget,
+} from "./launch/session-attach-gate";
 import { runLiveSessionAttach } from "./launch/session-attach-run";
 import { isSessionOwnerProcess } from "./launch/session-owner";
 import type { MCPManager } from "./mcp";
@@ -138,6 +143,7 @@ import {
 	ForkSourceNotFoundError,
 	SessionManager,
 	SessionMoveRefusedError,
+	type SessionOwnershipPolicy,
 } from "./session/session-manager";
 import type { SessionReservation } from "./session/session-storage";
 import { forkIfMovedAway } from "./session/session-transfer";
@@ -933,12 +939,19 @@ type MissingCwdMoveResult =
 	| { status: "declined" }
 	| { status: "moved"; manager: SessionManager };
 
+/** Strict-owner reservation handed from the attach gate to the manager that opens its target. */
+interface OwnershipHandoff {
+	readonly ownershipPolicy?: SessionOwnershipPolicy;
+	readonly ownershipReservation?: SessionReservation;
+}
+
 async function moveMissingCwdSessionIfNeeded(
 	sessionArg: string,
 	session: SessionInfo,
 	cwd: string,
 	sessionDir: string | undefined,
 	askToMoveSession: SessionPrompt,
+	ownership?: OwnershipHandoff,
 ): Promise<MissingCwdMoveResult> {
 	const sourceCwd = session.cwd;
 	if (!sourceCwd || fsSync.existsSync(sourceCwd)) {
@@ -957,7 +970,7 @@ async function moveMissingCwdSessionIfNeeded(
 			return { status: "declined" };
 		}
 	}
-	return { status: "moved", manager: await openRelocatedSession(session, cwd, sessionDir) };
+	return { status: "moved", manager: await openRelocatedSession(session, cwd, sessionDir, ownership) };
 }
 
 /** {@link SessionManager.openRelocated} into `cwd`, reporting a live-writer refusal as a CLI error. */
@@ -965,9 +978,10 @@ async function openRelocatedSession(
 	session: SessionInfo,
 	cwd: string,
 	sessionDir: string | undefined,
+	ownership?: OwnershipHandoff,
 ): Promise<SessionManager> {
 	try {
-		return await SessionManager.openRelocated(session.path, session.cwd, cwd, sessionDir);
+		return await SessionManager.openRelocated(session.path, session.cwd, cwd, sessionDir, ownership);
 	} catch (err) {
 		if (!(err instanceof SessionMoveRefusedError)) throw err;
 		// Its directory is gone, so it cannot be resumed in place either.
@@ -1261,6 +1275,15 @@ function validateSessionPersistenceArgs(parsed: Pick<Args, "continue" | "noSessi
 	}
 }
 /**
+ * A startup target the attach gate resolved as cold, with the strict
+ * reservation that must carry it through the first write. The manager that
+ * opens the target adopts the reservation; every other exit releases it.
+ */
+export interface SessionOwnerAttachSelection extends ResolvedSessionTarget {
+	readonly reservation: SessionReservation;
+}
+
+/**
  * Resolves CLI session flags into an existing, forked, in-memory, or cancelled session manager.
  *
  * `nativeFlagOwnership: "preliminary"` is reserved for the startup parse,
@@ -1276,6 +1299,8 @@ export async function createSessionManager(
 	options: {
 		nativeFlagOwnership?: "preliminary" | "resolved";
 		onSessionContinuation?: (continuation: SessionContinuation) => void;
+		/** The startup gate's cold target and its strict reservation. */
+		ownerAttach?: SessionOwnerAttachSelection;
 	} = {},
 ): Promise<SessionManager | undefined> {
 	if (parsed.fork) {
@@ -1320,22 +1345,27 @@ export async function createSessionManager(
 	}
 	normalizeContinueSessionArgs(parsed);
 
+	const ownerOptions =
+		options.ownerAttach === undefined
+			? undefined
+			: {
+					ownershipPolicy: "require-owner" as const,
+					ownershipReservation: options.ownerAttach.reservation,
+				};
+
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
 		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
 			// The conversation may have gone on in a sibling file while another process held this one.
-			const continuation = await findSessionContinuation(sessionArg);
+			const continuation = options.ownerAttach?.continuation ?? (await findSessionContinuation(sessionArg));
 			if (continuation) options.onSessionContinuation?.(continuation);
+			const sessionPath = options.ownerAttach?.session.path ?? continuation?.session.path ?? sessionArg;
 			let manager: SessionManager;
 			try {
-				manager = await SessionManager.open(
-					continuation?.session.path ?? sessionArg,
-					parsed.sessionDir,
-					undefined,
-					{
-						throwIfMissing: true,
-					},
-				);
+				manager = await SessionManager.open(sessionPath, parsed.sessionDir, undefined, {
+					throwIfMissing: true,
+					...ownerOptions,
+				});
 			} catch (err) {
 				if (isEnoent(err) || isEnotdir(err)) {
 					throw new SessionResolutionError(`Session "${sessionArg}" not found.`, SESSION_NOT_FOUND_HINT);
@@ -1345,7 +1375,9 @@ export async function createSessionManager(
 			// A copy whose conversation moved to another machine continues as a fork.
 			return await forkIfMovedAway(manager, parsed.sessionDir);
 		}
-		const target = await resolveResumeTarget(sessionArg, cwd, parsed.sessionDir);
+		const target = options.ownerAttach
+			? { session: options.ownerAttach.session, continuation: options.ownerAttach.continuation }
+			: await resolveResumeTarget(sessionArg, cwd, parsed.sessionDir);
 		if (!target) {
 			throw new SessionResolutionError(`Session "${sessionArg}" not found.`, SESSION_NOT_FOUND_HINT);
 		}
@@ -1357,6 +1389,7 @@ export async function createSessionManager(
 			cwd,
 			parsed.sessionDir,
 			askToMoveSession,
+			ownerOptions,
 		);
 		if (moveResult.status === "moved") {
 			return await forkIfMovedAway(moveResult.manager, parsed.sessionDir);
@@ -1364,12 +1397,24 @@ export async function createSessionManager(
 		if (moveResult.status === "declined") {
 			return undefined;
 		}
-		return await forkIfMovedAway(await SessionManager.open(session.path, parsed.sessionDir), parsed.sessionDir);
+		return await forkIfMovedAway(
+			await SessionManager.open(session.path, parsed.sessionDir, undefined, ownerOptions),
+			parsed.sessionDir,
+		);
 	}
+	const preselected: ContinueRecentTarget | undefined =
+		options.ownerAttach === undefined
+			? undefined
+			: (options.ownerAttach.recent ?? {
+					sessionPath: options.ownerAttach.session.path,
+					continuation: options.ownerAttach.continuation,
+				});
 	if (parsed.continue) {
 		return await forkIfMovedAway(
 			await SessionManager.continueRecent(cwd, parsed.sessionDir, undefined, {
 				onSessionContinuation: options.onSessionContinuation,
+				...ownerOptions,
+				preselected,
 			}),
 			parsed.sessionDir,
 		);
@@ -1388,6 +1433,8 @@ export async function createSessionManager(
 		const manager = await forkIfMovedAway(
 			await SessionManager.continueRecent(cwd, parsed.sessionDir, undefined, {
 				onSessionContinuation: options.onSessionContinuation,
+				...ownerOptions,
+				preselected,
 			}),
 			parsed.sessionDir,
 		);
@@ -2376,19 +2423,12 @@ export async function runRootCommand(
 				if (gate.kind === "cold") pickedAttach = { ...gate.target, reservation: gate.reservation };
 			}
 			try {
+				const ownership = pickedAttach
+					? { ownershipPolicy: "require-owner" as const, ownershipReservation: pickedAttach.reservation }
+					: undefined;
 				const opened = (await SessionManager.isFromRemovedWorktree(chosen, cwd, parsedArgs.sessionDir))
-					? await openRelocatedSession(chosen, cwd, parsedArgs.sessionDir, pickedAttach)
-					: await SessionManager.open(
-							chosen.path,
-							undefined,
-							undefined,
-							pickedAttach
-								? {
-										ownershipPolicy: "require-owner",
-										ownershipReservation: pickedAttach.reservation,
-									}
-								: undefined,
-						);
+					? await openRelocatedSession(chosen, cwd, parsedArgs.sessionDir, ownership)
+					: await SessionManager.open(chosen.path, undefined, undefined, ownership);
 				sessionManager = await forkIfMovedAway(opened, parsedArgs.sessionDir);
 			} catch (error: unknown) {
 				pickedAttach?.reservation.release();

@@ -292,6 +292,141 @@ describe("computeBankScope", () => {
 			]);
 		});
 	});
+
+	// The operator's project identity lives in `.systemd-ops/scope.toml`
+	// (`[scope].id`), which is not always the directory basename: `cpa-farm`
+	// declares `cpa`. Reading it keeps OMP memory in the same project scope the
+	// rest of the estate writes, instead of inventing a checkout-name tag.
+	describe("scope manifest labels", () => {
+		let baseDir: string;
+
+		const writeManifest = async (root: string, body: string): Promise<void> => {
+			await fs.mkdir(path.join(root, ".systemd-ops"), { recursive: true });
+			await fs.writeFile(path.join(root, ".systemd-ops", "scope.toml"), body);
+		};
+
+		const writeLegacyManifest = async (root: string, body: string): Promise<void> => {
+			await fs.mkdir(root, { recursive: true });
+			await fs.writeFile(path.join(root, ".systemd-ops.toml"), body);
+		};
+
+		const scopedLabel = (directory: string): string | undefined =>
+			computeBankScope(baseConfig({ scoping: "per-project-tagged" }), directory).retainTags?.[0];
+
+		beforeAll(async () => {
+			baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "hindsight-bank-scope-"));
+		});
+
+		afterAll(async () => {
+			if (baseDir) await removeWithRetries(baseDir);
+		});
+
+		const fixtures = [
+			{ directory: "hindsight", id: "memory" },
+			{ directory: "deepseek-harness", id: "exocortex" },
+			{ directory: "dji-flip", id: "drone-ops" },
+			{ directory: "cpa-farm", id: "cpa" },
+			{ directory: "oh-my-pi", id: "oh-my-pi" },
+		];
+
+		for (const fixture of fixtures) {
+			it(`labels ${fixture.directory} as ${fixture.id} from its scope manifest`, async () => {
+				const root = path.join(baseDir, fixture.directory);
+				await writeManifest(root, `[scope]\nid = "${fixture.id}"\n`);
+				expect(scopedLabel(path.join(root, "packages", "app"))).toBe(`project:${fixture.id}`);
+			});
+		}
+
+		it("accepts the legacy .systemd-ops.toml manifest", async () => {
+			const root = path.join(baseDir, "legacy");
+			await writeLegacyManifest(root, '[scope]\nid = "legacy-project"\n');
+			expect(scopedLabel(root)).toBe("project:legacy-project");
+		});
+
+		it("normalizes the scope id into a lowercase slug", async () => {
+			const root = path.join(baseDir, "normalized");
+			await writeManifest(root, '[scope]\nid = "  Drone Ops / Fleet  "\n');
+			expect(scopedLabel(root)).toBe("project:drone-ops-fleet");
+		});
+
+		it("keeps the basename when no scope manifest exists", async () => {
+			const root = path.join(baseDir, "unscoped");
+			await fs.mkdir(root, { recursive: true });
+			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+		});
+
+		it("ignores a directory holding both manifest flavours", async () => {
+			const root = path.join(baseDir, "ambiguous");
+			await writeManifest(root, '[scope]\nid = "guessed"\n');
+			await writeLegacyManifest(root, '[scope]\nid = "guessed-legacy"\n');
+			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+		});
+
+		it("keeps walking past an ambiguous directory", async () => {
+			const root = path.join(baseDir, "ambiguous-ancestor");
+			await writeManifest(root, '[scope]\nid = "outer-scope"\n');
+			const child = path.join(root, "inner");
+			await writeManifest(child, '[scope]\nid = "guessed"\n');
+			await writeLegacyManifest(child, '[scope]\nid = "guessed-legacy"\n');
+			expect(scopedLabel(child)).toBe("project:outer-scope");
+		});
+
+		it("ignores an empty scope id", async () => {
+			const root = path.join(baseDir, "empty-id");
+			await writeManifest(root, '[scope]\nid = ""\n');
+			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+		});
+
+		it("ignores a manifest without a [scope] section", async () => {
+			const root = path.join(baseDir, "no-scope-section");
+			await writeManifest(root, '[coordination]\nlead = "hcom:lead"\n');
+			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+		});
+
+		it("ignores a malformed manifest", async () => {
+			const root = path.join(baseDir, "malformed");
+			await writeManifest(root, "[scope\nid =\n");
+			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+		});
+	});
+
+	describe("scope manifests and git worktrees", () => {
+		let baseDir: string;
+		let primaryRoot: string;
+		let worktreeRoot: string;
+
+		beforeAll(async () => {
+			baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "hindsight-bank-scope-worktree-"));
+			primaryRoot = path.join(baseDir, "primary-checkout");
+			worktreeRoot = path.join(baseDir, "primary-checkout-feature");
+			await fs.mkdir(primaryRoot, { recursive: true });
+			runGit(primaryRoot, ["-c", "init.defaultBranch=main", "init"]);
+			runGit(primaryRoot, ["config", "user.email", "tester@example.com"]);
+			runGit(primaryRoot, ["config", "user.name", "Tester"]);
+			await fs.writeFile(path.join(primaryRoot, "README.md"), "hi\n");
+			runGit(primaryRoot, ["add", "-A"]);
+			runGit(primaryRoot, ["commit", "-m", "base"]);
+			await fs.mkdir(path.join(primaryRoot, ".systemd-ops"), { recursive: true });
+			await fs.writeFile(path.join(primaryRoot, ".systemd-ops", "scope.toml"), '[scope]\nid = "shared-scope"\n');
+			runGit(primaryRoot, ["worktree", "add", worktreeRoot, "-b", "feature"]);
+		});
+
+		afterAll(async () => {
+			if (baseDir) await removeWithRetries(baseDir);
+		});
+
+		it("resolves a linked worktree to the primary checkout's scope id", () => {
+			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), primaryRoot).retainTags).toEqual([
+				"project:shared-scope",
+			]);
+			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), worktreeRoot).retainTags).toEqual([
+				"project:shared-scope",
+			]);
+			expect(computeBankScope(baseConfig({ scoping: "per-project" }), worktreeRoot)).toEqual({
+				bankId: "omp-shared-scope",
+			});
+		});
+	});
 });
 
 describe("ensureBankExists", () => {

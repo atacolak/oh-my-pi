@@ -43,10 +43,7 @@ interface FakeBroker {
 	readonly sinks: Map<string, Sink>;
 	closed: boolean;
 	emit(frame: DaemonTerminalNotification): void;
-	waitForOperation(
-		predicate: (operation: DaemonOperation) => boolean,
-		message: string,
-	): Promise<DaemonOperation>;
+	waitForOperation(predicate: (operation: DaemonOperation) => boolean, message: string): Promise<DaemonOperation>;
 }
 
 function fakeBroker(options: { rejectSend?: boolean } = {}): FakeBroker {

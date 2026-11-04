@@ -259,15 +259,13 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 		});
 		removeInput = input.onData(data => {
 			if (finished) return;
-			void options.client
-				.request({ op: "send", name: options.name, id: options.id, data })
-				.catch(error => {
-					if (finished) return;
-					logger.warn("Terminal mirror input failed; detaching this mirror", {
-						error: error instanceof Error ? error.message : String(error),
-					});
-					void detach();
+			void options.client.request({ op: "send", name: options.name, id: options.id, data }).catch(error => {
+				if (finished) return;
+				logger.warn("Terminal mirror input failed; detaching this mirror", {
+					error: error instanceof Error ? error.message : String(error),
 				});
+				void detach();
+			});
 		});
 
 		await options.client.request({

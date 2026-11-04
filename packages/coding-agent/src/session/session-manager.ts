@@ -928,6 +928,15 @@ export class ForkSourceNotFoundError extends Error {
  * A trailing atomic rewrite still rewrites the header cwd after the path is
  * repointed.
  */
+export interface ContinueRecentTarget {
+	/** The JSONL file to open, or undefined when a fresh session should start. */
+	sessionPath?: string;
+	/** The copy whose conversation continues the chosen file, when one was found. */
+	continuation?: SessionContinuation;
+	/** A moved-project breadcrumb's gone cwd; the opened session must be relocated from it. */
+	reRootFrom?: string;
+}
+
 export class SessionManager {
 	#cwd: string;
 	/** Additional workspace directories beyond cwd (multi-root). Normalized absolute, deduped, excludes cwd. */
@@ -4519,12 +4528,16 @@ export class SessionManager {
 		recordedCwd: string,
 		cwd: string,
 		sessionDir?: string,
+		options?: { ownershipPolicy?: SessionOwnershipPolicy; ownershipReservation?: SessionReservation },
 	): Promise<SessionManager> {
 		// Anchor at the missing recorded cwd: `open` otherwise falls back to the
 		// launch cwd, which would make the `moveTo` below a no-op whenever the move
 		// target equals it. moveTo never chdirs, so the stale cwd is only the
 		// relocation source, not a directory we enter.
-		const manager = await SessionManager.open(sessionPath, sessionDir, undefined, { initialCwd: recordedCwd });
+		const manager = await SessionManager.open(sessionPath, sessionDir, undefined, {
+			initialCwd: recordedCwd,
+			...options,
+		});
 		try {
 			await manager.moveTo(cwd, sessionDir);
 		} catch (error) {
@@ -4574,24 +4587,16 @@ export class SessionManager {
 		};
 	}
 	/**
-	 * Continue the most recent session, or create a new one if none exists.
-	 *
-	 * When the chosen session's conversation went on in another file (it moved
-	 * off its file; see `findSessionContinuation`), this opens the copy to
-	 * resume instead and reports it to `onSessionContinuation`. The session the
-	 * terminal's record of its last session names was chosen, as a file named
-	 * to `--resume` is, so it is kept when it has turns its continuation lacks
-	 * ({@link findSessionContinuation}). Without that record the pick goes by
-	 * file time, and a process writes its exit record or an idle cache refresh
-	 * long after its last turn, so the pick can be any copy
-	 * ({@link findRecentSessionContinuation}).
+	 * Read-only selection of the session {@link continueRecent} would open.
+	 * Performs no open, claim, or relocation, so a caller can decide ownership
+	 * before constructing a session manager.
 	 */
-	static async continueRecent(
+	static async resolveContinueTarget(
 		cwd: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
-		options: { onSessionContinuation?: (continuation: SessionContinuation) => void } = {},
-	): Promise<SessionManager> {
+		options: { skipReRoot?: boolean } = {},
+	): Promise<ContinueRecentTarget> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const resolvedCwd = path.resolve(cwd);
 		const breadcrumb = await readTerminalBreadcrumbEntry();
@@ -4609,9 +4614,7 @@ export class SessionManager {
 				!breadcrumb.exists &&
 				(!sessionDir || pathIsWithin(dir, path.dirname(breadcrumb.sessionFile)))
 			) {
-				const manager = new SessionManager(cwd, dir, true, storage);
-				manager.#resetToNewSession();
-				return manager;
+				return {};
 			}
 
 			// Recover stale crumbs: a subagent open (pre-fix) may have pointed this
@@ -4658,34 +4661,25 @@ export class SessionManager {
 				// Cross-filesystem `mv` (new inode) is intentionally not a re-root.
 				const looksLikeMovedProject =
 					candidateForMove && hasPositiveMovedProjectEvidence(breadcrumb.cwdIdentity, resolvedCwd);
-				if (looksLikeMovedProject) {
+				if (looksLikeMovedProject && !options.skipReRoot) {
 					logger.warn("Re-rooting moved session", { from: breadcrumbCwd, to: resolvedCwd });
-					// Anchor at the gone breadcrumb cwd so the moveTo below relocates the
-					// session: open() now falls back to the launch cwd for a missing
-					// recorded cwd, which would no-op moveTo when it equals `cwd`.
+					// Anchor at the gone breadcrumb cwd so moveTo relocates the session:
+					// open() falls back to the launch cwd for a missing recorded cwd,
+					// which would make moveTo a no-op when it equals `cwd`.
 					// The breadcrumb names this session, as a file named to `--resume` is named.
 					const continuation = await findSessionContinuation(breadcrumb.sessionFile, storage);
-					const manager = await SessionManager.open(
-						continuation?.session.path ?? breadcrumb.sessionFile,
-						undefined,
-						storage,
-						{ initialCwd: breadcrumbCwd },
-					);
-					try {
-						await manager.moveTo(cwd, sessionDir);
-						if (continuation) options.onSessionContinuation?.(continuation);
-						return manager;
-					} catch (err) {
-						if (!(err instanceof SessionMoveRefusedError)) throw err;
-						// Another live omp process still writes the session (the
-						// project was renamed under it): leave it there and continue
-						// as if no move were possible.
-						logger.warn("Not re-rooting moved session: it is open in another omp process", {
-							from: breadcrumbCwd,
-							to: resolvedCwd,
-						});
-						await manager.close();
-					}
+					return {
+						sessionPath: continuation?.session.path ?? breadcrumb.sessionFile,
+						continuation,
+						reRootFrom: breadcrumbCwd,
+					};
+				}
+				if (looksLikeMovedProject) {
+					// The caller tried the move and another live process refused it.
+					logger.warn("Not re-rooting moved session: it is open in another omp process", {
+						from: breadcrumbCwd,
+						to: resolvedCwd,
+					});
 				} else if (candidateForMove) {
 					logger.warn(
 						"Not relocating session: project directory is unavailable and there is no evidence it moved here",
@@ -4698,20 +4692,79 @@ export class SessionManager {
 		}
 
 		if (chosenSession === undefined) chosenSession = await findMostRecentNonEmptySession(dir, storage);
+		let continuation: SessionContinuation | undefined;
 		if (chosenSession) {
 			const fromBreadcrumb = !!breadcrumb && path.resolve(chosenSession) === path.resolve(breadcrumb.sessionFile);
-			const continuation = fromBreadcrumb
+			continuation = fromBreadcrumb
 				? await findSessionContinuation(chosenSession, storage)
 				: await findRecentSessionContinuation(chosenSession, storage);
-			if (continuation) {
-				options.onSessionContinuation?.(continuation);
-				chosenSession = continuation.session.path;
+			if (continuation) chosenSession = continuation.session.path;
+		}
+		return { sessionPath: chosenSession ?? undefined, continuation };
+	}
+
+	/**
+	 * Continue the most recent session, or create a new one if none exists.
+	 *
+	 * When the chosen session's conversation went on in another file (it moved
+	 * off its file; see `findSessionContinuation`), this opens the copy to
+	 * resume instead and reports it to `onSessionContinuation`. The session the
+	 * terminal's record of its last session names was chosen, as a file named
+	 * to `--resume` is, so it is kept when it has turns its continuation lacks
+	 * ({@link findSessionContinuation}). Without that record the pick goes by
+	 * file time, and a process writes its exit record or an idle cache refresh
+	 * long after its last turn, so the pick can be any copy
+	 * ({@link findRecentSessionContinuation}).
+	 */
+	static async continueRecent(
+		cwd: string,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+		options: {
+			onSessionContinuation?: (continuation: SessionContinuation) => void;
+			/** How to react when another live process owns the journal; defaults to `"branch"`. */
+			ownershipPolicy?: SessionOwnershipPolicy;
+			/** Bootstrap reservation adopted by this manager's first claim (strict owner path). */
+			ownershipReservation?: SessionReservation;
+			/** The target a caller already resolved; avoids deciding twice. */
+			preselected?: ContinueRecentTarget;
+		} = {},
+	): Promise<SessionManager> {
+		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
+		let target = options.preselected ?? (await SessionManager.resolveContinueTarget(cwd, sessionDir, storage));
+		const ownerOptions =
+			options.ownershipPolicy === undefined && options.ownershipReservation === undefined
+				? undefined
+				: {
+						ownershipPolicy: options.ownershipPolicy,
+						ownershipReservation: options.ownershipReservation,
+					};
+
+		if (target.reRootFrom && target.sessionPath) {
+			const manager = await SessionManager.open(target.sessionPath, undefined, storage, {
+				initialCwd: target.reRootFrom,
+				...ownerOptions,
+			});
+			try {
+				await manager.moveTo(cwd, sessionDir);
+				if (target.continuation) options.onSessionContinuation?.(target.continuation);
+				return manager;
+			} catch (err) {
+				if (!(err instanceof SessionMoveRefusedError)) throw err;
+				await manager.close();
+				if (options.ownershipPolicy === "require-owner") throw err;
+				// Another live omp process still writes the session (the project was
+				// renamed under it): leave it there and continue as if no move were possible.
+				target = await SessionManager.resolveContinueTarget(cwd, sessionDir, storage, { skipReRoot: true });
 			}
 		}
 
 		const manager = new SessionManager(cwd, dir, true, storage);
-		if (chosenSession) await manager.setSessionFile(chosenSession);
+		if (target.sessionPath) await manager.setSessionFile(target.sessionPath);
 		else manager.#resetToNewSession();
+		manager.#ownershipPolicy = options.ownershipPolicy ?? "branch";
+		manager.#ownershipReservation = options.ownershipReservation;
+		if (target.continuation) options.onSessionContinuation?.(target.continuation);
 		return manager;
 	}
 

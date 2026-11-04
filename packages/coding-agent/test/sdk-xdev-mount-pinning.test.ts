@@ -8,6 +8,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	type CreateAgentSessionOptions,
+	type CustomTool,
 	createAgentSession,
 	discoverAuthStorage,
 	type ExtensionFactory,
@@ -58,6 +59,40 @@ const lateDeclaredExtension: ExtensionFactory = pi => {
 		});
 	});
 };
+
+const preconstructionExtension: ExtensionFactory = pi => {
+	pi.registerTool({
+		name: "become_actor",
+		label: "Become Actor",
+		description: "Extension tool registered before session construction.",
+		parameters: type({}),
+		async execute() {
+			return { content: [{ type: "text", text: "preconstruction" }] };
+		},
+	});
+};
+
+const mcpOriginExtension: ExtensionFactory = pi => {
+	pi.registerTool({
+		name: "mcp__demo__lookup",
+		label: "MCP Origin Lookup",
+		description: "Tool minted from an MCP server, governed by the separate mcps: declaration.",
+		parameters: type({}),
+		async execute() {
+			return { content: [{ type: "text", text: "mcp" }] };
+		},
+	});
+};
+
+const callerInjectedTool = {
+	name: "caller_injected_tool",
+	label: "Caller Injected Tool",
+	description: "Caller-supplied SDK custom tool, not part of any profile declaration.",
+	parameters: type({}),
+	async execute() {
+		return { content: [{ type: "text", text: "caller injected" }] };
+	},
+} satisfies CustomTool;
 
 describe("xd:// mount pinning for declared discoverable tools", () => {
 	const tempDirs: string[] = [];
@@ -292,6 +327,90 @@ describe("xd:// mount pinning for declared discoverable tools", () => {
 			expect(session.getEnabledToolNames()).not.toContain("late_undeclared_tool");
 			expect(session.getActiveToolNames()).not.toContain("late_undeclared_tool");
 			expect(session.getXdevToolEntries().map(entry => entry.name)).not.toContain("late_undeclared_tool");
+		} finally {
+			await session.dispose();
+		}
+	}, 60_000);
+
+	it("does not activate a pre-construction extension tool outside a declared tool load set", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			settings: Settings.isolated({ "tools.xdev": false }),
+			extensions: [preconstructionExtension],
+			toolNames: ["read", "write"],
+			restrictToolNames: false,
+			toolLoad: {
+				declared: true,
+				names: ["read", "write"],
+				eager: ["read", "write"],
+				discoverable: [],
+			},
+		});
+		try {
+			expect(session.getEnabledToolNames()).not.toContain("become_actor");
+			expect(session.getActiveToolNames()).not.toContain("become_actor");
+			expect(session.getXdevToolEntries().map(entry => entry.name)).not.toContain("become_actor");
+		} finally {
+			await session.dispose();
+		}
+	}, 60_000);
+
+	it("activates a pre-construction extension tool when the profile declares no tool load", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			settings: Settings.isolated({ "tools.xdev": false }),
+			extensions: [preconstructionExtension],
+			toolNames: ["read", "write"],
+			restrictToolNames: false,
+		});
+		try {
+			expect(session.getActiveToolNames()).toContain("become_actor");
+		} finally {
+			await session.dispose();
+		}
+	}, 60_000);
+
+	it("keeps an MCP-origin tool active under a declared tool load set", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			settings: Settings.isolated({ "tools.xdev": false }),
+			extensions: [mcpOriginExtension],
+			toolNames: ["read", "write"],
+			restrictToolNames: false,
+			toolLoad: {
+				declared: true,
+				names: ["read", "write"],
+				eager: ["read", "write"],
+				discoverable: [],
+			},
+		});
+		try {
+			expect(session.getEnabledToolNames()).toContain("mcp__demo__lookup");
+		} finally {
+			await session.dispose();
+		}
+	}, 60_000);
+
+	it("keeps a caller-injected SDK custom tool active under a declared tool load set", async () => {
+		const tempDir = makeTempDir();
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			settings: Settings.isolated({ "tools.xdev": false }),
+			customTools: [callerInjectedTool],
+			toolNames: ["read", "write"],
+			restrictToolNames: false,
+			toolLoad: {
+				declared: true,
+				names: ["read", "write"],
+				eager: ["read", "write"],
+				discoverable: [],
+			},
+		});
+		try {
+			expect(session.getActiveToolNames()).toContain("caller_injected_tool");
 		} finally {
 			await session.dispose();
 		}

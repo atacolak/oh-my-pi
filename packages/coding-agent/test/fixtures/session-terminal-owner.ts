@@ -37,8 +37,12 @@ const emit = (name: string, data: Record<string, unknown> = {}): void => {
 for (const signal of ["SIGHUP", "SIGTERM", "SIGINT", "SIGQUIT"] as const) {
 	process.on(signal, () => emit("owner-signal", { signal, pid: process.pid }));
 }
-process.on("uncaughtException", error => emit("owner-uncaught", { message: String(error) }));
-process.on("unhandledRejection", error => emit("owner-rejection", { message: String(error) }));
+process.on("uncaughtException", error =>
+	emit("owner-uncaught", { message: String(error), stack: error instanceof Error ? error.stack : undefined }),
+);
+process.on("unhandledRejection", error =>
+	emit("owner-rejection", { message: String(error), stack: error instanceof Error ? error.stack : undefined }),
+);
 process.on("exit", code => emit("owner-exit", { code, pid: process.pid }));
 
 const cwd = process.cwd();

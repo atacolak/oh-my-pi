@@ -169,9 +169,7 @@ describe("resolveStartupSessionGate", () => {
 		expect((await resolveStartupSessionGate({ ...shared, fromClaude: true })).kind).toBe("none");
 		expect((await resolveStartupSessionGate({ ...shared, fromCodex: true })).kind).toBe("none");
 		expect((await resolveStartupSessionGate({ ...shared, resume: true })).kind).toBe("none");
-		expect((await resolveStartupSessionGate({ ...shared, autoResume: true, goal: "fresh goal" })).kind).toBe(
-			"none",
-		);
+		expect((await resolveStartupSessionGate({ ...shared, autoResume: true, goal: "fresh goal" })).kind).toBe("none");
 		expect(observed).toEqual([]);
 	});
 });

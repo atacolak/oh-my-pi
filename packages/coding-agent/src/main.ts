@@ -2399,11 +2399,16 @@ export async function runRootCommand(
 			const chosen = continuation?.session ?? selected;
 			let pickedAttach: SessionOwnerAttachSelection | undefined;
 			if (!isSessionOwnerProcess()) {
-				const gate = await logger.time("gatePickedSession", gateSessionTarget, { session: chosen, continuation }, {
-					cwd,
-					sessionDir: parsedArgs.sessionDir,
-					autoResume: false,
-				});
+				const gate = await logger.time(
+					"gatePickedSession",
+					gateSessionTarget,
+					{ session: chosen, continuation },
+					{
+						cwd,
+						sessionDir: parsedArgs.sessionDir,
+						autoResume: false,
+					},
+				);
 				if (gate.kind === "refuse") {
 					throw new SessionResolutionError(
 						describeSessionAttachRefusal(gate.sessionId, gate.code),

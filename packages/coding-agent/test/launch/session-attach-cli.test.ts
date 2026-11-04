@@ -27,7 +27,10 @@ interface RefreshEndpoint {
 }
 
 function sessionDirNames(dir: string): string[] {
-	return fs.readdirSync(dir).filter(name => name.endsWith(".jsonl")).sort();
+	return fs
+		.readdirSync(dir)
+		.filter(name => name.endsWith(".jsonl"))
+		.sort();
 }
 
 async function createSession(sessionsDir: string, cwd: string): Promise<{ sessionId: string; sessionPath: string }> {
@@ -94,7 +97,9 @@ async function runCli(homeDir: string, agentDir: string, projectDir: string, arg
 	} catch (error) {
 		child.kill("SIGKILL");
 		const output = Buffer.concat(chunks).toString("utf8");
-		throw new Error(`${error instanceof Error ? error.message : String(error)}\n--- output ---\n${output.slice(-4000)}`);
+		throw new Error(
+			`${error instanceof Error ? error.message : String(error)}\n--- output ---\n${output.slice(-4000)}`,
+		);
 	}
 }
 
@@ -118,12 +123,22 @@ function serveSessionEndpoint(
 				}
 				frames.push(frame);
 				if (frame.type === "get_state") {
-					connection.send(JSON.stringify({ type: "response", id: frame.id, command: "get_state", success: true, data: { sessionId, isStreaming: false } }));
+					connection.send(
+						JSON.stringify({
+							type: "response",
+							id: frame.id,
+							command: "get_state",
+							success: true,
+							data: { sessionId, isStreaming: false },
+						}),
+					);
 					return;
 				}
 				if (frame.type === "terminal_refresh") {
 					if (frame.sessionId !== sessionId || frame.generation !== generation) {
-						connection.send(JSON.stringify({ type: "terminal_refresh_error", id: frame.id, message: "not this attachment" }));
+						connection.send(
+							JSON.stringify({ type: "terminal_refresh_error", id: frame.id, message: "not this attachment" }),
+						);
 						return;
 					}
 					connection.send(JSON.stringify({ type: "terminal_refreshed", id: frame.id, sessionId, generation }));
@@ -146,82 +161,90 @@ function serveSessionEndpoint(
 }
 
 describe("CLI --resume against a live owner", () => {
-	it(
-		"attaches and never creates a sibling transcript, then refuses a stale publication",
-		async () => {
-			using tempDir = TempDir.createSync("@omp-cli-attach-");
-			const homeDir = path.join(tempDir.path(), "home");
-			const agentDir = path.join(homeDir, "agent");
-			const projectDir = path.join(tempDir.path(), "project");
-			const sessionsDir = path.join(tempDir.path(), "sessions");
-			const runDir = path.join(homeDir, ".omp", "run");
-			for (const dir of [agentDir, projectDir, sessionsDir, runDir]) {
-				fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-			}
-			const project = fs.realpathSync(projectDir);
+	it("attaches and never creates a sibling transcript, then refuses a stale publication", async () => {
+		using tempDir = TempDir.createSync("@omp-cli-attach-");
+		const homeDir = path.join(tempDir.path(), "home");
+		const agentDir = path.join(homeDir, "agent");
+		const projectDir = path.join(tempDir.path(), "project");
+		const sessionsDir = path.join(tempDir.path(), "sessions");
+		const runDir = path.join(homeDir, ".omp", "run");
+		for (const dir of [agentDir, projectDir, sessionsDir, runDir]) {
+			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+		}
+		const project = fs.realpathSync(projectDir);
 
-			const { sessionId, sessionPath } = await createSession(sessionsDir, project);
-			const before = sessionDirNames(sessionsDir);
-			expect(before).toEqual([path.basename(sessionPath)]);
+		const { sessionId, sessionPath } = await createSession(sessionsDir, project);
+		const before = sessionDirNames(sessionsDir);
+		expect(before).toEqual([path.basename(sessionPath)]);
 
-			const reportFile = path.join(tempDir.path(), "owner.json");
-			const stopFile = path.join(tempDir.path(), "stop");
-			const launcher = Bun.spawn([process.execPath, LAUNCHER, project, reportFile, stopFile], {
-				cwd: project,
-				env: cliEnvironment(homeDir, agentDir),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			let endpoint: RefreshEndpoint | undefined;
-			let owner: OwnerReport | undefined;
-			try {
-				owner = await waitForJson<OwnerReport>(reportFile, 60_000);
-				const endpointPath = ipcEndpoint(runDir, sessionId);
-				endpoint = await serveSessionEndpoint(endpointPath, sessionId, owner.id, () => {
-					setTimeout(() => {
-						try {
-							process.kill(owner!.pid, "SIGTERM");
-						} catch {}
-					}, 100);
-				});
-				fs.writeFileSync(
-					path.join(runDir, `${sessionId}.json`),
-					JSON.stringify({ pid: process.pid, sessionId, sessionFile: sessionPath, terminal: { protocolVersion: 1, projectDir: project, name: owner.name, id: owner.id } }),
-					{ mode: 0o600 },
-				);
-
-				const live = await runCli(homeDir, agentDir, project, ["--resume", sessionId, "--session-dir", sessionsDir]);
-
-				expect(live.exitCode, live.output).toBe(42);
-				expect(live.output).toContain("OWNER-BANNER");
-				expect(endpoint.frames.some(frame => frame.type === "terminal_refresh")).toBe(true);
-				expect(sessionDirNames(sessionsDir)).toEqual(before);
-
-				const stale = await createSession(sessionsDir, project);
-				const staleId = stale.sessionId;
-				fs.writeFileSync(
-					path.join(runDir, `${staleId}.json`),
-					JSON.stringify({ pid: process.pid, sessionId: staleId, sessionFile: null, terminal: { protocolVersion: 1, projectDir: project, name: "mind-stale", id: "generation-stale" } }),
-					{ mode: 0o600 },
-				);
-
-				const refusal = await runCli(homeDir, agentDir, project, ["--resume", staleId, "--session-dir", sessionsDir]);
-
-				expect(refusal.exitCode).not.toBe(0);
-				expect(refusal.output).toContain("refusing to open a second transcript");
-				expect(sessionDirNames(sessionsDir)).toEqual([...before, path.basename(stale.sessionPath)]);
-			} finally {
-				if (owner) {
+		const reportFile = path.join(tempDir.path(), "owner.json");
+		const stopFile = path.join(tempDir.path(), "stop");
+		const launcher = Bun.spawn([process.execPath, LAUNCHER, project, reportFile, stopFile], {
+			cwd: project,
+			env: cliEnvironment(homeDir, agentDir),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		let endpoint: RefreshEndpoint | undefined;
+		let owner: OwnerReport | undefined;
+		try {
+			owner = await waitForJson<OwnerReport>(reportFile, 60_000);
+			const endpointPath = ipcEndpoint(runDir, sessionId);
+			endpoint = await serveSessionEndpoint(endpointPath, sessionId, owner.id, () => {
+				setTimeout(() => {
 					try {
-						process.kill(owner.pid, "SIGTERM");
+						process.kill(owner!.pid, "SIGTERM");
 					} catch {}
-				}
-				fs.writeFileSync(stopFile, "");
-				await withTimeout(launcher.exited, 20_000, "broker launcher did not stop").catch(() => launcher.kill("SIGKILL"));
-				await endpoint?.close();
+				}, 100);
+			});
+			fs.writeFileSync(
+				path.join(runDir, `${sessionId}.json`),
+				JSON.stringify({
+					pid: process.pid,
+					sessionId,
+					sessionFile: sessionPath,
+					terminal: { protocolVersion: 1, projectDir: project, name: owner.name, id: owner.id },
+				}),
+				{ mode: 0o600 },
+			);
+
+			const live = await runCli(homeDir, agentDir, project, ["--resume", sessionId, "--session-dir", sessionsDir]);
+
+			expect(live.exitCode, live.output).toBe(42);
+			expect(live.output).toContain("OWNER-BANNER");
+			expect(endpoint.frames.some(frame => frame.type === "terminal_refresh")).toBe(true);
+			expect(sessionDirNames(sessionsDir)).toEqual(before);
+
+			const stale = await createSession(sessionsDir, project);
+			const staleId = stale.sessionId;
+			fs.writeFileSync(
+				path.join(runDir, `${staleId}.json`),
+				JSON.stringify({
+					pid: process.pid,
+					sessionId: staleId,
+					sessionFile: null,
+					terminal: { protocolVersion: 1, projectDir: project, name: "mind-stale", id: "generation-stale" },
+				}),
+				{ mode: 0o600 },
+			);
+
+			const refusal = await runCli(homeDir, agentDir, project, ["--resume", staleId, "--session-dir", sessionsDir]);
+
+			expect(refusal.exitCode).not.toBe(0);
+			expect(refusal.output).toContain("refusing to open a second transcript");
+			expect(sessionDirNames(sessionsDir)).toEqual([...before, path.basename(stale.sessionPath)]);
+		} finally {
+			if (owner) {
+				try {
+					process.kill(owner.pid, "SIGTERM");
+				} catch {}
 			}
-		},
-		180_000,
-	);
+			fs.writeFileSync(stopFile, "");
+			await withTimeout(launcher.exited, 20_000, "broker launcher did not stop").catch(() =>
+				launcher.kill("SIGKILL"),
+			);
+			await endpoint?.close();
+		}
+	}, 180_000);
 });

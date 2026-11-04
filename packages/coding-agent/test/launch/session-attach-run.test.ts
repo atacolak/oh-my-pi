@@ -109,21 +109,58 @@ const OWNER_SCRIPT = [
 ].join("\n");
 
 describe("runLiveSessionAttach", () => {
-	it(
-		"mirrors the live owner, refreshes its renderer, and reports the owner exit code",
-		async () => {
-			await withTerminalBroker(async ({ client, projectDir, connect }) => {
-				using tempDir = TempDir.createSync("@omp-session-attach-run-");
-				const owner = await startOwner(client, projectDir, OWNER_SCRIPT);
-				const sessionId = `session-${Snowflake.next()}`;
-				const endpoint = sessionAttachEndpoint(sessionId, tempDir.path());
-				const terminal = localTerminal();
-				const server = await serveRefresh(endpoint, frame => {
-					terminal.send("go\n");
-					return { type: "terminal_refreshed", id: frame.id, sessionId, generation: owner.id };
+	it("mirrors the live owner, refreshes its renderer, and reports the owner exit code", async () => {
+		await withTerminalBroker(async ({ client, projectDir, connect }) => {
+			using tempDir = TempDir.createSync("@omp-session-attach-run-");
+			const owner = await startOwner(client, projectDir, OWNER_SCRIPT);
+			const sessionId = `session-${Snowflake.next()}`;
+			const endpoint = sessionAttachEndpoint(sessionId, tempDir.path());
+			const terminal = localTerminal();
+			const server = await serveRefresh(endpoint, frame => {
+				terminal.send("go\n");
+				return { type: "terminal_refreshed", id: frame.id, sessionId, generation: owner.id };
+			});
+			try {
+				const exitCode = await runLiveSessionAttach(
+					sessionId,
+					{ protocolVersion: 1, projectDir, name: owner.name, id: owner.id },
+					{
+						client: await connect(),
+						endpointDir: tempDir.path(),
+						timeoutMs: 5_000,
+						mirror: { input: terminal.input, output: terminal.output },
+					},
+				);
+
+				expect(exitCode).toBe(7);
+				expect(terminal.chunks.join("")).toContain("OWNER-BANNER");
+				expect(server.requests).toHaveLength(1);
+				expect(server.requests[0]).toMatchObject({
+					type: "terminal_refresh",
+					sessionId,
+					generation: owner.id,
 				});
-				try {
-					const exitCode = await runLiveSessionAttach(
+			} finally {
+				await server.close();
+			}
+		});
+	}, 30_000);
+
+	it("propagates a refused refresh instead of running without a repaint", async () => {
+		await withTerminalBroker(async ({ client, projectDir, connect }) => {
+			using tempDir = TempDir.createSync("@omp-session-attach-run-");
+			const owner = await startOwner(client, projectDir, OWNER_SCRIPT);
+			const sessionId = `session-${Snowflake.next()}`;
+			const endpoint = sessionAttachEndpoint(sessionId, tempDir.path());
+			const terminal = localTerminal();
+			const server = await serveRefresh(endpoint, frame => ({
+				type: "terminal_refresh_error",
+				id: frame.id,
+				message: "refused: not this attachment",
+			}));
+			try {
+				await expect(
+					runLiveSessionAttach(
 						sessionId,
 						{ protocolVersion: 1, projectDir, name: owner.name, id: owner.id },
 						{
@@ -132,56 +169,11 @@ describe("runLiveSessionAttach", () => {
 							timeoutMs: 5_000,
 							mirror: { input: terminal.input, output: terminal.output },
 						},
-					);
-
-					expect(exitCode).toBe(7);
-					expect(terminal.chunks.join("")).toContain("OWNER-BANNER");
-					expect(server.requests).toHaveLength(1);
-					expect(server.requests[0]).toMatchObject({
-						type: "terminal_refresh",
-						sessionId,
-						generation: owner.id,
-					});
-				} finally {
-					await server.close();
-				}
-			});
-		},
-		30_000,
-	);
-
-	it(
-		"propagates a refused refresh instead of running without a repaint",
-		async () => {
-			await withTerminalBroker(async ({ client, projectDir, connect }) => {
-				using tempDir = TempDir.createSync("@omp-session-attach-run-");
-				const owner = await startOwner(client, projectDir, OWNER_SCRIPT);
-				const sessionId = `session-${Snowflake.next()}`;
-				const endpoint = sessionAttachEndpoint(sessionId, tempDir.path());
-				const terminal = localTerminal();
-				const server = await serveRefresh(endpoint, frame => ({
-					type: "terminal_refresh_error",
-					id: frame.id,
-					message: "refused: not this attachment",
-				}));
-				try {
-					await expect(
-						runLiveSessionAttach(
-							sessionId,
-							{ protocolVersion: 1, projectDir, name: owner.name, id: owner.id },
-							{
-								client: await connect(),
-								endpointDir: tempDir.path(),
-								timeoutMs: 5_000,
-								mirror: { input: terminal.input, output: terminal.output },
-							},
-						),
-					).rejects.toThrow("not this attachment");
-				} finally {
-					await server.close();
-				}
-			});
-		},
-		30_000,
-	);
+					),
+				).rejects.toThrow("not this attachment");
+			} finally {
+				await server.close();
+			}
+		});
+	}, 30_000);
 });

@@ -3,10 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import {
-	type SessionOwnerAttachSelection,
-	createSessionManager,
-} from "@oh-my-pi/pi-coding-agent/main";
+import { type SessionOwnerAttachSelection, createSessionManager } from "@oh-my-pi/pi-coding-agent/main";
 import { readSessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {

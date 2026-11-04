@@ -52,16 +52,12 @@ function refreshed(frame: Frame, overrides: Partial<Frame> = {}): object {
 
 describe("sessionAttachEndpoint", () => {
 	it("derives the session endpoint from the profile-independent run directory", () => {
-		expect(sessionAttachEndpoint("session-a")).toBe(
-			ipcEndpoint(path.join(getBaseConfigRoot(), "run"), "session-a"),
-		);
+		expect(sessionAttachEndpoint("session-a")).toBe(ipcEndpoint(path.join(getBaseConfigRoot(), "run"), "session-a"));
 	});
 
 	it("honours an explicit endpoint directory", () => {
 		using tempDir = TempDir.createSync("@omp-session-endpoint-");
-		expect(sessionAttachEndpoint("session-a", tempDir.path())).toBe(
-			ipcEndpoint(tempDir.path(), "session-a"),
-		);
+		expect(sessionAttachEndpoint("session-a", tempDir.path())).toBe(ipcEndpoint(tempDir.path(), "session-a"));
 	});
 
 	it("rejects an id that could name a path", () => {

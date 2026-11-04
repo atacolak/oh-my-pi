@@ -85,9 +85,7 @@ export async function requestSessionTerminalRefresh(
 				}
 				if (!isRecord(frame)) return;
 				if (frame.type === "ready") {
-					connection.send(
-						JSON.stringify({ id: requestId, type: "terminal_refresh", sessionId, generation }),
-					);
+					connection.send(JSON.stringify({ id: requestId, type: "terminal_refresh", sessionId, generation }));
 					return;
 				}
 				if (frame.id !== requestId) return;

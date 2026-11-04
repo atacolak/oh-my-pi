@@ -377,8 +377,20 @@ async function startLifetimeFixture(
 			);
 		},
 		async waitForCompletion(id) {
-			const result = await web.next(frame => frame.type === "prompt_result" && frame.id === id);
-			return result;
+			try {
+				return await web.next(frame => frame.type === "prompt_result" && frame.id === id);
+			} catch (error) {
+				const logPath = path.join(runtimeDir, "daemons", name, "output.log");
+				const previousPath = path.join(runtimeDir, "daemons", name, "output.previous.log");
+				const readLog = (file: string): string =>
+					fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+				const log = `${readLog(previousPath)}${readLog(logPath)}`.slice(-20_000);
+				const debugPath = `/tmp/omp-owner-debug-${owner.pid}.log`;
+				fs.writeFileSync(debugPath, log);
+				throw new Error(
+					`${error instanceof Error ? error.message : String(error)}; ownerAlive=${alive(owner.pid)}; events=${JSON.stringify(readEvents(eventsFile))}; ownerLog=${JSON.stringify(log)}`,
+				);
+			}
 		},
 		readExitEntries() {
 			if (!fs.existsSync(owner.sessionFile)) return [];

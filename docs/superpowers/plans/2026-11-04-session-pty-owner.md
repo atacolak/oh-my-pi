@@ -225,7 +225,7 @@ git commit -m "feat(launch): stream supervised PTYs without binding child lifeti
 **Acceptance / anti-gameable verification:** refreshing terminal I/O does not dispose the session, close its socket, clear draft/dialog state, emit shutdown or write `session_exit`. Web can still execute `get_state` during and after refresh. Real PTY probe shows modes/probes are restored with one responder.
 **Risk:** `ui.stop()/start()` may leave cached differential/native state that a full repaint does not restore; falsify before CLI cutover.
 
-- [ ] **Step 1: add failing refresh tests**
+- [x] **Step 1: add failing refresh tests**
 
 In `rpc-interactive-socket.test.ts`, reuse its real `createInteractiveFixture`, `SocketPeer`, `frameOf`, and existing `fixture` cleanup. Add:
 
@@ -253,12 +253,12 @@ it("refreshes terminal I/O without ending its session or socket", async () => {
 
 Add a real-controller pending approval/draft test in `terminal-refresh.test.ts`: start a promise-backed UI selector with existing controller methods, refresh, assert it has not settled, then select via injected real input and assert its one original promise resolves. Do not test a replacement selector or a mocked pre-resolved approval. Exercise timeout/caller cancellation unchanged. The test uses the same mock-session constructor pattern as the interactive socket fixture, not a live model.
 
-- [ ] **Step 2: RED verification**
+- [x] **Step 2: RED verification**
 
 Run: `bun test packages/coding-agent/test/rpc-interactive-socket.test.ts packages/coding-agent/test/launch/terminal-refresh.test.ts`
 Expected on parent: `refreshTerminalAttachment` is absent. Then run the real Stage 2 query fixture with renderer refresh; record any duplicate reply/stale screen before implementation changes.
 
-- [ ] **Step 3: implement narrow refresh and optional transport-control hook**
+- [x] **Step 3: implement narrow refresh and optional transport-control hook**
 
 Add exactly one renderer-only method:
 
@@ -272,11 +272,11 @@ refreshTerminalAttachment(): void {
 
 If the real probe requires invalidating existing renderer/native cache, do so through the existing TUI invalidation API inside this method; do not replace the component tree or call `InteractiveMode.stop()`. Add an optional `terminalControl` to `serveInteractiveSessionSocket` carrying expected owner coordinates and `refresh:()=>void`; wrap its per-connection surface to intercept `{type:"terminal_refresh",id,sessionId,generation}` before command dispatch. Reply `{type:"terminal_refreshed",id,sessionId,generation}` only after accepted refresh; return an explicit error frame on identity mismatch or unavailable capability. Ordinary RPC surfaces and host-command capabilities are unchanged. This hook is wired to real broker metadata in Stage 4.
 
-- [ ] **Step 4: PASS verification**
+- [x] **Step 4: PASS verification**
 
 Run the Step 2 command. Expected: PASS; existing host-only `set_ask_dialog` rejection stays unchanged. Lead verifies the pending gate through real PTY input and records screen evidence, not just spy counts, plus the recorded RPC baseline.
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 ```bash
 git add packages/coding-agent/src/modes/interactive-mode.ts packages/coding-agent/src/modes/rpc/rpc-command-surface.ts packages/coding-agent/test/rpc-interactive-socket.test.ts packages/coding-agent/test/launch/terminal-refresh.test.ts

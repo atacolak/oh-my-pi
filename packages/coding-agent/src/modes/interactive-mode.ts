@@ -7898,12 +7898,36 @@ export class InteractiveMode implements InteractiveModeContext {
 	/**
 	 * Publish this terminal session's command surface on its attach endpoint.
 	 * The session owns the listener: a client disconnect detaches only that
-	 * client, never the session or a running turn.
+	 * client, never the session or a running turn. `owner` carries the broker
+	 * generation of the PTY this publication belongs to, which enables the
+	 * transport-local `terminal_refresh` request for an attaching mirror.
 	 */
-	async attachSessionSocket(socket: RpcSessionSocket | undefined): Promise<void> {
+	async attachSessionSocket(
+		socket: RpcSessionSocket | undefined,
+		owner?: { generation: string },
+	): Promise<void> {
 		if (!socket || this.#servedSessionSocket) return;
 		const { serveInteractiveSessionSocket } = await import("./rpc/rpc-command-surface");
-		this.#servedSessionSocket = await serveInteractiveSessionSocket({ session: this.session, socket });
+		this.#servedSessionSocket = await serveInteractiveSessionSocket({
+			session: this.session,
+			socket,
+			...(owner
+				? { terminalControl: { generation: owner.generation, refresh: () => this.refreshTerminalAttachment() } }
+				: {}),
+		});
+	}
+
+	/**
+	 * Reinitialize this session's terminal I/O for a newly attached mirror:
+	 * restart the renderer, re-enable its modes and probes, and force a full
+	 * repaint from the live component tree. The session, its socket, the draft,
+	 * pending dialogs and any running turn stay exactly as they are; only the
+	 * renderer restarts, so no dispose/teardown path is reachable from here.
+	 */
+	refreshTerminalAttachment(): void {
+		this.ui.stop();
+		this.ui.start();
+		this.ui.requestRender(true, { clearScrollback: true });
 	}
 
 	/**

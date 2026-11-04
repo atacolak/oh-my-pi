@@ -78,6 +78,10 @@ import {
 	type MarketplaceAutoUpdateOptions,
 } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
+import type { SessionAttachTerminal } from "./launch/session-attach";
+import { describeSessionAttachRefusal, gateSessionTarget, resolveStartupSessionGate } from "./launch/session-attach-gate";
+import { runLiveSessionAttach } from "./launch/session-attach-run";
+import { isSessionOwnerProcess } from "./launch/session-owner";
 import type { MCPManager } from "./mcp";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import { formatSessionContinuationNotice } from "./modes/persistence-failure";
@@ -129,7 +133,13 @@ import {
 	type SessionContinuation,
 	type SessionInfo,
 } from "./session/session-listing";
-import { ForkSourceNotFoundError, SessionManager, SessionMoveRefusedError } from "./session/session-manager";
+import {
+	type ContinueRecentTarget,
+	ForkSourceNotFoundError,
+	SessionManager,
+	SessionMoveRefusedError,
+} from "./session/session-manager";
+import type { SessionReservation } from "./session/session-storage";
 import { forkIfMovedAway } from "./session/session-transfer";
 import { shouldShowStartupSplash } from "./startup-splash";
 import {
@@ -2120,6 +2130,10 @@ export async function runRootCommand(
 		);
 		let sessionManager: SessionManager | undefined;
 		let foreignSource: ForeignSessionSource | undefined;
+		// The startup target this process may open cold under its strict reservation.
+		let ownerAttach: SessionOwnerAttachSelection | undefined;
+		// A live target this terminal must mirror instead of opening.
+		let liveAttach: { sessionId: string; terminal: SessionAttachTerminal } | undefined;
 		// A resumed session whose conversation went on in another file resumes that file; say so.
 		const resumedContinuations: SessionContinuation[] = [];
 		try {
@@ -2182,24 +2196,69 @@ export async function runRootCommand(
 					throw new SessionResolutionError(`Failed to import ${sourceName} session: ${message}`);
 				}
 			} else {
-				sessionManager = await logger.time(
-					"createSessionManager",
-					createSessionManager,
-					parsedArgs,
-					cwd,
-					settingsInstance,
-					promptMoveSession,
-					{
-						nativeFlagOwnership: "preliminary",
-						onSessionContinuation: continuation => resumedContinuations.push(continuation),
-					},
-				);
+				if (!isSessionOwnerProcess()) {
+					const gate = await logger.time("resolveStartupSessionGate", resolveStartupSessionGate, {
+						cwd,
+						sessionDir: parsedArgs.sessionDir,
+						resume: parsedArgs.resume,
+						continue: parsedArgs.continue,
+						fork: parsedArgs.fork,
+						noSession: parsedArgs.noSession,
+						goal: parsedArgs.goal,
+						fromClaude: parsedArgs.fromClaude,
+						fromCodex: parsedArgs.fromCodex,
+						autoResume: cfgAutoResume.get(settingsInstance),
+					});
+					if (gate.kind === "refuse") {
+						throw new SessionResolutionError(
+							describeSessionAttachRefusal(gate.sessionId, gate.code),
+							"Attach to the running process, or stop it, then retry.",
+						);
+					}
+					if (gate.kind === "attach") {
+						if (!isInteractive) {
+							throw new SessionResolutionError(
+								`Session "${gate.target.session.id}" is live in another omp process; refusing to open a second transcript.`,
+								"Resume it from an interactive terminal to attach, or use its RPC/Web endpoint.",
+							);
+						}
+						liveAttach = { sessionId: gate.target.session.id, terminal: gate.terminal };
+					}
+					if (gate.kind === "cold") {
+						ownerAttach = {
+							session: gate.target.session,
+							continuation: gate.target.continuation,
+							reservation: gate.reservation,
+							recent: gate.target.recent,
+						};
+					}
+				}
+				if (!liveAttach) {
+					sessionManager = await logger.time(
+						"createSessionManager",
+						createSessionManager,
+						parsedArgs,
+						cwd,
+						settingsInstance,
+						promptMoveSession,
+						{
+							nativeFlagOwnership: "preliminary",
+							onSessionContinuation: continuation => resumedContinuations.push(continuation),
+							ownerAttach,
+						},
+					);
+				}
 			}
 		} catch (error: unknown) {
+			ownerAttach?.reservation.release();
 			if (error instanceof SessionResolutionError) {
 				exitForSessionResolutionError(error);
 			}
 			throw error;
+		}
+		if (liveAttach) {
+			stopStartupWatchdog();
+			process.exit(await runLiveSessionAttach(liveAttach.sessionId, liveAttach.terminal));
 		}
 		// Only createSessionManager's implicit auto-resume promotes continue here.
 		const autoResumed = !explicitSessionSelection && parsedArgs.continue === true;
@@ -2291,14 +2350,48 @@ export async function runRootCommand(
 			const continuation = await findSessionContinuation(selected.path);
 			if (continuation) resumedContinuations.push(continuation);
 			const chosen = continuation?.session ?? selected;
+			let pickedAttach: SessionOwnerAttachSelection | undefined;
+			if (!isSessionOwnerProcess()) {
+				const gate = await logger.time("gatePickedSession", gateSessionTarget, { session: chosen, continuation }, {
+					cwd,
+					sessionDir: parsedArgs.sessionDir,
+					autoResume: false,
+				});
+				if (gate.kind === "refuse") {
+					throw new SessionResolutionError(
+						describeSessionAttachRefusal(gate.sessionId, gate.code),
+						"Attach to the running process, or stop it, then retry.",
+					);
+				}
+				if (gate.kind === "attach") {
+					if (!isInteractive) {
+						throw new SessionResolutionError(
+							`Session "${gate.target.session.id}" is live in another omp process; refusing to open a second transcript.`,
+							"Resume it from an interactive terminal to attach, or use its RPC/Web endpoint.",
+						);
+					}
+					stopStartupWatchdog();
+					process.exit(await runLiveSessionAttach(gate.target.session.id, gate.terminal));
+				}
+				if (gate.kind === "cold") pickedAttach = { ...gate.target, reservation: gate.reservation };
+			}
 			try {
-				sessionManager = await forkIfMovedAway(
-					(await SessionManager.isFromRemovedWorktree(chosen, cwd, parsedArgs.sessionDir))
-						? await openRelocatedSession(chosen, cwd, parsedArgs.sessionDir)
-						: await SessionManager.open(chosen.path),
-					parsedArgs.sessionDir,
-				);
+				const opened = (await SessionManager.isFromRemovedWorktree(chosen, cwd, parsedArgs.sessionDir))
+					? await openRelocatedSession(chosen, cwd, parsedArgs.sessionDir, pickedAttach)
+					: await SessionManager.open(
+							chosen.path,
+							undefined,
+							undefined,
+							pickedAttach
+								? {
+										ownershipPolicy: "require-owner",
+										ownershipReservation: pickedAttach.reservation,
+									}
+								: undefined,
+						);
+				sessionManager = await forkIfMovedAway(opened, parsedArgs.sessionDir);
 			} catch (error: unknown) {
+				pickedAttach?.reservation.release();
 				if (error instanceof SessionResolutionError) exitForSessionResolutionError(error);
 				throw error;
 			}

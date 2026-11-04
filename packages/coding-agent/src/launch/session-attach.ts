@@ -1,0 +1,196 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { IpcConnection, ipcEndpoint } from "@oh-my-pi/pi-natives";
+import { getBaseConfigRoot, isEnoent, isRecord, toError, withTimeout } from "@oh-my-pi/pi-utils";
+import { isSessionLeaseHeld } from "../session/session-storage";
+
+export interface SessionAttachTerminal {
+	protocolVersion: 1;
+	projectDir: string;
+	name: string;
+	id: string;
+}
+
+export type SessionAttachRefusalCode =
+	| "owner-unreachable"
+	| "terminal-unavailable"
+	| "owner-busy"
+	| "ownership-unknown";
+
+export type SessionAttachProbe =
+	| { status: "live"; sessionId: string; terminal?: SessionAttachTerminal }
+	| { status: "unreachable"; sessionId: string; endpoint: string }
+	| { status: "unknown"; sessionId: string; reason: string }
+	| { status: "absent"; sessionId: string; leaseHeld: boolean | null };
+
+export type SessionAttachDecision =
+	| { kind: "attach"; terminal: SessionAttachTerminal }
+	| { kind: "cold"; sessionId: string }
+	| { kind: "refuse"; code: SessionAttachRefusalCode };
+
+export interface SessionAttachProbeOptions {
+	endpointDir?: string;
+	timeoutMs?: number;
+}
+
+const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
+
+export function decideSessionAttach(probe: SessionAttachProbe): SessionAttachDecision {
+	switch (probe.status) {
+		case "live":
+			return probe.terminal === undefined
+				? { kind: "refuse", code: "terminal-unavailable" }
+				: { kind: "attach", terminal: probe.terminal };
+		case "unreachable":
+			return { kind: "refuse", code: "owner-unreachable" };
+		case "unknown":
+			return { kind: "refuse", code: "ownership-unknown" };
+		case "absent":
+			if (probe.leaseHeld === true) return { kind: "refuse", code: "owner-busy" };
+			if (probe.leaseHeld === null) return { kind: "refuse", code: "ownership-unknown" };
+			return { kind: "cold", sessionId: probe.sessionId };
+	}
+}
+
+export async function probeSessionAttach(
+	sessionId: string,
+	options: SessionAttachProbeOptions = {},
+): Promise<SessionAttachProbe> {
+	assertSessionId(sessionId);
+	const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+	const endpointDir = options.endpointDir ?? path.join(getBaseConfigRoot(), "run");
+	const endpoint = ipcEndpoint(endpointDir, sessionId);
+	const sidecarPath = path.join(endpointDir, `${sessionId}.json`);
+
+	const publication = await readPublication(sidecarPath, sessionId);
+	if (publication.kind === "unknown") return { status: "unknown", sessionId, reason: publication.reason };
+	if (publication.kind === "invalid") return { status: "unreachable", sessionId, endpoint };
+
+	const observation = await observeLiveSession(endpoint, sessionId, timeoutMs);
+	if (observation === "live") {
+		const terminal = terminalFromMetadata(publication.kind === "published" ? publication.metadata : undefined);
+		return terminal === undefined ? { status: "live", sessionId } : { status: "live", sessionId, terminal };
+	}
+	if (observation === "unreachable") return { status: "unreachable", sessionId, endpoint };
+
+	const refreshed = await readPublication(sidecarPath, sessionId);
+	if (refreshed.kind === "absent") return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	if (refreshed.kind === "unknown") return { status: "unknown", sessionId, reason: refreshed.reason };
+	return { status: "unreachable", sessionId, endpoint };
+}
+
+type PublicationObservation =
+	| { kind: "absent" }
+	| { kind: "published"; metadata?: SessionAttachMetadata }
+	| { kind: "invalid" }
+	| { kind: "unknown"; reason: string };
+
+interface SessionAttachMetadata {
+	pid: number;
+	sessionId: string;
+	terminal?: unknown;
+}
+
+async function readPublication(sidecarPath: string, sessionId: string): Promise<PublicationObservation> {
+	let raw: string;
+	try {
+		raw = await fs.readFile(sidecarPath, "utf8");
+	} catch (error) {
+		return isEnoent(error) ? { kind: "absent" } : { kind: "unknown", reason: toError(error).message };
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return { kind: "invalid" };
+	}
+	const metadata = parseMetadata(parsed, sessionId);
+	return metadata === undefined ? { kind: "invalid" } : { kind: "published", metadata };
+}
+
+function parseMetadata(value: unknown, sessionId: string): SessionAttachMetadata | undefined {
+	if (!isRecord(value)) return undefined;
+	const { pid, sessionId: observedSessionId } = value;
+	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
+	if (observedSessionId !== sessionId) return undefined;
+	return { pid, sessionId, terminal: value.terminal };
+}
+
+function terminalFromMetadata(metadata: SessionAttachMetadata | undefined): SessionAttachTerminal | undefined {
+	const terminal = metadata?.terminal;
+	if (!isRecord(terminal) || terminal.protocolVersion !== 1) return undefined;
+	const { projectDir, name, id } = terminal;
+	if (typeof projectDir !== "string" || projectDir.length === 0) return undefined;
+	if (typeof name !== "string" || name.length === 0) return undefined;
+	if (typeof id !== "string" || id.length === 0) return undefined;
+	return { protocolVersion: 1, projectDir, name, id };
+}
+
+type LiveObservation = "live" | "unreachable" | "vanished";
+
+let probeSequence = 0;
+
+async function observeLiveSession(endpoint: string, sessionId: string, timeoutMs: number): Promise<LiveObservation> {
+	let connection: IpcConnection;
+	try {
+		connection = await IpcConnection.connect(endpoint, { framing: "lines", timeoutMs });
+	} catch (error) {
+		return isEnoent(error) ? "vanished" : "unreachable";
+	}
+
+	const ready = Promise.withResolvers<void>();
+	const response = Promise.withResolvers<Record<string, unknown>>();
+	ready.promise.catch(() => {});
+	response.promise.catch(() => {});
+	const requestId = `attach-probe-${process.pid}-${++probeSequence}`;
+	let requested = false;
+
+	try {
+		connection.start(
+			line => {
+				let frame: unknown;
+				try {
+					frame = JSON.parse(line);
+				} catch {
+					return;
+				}
+				if (!isRecord(frame)) return;
+				if (!requested && frame.type === "ready") {
+					requested = true;
+					ready.resolve();
+					connection.send(JSON.stringify({ id: requestId, type: "get_state" }));
+					return;
+				}
+				if (frame.type === "response" && frame.id === requestId) response.resolve(frame);
+			},
+			reason => {
+				const error = new Error(reason ?? "session endpoint closed");
+				ready.reject(error);
+				response.reject(error);
+			},
+		);
+		await withTimeout(ready.promise, timeoutMs, `session endpoint ${endpoint} did not complete its handshake`);
+		const state = await withTimeout(
+			response.promise,
+			timeoutMs,
+			`session endpoint ${endpoint} did not answer get_state`,
+		);
+		if (state.success !== true) return "unreachable";
+		const data = isRecord(state.data) ? state.data : undefined;
+		return data?.sessionId === sessionId ? "live" : "unreachable";
+	} catch {
+		return "unreachable";
+	} finally {
+		connection.destroy();
+	}
+}
+
+function assertSessionId(sessionId: string): void {
+	if (typeof sessionId !== "string" || sessionId.length === 0) {
+		throw new TypeError("Session attach probe requires a session id");
+	}
+	if (sessionId === "." || sessionId === ".." || sessionId.includes("/") || sessionId.includes("\\")) {
+		throw new TypeError(`Session id cannot name a path: ${sessionId}`);
+	}
+}

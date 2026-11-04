@@ -118,6 +118,24 @@ describe("strict session reservation", () => {
 		expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
 	}, 30_000);
 
+	it("releases a reservation the manager never adopts", async () => {
+		using tempDir = TempDir.createSync("@omp-session-reservation-");
+		const { sessionId, sessionPath } = await createSession(tempDir);
+		const storage = new FileSessionStorage();
+		const reservation = storage.reserveSession(sessionId, sessionPath);
+		expect(isSessionLeaseHeld(sessionId)).toBe(true);
+
+		const manager = await SessionManager.open(sessionPath, tempDir.path(), storage, {
+			suppressBreadcrumb: true,
+			ownershipPolicy: "require-owner",
+			ownershipReservation: reservation,
+		});
+		expect(isSessionLeaseHeld(sessionId)).toBe(true);
+		await manager.close();
+
+		expect(isSessionLeaseHeld(sessionId)).toBe(false);
+	});
+
 	it("refuses a cold resume whose lease state cannot be determined", async () => {
 		using tempDir = TempDir.createSync("@omp-session-reservation-");
 		const { sessionId, sessionPath } = await createSession(tempDir);

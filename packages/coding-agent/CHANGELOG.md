@@ -20,6 +20,7 @@
 
 ### Changed
 
+- Closing the terminal on an interactive session (`SIGHUP`) now detaches the TUI instead of exiting: the draft is saved for `--resume`, and the session, its background jobs, and its attach endpoint keep serving, while `Ctrl+C`, `Ctrl+D` and `/exit` still shut it down
 - `/resume` and `omp --resume` open at once on your titled sessions (read from `~/.omp/agent/history.db`), then fill in prompts, status, and untitled sessions when the full scan finishes; the first scan saves older sessions' titles too, so later opens list them right away
 - With `symbolPreset: ascii`, status glyphs are three columns wide (`[+]`, `[-]`, `[#]`, `[ ]`) and status spinners animate as `[|] [/] [-] [\]` ([#17732](https://github.com/can1357/oh-my-pi/pull/17732) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - The subagent HUD marks each running agent with the running status glyph instead of a dot ([#17732](https://github.com/can1357/oh-my-pi/pull/17732) by [@JustasMasiulis](https://github.com/JustasMasiulis))

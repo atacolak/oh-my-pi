@@ -865,6 +865,34 @@ export interface SessionPersistenceNotice {
 }
 
 /**
+ * How a session manager reacts when another live omp process owns the journal
+ * it was asked to write (see {@link SessionManager} `#moveOffSessionFile`).
+ *
+ * `"branch"` keeps the historical behavior: the manager saves to a fresh
+ * sibling instead of mixing entries into the owner's journal. `"require-owner"`
+ * is the strict owner path for a resume: branching would silently create a
+ * second transcript for one session, so every attempted branch is an error.
+ */
+export type SessionOwnershipPolicy = "branch" | "require-owner";
+
+/**
+ * A `"require-owner"` session could not be written: another live omp process
+ * owns its journal, and this manager must not fork a second transcript. The
+ * owner path turns this into a startup refusal; nothing was appended.
+ */
+export class SessionOwnershipConflictError extends Error {
+	readonly sessionId: string;
+	readonly sessionFile: string;
+
+	constructor(sessionId: string, sessionFile: string) {
+		super(`Session "${sessionId}" is open in another process; refusing to write a second transcript.`);
+		this.name = "SessionOwnershipConflictError";
+		this.sessionId = sessionId;
+		this.sessionFile = sessionFile;
+	}
+}
+
+/**
  * Thrown by {@link SessionManager.forkFrom} when the fork source is missing.
  * The CLI maps this to a clean session-resolution failure at its own boundary
  * (this module must not import `main.ts`, where `SessionResolutionError` lives).
@@ -1027,6 +1055,14 @@ export class SessionManager {
 	 * after {@link close} gave the claim up.
 	 */
 	#sessionClaim: { sessionId: string; release: (() => void) | undefined } | undefined;
+	/** How this manager reacts when another live process owns its journal. */
+	#ownershipPolicy: SessionOwnershipPolicy = "branch";
+	/**
+	 * The strict owner path's bootstrap reservation, held from before this
+	 * manager existed until its first successful claim makes the extra holder
+	 * redundant (see {@link #adoptOwnershipReservation}).
+	 */
+	#ownershipReservation: SessionReservation | undefined;
 	/**
 	 * The background artifact copy a move or branch to `sessionFile` started (see
 	 * {@link #moveOffSessionFile}, {@link createBranchedSession}). Never rejects.
@@ -1129,6 +1165,28 @@ export class SessionManager {
 		// another session was moved onto it, the claim fails and the next write
 		// moves this session to a sibling instead of appending into that journal.
 		this.#sessionClaim = { sessionId, release: this.#storage.claimSession(sessionId, sessionFile) ?? undefined };
+		if (this.#sessionClaim.release) this.#adoptOwnershipReservation(sessionId);
+	}
+
+	/**
+	 * The bootstrap reservation and this manager's claim share one lease entry,
+	 * so a successful claim makes the reservation's extra holder redundant.
+	 * Releasing it here — not before the first write — is what keeps the strict
+	 * owner path from reopening the window another process could win.
+	 */
+	#adoptOwnershipReservation(sessionId: string): void {
+		const reservation = this.#ownershipReservation;
+		if (!reservation || reservation.sessionId !== sessionId) return;
+		this.#ownershipReservation = undefined;
+		reservation.release();
+	}
+
+	/** Give up a reservation this manager never adopted (startup failure, close, or a session switch). */
+	#releaseOwnershipReservation(): void {
+		const reservation = this.#ownershipReservation;
+		if (!reservation) return;
+		this.#ownershipReservation = undefined;
+		reservation.release();
 	}
 
 	/**
@@ -1281,6 +1339,9 @@ export class SessionManager {
 	 * await it. Returns the sibling.
 	 */
 	#moveOffSessionFile(reason: SessionPersistenceNotice["reason"]): string {
+		if (reason === "open-elsewhere" && this.#ownershipPolicy === "require-owner") {
+			throw new SessionOwnershipConflictError(this.#sessionId, this.#sessionFile as string);
+		}
 		const from = this.#sessionFile as string;
 		const previousSessionId = this.#sessionId;
 		const timestamp = nowIso();
@@ -4382,7 +4443,16 @@ export class SessionManager {
 		filePath: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
-		options?: { initialCwd?: string; parentSession?: string; suppressBreadcrumb?: boolean; throwIfMissing?: boolean },
+		options?: {
+			initialCwd?: string;
+			parentSession?: string;
+			suppressBreadcrumb?: boolean;
+			throwIfMissing?: boolean;
+			/** How to react when another live process owns the journal; defaults to `"branch"`. */
+			ownershipPolicy?: SessionOwnershipPolicy;
+			/** Bootstrap reservation adopted by this manager's first claim (strict owner path). */
+			ownershipReservation?: SessionReservation;
+		},
 	): Promise<SessionManager> {
 		const probed = await loadSessionFile(filePath, storage, { throwIfMissing: options?.throwIfMissing });
 		const header = probed.entries.find(entry => entry.type === "session") as SessionHeader | undefined;

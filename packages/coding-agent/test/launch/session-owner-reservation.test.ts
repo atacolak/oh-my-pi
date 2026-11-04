@@ -10,6 +10,7 @@ import {
 	SessionReservationUnavailableError,
 } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { rejectionOf } from "../helpers/rejection";
 
 function userTurn(content: string) {
 	return { role: "user" as const, content, timestamp: Date.now() };
@@ -88,7 +89,41 @@ describe("strict session reservation", () => {
 		expect(isSessionLeaseHeld(sessionId)).toBe(false);
 		expect(fs.readFileSync(sessionPath, "utf8")).toContain(sessionId);
 	}, 30_000);
+
+	it("refuses to branch a strict owner onto a sibling while another process writes the session", async () => {
+		using tempDir = TempDir.createSync("@omp-session-reservation-");
+		const { sessionId, sessionPath } = await createSession(tempDir);
+		const before = fs.readFileSync(sessionPath, "utf8");
+		const holder = await LeaseHolder.spawn(tempDir, sessionId, sessionPath);
+		try {
+			expect(await holder.held()).toBe("held");
+			const manager = await SessionManager.open(sessionPath, tempDir.path(), new FileSessionStorage(), {
+				suppressBreadcrumb: true,
+				ownershipPolicy: "require-owner",
+			});
+			manager.appendMessage(userTurn("strict owner"));
+			const failure = await rejectionOf(manager.flush());
+			expect((failure as Error).name).toBe("SessionOwnershipConflictError");
+			expect((failure as Error).message).toContain(sessionId);
+			expect(manager.getSessionFile()).toBe(sessionPath);
+			// A strict owner never reports a clean close after losing the journal.
+			expect((await rejectionOf(manager.close())) as Error).toBe(failure);
+		} finally {
+			await holder.close();
+		}
+
+		expect(jsonlFiles(tempDir.path())).toEqual([sessionPath]);
+		expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
+	}, 30_000);
 });
+
+function jsonlFiles(dir: string): string[] {
+	return fs
+		.readdirSync(dir)
+		.filter(name => name.endsWith(".jsonl"))
+		.map(name => path.join(dir, name))
+		.sort();
+}
 
 const STORAGE_MODULE = path.join(import.meta.dir, "../../src/session/session-storage.ts");
 

@@ -517,6 +517,41 @@ describe("broker terminal streams", () => {
 		});
 	}, 20_000);
 
+	it("reports the child exit to the attached subscriber", async () => {
+		await withTerminalBroker(async ({ client, projectDir }) => {
+			const subscriptionId = `view-${Snowflake.next()}`;
+			const capture = captureTerminal(client, subscriptionId, { ack: true });
+			const spec = terminalSpec(
+				projectDir,
+				'process.stdin.setRawMode(true);' +
+					'process.stdout.write("BYE\\n");' +
+					'setTimeout(() => process.exit(3), 50);' +
+					'process.stdin.on("data", () => {});',
+				{ ready: { log: "BYE", timeoutMs: 5_000 } },
+			);
+			try {
+				const started = await client.request({
+					op: "terminal_start",
+					subscriptionId,
+					spec,
+					columns: 80,
+					rows: 24,
+				});
+				if (started.op !== "terminal_start") throw new Error("unexpected terminal_start result");
+				const exit = await capture.waitForExit();
+				expect(exit.exitCode).toBe(3);
+				expect(exit.id).toBe(started.daemon.id);
+				const listed = await client.request({ op: "list" });
+				if (listed.op !== "list") throw new Error("unexpected list result");
+				const dead = listed.daemons.find(daemon => daemon.name === spec.name);
+				expect(dead?.state).toBe("failed");
+				expect(dead?.exitCode).toBe(3);
+			} finally {
+				capture.off();
+			}
+		});
+	}, 20_000);
+
 	it("rejects an acknowledgement beyond the sent sequence", async () => {
 		await withTerminalBroker(async ({ client, projectDir }) => {
 			const subscriptionId = `view-${Snowflake.next()}`;

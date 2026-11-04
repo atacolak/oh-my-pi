@@ -6,7 +6,7 @@
  * must recall against its own history instead of replaying a week-old block.
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { Settings as SettingsClass } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -51,6 +51,13 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		recallContextTurns: 2,
 		recallMaxQueryChars: 800,
 		recallPromptPreamble: "preamble",
+		recallPreferObservations: true,
+		recallPrune: true,
+		recallDedup: true,
+		recallCadence: "boundary",
+		decisionModelUrl: null,
+		decisionModelApiKey: null,
+		decisionModelThreshold: 0.25,
 		debug: false,
 		requestTimeoutMs: 30_000,
 		reflectTimeoutMs: 30_000,
@@ -205,6 +212,19 @@ describe("recall dedupe", () => {
 		expect([...harness.state.recalledMemoryIds][0]).toStartWith("id:m1:");
 		// An empty refresh must not overwrite the transcript's recall with nothing.
 		expect(harness.sessionManager.getBranch().filter(entry => entry.type === "custom")).toHaveLength(1);
+	});
+});
+
+describe("recall request settings", () => {
+	it("forwards the observation preference and rerank switches to the bank", async () => {
+		const client = new RecordingApi();
+		const harness = makeHarness(client, {
+			config: makeConfig({ recallPreferObservations: false, recallPrune: false, recallDedup: true }),
+		});
+
+		expect(await deliverRecall(harness, "first question")).toContain("beta-9");
+		expect(client.recallCalls[0]!.options?.preferObservations).toBe(false);
+		expect(client.recallCalls[0]!.options?.rerank).toEqual({ prune: false, dedup: true });
 	});
 });
 
@@ -387,6 +407,150 @@ describe("resumed transcripts", () => {
 		expect(client.recallCalls).toHaveLength(2);
 		expect(client.recallCalls[1]!.query).toContain("Prior context:");
 		expect(client.recallCalls[1]!.query).toContain("second follow-up");
+	});
+});
+
+describe("per-turn cadence", () => {
+	it("asks the bank again each turn and delivers only memories the transcript lacks", async () => {
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: makeConfig({ recallCadence: "per-turn" }) });
+
+		expect(await deliverRecall(harness, "first question")).toContain("beta-9");
+		client.recallResponse = {
+			results: [
+				{ id: "m1", text: "deploy host is beta-9", type: "world" },
+				{ id: "m2", text: "deploy host moved to gamma-2", type: "world" },
+			],
+		};
+
+		appendTurn(harness.sessionManager, "first question", "first answer");
+		const block = await deliverRecall(harness, "second question about deploys");
+
+		expect(client.recallCalls).toHaveLength(2);
+		expect(block).toContain("gamma-2");
+		expect(block).not.toContain("beta-9");
+	});
+
+	it("skips a trivial acknowledgement and asks again on a real question", async () => {
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: makeConfig({ recallCadence: "per-turn" }) });
+
+		expect(await deliverRecall(harness, "first question")).toContain("beta-9");
+		appendTurn(harness.sessionManager, "first question", "first answer");
+
+		expect(await deliverRecall(harness, "ok")).toBeUndefined();
+		expect(await deliverRecall(harness, "continue please")).toBeUndefined();
+		expect(client.recallCalls).toHaveLength(1);
+
+		client.recallResponse = { results: [{ id: "m2", text: "deploy host moved to gamma-2", type: "world" }] };
+		expect(await deliverRecall(harness, "where did the deploy host move?")).toContain("gamma-2");
+		expect(client.recallCalls).toHaveLength(2);
+	});
+});
+
+type FetchInput = string | URL | Request;
+type FetchInit = RequestInit | BunFetchRequestInit;
+
+/** Answers every System One request with one `noul`; returns the requests so their bodies can be asserted. */
+function stubDecisionModel(noul: number): { url: string; body: Record<string, unknown> }[] {
+	const requests: { url: string; body: Record<string, unknown> }[] = [];
+	vi.spyOn(globalThis, "fetch").mockImplementation(
+		Object.assign(
+			async (input: FetchInput, init?: FetchInit): Promise<Response> => {
+				requests.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+				return Response.json({ answers: { m0: { type: "noul", noul } } });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		),
+	);
+	return requests;
+}
+
+describe("decision-model abstention", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const decisionConfig = () => makeConfig({ decisionModelUrl: "http://decision.local", decisionModelThreshold: 0.25 });
+
+	it("keeps a lone survivor above the threshold and asks about the question and the memory", async () => {
+		const requests = stubDecisionModel(0.9);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
+		expect(requests).toHaveLength(1);
+		expect(requests[0]!.url).toBe("http://decision.local/v1/systemone");
+		expect(requests[0]!.body).toEqual({
+			model: "hs-decide-1-flash",
+			state: "Question: where is the deploy host?",
+			questions: {
+				m0: {
+					type: "noul",
+					instructions: {
+						task: "Showing this memory to someone answering the question would help them, rather than distract them.",
+						memory: "deploy host is beta-9",
+					},
+				},
+			},
+		});
+	});
+
+	it("drops a lone survivor below the threshold without recording it as delivered", async () => {
+		const requests = stubDecisionModel(0.1);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		const preparation = await harness.state.beforeAgentStartPrompt("where is the deploy host?");
+		expect(requests).toHaveLength(1);
+		expect(preparation).toBeDefined();
+		expect(preparation!.contextEntry).toBeUndefined();
+		expect(preparation!.commit()).toBe(true);
+		expect(harness.state.recalledMemoryIds.size).toBe(0);
+	});
+
+	it("fails open when the decision endpoint is unreachable", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (): Promise<Response> => {
+					throw new TypeError("connect ECONNREFUSED");
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
+	});
+
+	it("fails open when the decision endpoint refuses without a score", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(async (): Promise<Response> => new Response("decision service unavailable", { status: 503 }), {
+				preconnect: globalThis.fetch.preconnect,
+			}),
+		);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
+	});
+
+	it("does not consult the decision model when two results survive", async () => {
+		const requests = stubDecisionModel(0);
+		const client = new RecordingApi();
+		client.recallResponse = {
+			results: [
+				{ id: "m1", text: "deploy host is beta-9", type: "world" },
+				{ id: "m2", text: "deploy host moved to gamma-2", type: "world" },
+			],
+		};
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		const block = await deliverRecall(harness, "where is the deploy host?");
+		expect(block).toContain("beta-9");
+		expect(block).toContain("gamma-2");
+		expect(requests).toHaveLength(0);
 	});
 });
 

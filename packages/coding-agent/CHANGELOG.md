@@ -69,6 +69,9 @@
 - Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
 - Added `hindsight.retainUpdateMode` (`replace` | `append`, default `replace`) so full-session retain can append only newly accumulated turns to the same session document.
+- Added `hindsight.recallPreferObservations`, `hindsight.recallPrune`, and `hindsight.recallDedup` (default on) so recall can prefer observations over superseded facts and use server-side pruning/dedup where the decision model supports it.
+- Added `hindsight.recallCadence` (`boundary` default, `per-turn` opt-in) so a session can re-ask the bank every turn while never repeating a memory the transcript already holds.
+- Added opt-in single-survivor abstention via `hindsight.decisionModelUrl` / `hindsight.decisionModelThreshold`: a lone low-confidence recall result is dropped, and an unreachable decision service keeps the memory.
 
 ### Changed
 

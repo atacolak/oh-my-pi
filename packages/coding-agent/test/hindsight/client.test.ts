@@ -32,6 +32,34 @@ describe("HindsightApi fetch cancellation", () => {
 	});
 });
 
+describe("HindsightApi recall request", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("sends the observation preference and rerank switches", async () => {
+		let body: Record<string, unknown> | undefined;
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (_input: FetchInput, init?: FetchInit): Promise<Response> => {
+					body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+					return Response.json({ results: [] });
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+
+		const client = new HindsightApi({ baseUrl: "https://hindsight.example" });
+		await client.recall("bank", "query", {
+			preferObservations: true,
+			rerank: { prune: true, dedup: false },
+		});
+
+		expect(body?.prefer_observations).toBe(true);
+		expect(body?.rerank).toEqual({ prune: true, dedup: false });
+	});
+});
+
 describe("HindsightApi per-op timeouts", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();

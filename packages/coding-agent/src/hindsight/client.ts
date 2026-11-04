@@ -22,6 +22,12 @@ const DEFAULT_RETAIN_TIMEOUT_MS = 60_000;
 const MENTAL_MODEL_PAGE_SIZE = 1000;
 /** Cap on server-supplied error text copied into `HindsightError.message` (logged unconditionally). */
 const MAX_ERROR_DETAIL_CHARS = 2000;
+/** System One decision model that votes on a lone recall survivor. */
+const DECISION_MODEL_ID = "hs-decide-1-flash";
+/** A dead local decision service must not stall a turn. */
+const DEFAULT_DECISION_TIMEOUT_MS = 2_000;
+const DECISION_TASK =
+	"Showing this memory to someone answering the question would help them, rather than distract them.";
 
 export type Budget = "low" | "mid" | "high" | string;
 export type TagsMatch = "any" | "all" | "any_strict" | "all_strict";
@@ -131,6 +137,10 @@ export interface RecallOptions extends HindsightRequestOptions {
 	budget?: Budget;
 	tags?: string[];
 	tagsMatch?: TagsMatch;
+	/** Drop raw facts an observation already supersedes; no effect unless observations are recalled too. */
+	preferObservations?: boolean;
+	/** Recall-stage pruning and dedup; a no-op on servers without a recall decision model. */
+	rerank?: { prune?: boolean; dedup?: boolean };
 }
 
 export interface ReflectOptions extends HindsightRequestOptions {
@@ -393,6 +403,8 @@ export class HindsightApi {
 					budget: options?.budget ?? "mid",
 					tags: options?.tags,
 					tags_match: options?.tagsMatch,
+					prefer_observations: options?.preferObservations,
+					rerank: options?.rerank,
 				},
 				signal: options?.signal,
 				timeoutMs: this.#recallTimeoutMs,
@@ -691,6 +703,65 @@ export class HindsightApi {
 		}
 
 		return (parsed ?? {}) as T;
+	}
+}
+
+export interface RecallDecisionOptions {
+	baseUrl: string;
+	apiKey?: string | null;
+	/** Minimum `noul` score for the lone survivor to be delivered. */
+	threshold: number;
+	/** Request deadline (ms). */
+	timeoutMs?: number;
+}
+
+interface SystemOneResponse {
+	answers?: Record<string, { noul?: unknown } | undefined>;
+}
+
+/**
+ * Hindsight keeps every recall candidate above `max(0.20, 0.40 * best)`, so a bank with no
+ * matching memory still returns one survivor; only a lone result can be a floor artefact.
+ * A System One decision model scores that memory against the question, and anything but a
+ * definite answer below `threshold` keeps it: a decision service that is down never withholds
+ * memory, and a short deadline keeps a stalled one from holding the turn.
+ */
+export class HindsightRecallDecision {
+	#baseUrl: string;
+	#apiKey?: string;
+	#threshold: number;
+	#timeoutMs: number;
+
+	constructor(options: RecallDecisionOptions) {
+		this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
+		this.#apiKey = options.apiKey ?? undefined;
+		this.#threshold = options.threshold;
+		this.#timeoutMs = options.timeoutMs ?? DEFAULT_DECISION_TIMEOUT_MS;
+	}
+
+	async keep(query: string, memory: string, signal?: AbortSignal): Promise<boolean> {
+		const headers: Record<string, string> = { "Content-Type": "application/json" };
+		if (this.#apiKey) headers.Authorization = `Bearer ${this.#apiKey}`;
+		try {
+			const response = await fetch(`${this.#baseUrl}/v1/systemone`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					model: DECISION_MODEL_ID,
+					state: `Question: ${query}`,
+					questions: {
+						m0: { type: "noul", instructions: { task: DECISION_TASK, memory } },
+					},
+				}),
+				signal: withTimeoutSignal(this.#timeoutMs, signal),
+			});
+			if (!response.ok) return true;
+			const parsed = tryParseJson(await response.text()) as SystemOneResponse | undefined;
+			const noul = parsed?.answers?.m0?.noul;
+			return typeof noul !== "number" || !Number.isFinite(noul) || noul >= this.#threshold;
+		} catch {
+			return true;
+		}
 	}
 }
 

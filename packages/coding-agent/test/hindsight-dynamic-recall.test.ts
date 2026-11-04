@@ -410,6 +410,44 @@ describe("resumed transcripts", () => {
 	});
 });
 
+describe("per-turn cadence", () => {
+	it("asks the bank again each turn and delivers only memories the transcript lacks", async () => {
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: makeConfig({ recallCadence: "per-turn" }) });
+
+		expect(await deliverRecall(harness, "first question")).toContain("beta-9");
+		client.recallResponse = {
+			results: [
+				{ id: "m1", text: "deploy host is beta-9", type: "world" },
+				{ id: "m2", text: "deploy host moved to gamma-2", type: "world" },
+			],
+		};
+
+		appendTurn(harness.sessionManager, "first question", "first answer");
+		const block = await deliverRecall(harness, "second question about deploys");
+
+		expect(client.recallCalls).toHaveLength(2);
+		expect(block).toContain("gamma-2");
+		expect(block).not.toContain("beta-9");
+	});
+
+	it("skips a trivial acknowledgement and asks again on a real question", async () => {
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: makeConfig({ recallCadence: "per-turn" }) });
+
+		expect(await deliverRecall(harness, "first question")).toContain("beta-9");
+		appendTurn(harness.sessionManager, "first question", "first answer");
+
+		expect(await deliverRecall(harness, "ok")).toBeUndefined();
+		expect(await deliverRecall(harness, "continue please")).toBeUndefined();
+		expect(client.recallCalls).toHaveLength(1);
+
+		client.recallResponse = { results: [{ id: "m2", text: "deploy host moved to gamma-2", type: "world" }] };
+		expect(await deliverRecall(harness, "where did the deploy host move?")).toContain("gamma-2");
+		expect(client.recallCalls).toHaveLength(2);
+	});
+});
+
 describe("recall refresh boundaries", () => {
 	it("refreshes the recall at a committed compaction boundary with the new query shape", async () => {
 		const client = new RecordingApi();

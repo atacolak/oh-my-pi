@@ -41,6 +41,9 @@ function noticeErrorText(errorText: string): string {
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
 const MENTAL_MODEL_LOAD_TIMED_OUT = Symbol("mental-model-load-timed-out");
+/** A prompt this short is an acknowledgement, not a question worth asking the bank. */
+const TRIVIAL_ACK_MAX_CHARS = 12;
+const TRIVIAL_ACK_MAX_WORDS = 3;
 
 /** A compaction that rewrote the transcript, so the next turn asks its question of a new segment. */
 function isCommittedCompaction(event: AgentSessionEvent): boolean {
@@ -1040,9 +1043,15 @@ export class HindsightSessionState {
 		if (!this.config.autoRecall) return undefined;
 		const latestPrompt = promptText.trim();
 		if (!latestPrompt) return undefined;
-		// One recall per context epoch: the transcript already carries the delivered block,
-		// so only a boundary (compaction, retitle, new transcript) asks the bank again.
-		if (this.recallDelivered && !this.#recallRefreshRequested) return undefined;
+		// A boundary cadence recalls once per context epoch: the transcript already carries the
+		// delivered block, so only a boundary (compaction, retitle, new transcript) asks the bank
+		// again. A per-turn cadence asks every turn, and `recalledMemoryIds` keeps out what the
+		// transcript already holds — but an acknowledgement is not a new question.
+		if (this.recallDelivered && !this.#recallRefreshRequested) {
+			const words = latestPrompt.split(/\s+/).length;
+			const trivialAck = latestPrompt.length < TRIVIAL_ACK_MAX_CHARS || words < TRIVIAL_ACK_MAX_WORDS;
+			if (this.config.recallCadence !== "per-turn" || trivialAck) return undefined;
+		}
 
 		const generation = ++this.#recallGeneration;
 		this.#recallRefreshRequested = false;

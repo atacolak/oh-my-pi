@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Agent profiles that declare a tool under `tools.discoverable` now mount it under `xd://` instead of leaving it top-level, even when the profile also lists it; `todo`/`ask`/`grep`/`web_search` stay top-level only by default, and a discoverable `write` becomes the device-only transport.
+- A declared `tools:` list is now closed for extension tools registered after the session starts: an unnamed tool no longer becomes active (or an `xd://` device).
 - A named agent profile is closed-world for MCP: omitting `mcps:` now allows zero servers instead of inheriting every user server, and the allowlist is applied before discovery, so a profile that names no server spawns none (previously all servers were dialed and only their tools were filtered). Only a bare unnamed `omp` session still defaults to the user's servers.
 - Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
 - `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.

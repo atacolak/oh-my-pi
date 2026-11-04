@@ -14,6 +14,7 @@ import {
 	truncateTailBytes,
 } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
+import { SESSION_OWNER_CONTEXT_ENV, type SessionOwnerContext } from "./session-owner";
 import {
 	DAEMON_META_FILE,
 	DAEMON_SPEC_FILE,
@@ -894,6 +895,11 @@ class DaemonBroker {
 		}
 		let installed: TerminalSubscription | undefined;
 		const started = await this.#start(spec, undefined, false, true, record => {
+			record.spec.env[SESSION_OWNER_CONTEXT_ENV] = JSON.stringify({
+				projectDir: record.spec.cwd,
+				name: record.spec.name,
+				id: record.snapshot.id,
+			} satisfies SessionOwnerContext);
 			installed = this.#subscribeTerminal(
 				record,
 				socket,

@@ -262,4 +262,37 @@ describe("an interactive session's published endpoint", () => {
 			reattached.close();
 		}
 	}, 30_000);
+
+	it("refreshes terminal I/O without ending its session or socket", async () => {
+		fixture = await createInteractiveFixture([]);
+		const peer = await SocketPeer.connect(fixture.endpoint);
+		await peer.next(frame => frame.type === "ready");
+		const dispose = spyOn(fixture.session, "dispose");
+		const stopMode = spyOn(fixture.mode, "stop");
+		const close = spyOn(fixture.socket, "close");
+		const stop = spyOn(fixture.mode.ui, "stop").mockImplementation(() => {});
+		const start = spyOn(fixture.mode.ui, "start").mockImplementation(() => {});
+		const repaint = spyOn(fixture.mode.ui, "requestRender").mockImplementation(() => {});
+		try {
+			peer.send({ id: "before-refresh", type: "get_state" });
+			fixture.mode.refreshTerminalAttachment();
+			peer.send({ id: "during-refresh", type: "get_state" });
+			expect((await frameOf(peer, "before-refresh")).success).toBe(true);
+			expect((await frameOf(peer, "during-refresh")).success).toBe(true);
+
+			expect(stop).toHaveBeenCalledTimes(1);
+			expect(start).toHaveBeenCalledTimes(1);
+			expect(repaint).toHaveBeenCalled();
+			expect(dispose).not.toHaveBeenCalled();
+			expect(close).not.toHaveBeenCalled();
+			expect(stopMode).not.toHaveBeenCalled();
+
+			peer.send({ id: "after-refresh", type: "get_state" });
+			const state = await frameOf(peer, "after-refresh");
+			expect(state.success).toBe(true);
+			expect((state.data as Record<string, unknown>).sessionId).toBe(fixture.session.sessionId);
+		} finally {
+			peer.close();
+		}
+	}, 30_000);
 });

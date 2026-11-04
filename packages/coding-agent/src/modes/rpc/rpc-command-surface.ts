@@ -1983,16 +1983,70 @@ export class RpcCommandSurface {
 /**
  * Serve this surface to every client attaching at the session endpoint, and
  * re-publish when the process-level wake-up (SIGUSR2) says the session moved.
- * Returns a detach callback for the SIGUSR2 listener.
+ * Returns a detach callback for the SIGUSR2 listener. `intercept` sees each
+ * frame before command dispatch and claims the ones this transport owns.
  */
 export async function publishSessionSocket(
 	socket: RpcSessionSocket,
 	surface: RpcCommandSurface,
+	intercept?: (frame: unknown, conn: RpcClientConn) => boolean,
 ): Promise<() => void> {
-	await socket.listen(conn => surface.createSocketSurface(conn));
+	await socket.listen(conn => {
+		const bound = surface.createSocketSurface(conn);
+		if (!intercept) return bound;
+		return {
+			...bound,
+			dispatch: frame => {
+				if (intercept(frame, conn)) return;
+				bound.dispatch(frame);
+			},
+		};
+	});
 	const rebind = () => void socket.rebind().catch(() => {});
 	process.on("SIGUSR2", rebind);
 	return () => process.off("SIGUSR2", rebind);
+}
+
+/**
+ * Transport-local request from an attaching terminal mirror. It is not an
+ * `RpcCommand`: only a publication that owns a broker PTY accepts it, so it
+ * never becomes a host capability for ordinary RPC clients.
+ */
+export interface InteractiveTerminalRefreshFrame {
+	readonly type: "terminal_refresh";
+	readonly id: string;
+	readonly sessionId: string;
+	readonly generation: string;
+}
+
+export interface InteractiveTerminalRefreshedFrame {
+	readonly type: "terminal_refreshed";
+	readonly id: string;
+	readonly sessionId: string;
+	readonly generation: string;
+}
+
+export interface InteractiveTerminalRefreshErrorFrame {
+	readonly type: "terminal_refresh_error";
+	readonly id: string;
+	readonly message: string;
+}
+
+/** The broker-owner attachment this publication accepts refreshes for. */
+export interface InteractiveTerminalControl {
+	/** Broker generation that owns this publication; a refresh for another generation is refused. */
+	readonly generation: string;
+	/** Restart this session's renderer and force a full repaint for the new terminal. */
+	refresh(): void;
+}
+
+function terminalRefreshFrame(frame: unknown): InteractiveTerminalRefreshFrame | undefined {
+	if (typeof frame !== "object" || frame === null) return undefined;
+	const candidate = frame as Partial<InteractiveTerminalRefreshFrame>;
+	if (candidate.type !== "terminal_refresh") return undefined;
+	if (typeof candidate.id !== "string" || typeof candidate.sessionId !== "string") return undefined;
+	if (typeof candidate.generation !== "string") return undefined;
+	return candidate as InteractiveTerminalRefreshFrame;
 }
 
 export interface ServedSessionSocket {
@@ -2013,6 +2067,8 @@ export interface ServedSessionSocket {
 export async function serveInteractiveSessionSocket(options: {
 	session: AgentSession;
 	socket: RpcSessionSocket;
+	/** Present only when this publication owns a broker PTY that a mirror can attach to. */
+	terminalControl?: InteractiveTerminalControl;
 }): Promise<ServedSessionSocket> {
 	const clients = new RpcClientRegistry();
 	const output: RpcOutput = frame => clients.broadcast(frame);
@@ -2032,7 +2088,49 @@ export async function serveInteractiveSessionSocket(options: {
 		extensionUserMessageTracker,
 	});
 	surface.start();
-	const detachWake = await publishSessionSocket(options.socket, surface);
+	const terminalControl = options.terminalControl;
+	const detachWake = await publishSessionSocket(options.socket, surface, (frame, conn) => {
+		const refresh = terminalRefreshFrame(frame);
+		if (!refresh) return false;
+		if (!terminalControl) {
+			const reply: InteractiveTerminalRefreshErrorFrame = {
+				type: "terminal_refresh_error",
+				id: refresh.id,
+				message: "terminal refresh unavailable: this publication has no broker attachment",
+			};
+			conn.send(reply);
+			return true;
+		}
+		const sessionId = options.session.sessionId;
+		if (refresh.sessionId !== sessionId || refresh.generation !== terminalControl.generation) {
+			const reply: InteractiveTerminalRefreshErrorFrame = {
+				type: "terminal_refresh_error",
+				id: refresh.id,
+				message: `terminal refresh refused: session ${refresh.sessionId} generation ${refresh.generation} is not this attachment`,
+			};
+			conn.send(reply);
+			return true;
+		}
+		try {
+			terminalControl.refresh();
+		} catch (error) {
+			const reply: InteractiveTerminalRefreshErrorFrame = {
+				type: "terminal_refresh_error",
+				id: refresh.id,
+				message: `terminal refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+			};
+			conn.send(reply);
+			return true;
+		}
+		const reply: InteractiveTerminalRefreshedFrame = {
+			type: "terminal_refreshed",
+			id: refresh.id,
+			sessionId,
+			generation: terminalControl.generation,
+		};
+		conn.send(reply);
+		return true;
+	});
 	let publishedSessionId = options.session.sessionId;
 	const unsubscribeIdentity = options.session.subscribe(() => {
 		const sessionId = options.session.sessionId;

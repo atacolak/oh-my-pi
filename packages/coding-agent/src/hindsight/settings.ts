@@ -289,6 +289,57 @@ export const cfgHindsightRecallTypes = register({
 	default: HINDSIGHT_RECALL_TYPES_DEFAULT,
 });
 
+export const cfgHindsightRecallPreferObservations = register({
+	id: "hindsight.recallPreferObservations",
+	env: "HINDSIGHT_RECALL_PREFER_OBSERVATIONS",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallPrune = register({
+	id: "hindsight.recallPrune",
+	env: "HINDSIGHT_RECALL_PRUNE",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallDedup = register({
+	id: "hindsight.recallDedup",
+	env: "HINDSIGHT_RECALL_DEDUP",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallCadence = register({
+	id: "hindsight.recallCadence",
+	env: "HINDSIGHT_RECALL_CADENCE",
+	type: "enum",
+	values: ["per-turn", "boundary"] as const,
+	default: "boundary",
+});
+
+export const cfgHindsightDecisionModelUrl = register({
+	id: "hindsight.decisionModelUrl",
+	env: "HINDSIGHT_DECISION_MODEL_URL",
+	type: "string",
+	default: undefined,
+});
+
+export const cfgHindsightDecisionModelApiKey = register({
+	id: "hindsight.decisionModelApiKey",
+	env: "HINDSIGHT_DECISION_MODEL_API_KEY",
+	type: "string",
+	credential: true,
+	default: undefined,
+});
+
+export const cfgHindsightDecisionModelThreshold = register({
+	id: "hindsight.decisionModelThreshold",
+	env: "HINDSIGHT_DECISION_MODEL_THRESHOLD",
+	type: "number",
+	default: 0.25,
+});
+
 export const cfgHindsightDebug = register({
 	id: "hindsight.debug",
 	env: "HINDSIGHT_DEBUG",

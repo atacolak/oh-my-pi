@@ -131,6 +131,10 @@ export interface RecallOptions extends HindsightRequestOptions {
 	budget?: Budget;
 	tags?: string[];
 	tagsMatch?: TagsMatch;
+	/** Drop raw facts an observation already supersedes; no effect unless observations are recalled too. */
+	preferObservations?: boolean;
+	/** Recall-stage pruning and dedup; a no-op on servers without a recall decision model. */
+	rerank?: { prune?: boolean; dedup?: boolean };
 }
 
 export interface ReflectOptions extends HindsightRequestOptions {
@@ -393,6 +397,8 @@ export class HindsightApi {
 					budget: options?.budget ?? "mid",
 					tags: options?.tags,
 					tags_match: options?.tagsMatch,
+					prefer_observations: options?.preferObservations,
+					rerank: options?.rerank,
 				},
 				signal: options?.signal,
 				timeoutMs: this.#recallTimeoutMs,

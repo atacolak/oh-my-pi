@@ -808,6 +808,8 @@ export class HindsightSessionState {
 				types: this.config.recallTypes.length > 0 ? this.config.recallTypes : undefined,
 				tags: this.recallTags,
 				tagsMatch: this.recallTagsMatch,
+				preferObservations: this.config.recallPreferObservations,
+				rerank: { prune: this.config.recallPrune, dedup: this.config.recallDedup },
 				signal,
 			});
 			if (signal?.aborted) return { context: null, ok: false, delivered: [] };

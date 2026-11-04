@@ -51,6 +51,13 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		recallContextTurns: 2,
 		recallMaxQueryChars: 800,
 		recallPromptPreamble: "preamble",
+		recallPreferObservations: true,
+		recallPrune: true,
+		recallDedup: true,
+		recallCadence: "boundary",
+		decisionModelUrl: null,
+		decisionModelApiKey: null,
+		decisionModelThreshold: 0.25,
 		debug: false,
 		requestTimeoutMs: 30_000,
 		reflectTimeoutMs: 30_000,
@@ -205,6 +212,19 @@ describe("recall dedupe", () => {
 		expect([...harness.state.recalledMemoryIds][0]).toStartWith("id:m1:");
 		// An empty refresh must not overwrite the transcript's recall with nothing.
 		expect(harness.sessionManager.getBranch().filter(entry => entry.type === "custom")).toHaveLength(1);
+	});
+});
+
+describe("recall request settings", () => {
+	it("forwards the observation preference and rerank switches to the bank", async () => {
+		const client = new RecordingApi();
+		const harness = makeHarness(client, {
+			config: makeConfig({ recallPreferObservations: false, recallPrune: false, recallDedup: true }),
+		});
+
+		expect(await deliverRecall(harness, "first question")).toContain("beta-9");
+		expect(client.recallCalls[0]!.options?.preferObservations).toBe(false);
+		expect(client.recallCalls[0]!.options?.rerank).toEqual({ prune: false, dedup: true });
 	});
 });
 

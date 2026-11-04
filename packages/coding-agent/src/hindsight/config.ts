@@ -15,15 +15,22 @@ import {
 	cfgHindsightBankIdPrefix,
 	cfgHindsightBankMission,
 	cfgHindsightDebug,
+	cfgHindsightDecisionModelApiKey,
+	cfgHindsightDecisionModelThreshold,
+	cfgHindsightDecisionModelUrl,
 	cfgHindsightGlobalScope,
 	cfgHindsightMentalModelAutoSeed,
 	cfgHindsightMentalModelMaxRenderChars,
 	cfgHindsightMentalModelsEnabled,
 	cfgHindsightProvenanceTags,
 	cfgHindsightRecallBudget,
+	cfgHindsightRecallCadence,
 	cfgHindsightRecallContextTurns,
+	cfgHindsightRecallDedup,
 	cfgHindsightRecallMaxQueryChars,
 	cfgHindsightRecallMaxTokens,
+	cfgHindsightRecallPreferObservations,
+	cfgHindsightRecallPrune,
 	cfgHindsightRecallTimeoutMs,
 	cfgHindsightRecallTypes,
 	cfgHindsightReflectTimeoutMs,
@@ -79,6 +86,24 @@ export interface HindsightConfig {
 	recallContextTurns: number;
 	recallMaxQueryChars: number;
 	recallPromptPreamble: string;
+	/** Let observations supersede the raw facts they were consolidated from. */
+	recallPreferObservations: boolean;
+	/** Recall-stage pruning on the server; a no-op where no recall decision model runs. */
+	recallPrune: boolean;
+	/** Recall-stage dedup on the server; a no-op where no recall decision model runs. */
+	recallDedup: boolean;
+	/**
+	 * `boundary` recalls once per context epoch; `per-turn` asks again every turn while
+	 * deduping what the transcript already holds. The default stays `boundary`: per-turn
+	 * without server-side pruning repeats near-miss memories every turn.
+	 */
+	recallCadence: "per-turn" | "boundary";
+	/** Decision-model base URL; unset disables single-survivor abstention. */
+	decisionModelUrl: string | null;
+	/** Bearer token for the decision model; unset sends none. */
+	decisionModelApiKey: string | null;
+	/** Minimum `noul` for a lone recall survivor to reach the model. */
+	decisionModelThreshold: number;
 
 	debug: boolean;
 
@@ -140,6 +165,13 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 		recallContextTurns: cfgHindsightRecallContextTurns.get(settings),
 		recallMaxQueryChars: cfgHindsightRecallMaxQueryChars.get(settings),
 		recallPromptPreamble: DEFAULT_PREAMBLE,
+		recallPreferObservations: cfgHindsightRecallPreferObservations.get(settings),
+		recallPrune: cfgHindsightRecallPrune.get(settings),
+		recallDedup: cfgHindsightRecallDedup.get(settings),
+		recallCadence: cfgHindsightRecallCadence.get(settings),
+		decisionModelUrl: cfgHindsightDecisionModelUrl.get(settings)?.trim() || null,
+		decisionModelApiKey: cfgHindsightDecisionModelApiKey.get(settings) ?? null,
+		decisionModelThreshold: cfgHindsightDecisionModelThreshold.get(settings),
 
 		debug: cfgHindsightDebug.get(settings),
 

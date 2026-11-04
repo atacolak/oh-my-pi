@@ -74,8 +74,8 @@ import type { RpcSessionSocket, RpcSessionSocketSurface } from "./rpc-socket";
 import type { RpcSessionSettleWatcher } from "./rpc-session-settle";
 import { getRpcSessionState } from "./rpc-state";
 import type { AgentSessionEvent } from "../../session/agent-session-events";
-import type { RpcSubagentRegistry } from "./rpc-subagents";
-import { readRpcSubagentTranscript, resolveOwnedLiveSubagent } from "./rpc-subagents";
+import type { EventBus } from "../../utils/event-bus";
+import { RpcSubagentRegistry, readRpcSubagentTranscript, resolveOwnedLiveSubagent } from "./rpc-subagents";
 import type {
 	RpcAbortAndRestoreQueueResult,
 	RpcCommand,
@@ -735,9 +735,11 @@ export const SESSION_CHANGE_TYPES: Readonly<Record<string, true>> = {
  * Commands only the process that owns the session's RPC runner can serve:
  * session transitions it must coordinate with the goal/dictation/socket
  * machinery, the goal continuation driver, live voice, dictation, /btw,
- * subagent subscription, event filtering, extension-UI login, and the
- * terminal-owned tree/handoff paths. A TUI-hosted surface has no such runner,
- * so it refuses them instead of half-running them.
+ * event filtering, extension-UI login, and the terminal-owned tree/handoff
+ * paths. A TUI-hosted surface has no such runner, so it refuses them instead
+ * of half-running them. Subagent reads, steering, cancellation and the
+ * per-view subscription are not here: both surfaces serve them from the
+ * session's subagent registry.
  */
 const HOST_COMMANDS: Readonly<Record<string, true>> = {
 	new_session: true,
@@ -761,11 +763,6 @@ const HOST_COMMANDS: Readonly<Record<string, true>> = {
 	btw_cancel: true,
 	get_btw_history: true,
 	set_event_filter: true,
-	set_subagent_subscription: true,
-	get_subagents: true,
-	get_subagent_messages: true,
-	cancel_subagent: true,
-	steer_subagent: true,
 };
 
 const NO_SCHEDULED_TURN = () => false;
@@ -871,6 +868,13 @@ export interface RpcCommandSurfaceOptions {
 	promptResults: RpcPromptResults;
 	extensionUserMessageTracker: RpcExtensionUserMessageTracker;
 	host?: RpcHostCommandServices;
+	/**
+	 * Subagent registry owned by this surface's transport when it has no RPC
+	 * runner (a terminal-hosted publication). The stdio runner supplies its own
+	 * through `host.subagents`; a client's subscription is filtered per view by
+	 * `clients` either way.
+	 */
+	subagents?: RpcSubagentRegistry;
 }
 
 /**
@@ -895,6 +899,7 @@ export class RpcCommandSurface {
 	readonly #maxResponseBytes: () => number;
 	readonly #pendingExtensionRequests: RpcPendingExtensionRequests;
 	readonly #host: RpcHostCommandServices | undefined;
+	readonly #subagents: RpcSubagentRegistry | undefined;
 	readonly #inputGate = new RpcUserInputGate();
 	readonly #builtinCommandAborts = new Set<AbortController>();
 	#unsubscribeObserve: (() => void) | undefined;
@@ -910,6 +915,7 @@ export class RpcCommandSurface {
 		this.promptResults = options.promptResults;
 		this.extensionUserMessageTracker = options.extensionUserMessageTracker;
 		this.#host = options.host;
+		this.#subagents = options.subagents;
 		this.hostToolBridge = new RpcHostToolBridge(options.defaultConn);
 		this.hostUriBridge = new RpcHostUriBridge(options.output);
 	}
@@ -984,9 +990,20 @@ export class RpcCommandSurface {
 			},
 			close: reason => {
 				this.#clients.unregister(conn);
+				this.#syncSubagentEmission();
 				void this.#session.refreshRpcHostTools(this.hostToolBridge.removeClient(conn, reason));
 			},
 		};
+	}
+
+	/**
+	 * Keep the shared bus emitting at the union of the attached views' levels;
+	 * each view still receives only the frames its own level covers.
+	 */
+	#syncSubagentEmission(): void {
+		const subagents = this.#subagents ?? this.#host?.subagents;
+		if (!subagents) return;
+		subagents.setSubscriptionLevel(this.#clients.maxSubagentSubscription());
 	}
 
 	/** Serve one command; the caller owns the response sink (stdio) or receives it here (socket). */
@@ -1556,7 +1573,8 @@ export class RpcCommandSurface {
 			}
 
 			case "set_subagent_subscription": {
-				if (!host!.subagents) {
+				const subagents = this.#subagents ?? host?.subagents;
+				if (!subagents) {
 					return rpcError(id, "set_subagent_subscription", "Subagent event bus is unavailable");
 				}
 				if (!isSubagentSubscriptionLevel(command.level)) {
@@ -1566,8 +1584,14 @@ export class RpcCommandSurface {
 						`Invalid subagent subscription level: ${String(command.level)}`,
 					);
 				}
-				host!.subagents.setSubscriptionLevel(command.level);
-				return rpcSuccess(id, "set_subagent_subscription", { level: host!.subagents.getSubscriptionLevel() });
+				// Streaming is a view preference: the caller's own level changes, the
+				// bus only ever rises to the union so no other view starts receiving.
+				const view = conn ?? this.#defaultConn;
+				this.#clients.setSubagentSubscription(view, command.level);
+				subagents.setSubscriptionLevel(this.#clients.maxSubagentSubscription());
+				return rpcSuccess(id, "set_subagent_subscription", {
+					level: this.#clients.getSubagentSubscription(view),
+				});
 			}
 
 			case "set_event_filter": {
@@ -1593,21 +1617,23 @@ export class RpcCommandSurface {
 			}
 
 			case "get_subagents": {
-				if (!host!.subagents) {
+				const subagents = this.#subagents ?? host?.subagents;
+				if (!subagents) {
 					return rpcError(id, "get_subagents", "Subagent event bus is unavailable");
 				}
-				return rpcSuccess(id, "get_subagents", { subagents: host!.subagents.getSubagents() });
+				return rpcSuccess(id, "get_subagents", { subagents: subagents.getSubagents() });
 			}
 
 			case "get_subagent_messages": {
-				if (!host!.subagents) {
+				const subagents = this.#subagents ?? host?.subagents;
+				if (!subagents) {
 					return rpcError(id, "get_subagent_messages", "Subagent event bus is unavailable");
 				}
 				try {
 					if (command.fromByte !== undefined && !Number.isFinite(command.fromByte)) {
 						return rpcError(id, "get_subagent_messages", "fromByte must be a finite number");
 					}
-					const sessionFile = host!.subagents.resolveSessionFile(command);
+					const sessionFile = subagents.resolveSessionFile(command);
 					const transcript = await readRpcSubagentTranscript(sessionFile, command.fromByte);
 					return rpcSuccess(id, "get_subagent_messages", transcript);
 				} catch (err) {
@@ -1616,14 +1642,15 @@ export class RpcCommandSurface {
 			}
 
 			case "cancel_subagent": {
-				if (!host!.subagents) {
+				const subagents = this.#subagents ?? host?.subagents;
+				if (!subagents) {
 					return rpcError(id, "cancel_subagent", "Subagent event bus is unavailable");
 				}
 				if (typeof command.subagentId !== "string" || command.subagentId.length === 0) {
 					return rpcError(id, "cancel_subagent", "`subagentId` must be a non-empty string.");
 				}
 				try {
-					const cancelled = await handleRpcCancelSubagent(host!.subagents, command.subagentId);
+					const cancelled = await handleRpcCancelSubagent(subagents, command.subagentId);
 					return rpcSuccess(id, "cancel_subagent", { cancelled });
 				} catch (err) {
 					return rpcError(id, "cancel_subagent", err instanceof Error ? err.message : String(err));
@@ -1631,7 +1658,8 @@ export class RpcCommandSurface {
 			}
 
 			case "steer_subagent": {
-				if (!host!.subagents) {
+				const subagents = this.#subagents ?? host?.subagents;
+				if (!subagents) {
 					return rpcError(id, "steer_subagent", "Subagent event bus is unavailable");
 				}
 				if (typeof command.subagentId !== "string" || command.subagentId.length === 0) {
@@ -1640,7 +1668,7 @@ export class RpcCommandSurface {
 				if (typeof command.message !== "string" || !command.message.trim()) {
 					return rpcError(id, "steer_subagent", "`message` is required for steer_subagent.");
 				}
-				const failure = await handleRpcSteerSubagent(host!.subagents, command.subagentId, command.message);
+				const failure = await handleRpcSteerSubagent(subagents, command.subagentId, command.message);
 				return failure ? rpcError(id, "steer_subagent", failure) : rpcSuccess(id, "steer_subagent");
 			}
 
@@ -2066,6 +2094,12 @@ export async function serveInteractiveSessionSocket(options: {
 	socket: RpcSessionSocket;
 	/** Present only when this publication owns a broker PTY that a mirror can attach to. */
 	terminalControl?: InteractiveTerminalControl;
+	/**
+	 * The session tree's own subagent event bus, so a client sees exactly the
+	 * roster the terminal sees. Absent means this publication serves no
+	 * subagent read/control and refuses those commands.
+	 */
+	subagentEventBus?: EventBus;
 }): Promise<ServedSessionSocket> {
 	const clients = new RpcClientRegistry();
 	const output: RpcOutput = frame => clients.broadcast(frame);
@@ -2074,6 +2108,9 @@ export async function serveInteractiveSessionSocket(options: {
 	const promptResults = new RpcPromptResults(options.session, output, undefined, {
 		costCapRefusal: () => options.session.costCapRefusal,
 	});
+	const subagents = options.subagentEventBus
+		? new RpcSubagentRegistry(options.subagentEventBus, frame => clients.broadcastSubagent(frame))
+		: undefined;
 	const surface = new RpcCommandSurface({
 		session: options.session,
 		output,
@@ -2083,6 +2120,7 @@ export async function serveInteractiveSessionSocket(options: {
 		pendingExtensionRequests: new RpcPendingExtensionRequests(),
 		promptResults,
 		extensionUserMessageTracker,
+		subagents,
 	});
 	surface.start();
 	const terminalControl = options.terminalControl;
@@ -2133,6 +2171,7 @@ export async function serveInteractiveSessionSocket(options: {
 		const sessionId = options.session.sessionId;
 		if (sessionId === publishedSessionId) return;
 		publishedSessionId = sessionId;
+		subagents?.clear();
 		void options.socket.rebind().catch(rebindError => {
 			logger.warn("RPC session socket rebind failed", { error: String(rebindError) });
 		});
@@ -2143,6 +2182,7 @@ export async function serveInteractiveSessionSocket(options: {
 			unsubscribeIdentity();
 			detachWake();
 			surface.dispose();
+			subagents?.dispose();
 			await options.socket.close();
 		},
 	};

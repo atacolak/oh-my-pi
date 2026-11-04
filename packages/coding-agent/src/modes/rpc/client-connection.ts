@@ -5,6 +5,8 @@ import type {
 	RpcHostUriCancelRequest,
 	RpcHostUriRequest,
 	RpcResponse,
+	RpcSubagentFrame,
+	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 
 /** Any frame an RPC server can deliver to a client. */
@@ -67,9 +69,21 @@ export class RpcClientConnection implements RpcClientConn {
 	}
 }
 
+const SUBAGENT_SUBSCRIPTION_RANK: Record<RpcSubagentSubscriptionLevel, number> = {
+	off: 0,
+	progress: 1,
+	events: 2,
+};
+
 /** Attached clients in registration order; one of them owns extension UI. */
 export class RpcClientRegistry {
 	#connections: RpcClientConn[] = [];
+	/**
+	 * Subagent streaming is a view preference, never a session-wide switch: each
+	 * attached view (stdio or a socket client) records its own level, and the
+	 * registry's broadcast filters by it.
+	 */
+	#subagentSubscriptions = new WeakMap<RpcClientConn, RpcSubagentSubscriptionLevel>();
 
 	register(conn: RpcClientConn): void {
 		if (this.#connections.includes(conn)) return;
@@ -81,6 +95,35 @@ export class RpcClientRegistry {
 		if (index < 0) return false;
 		this.#connections.splice(index, 1);
 		return true;
+	}
+
+	setSubagentSubscription(conn: RpcClientConn, level: RpcSubagentSubscriptionLevel): void {
+		this.#subagentSubscriptions.set(conn, level);
+	}
+
+	getSubagentSubscription(conn: RpcClientConn): RpcSubagentSubscriptionLevel {
+		return this.#subagentSubscriptions.get(conn) ?? "off";
+	}
+
+	/** Highest level any open view asked for, so the shared bus emits for the union. */
+	maxSubagentSubscription(): RpcSubagentSubscriptionLevel {
+		let max: RpcSubagentSubscriptionLevel = "off";
+		for (const conn of this.#connections) {
+			if (!conn.isOpen) continue;
+			const level = this.getSubagentSubscription(conn);
+			if (SUBAGENT_SUBSCRIPTION_RANK[level] > SUBAGENT_SUBSCRIPTION_RANK[max]) max = level;
+		}
+		return max;
+	}
+
+	/** Deliver a subagent frame only to open views whose own level covers it. */
+	broadcastSubagent(frame: RpcSubagentFrame): void {
+		const required = SUBAGENT_SUBSCRIPTION_RANK[frame.type === "subagent_event" ? "events" : "progress"];
+		for (const conn of this.#connections) {
+			if (!conn.isOpen) continue;
+			if (SUBAGENT_SUBSCRIPTION_RANK[this.getSubagentSubscription(conn)] < required) continue;
+			conn.send(frame);
+		}
 	}
 
 	/**

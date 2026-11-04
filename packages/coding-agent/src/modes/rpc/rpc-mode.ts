@@ -860,7 +860,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			sessionChangesInProgress--;
 		}
 	};
-	const subagentRegistry = subagentEventBus ? new RpcSubagentRegistry(subagentEventBus, output) : undefined;
+	// Each attached view (the stdio client and any socket client) filters its own
+	// subscription; the registry emits at the union so nothing leaks between views.
+	const subagentRegistry = subagentEventBus
+		? new RpcSubagentRegistry(subagentEventBus, frame => clients.broadcastSubagent(frame))
+		: undefined;
 
 	// Shutdown request flag (wrapped in object to allow mutation with const)
 	const shutdownState = { requested: false };

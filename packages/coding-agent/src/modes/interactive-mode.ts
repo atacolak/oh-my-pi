@@ -7913,6 +7913,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#servedSessionSocket = await serveInteractiveSessionSocket({
 			session: this.session,
 			socket,
+			subagentEventBus: this.#subagentEventBus,
 			...(owner
 				? { terminalControl: { generation: owner.generation, refresh: () => this.refreshTerminalAttachment() } }
 				: {}),

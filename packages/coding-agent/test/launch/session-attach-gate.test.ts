@@ -6,7 +6,11 @@ import {
 	gateSessionTarget,
 	resolveStartupSessionGate,
 } from "../../src/launch/session-attach-gate";
-import type { SessionAttachProbe, SessionAttachTerminal } from "../../src/launch/session-attach";
+import type {
+	SessionAttachProbe,
+	SessionAttachRefusalCode,
+	SessionAttachTerminal,
+} from "../../src/launch/session-attach";
 import { readSessionInfo } from "../../src/session/session-listing";
 import { SessionManager } from "../../src/session/session-manager";
 import { FileSessionStorage, isSessionLeaseHeld } from "../../src/session/session-storage";
@@ -215,7 +219,7 @@ describe("gateSessionTarget (picker selection)", () => {
 	it("refuses every non-cold probe without taking a reservation", async () => {
 		using tempDir = TempDir.createSync("@omp-session-gate-");
 		const { sessionId, target: picked } = await target(tempDir.path(), "picked refusal");
-		const cases: Array<[SessionAttachProbe, string]> = [
+		const cases: Array<[SessionAttachProbe, SessionAttachRefusalCode]> = [
 			[{ status: "unreachable", sessionId, endpoint: "/run/session" }, "owner-unreachable"],
 			[{ status: "unknown", sessionId, reason: "unreadable publication" }, "ownership-unknown"],
 			[{ status: "absent", sessionId, leaseHeld: true }, "owner-busy"],

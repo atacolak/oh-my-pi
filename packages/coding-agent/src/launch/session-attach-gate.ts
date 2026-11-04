@@ -34,7 +34,7 @@ export interface SessionAttachGateOptions {
 	readonly fromClaude?: boolean;
 	readonly fromCodex?: boolean;
 	/** The effective `autoResume` setting; only consulted when no other target flag is set. */
-	readonly autoResume: boolean;
+	readonly autoResume?: boolean;
 	/** Reads the live publication and lease observation; defaults to {@link probeSessionAttach}. */
 	readonly probe?: (sessionId: string) => Promise<SessionAttachProbe>;
 	readonly storage?: SessionStorage;

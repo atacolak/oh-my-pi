@@ -364,6 +364,8 @@ export class SessionTools {
 	#toolLoad: NamedLoadSet | undefined;
 	#mcpLoad: NamedLoadSet | undefined;
 	#loadModeOverrides = new Map<string, ToolLoadMode>();
+	/** Names the agent profile explicitly declared under `tools.discoverable` (eager wins). */
+	#declaredDiscoverableToolNames = new Set<string>();
 	#pendingToolRosterDelta: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingToolRosterDeltaAfterBase: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
@@ -1029,9 +1031,13 @@ export class SessionTools {
 
 	#rebuildLoadModeOverrides(): void {
 		this.#loadModeOverrides.clear();
+		this.#declaredDiscoverableToolNames.clear();
 		if (this.#toolLoad) {
 			for (const name of this.#toolLoad.eager) this.#loadModeOverrides.set(name, "essential");
-			for (const name of this.#toolLoad.discoverable) this.#loadModeOverrides.set(name, "discoverable");
+			for (const name of this.#toolLoad.discoverable) {
+				this.#loadModeOverrides.set(name, "discoverable");
+				if (!this.#toolLoad.eager.includes(name)) this.#declaredDiscoverableToolNames.add(name);
+			}
 		}
 		if (!this.#mcpLoad) return;
 		for (const tool of this.#toolRegistry.values()) {
@@ -1329,7 +1335,11 @@ export class SessionTools {
 			this.#rebuildLoadModeOverrides();
 		}
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
+		// A `write` the profile declared discoverable was never granted for filesystem
+		// writes: it is the xd:// execution transport, held back as device-only.
+		const declaredWriteTransport = this.#declaredDiscoverableToolNames.has("write");
 		const fullWriteSelected =
+			!declaredWriteTransport &&
 			toolNames.includes("write") &&
 			(this.#presentationPinnedToolNames?.has("write") === true ||
 				this.#runtimeSelectedToolNames?.has("write") === true);
@@ -1370,10 +1380,13 @@ export class SessionTools {
 				xdevReadAvailable &&
 				xdevWriteAvailable &&
 				!isPresentationPinned(name) &&
-				isMountableUnderXdev({
-					name,
-					loadMode: this.#effectiveLoadMode(name, tool.loadMode),
-				}),
+				isMountableUnderXdev(
+					{
+						name,
+						loadMode: this.#effectiveLoadMode(name, tool.loadMode),
+					},
+					this.#declaredDiscoverableToolNames,
+				),
 		);
 		const mountNames = new Set(mountCandidates.map(({ name }) => name));
 		const tools: AgentTool[] = [];
@@ -1386,7 +1399,10 @@ export class SessionTools {
 
 		const pinnedWrite = isPresentationPinned("write");
 		const activeDeferrableTool = tools.some(tool => tool.deferrable === true);
-		const transportNeeded = mountNames.size > 0 || activeDeferrableTool || this.#host.planModeEnabled();
+		const declaredWriteTransportSelected =
+			declaredWriteTransport && toolNames.includes("write") && this.#xdev !== undefined && xdevReadAvailable;
+		const transportNeeded =
+			mountNames.size > 0 || activeDeferrableTool || this.#host.planModeEnabled() || declaredWriteTransportSelected;
 		if (transportNeeded && !builtInWriteAvailable) {
 			const writeRegistration = this.#ensureWriteRegistered?.();
 			builtInWriteAvailable = writeRegistration ? (await untilAborted(signal, writeRegistration)) === true : false;

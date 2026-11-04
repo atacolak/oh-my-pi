@@ -46,22 +46,28 @@ import { renderError, ToolAbortError } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 /**
- * Discoverable built-ins that must stay top-level even when xdev mounting is
- * active: `todo` feeds the todo prelude/prewalk machinery, `ask` is the
+ * Discoverable built-ins that default to the top level even when xdev mounting
+ * is active: `todo` feeds the todo prelude/prewalk machinery, `ask` is the
  * model's user-interaction affordance, `grep` is the redirect target of the
  * bash interceptor rules, and `web_search` is invoked directly by most models
  * (which have no notion of the `xd://` protocol) so hiding it behind dispatch
- * makes it unreachable in practice (issue #5973). `yield` terminates structured
- * subagent runs and must stay directly callable — each loses its harness
- * integration or usability if hidden behind dispatch.
+ * makes it unreachable in practice (issue #5973). This is a default, not a
+ * veto: an explicit `tools.discoverable` declaration overrides it.
  */
 export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	todo: true,
-	yield: true,
 	ask: true,
 	grep: true,
 	web_search: true,
 };
+
+/**
+ * Tools that never mount behind `xd://` in any configuration. `yield`
+ * terminates structured subagent runs: the run observes the result directly,
+ * and a dispatched `yield` would never reach the harness contract, so no
+ * declaration may move it.
+ */
+export const XDEV_NEVER_MOUNT: Record<string, true> = { yield: true };
 
 /**
  * Tools that carry the `xd://` transport itself and therefore can never be
@@ -78,12 +84,18 @@ export type XdevDocsMode = "inline" | "builtins" | "catalog";
 /**
  * Whether an enabled tool is presented under `xd://` (rather than top-level)
  * while the `xd://` transport is active. Discoverable tools mount unless they
- * are pinned top-level by {@link XDEV_KEEP_TOP_LEVEL} or carry the transport
- * itself ({@link XDEV_TRANSPORT_TOOLS}); essential tools never do. The caller
- * gates this on the transport being active.
+ * carry the transport itself ({@link XDEV_TRANSPORT_TOOLS}), must stay directly
+ * callable ({@link XDEV_NEVER_MOUNT}), or are pinned by the
+ * {@link XDEV_KEEP_TOP_LEVEL} default that no `declaredDiscoverable` entry
+ * overrides; essential tools never mount. The caller gates this on the transport
+ * being active.
  */
-export function isMountableUnderXdev(tool: { name: string; loadMode?: ToolLoadMode }): boolean {
-	if (tool.name in XDEV_TRANSPORT_TOOLS || tool.name in XDEV_KEEP_TOP_LEVEL) return false;
+export function isMountableUnderXdev(
+	tool: { name: string; loadMode?: ToolLoadMode },
+	declaredDiscoverable?: ReadonlySet<string>,
+): boolean {
+	if (tool.name in XDEV_TRANSPORT_TOOLS || tool.name in XDEV_NEVER_MOUNT) return false;
+	if (tool.name in XDEV_KEEP_TOP_LEVEL && declaredDiscoverable?.has(tool.name) !== true) return false;
 	return tool.loadMode === "discoverable";
 }
 

@@ -4274,9 +4274,11 @@ export class SessionManager {
 	 * session file while creating a fresh session file in this sessionDir.
 	 *
 	 * `options.sessionFile` pins the new session's file path (default: an
-	 * auto-named `<timestamp>_<id>.jsonl` in `sessionDir`). Artifacts are copied
-	 * recursively by default; nested agents that deliberately share their parent's
-	 * artifact root may disable this with `copyArtifacts: false`.
+	 * auto-named `<timestamp>_<id>.jsonl` in `sessionDir`). A pinned file also
+	 * anchors the manager's session directory to that file's parent, so the fork
+	 * never materializes the cwd-derived default directory it would not write to.
+	 * Artifacts are copied recursively by default; nested agents that deliberately
+	 * share their parent's artifact root may disable this with `copyArtifacts: false`.
 	 *
 	 * `seance` creates a read-only consult fork instead: artifacts stay in the
 	 * source (the header's `seanceSource` points lookups at them), inherited
@@ -4298,7 +4300,11 @@ export class SessionManager {
 			seance?: boolean;
 		},
 	): Promise<SessionManager> {
-		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
+		const dir =
+			sessionDir ??
+			(options?.sessionFile
+				? path.dirname(path.resolve(options.sessionFile))
+				: SessionManager.getDefaultSessionDir(cwd, undefined, storage));
 		const manager = new SessionManager(cwd, dir, true, storage);
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 

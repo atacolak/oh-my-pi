@@ -6,7 +6,7 @@
  * must recall against its own history instead of replaying a week-old block.
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { Settings as SettingsClass } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -445,6 +445,112 @@ describe("per-turn cadence", () => {
 		client.recallResponse = { results: [{ id: "m2", text: "deploy host moved to gamma-2", type: "world" }] };
 		expect(await deliverRecall(harness, "where did the deploy host move?")).toContain("gamma-2");
 		expect(client.recallCalls).toHaveLength(2);
+	});
+});
+
+type FetchInput = string | URL | Request;
+type FetchInit = RequestInit | BunFetchRequestInit;
+
+/** Answers every System One request with one `noul`; returns the requests so their bodies can be asserted. */
+function stubDecisionModel(noul: number): { url: string; body: Record<string, unknown> }[] {
+	const requests: { url: string; body: Record<string, unknown> }[] = [];
+	vi.spyOn(globalThis, "fetch").mockImplementation(
+		Object.assign(
+			async (input: FetchInput, init?: FetchInit): Promise<Response> => {
+				requests.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+				return Response.json({ answers: { m0: { type: "noul", noul } } });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		),
+	);
+	return requests;
+}
+
+describe("decision-model abstention", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const decisionConfig = () => makeConfig({ decisionModelUrl: "http://decision.local", decisionModelThreshold: 0.25 });
+
+	it("keeps a lone survivor above the threshold and asks about the question and the memory", async () => {
+		const requests = stubDecisionModel(0.9);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
+		expect(requests).toHaveLength(1);
+		expect(requests[0]!.url).toBe("http://decision.local/v1/systemone");
+		expect(requests[0]!.body).toEqual({
+			model: "hs-decide-1-flash",
+			state: "Question: where is the deploy host?",
+			questions: {
+				m0: {
+					type: "noul",
+					instructions: {
+						task: "Showing this memory to someone answering the question would help them, rather than distract them.",
+						memory: "deploy host is beta-9",
+					},
+				},
+			},
+		});
+	});
+
+	it("drops a lone survivor below the threshold without recording it as delivered", async () => {
+		const requests = stubDecisionModel(0.1);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		const preparation = await harness.state.beforeAgentStartPrompt("where is the deploy host?");
+		expect(requests).toHaveLength(1);
+		expect(preparation).toBeDefined();
+		expect(preparation!.contextEntry).toBeUndefined();
+		expect(preparation!.commit()).toBe(true);
+		expect(harness.state.recalledMemoryIds.size).toBe(0);
+	});
+
+	it("fails open when the decision endpoint is unreachable", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (): Promise<Response> => {
+					throw new TypeError("connect ECONNREFUSED");
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
+	});
+
+	it("fails open when the decision endpoint refuses without a score", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(async (): Promise<Response> => new Response("decision service unavailable", { status: 503 }), {
+				preconnect: globalThis.fetch.preconnect,
+			}),
+		);
+		const client = new RecordingApi();
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
+	});
+
+	it("does not consult the decision model when two results survive", async () => {
+		const requests = stubDecisionModel(0);
+		const client = new RecordingApi();
+		client.recallResponse = {
+			results: [
+				{ id: "m1", text: "deploy host is beta-9", type: "world" },
+				{ id: "m2", text: "deploy host moved to gamma-2", type: "world" },
+			],
+		};
+		const harness = makeHarness(client, { config: decisionConfig() });
+
+		const block = await deliverRecall(harness, "where is the deploy host?");
+		expect(block).toContain("beta-9");
+		expect(block).toContain("gamma-2");
+		expect(requests).toHaveLength(0);
 	});
 });
 

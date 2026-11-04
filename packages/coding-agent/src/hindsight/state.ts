@@ -9,7 +9,7 @@ import {
 import type { MemoryPromptPreparation } from "../memory-backend/types";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { type BankScope, ensureBankExists } from "./bank";
-import type { HindsightApi, MemoryItemInput, UpdateMode } from "./client";
+import { HindsightRecallDecision, type HindsightApi, type MemoryItemInput, type UpdateMode } from "./client";
 import type { HindsightConfig } from "./config";
 import {
 	composeRecallQuery,
@@ -434,6 +434,8 @@ export class HindsightSessionState {
 	#committedTitle?: string;
 	#unsubscribeSessionName?: () => void;
 	#recallGeneration = 0;
+	/** Bounded System One vote on a lone recall survivor; unset unless a decision model is configured. */
+	#recallDecision?: HindsightRecallDecision;
 	/** Cached `<mental_models>` block injected into developer instructions. */
 	mentalModelsSnippet?: string;
 	/** When the current bootstrap/boundary load settled; gates the first-turn race. */
@@ -481,6 +483,13 @@ export class HindsightSessionState {
 		this.#cachedTranscript = "";
 		this.#lastRetainedPrefixKey = "";
 		this.recallDelivered = options.recallDelivered ?? false;
+		this.#recallDecision = options.config.decisionModelUrl
+			? new HindsightRecallDecision({
+					baseUrl: options.config.decisionModelUrl,
+					apiKey: options.config.decisionModelApiKey,
+					threshold: options.config.decisionModelThreshold,
+				})
+			: undefined;
 		this.retainQueue = new HindsightRetainQueue(this);
 		this.#closeRetainBaselineTurns =
 			options.closeRetainBaselineTurns ??
@@ -817,6 +826,15 @@ export class HindsightSessionState {
 			});
 			if (signal?.aborted) return { context: null, ok: false, delivered: [] };
 			const results = response.results ?? [];
+			// Hindsight keeps every candidate above its relevance floor, so a bank with no
+			// matching memory still returns one survivor; only a lone result can be a floor
+			// artefact. Two results already show a real match cleared the floor.
+			if (results.length === 1 && this.#recallDecision) {
+				if (!(await this.#recallDecision.keep(query, results[0]!.text, signal))) {
+					return { context: null, ok: true, delivered: [] };
+				}
+				if (signal?.aborted) return { context: null, ok: false, delivered: [] };
+			}
 			// A refresh exists to surface what the model does not already have. Memories
 			// already delivered in this transcript are context it has read.
 			const fresh = results.filter(result => !this.recalledMemoryIds.has(recallMemoryKey(result)));

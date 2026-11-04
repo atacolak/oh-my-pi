@@ -102,7 +102,7 @@ export interface HindsightConfig {
 	decisionModelUrl: string | null;
 	/** Bearer token for the decision model; unset sends none. */
 	decisionModelApiKey: string | null;
-	/** Minimum `noul` for a lone recall survivor to reach the model. */
+	/** Minimum `noul` score for a lone recall survivor to be delivered. */
 	decisionModelThreshold: number;
 
 	debug: boolean;

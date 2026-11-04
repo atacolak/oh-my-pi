@@ -34,6 +34,16 @@ Behavior notes:
 - When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, pending stdout is delivered, and normal shutdown exits with code `0`. A session-persistence failure still latched at disposal exits with code `1` after delivering its `notice` frame.
 - Responses/events are written as one JSON object per line.
 
+## Session ownership on startup
+
+Before opening an existing session, startup reads that session's owner publication (socket + discovery sidecar). The result is the launch's only decision:
+
+- **LIVE**: attach. `--resume <id>`, `--resume <path>`, `--continue`, auto-resume, and a picker selection mirror the owner's PTY and request a full repaint. Attach needs an interactive terminal; `-p` and RPC refuse instead.
+- **STALE** (publication present, endpoint unreachable) or **UNKNOWN** (ownership unreadable): refuse with a non-zero exit; no session is opened.
+- **ABSENT** with a free ownership lease: open cold under a strict reservation.
+- **ABSENT** with the lease held: refuse as `owner-busy`; the reservation is never bypassed.
+- `--fork`, `--from-claude`/`--from-codex`, `--no-session`, and a process re-entering its own owner role do not consult the decision.
+
 ## Transport and Framing
 
 Protocol v1 stdout frames are a single JSON object followed by `\n`. The server caps each physical stdout frame at 1 MiB, including the newline. Inbound frames are always one unchunked JSONL object; clients SHOULD keep them within the advertised physical-frame limit. Input is not reassembled from `rpc_chunk` frames.

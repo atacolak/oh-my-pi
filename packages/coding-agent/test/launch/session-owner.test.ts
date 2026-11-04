@@ -205,7 +205,7 @@ describe("session owner through the broker", () => {
 
 				expect(report.context).toEqual({ projectDir, name, id: started.daemon.id });
 				expect(report.liveContext).toEqual(report.context);
-				expect(report.pid).toBe(started.daemon.pid);
+				expect(started.daemon.pid).toBe(report.pid);
 				expect(report.pid).not.toBe(process.pid);
 				expect(Process.fromPid(report.pid)?.status()).toBe(ProcessStatus.Running);
 
@@ -263,7 +263,7 @@ describe("session owner through the broker", () => {
 			expect(exitCode).toBe(0);
 			const started = JSON.parse(stdout) as Extract<DaemonRpcResult, { op: "terminal_start" }>;
 			const report = await waitForJson<OwnerReport>(reportFile);
-			expect(report.pid).toBe(started.daemon.pid);
+			expect(started.daemon.pid).toBe(report.pid);
 
 			const described = await client.request({ op: "describe", name });
 			if (described.op !== "describe") throw new Error("unexpected describe result");

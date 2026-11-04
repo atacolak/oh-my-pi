@@ -142,15 +142,31 @@ import {
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
-/** Bounded ring of drafts that an empty overwrite or a composer clear pushed aside. */
+/** Companion CAS metadata for the plain-body `draft.txt` shared with `omp-rpc`. */
+export const DRAFT_META_FILENAME = "draft.meta.json";
+/** Bounded ring of cleared and displaced drafts, shared with `omp-rpc`. */
 export const DRAFT_HISTORY_FILENAME = "draft-history.jsonl";
-/** Newest recoverable drafts kept beyond `draft.txt`; the ring never grows past this. */
-export const DRAFT_HISTORY_LIMIT = 5;
+/** Newest recovery rows kept beyond `draft.txt`; the ring never grows past this. */
+export const DRAFT_HISTORY_LIMIT = 10;
+/** Host that wrote a draft revision or ring row. */
+export type DraftSource = "tui" | "rpc";
 
-/** Composer text handed back on resume. `archivedAt` is set when it came from the recovery ring. */
+/** Composer text handed back on resume. */
 export interface RecoveredDraft {
 	text: string;
-	archivedAt?: number;
+}
+
+interface DraftMeta {
+	rev: number;
+	updatedAt: string;
+	source: DraftSource;
+}
+
+interface DraftHistoryEntry {
+	rev: number;
+	updatedAt: string;
+	source: DraftSource;
+	text: string;
 }
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
 /**
@@ -988,6 +1004,12 @@ export class SessionManager {
 	#released = false;
 	/** Set by {@link releaseRetainedEntries}: `#entries` was cleared, so `#serializeBody()` is no longer authoritative. */
 	#entriesReleased = false;
+	/** Revision of the newest draft state this process wrote or observed. */
+	#draftRevision = 0;
+	/** `draft.txt` the remembered revision belongs to; a path switch forces a re-read. */
+	#draftRevisionKey: string | null = null;
+	/** Serializes this process's read-modify-write cycles over the shared draft hosts. */
+	#draftTail: Promise<void> = Promise.resolve();
 	/** Serializes async disk work (flush/close/atomic rewrite). Appends are synchronous and bypass it. */
 	#diskTail: Promise<void> = Promise.resolve();
 	#diskFailure: Error | undefined;
@@ -2187,13 +2209,62 @@ export class SessionManager {
 		return artifactsDir ? path.join(artifactsDir, "draft.txt") : null;
 	}
 
+	#draftMetaPath(): string | null {
+		const artifactsDir = this.getArtifactsDir();
+		return artifactsDir ? path.join(artifactsDir, DRAFT_META_FILENAME) : null;
+	}
+
 	#draftHistoryPath(): string | null {
 		const artifactsDir = this.getArtifactsDir();
 		return artifactsDir ? path.join(artifactsDir, DRAFT_HISTORY_FILENAME) : null;
 	}
 
-	/** Newest-last ring entries; a torn or foreign line is skipped, never fatal. */
-	async #readDraftHistory(): Promise<RecoveredDraft[]> {
+	async #readDraftText(draftPath: string): Promise<string | null> {
+		try {
+			return await this.#storage.readText(draftPath);
+		} catch (err) {
+			if (isEnoent(err)) return null;
+			throw err;
+		}
+	}
+
+	/** CAS head shared by both host writers; an absent or torn meta file is revision 0. */
+	async #readDraftRevision(): Promise<number> {
+		const metaPath = this.#draftMetaPath();
+		if (!metaPath) return 0;
+		let content: string;
+		try {
+			content = await this.#storage.readText(metaPath);
+		} catch (err) {
+			if (isEnoent(err)) return 0;
+			throw err;
+		}
+		try {
+			const parsed = JSON.parse(content) as { rev?: unknown };
+			return typeof parsed.rev === "number" && Number.isInteger(parsed.rev) && parsed.rev >= 0 ? parsed.rev : 0;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** How a process learns the shared head: on its first draft operation for this file. */
+	async #observeDraftRevision(): Promise<number> {
+		const draftPath = this.#draftPath();
+		if (this.#draftRevisionKey !== draftPath) {
+			this.#draftRevision = await this.#readDraftRevision();
+			this.#draftRevisionKey = draftPath;
+		}
+		return this.#draftRevision;
+	}
+
+	async #writeDraftMeta(meta: DraftMeta): Promise<void> {
+		const metaPath = this.#draftMetaPath();
+		if (!metaPath) return;
+		await this.#storage.writeTextAtomic(metaPath, JSON.stringify(meta));
+	}
+
+	/** Newest-last ring rows; legacy and torn lines are tolerated, never fatal. */
+	async #readDraftHistory(): Promise<DraftHistoryEntry[]> {
 		const historyPath = this.#draftHistoryPath();
 		if (!historyPath) return [];
 		let content: string;
@@ -2203,22 +2274,34 @@ export class SessionManager {
 			if (isEnoent(err)) return [];
 			throw err;
 		}
-		const history: RecoveredDraft[] = [];
+		const history: DraftHistoryEntry[] = [];
 		for (const line of content.split("\n")) {
 			if (line.trim().length === 0) continue;
 			try {
-				const parsed = JSON.parse(line) as { text?: unknown; archivedAt?: unknown };
+				const parsed = JSON.parse(line) as {
+					rev?: unknown;
+					updatedAt?: unknown;
+					source?: unknown;
+					text?: unknown;
+					archivedAt?: unknown;
+				};
 				if (typeof parsed?.text !== "string" || parsed.text.length === 0) continue;
+				const archivedAt = typeof parsed.archivedAt === "number" ? parsed.archivedAt : 0;
 				history.push({
+					rev: typeof parsed.rev === "number" && Number.isInteger(parsed.rev) && parsed.rev >= 0 ? parsed.rev : 0,
+					updatedAt:
+						typeof parsed.updatedAt === "string" && !Number.isNaN(Date.parse(parsed.updatedAt))
+							? parsed.updatedAt
+							: new Date(archivedAt).toISOString(),
+					source: parsed.source === "rpc" ? "rpc" : "tui",
 					text: parsed.text,
-					archivedAt: typeof parsed.archivedAt === "number" ? parsed.archivedAt : undefined,
 				});
 			} catch {}
 		}
 		return history;
 	}
 
-	async #writeDraftHistory(history: readonly RecoveredDraft[]): Promise<void> {
+	async #writeDraftHistory(history: readonly DraftHistoryEntry[]): Promise<void> {
 		const historyPath = this.#draftHistoryPath();
 		if (!historyPath) return;
 		const bounded = history.slice(-DRAFT_HISTORY_LIMIT);
@@ -2233,12 +2316,12 @@ export class SessionManager {
 		await this.#storage.writeTextAtomic(historyPath, `${bounded.map(entry => JSON.stringify(entry)).join("\n")}\n`);
 	}
 
-	/** Park `text` as the newest recoverable draft; the common consecutive duplicate is ignored. */
-	async #archiveDraft(text: string): Promise<void> {
-		if (text.length === 0) return;
+	/** One recovery row; empty bodies and consecutive duplicates are not ring material. */
+	async #appendDraftHistory(entry: DraftHistoryEntry): Promise<void> {
+		if (entry.text.length === 0) return;
 		const history = await this.#readDraftHistory();
-		if (history.at(-1)?.text === text) return;
-		history.push({ text, archivedAt: Date.now() });
+		if (history.at(-1)?.text === entry.text) return;
+		history.push(entry);
 		await this.#writeDraftHistory(history);
 	}
 
@@ -2465,6 +2548,8 @@ export class SessionManager {
 
 		this.#sessionFile = resolvedSessionFile;
 		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
+		// The next draft operation learns this file's shared CAS head on demand.
+		this.#draftRevisionKey = null;
 
 		const { entries: fileEntries, titleSlot } = loaded;
 		if (fileEntries.length === 0) {
@@ -3372,22 +3457,56 @@ export class SessionManager {
 		return this.#inMemoryArtifacts?.get(id) ?? null;
 	}
 
-	async saveDraft(text: string): Promise<void> {
+	/** Serialize this process's read-modify-write cycles over the shared draft hosts. */
+	#queueDraftMutation<T>(operation: () => Promise<T>): Promise<T> {
+		const run = this.#draftTail.then(operation);
+		this.#draftTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	/**
+	 * Persist the live composer body. `source` tags the writer (`"tui"` here,
+	 * `"rpc"` in Exocortex). A non-empty write yields when another host owns a
+	 * newer revision; the abandoned body joins the recovery ring instead of
+	 * clobbering the foreign draft.
+	 */
+	saveDraft(text: string, source: DraftSource = "tui"): Promise<void> {
+		return this.#queueDraftMutation(() => this.#saveDraftLocked(text, source));
+	}
+
+	async #saveDraftLocked(text: string, source: DraftSource): Promise<void> {
 		const draftPath = this.#draftPath();
 		if (!draftPath || !this.#persist) return;
 
-		if (text.length === 0) {
-			// An empty overwrite (composer cleared by Escape/Ctrl+C, or a teardown
-			// snapshot after one) must never erase a draft that had content: park the
-			// live sidecar in the bounded ring first, then remove it so close-time GC
-			// still sees no pending draft.
-			let existing: string | null = null;
-			try {
-				existing = await this.#storage.readText(draftPath);
-			} catch (err) {
-				if (!isEnoent(err)) throw err;
+		const expectedRev = await this.#observeDraftRevision();
+		const onDiskRev = await this.#readDraftRevision();
+		if (onDiskRev !== expectedRev) {
+			// A clear that lost the race must leave the other host's draft alone.
+			if (text.length === 0) return;
+			if ((await this.#readDraftText(draftPath)) === text) {
+				this.#draftRevision = onDiskRev;
+				return;
 			}
-			if (existing !== null && existing.length > 0) await this.#archiveDraft(existing);
+			await this.#appendDraftHistory({ rev: expectedRev + 1, updatedAt: new Date().toISOString(), source, text });
+			return;
+		}
+
+		const updatedAt = new Date().toISOString();
+		if (text.length === 0) {
+			// An empty overwrite never destroys the last non-empty draft. This
+			// holds for Escape/Ctrl+C and for a deliberate select-all-and-delete:
+			// the body stays in `draft.txt` as the live source and is only copied
+			// into the ring for audit. Only a real submission unlinks the sidecar.
+			const existing = await this.#readDraftText(draftPath);
+			if (existing !== null && existing.length > 0) {
+				await this.#appendDraftHistory({ rev: expectedRev, updatedAt, source, text: existing });
+				return;
+			}
+			// Nothing was ever typed: there is no live draft to keep, so leave
+			// close-time GC its "no sidecar, no pending draft" signal.
 			try {
 				await this.#storage.unlink(draftPath);
 			} catch (err) {
@@ -3408,39 +3527,57 @@ export class SessionManager {
 			this.#draftOnlySessionCleanupArmed = true;
 		}
 		await this.#storage.writeTextAtomic(draftPath, text);
-	}
-
-	/** Forget the persisted draft and its recovery ring: a submitted message owns that text now. */
-	async discardDraft(): Promise<void> {
-		if (!this.#persist) return;
-		for (const target of [this.#draftPath(), this.#draftHistoryPath()]) {
-			if (!target) continue;
-			try {
-				await this.#storage.unlink(target);
-			} catch (err) {
-				if (!isEnoent(err)) throw err;
-			}
-		}
+		this.#draftRevision = expectedRev + 1;
+		await this.#writeDraftMeta({ rev: this.#draftRevision, updatedAt, source });
 	}
 
 	/**
-	 * Composer text to restore on resume. `draft.txt` is the live source; when it
-	 * is missing or empty, the newest entry of the bounded recovery ring wins and
-	 * `archivedAt` marks it as recovered rather than live.
+	 * A submitted message owns the draft text now: archive it in the ring, then
+	 * clear `draft.txt`. Restoring never calls this.
+	 */
+	discardDraft(text: string = "", source: DraftSource = "tui"): Promise<void> {
+		return this.#queueDraftMutation(() => this.#discardDraftLocked(text, source));
+	}
+
+	async #discardDraftLocked(text: string, source: DraftSource): Promise<void> {
+		if (!this.#persist) return;
+		const draftPath = this.#draftPath();
+		const metaPath = this.#draftMetaPath();
+		if (!draftPath || !metaPath) return;
+
+		const expectedRev = await this.#observeDraftRevision();
+		const onDiskRev = await this.#readDraftRevision();
+		const body = text.length > 0 ? text : ((await this.#readDraftText(draftPath)) ?? "");
+		const updatedAt = new Date().toISOString();
+		if (onDiskRev !== expectedRev) {
+			// Another host advanced the draft; keep its sidecar but still record the
+			// text this submission consumed.
+			await this.#appendDraftHistory({ rev: expectedRev + 1, updatedAt, source, text: body });
+			return;
+		}
+
+		await this.#appendDraftHistory({ rev: expectedRev, updatedAt, source, text: body });
+		try {
+			await this.#storage.unlink(draftPath);
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+		}
+		this.#draftRevision = expectedRev + 1;
+		await this.#writeDraftMeta({ rev: this.#draftRevision, updatedAt, source });
+	}
+
+	/**
+	 * Composer text to restore on resume. A pure read of `draft.txt`: restoring
+	 * never deletes the sidecar, so an abandoned resume (or a second restart)
+	 * still finds the same text.
 	 */
 	async consumeDraftEntry(): Promise<RecoveredDraft | null> {
 		const draftPath = this.#draftPath();
-		const live = draftPath ? await this.#consumeLiveDraft(draftPath) : null;
-		if (live && live.text.length > 0) return live;
+		if (!draftPath) return null;
+		// Adopt the shared head this resume is looking at; the next write CASes against it.
+		this.#draftRevision = await this.#readDraftRevision();
+		this.#draftRevisionKey = draftPath;
 
-		const history = await this.#readDraftHistory();
-		const archived = history.at(-1);
-		if (!archived) return null;
-		await this.#writeDraftHistory(history.slice(0, -1));
-		return archived;
-	}
-
-	async #consumeLiveDraft(draftPath: string): Promise<RecoveredDraft | null> {
 		let draft: string;
 		try {
 			draft = await this.#storage.readText(draftPath);
@@ -3448,12 +3585,8 @@ export class SessionManager {
 			if (isEnoent(err)) return null;
 			throw err;
 		}
+		if (draft.length === 0) return null;
 
-		try {
-			await this.#storage.unlink(draftPath);
-		} catch (err) {
-			if (!isEnoent(err)) throw err;
-		}
 		if (this.#entries.every(isDraftOnlyMetadataEntry) && this.#hasDraftOnlySessionMarker())
 			this.#draftOnlySessionCleanupArmed = true;
 

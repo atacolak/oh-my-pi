@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import type { DraftSource } from "../session/session-manager";
 
 /**
  * Long enough that a typing burst collapses into one write, short enough that a
@@ -8,8 +9,8 @@ export const COMPOSER_DRAFT_DEBOUNCE_MS = 175;
 
 /** Durable side of {@link ComposerDraftPersistence}; `saveDraft("")` archives, never erases. */
 export interface ComposerDraftStore {
-	saveDraft(text: string): Promise<void>;
-	discardDraft(): Promise<void>;
+	saveDraft(text: string, source?: DraftSource): Promise<void>;
+	discardDraft(text: string, source?: DraftSource): Promise<void>;
 }
 
 /**
@@ -20,9 +21,10 @@ export interface ComposerDraftStore {
  *
  * A clear (empty text) never cancels typed content: any unwritten draft is
  * handed to the store first, then the empty save runs, which parks the text in
- * the session's bounded recovery ring. {@link discard} is the only operation
- * that forgets a draft, and it is reserved for a submission that now owns the
- * text.
+ * the session's bounded recovery ring while keeping it in the live sidecar.
+ * That includes a deliberate select-all-and-delete: an empty overwrite never
+ * destroys the last non-empty draft. {@link discard} is the only operation that
+ * clears the sidecar for a submission, and it archives the submitted body first.
  */
 export class ComposerDraftPersistence {
 	readonly #store: ComposerDraftStore;
@@ -61,12 +63,15 @@ export class ComposerDraftPersistence {
 		await this.#tail;
 	}
 
-	/** Forget the persisted draft and its recovery ring: the submitted message owns the text. */
-	async discard(): Promise<void> {
+	/**
+	 * A submitted message owns `text`: archive it in the recovery ring and clear
+	 * the live draft. This is the only operation that clears a draft.
+	 */
+	async discard(text: string): Promise<void> {
 		this.#cancelTimer();
 		this.#pending = undefined;
 		this.#lastQueued = "";
-		this.#tail = this.#tail.then(() => this.#store.discardDraft()).catch(this.#logFailure);
+		this.#tail = this.#tail.then(() => this.#store.discardDraft(text)).catch(this.#logFailure);
 		await this.#tail;
 	}
 

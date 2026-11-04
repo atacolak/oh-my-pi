@@ -295,8 +295,8 @@ export class InputController {
 		},
 	) {
 		this.#draftPersistence = new ComposerDraftPersistence({
-			saveDraft: text => this.ctx.sessionManager.saveDraft(text),
-			discardDraft: () => this.ctx.sessionManager.discardDraft(),
+			saveDraft: (text, source) => this.ctx.sessionManager.saveDraft(text, source),
+			discardDraft: (text, source) => this.ctx.sessionManager.discardDraft(text, source),
 		});
 	}
 
@@ -1106,9 +1106,9 @@ export class InputController {
 
 			// The editor cleared its text before this callback ran, so the persisted
 			// draft still holds the submission. It belongs to the message now: cancel
-			// the pending debounce and drop the sidecar and recovery ring, so the next
-			// resume cannot resurrect a prompt that was already sent.
-			if (text) void this.#draftPersistence.discard();
+			// the pending debounce, archive the submitted body in the recovery ring,
+			// and clear the sidecar so a resume cannot resurrect a sent prompt.
+			if (text) void this.#draftPersistence.discard(text);
 
 			// Focused subagent session: the editor is a plain chat box for it.
 			// Everything below (slash/bash/python, loop,

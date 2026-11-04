@@ -27,6 +27,9 @@ export const DAEMON_IDLE_GRACE_ENV = "OMP_DAEMON_IDLE_GRACE_MS";
 /** Signals accepted by daemon input operations. */
 export type DaemonSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKILL";
 
+/** Terminal stream generation advertised in `ping` results; absence means the broker has no terminal streams. */
+export const DAEMON_TERMINAL_PROTOCOL_VERSION = 1;
+
 /** Typed broker operation sent over the authenticated socket. */
 export type DaemonOperation =
 	| { op: "ping" }
@@ -52,7 +55,14 @@ export type DaemonOperation =
 			timeoutMs: number;
 	  }
 	| { op: "wait"; name: string; for: "ready" | "exit"; pattern?: string; timeoutMs: number }
-	| { op: "send"; name: string; data?: string; signal?: DaemonSignal }
+	| {
+			op: "send";
+			name: string;
+			/** Expected `DaemonSnapshot.id`; a mismatched generation writes no bytes. Legacy brokers ignore it. */
+			id?: string;
+			data?: string;
+			signal?: DaemonSignal;
+	  }
 	| {
 			op: "stop";
 			name: string;
@@ -65,11 +75,19 @@ export type DaemonOperation =
 	| { op: "describe"; name: string }
 	/** Abort this connection's in-flight `wait`/follow-`logs` request `requestId`. Legacy brokers reject it. */
 	| { op: "cancel"; requestId: string }
+	/** Start a managed PTY and install this subscription before the child's first byte. */
+	| { op: "terminal_start"; subscriptionId: string; spec: DaemonSpec; columns: number; rows: number }
+	/** Stream an already running generation; the exact `DaemonSnapshot.id` is required. */
+	| { op: "terminal_attach"; subscriptionId: string; name: string; id: string; columns: number; rows: number }
+	| { op: "terminal_resize"; subscriptionId: string; name: string; id: string; columns: number; rows: number }
+	| { op: "terminal_detach"; subscriptionId: string; name: string; id: string }
+	/** Confirm receipt of every output frame up to and including `sequence`. */
+	| { op: "terminal_ack"; subscriptionId: string; name: string; id: string; sequence: number }
 	| { op: "shutdown" };
 
 /** Typed broker result decoded before it reaches tool code. */
 export type DaemonRpcResult =
-	| { op: "ping"; projectDir: string }
+	| { op: "ping"; projectDir: string; terminalProtocolVersion?: number }
 	| { op: "start"; daemon: DaemonSnapshot; readyTimedOut: boolean }
 	| { op: "list"; daemons: DaemonSnapshot[] }
 	| {
@@ -91,6 +109,11 @@ export type DaemonRpcResult =
 	| { op: "mode"; daemon: DaemonSnapshot }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
 	| { op: "cancel"; cancelled: boolean }
+	| { op: "terminal_start"; daemon: DaemonSnapshot }
+	| { op: "terminal_attach"; daemon: DaemonSnapshot; columns: number; rows: number }
+	| { op: "terminal_resize"; subscriptionId: string; name: string; id: string; columns: number; rows: number }
+	| { op: "terminal_detach"; subscriptionId: string; name: string; id: string }
+	| { op: "terminal_ack"; subscriptionId: string; name: string; id: string; sequence: number }
 	| { op: "shutdown" };
 
 /** Authenticated request envelope used by socket clients. */
@@ -118,7 +141,30 @@ export interface DaemonCompletionNotification {
 	daemon: DaemonSnapshot;
 }
 
-export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification;
+/** Unsolicited PTY bytes for one terminal subscription, in sequence order. */
+export interface DaemonTerminalOutputNotification {
+	event: "terminal_output";
+	subscriptionId: string;
+	name: string;
+	id: string;
+	sequence: number;
+	data: string;
+}
+
+/** Unsolicited owner exit reported to one terminal subscription. */
+export interface DaemonTerminalExitNotification {
+	event: "terminal_exit";
+	subscriptionId: string;
+	name: string;
+	id: string;
+	exitCode?: number;
+	reason?: string;
+}
+
+/** Streaming frames a terminal mirror acknowledges after its stdout drain accepts them. */
+export type DaemonTerminalNotification = DaemonTerminalOutputNotification | DaemonTerminalExitNotification;
+
+export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification | DaemonTerminalNotification;
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!isRecord(value)) throw new Error(`${label} must be an object`);
@@ -157,6 +203,18 @@ function numberValue(value: unknown, label: string): number {
 function optionalNumber(value: unknown, label: string): number | undefined {
 	if (value === undefined) return undefined;
 	return numberValue(value, label);
+}
+
+function positiveInteger(value: unknown, label: string): number {
+	const number = numberValue(value, label);
+	if (!Number.isInteger(number) || number <= 0) throw new Error(`${label} must be a positive integer`);
+	return number;
+}
+
+function nonNegativeInteger(value: unknown, label: string): number {
+	const number = numberValue(value, label);
+	if (!Number.isInteger(number) || number < 0) throw new Error(`${label} must be a nonnegative integer`);
+	return number;
 }
 
 function stringArray(value: unknown, label: string): string[] {
@@ -295,18 +353,46 @@ export function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 	throw new Error("response.ok must be a boolean");
 }
 
-/** Decode one broker response or unsolicited completion notification. */
+/** Decode one broker response or unsolicited notification. */
 export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 	const source = record(value, "daemon message");
-	if (source.event === "daemon-completed") {
-		return {
-			event: "daemon-completed",
-			completionId: stringValue(source.completionId, "completion.id"),
-			owner: stringValue(source.owner, "completion.owner"),
-			daemon: parseDaemonSnapshot(source.daemon),
-		};
+	if (source.event === undefined) return parseDaemonWireResponse(value);
+	return parseDaemonNotification(source);
+}
+
+function parseDaemonNotification(
+	source: Record<string, unknown>,
+): DaemonCompletionNotification | DaemonTerminalNotification {
+	const event = stringValue(source.event, "event");
+	switch (event) {
+		case "daemon-completed":
+			return {
+				event,
+				completionId: stringValue(source.completionId, "completion.id"),
+				owner: stringValue(source.owner, "completion.owner"),
+				daemon: parseDaemonSnapshot(source.daemon),
+			};
+		case "terminal_output":
+			return {
+				event,
+				subscriptionId: stringValue(source.subscriptionId, "terminal.subscriptionId"),
+				name: stringValue(source.name, "terminal.name"),
+				id: stringValue(source.id, "terminal.id"),
+				sequence: nonNegativeInteger(source.sequence, "terminal.sequence"),
+				data: rawString(source.data, "terminal.data"),
+			};
+		case "terminal_exit":
+			return {
+				event,
+				subscriptionId: stringValue(source.subscriptionId, "terminal.subscriptionId"),
+				name: stringValue(source.name, "terminal.name"),
+				id: stringValue(source.id, "terminal.id"),
+				exitCode: optionalNumber(source.exitCode, "terminal.exitCode"),
+				reason: optionalString(source.reason, "terminal.reason"),
+			};
+		default:
+			throw new Error(`Unknown daemon event: ${event}`);
 	}
-	return parseDaemonWireResponse(value);
 }
 
 function parseDaemonOperation(value: unknown): DaemonOperation {
@@ -356,6 +442,7 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 			return {
 				op,
 				name: stringValue(source.name, "operation.name"),
+				id: optionalString(source.id, "operation.id"),
 				data: optionalString(source.data, "operation.data"),
 				signal: source.signal === undefined ? undefined : daemonSignal(source.signal),
 			};
@@ -365,6 +452,47 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				name: stringValue(source.name, "operation.name"),
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
 				id: optionalString(source.id, "operation.id"),
+			};
+		case "terminal_start":
+			return {
+				op,
+				subscriptionId: stringValue(source.subscriptionId, "operation.subscriptionId"),
+				spec: parseDaemonSpec(source.spec),
+				columns: positiveInteger(source.columns, "operation.columns"),
+				rows: positiveInteger(source.rows, "operation.rows"),
+			};
+		case "terminal_attach":
+			return {
+				op,
+				subscriptionId: stringValue(source.subscriptionId, "operation.subscriptionId"),
+				name: stringValue(source.name, "operation.name"),
+				id: stringValue(source.id, "operation.id"),
+				columns: positiveInteger(source.columns, "operation.columns"),
+				rows: positiveInteger(source.rows, "operation.rows"),
+			};
+		case "terminal_resize":
+			return {
+				op,
+				subscriptionId: stringValue(source.subscriptionId, "operation.subscriptionId"),
+				name: stringValue(source.name, "operation.name"),
+				id: stringValue(source.id, "operation.id"),
+				columns: positiveInteger(source.columns, "operation.columns"),
+				rows: positiveInteger(source.rows, "operation.rows"),
+			};
+		case "terminal_detach":
+			return {
+				op,
+				subscriptionId: stringValue(source.subscriptionId, "operation.subscriptionId"),
+				name: stringValue(source.name, "operation.name"),
+				id: stringValue(source.id, "operation.id"),
+			};
+		case "terminal_ack":
+			return {
+				op,
+				subscriptionId: stringValue(source.subscriptionId, "operation.subscriptionId"),
+				name: stringValue(source.name, "operation.name"),
+				id: stringValue(source.id, "operation.id"),
+				sequence: nonNegativeInteger(source.sequence, "operation.sequence"),
 			};
 		case "restart":
 		case "describe":
@@ -387,7 +515,14 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 	const source = record(value, `${operation.op} result`);
 	switch (operation.op) {
 		case "ping":
-			return { op: "ping", projectDir: stringValue(source.projectDir, "result.projectDir") };
+			return {
+				op: "ping",
+				projectDir: stringValue(source.projectDir, "result.projectDir"),
+				terminalProtocolVersion:
+					source.terminalProtocolVersion === undefined
+						? undefined
+						: positiveInteger(source.terminalProtocolVersion, "result.terminalProtocolVersion"),
+			};
 		case "start":
 			return {
 				op: "start",
@@ -434,6 +569,39 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			};
 		case "cancel":
 			return { op: "cancel", cancelled: booleanValue(source.cancelled, "result.cancelled") };
+		case "terminal_start":
+			return { op: "terminal_start", daemon: parseDaemonSnapshot(source.daemon) };
+		case "terminal_attach":
+			return {
+				op: "terminal_attach",
+				daemon: parseDaemonSnapshot(source.daemon),
+				columns: positiveInteger(source.columns, "result.columns"),
+				rows: positiveInteger(source.rows, "result.rows"),
+			};
+		case "terminal_resize":
+			return {
+				op: "terminal_resize",
+				subscriptionId: stringValue(source.subscriptionId, "result.subscriptionId"),
+				name: stringValue(source.name, "result.name"),
+				id: stringValue(source.id, "result.id"),
+				columns: positiveInteger(source.columns, "result.columns"),
+				rows: positiveInteger(source.rows, "result.rows"),
+			};
+		case "terminal_detach":
+			return {
+				op: "terminal_detach",
+				subscriptionId: stringValue(source.subscriptionId, "result.subscriptionId"),
+				name: stringValue(source.name, "result.name"),
+				id: stringValue(source.id, "result.id"),
+			};
+		case "terminal_ack":
+			return {
+				op: "terminal_ack",
+				subscriptionId: stringValue(source.subscriptionId, "result.subscriptionId"),
+				name: stringValue(source.name, "result.name"),
+				id: stringValue(source.id, "result.id"),
+				sequence: nonNegativeInteger(source.sequence, "result.sequence"),
+			};
 		case "shutdown":
 			return { op: "shutdown" };
 	}

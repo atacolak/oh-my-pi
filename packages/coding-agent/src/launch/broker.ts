@@ -682,6 +682,12 @@ class DaemonBroker {
 				await this.#refreshDetached(record);
 				return { op: "describe", daemon: record.snapshot, spec: record.spec };
 			}
+			case "terminal_start":
+			case "terminal_attach":
+			case "terminal_resize":
+			case "terminal_detach":
+			case "terminal_ack":
+				throw new Error(`Daemon broker has no terminal stream implementation for ${operation.op}`);
 			case "shutdown":
 				return { op: "shutdown" };
 		}
@@ -1477,7 +1483,9 @@ class DaemonBroker {
 						if ("pendingCompletions" in decoded && Array.isArray(decoded.pendingCompletions)) {
 							return decoded.pendingCompletions.map(value => {
 								const message = parseDaemonWireMessage(value);
-								if (!("event" in message)) throw new Error("Pending daemon completion is not an event");
+								if (!("event" in message) || message.event !== "daemon-completed") {
+									throw new Error("Pending daemon completion is not a completion event");
+								}
 								return message;
 							});
 						}

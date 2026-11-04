@@ -150,7 +150,8 @@ class SocketPeer {
 		for (;;) {
 			const found = this.#frames.find(predicate);
 			if (found) return found;
-			if (this.#closed) throw new Error(`socket closed before a matching frame; saw ${JSON.stringify(this.#frames)}`);
+			if (this.#closed)
+				throw new Error(`socket closed before a matching frame; saw ${JSON.stringify(this.#frames)}`);
 			if (Date.now() > deadline) {
 				throw new Error(`timed out waiting for a frame; saw ${JSON.stringify(this.#frames)}`);
 			}
@@ -382,8 +383,7 @@ async function startLifetimeFixture(
 			} catch (error) {
 				const logPath = path.join(runtimeDir, "daemons", name, "output.log");
 				const previousPath = path.join(runtimeDir, "daemons", name, "output.previous.log");
-				const readLog = (file: string): string =>
-					fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+				const readLog = (file: string): string => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
 				const log = `${readLog(previousPath)}${readLog(logPath)}`.slice(-20_000);
 				const debugPath = `/tmp/omp-owner-debug-${owner.pid}.log`;
 				fs.writeFileSync(debugPath, log);

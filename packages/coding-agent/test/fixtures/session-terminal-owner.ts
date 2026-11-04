@@ -69,17 +69,22 @@ const backgroundProcess = Bun.spawn(["/bin/sh", "-c", "exec sleep 300"], {
 	cwd,
 	stdio: ["ignore", "ignore", "ignore"],
 });
-backgroundJobs.register("task", "lifetime background process", async ({ signal }) => {
-	const kill = (): void => {
-		try {
-			backgroundProcess.kill("SIGKILL");
-		} catch {}
-	};
-	if (signal.aborted) kill();
-	else signal.addEventListener("abort", kill, { once: true });
-	await backgroundProcess.exited;
-	return "background process released";
-}, { ownerId: MAIN_AGENT_ID });
+backgroundJobs.register(
+	"task",
+	"lifetime background process",
+	async ({ signal }) => {
+		const kill = (): void => {
+			try {
+				backgroundProcess.kill("SIGKILL");
+			} catch {}
+		};
+		if (signal.aborted) kill();
+		else signal.addEventListener("abort", kill, { once: true });
+		await backgroundProcess.exited;
+		return "background process released";
+	},
+	{ ownerId: MAIN_AGENT_ID },
+);
 
 const socket = createAgentSessionSocket(session, { endpointDir });
 const mode = new InteractiveMode(

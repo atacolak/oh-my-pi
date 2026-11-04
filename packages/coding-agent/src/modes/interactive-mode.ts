@@ -334,7 +334,7 @@ import {
 	type SessionObserverChangeKind,
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
-import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
+import { createSessionDetach, createSessionTeardown, type SessionDetach, type SessionTeardown } from "./session-teardown";
 import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { clearMermaidCache } from "@oh-my-pi/pi-tui/theme/mermaid-cache";
@@ -1738,6 +1738,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#autocompleteProviderFactories: AutocompleteProviderFactory[] = [];
 	#cleanupUnsubscribe?: () => void;
 	#signalTeardown?: SessionTeardown;
+	#detachSession?: SessionDetach;
+	#hangupUnsubscribe?: () => void;
 	readonly #version: string;
 	readonly #startupChangelog: StartupChangelogSelection | undefined;
 	/** Header components below the config warnings + welcome, retained so a live config-warning change can rebuild the header (#10048). */
@@ -2380,9 +2382,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Before first paint, so hints the user already learned never flash on.
 		await logger.time("InteractiveMode.init:hintUsage", () => hintUsage.load());
 
-		// Route SIGINT/SIGTERM/SIGHUP/uncaughtException through the same teardown
-		// the TUI Ctrl+C keypress path performs: persist the in-progress editor
-		// draft for `--resume`, then dispose the session (which emits the extension
+		// Route SIGINT/SIGTERM/uncaughtException through the same teardown the TUI
+		// Ctrl+C keypress path performs: persist the in-progress editor draft for
+		// `--resume`, then dispose the session (which emits the extension
 		// `session_shutdown` event, cancels the owned async job manager, disposes
 		// eval kernels, releases owned browser tabs, and closes the session
 		// manager). Without this callback a real kernel signal would drop the
@@ -2390,6 +2392,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// and orphan background bash/task processes (issue #4080). The registered
 		// callback and `shutdown()` share one promise-memoized teardown, so a
 		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
+		//
+		// SIGHUP is different once the session is published on an attach endpoint:
+		// the terminal went away, not the session. The hangup handler below claims
+		// it and detaches only the view; this disposal callback stays armed for the
+		// real quit (SIGINT/SIGTERM) and is the fallback when detach fails.
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
 			beginDispose: () => {
@@ -2408,12 +2415,24 @@ export class InteractiveMode implements InteractiveModeContext {
 				});
 			},
 		});
-		// Forward the postmortem reason (SIGTERM/SIGHUP/uncaughtException/…) so the
-		// persisted `session_exit` diagnostic carries the real trigger. Postmortem
-		// runs callbacks in REVERSE registration order — this callback (registered
-		// after the AgentSession constructor's `agent-session:<id>` recorder) runs
-		// FIRST and its dispose() would otherwise persist the generic "dispose".
+		// Forward the postmortem reason (SIGTERM/uncaughtException/…, or a SIGHUP
+		// whose detach failed) so the persisted `session_exit` diagnostic carries
+		// the real trigger. Postmortem runs callbacks in REVERSE registration
+		// order — this callback (registered after the AgentSession constructor's
+		// `agent-session:<id>` recorder) runs FIRST and its dispose() would
+		// otherwise persist the generic "dispose".
 		this.#cleanupUnsubscribe = postmortem.register("session-teardown", reason => this.#signalTeardown!(reason));
+
+		// Claim SIGHUP while this process is a live attach endpoint: closing the
+		// terminal detaches the view, it does not dispose the session or cancel
+		// its background jobs. The handler is unregistered by `stop()`, so the
+		// next real exit runs the disposal above.
+		this.#detachSession = createSessionDetach({
+			getDraftText: () => this.#inputController.getDraftText(),
+			saveDraft: text => this.sessionManager.saveDraft(text),
+			stopView: () => this.#teardownView(),
+		});
+		this.#hangupUnsubscribe = postmortem.registerHangupHandler(this.#detachSession);
 
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
@@ -7887,9 +7906,35 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#servedSessionSocket = await serveInteractiveSessionSocket({ session: this.session, socket });
 	}
 
+	/**
+	 * Detach this TUI when the terminal hangs up: persist the draft for
+	 * `--resume`, stop the renderer and its input handling, and keep the
+	 * session, its background jobs, and its attach endpoint serving. Registered
+	 * as the process's SIGHUP handler in `init()`; an explicit quit still runs
+	 * {@link shutdown}.
+	 */
+	async detachForHangup(): Promise<void> {
+		await this.#detachSession?.();
+	}
+
 	stop(): void {
 		void this.#servedSessionSocket?.close();
 		this.#servedSessionSocket = undefined;
+		this.#hangupUnsubscribe?.();
+		this.#hangupUnsubscribe = undefined;
+		this.#detachSession = undefined;
+		this.#teardownView();
+		this.#cleanupUnsubscribe?.();
+	}
+
+	/**
+	 * Release this mode's TUI-side resources: renderer, input listeners,
+	 * view-owned controllers and timers, session-event subscriptions used only
+	 * to paint, and process-global UI hooks. Shared by a real close (`stop()`)
+	 * and the SIGHUP detach, which deliberately keeps the session, its
+	 * background jobs, and the attach endpoint alive.
+	 */
+	#teardownView(): void {
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
 		this.#appearanceRefreshRequest = undefined;
@@ -7947,11 +7992,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.unsubscribe) {
 			this.unsubscribe();
 		}
-		if (this.#cleanupUnsubscribe) {
-			this.#cleanupUnsubscribe();
-		}
 		// Clear the process-global consent handler so it doesn't outlive this
-		// InteractiveMode instance (e.g. test harnesses, headless re-init).
+		// InteractiveMode instance (e.g. test harnesses, headless re-init). A
+		// detached process has no UI to host these dialogs, so it clears them
+		// too; the session itself is untouched.
 		setAutoQaConsentHandler(null, null);
 		setCfgApprovalHost(null);
 		this.#disposeImageBlobWriter?.();

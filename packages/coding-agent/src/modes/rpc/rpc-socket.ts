@@ -184,16 +184,11 @@ export class RpcSessionSocket {
 		const endpoint = ipcEndpoint(directory, identity.sessionId);
 		const sidecarPath = path.join(directory, `${identity.sessionId}.json`);
 
-		let server: IpcServer;
-		try {
-			server = await IpcServer.listen(
-				endpoint,
-				{ framing: "lines", maxFrameBytes: MAX_RPC_REASSEMBLED_BYTES },
-				conn => this.#accept(conn, createSurface),
-			);
-		} catch (error) {
-			throw error;
-		}
+		const server = await IpcServer.listen(
+			endpoint,
+			{ framing: "lines", maxFrameBytes: MAX_RPC_REASSEMBLED_BYTES },
+			conn => this.#accept(conn, createSurface),
+		);
 
 		try {
 			await writeSidecar(sidecarPath, this.#metadata(identity));
@@ -236,12 +231,13 @@ export class RpcSessionSocket {
 	}
 
 	#accept(socket: IpcConnection, createSurface: (conn: RpcClientConn) => RpcSessionSocketSurface): void {
-		let state: SocketConnectionState;
 		const conn = new RpcClientConnection({
 			id: `socket-${++this.#sequence}`,
+			// `state` is initialized before any frame can reach this sink: the
+			// listener starts below, after the state object exists.
 			send: frame => this.#send(state, frame),
 		});
-		state = {
+		const state: SocketConnectionState = {
 			conn,
 			socket,
 			decoder: new RpcFrameDecoder(),

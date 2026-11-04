@@ -10,6 +10,7 @@ import {
 	RpcSessionSocket,
 	type RpcSessionSocketIdentity,
 	type RpcSessionSocketSurface,
+	type RpcSessionSocketTerminal,
 } from "../src/modes/rpc/rpc-socket";
 
 type Frame = Record<string, unknown> & { type?: string };
@@ -101,11 +102,13 @@ function startServer(
 	directory: string,
 	session: FakeSession,
 	createSurface: (conn: RpcClientConn) => RpcSessionSocketSurface,
+	terminal?: () => RpcSessionSocketTerminal | undefined,
 ): Promise<RpcSessionSocket> {
 	const socket = new RpcSessionSocket({
 		endpointDir: directory,
 		identity: () => session.identity,
 		subscribe: listener => session.subscribe(listener),
+		...(terminal ? { terminal } : {}),
 	});
 	return socket.listen(createSurface).then(() => socket);
 }
@@ -154,8 +157,9 @@ describe("RPC session socket", () => {
 
 	async function publish(
 		createSurface: (conn: RpcClientConn) => RpcSessionSocketSurface = () => quietSurface(),
+		terminal?: () => RpcSessionSocketTerminal | undefined,
 	): Promise<{ socket: RpcSessionSocket; endpoint: string }> {
-		const socket = await startServer(directory, session, createSurface);
+		const socket = await startServer(directory, session, createSurface, terminal);
 		sockets.push(socket);
 		const endpoint = path.join(directory, "sess-1.sock");
 		return { socket, endpoint };
@@ -351,6 +355,62 @@ describe("RPC session socket", () => {
 			sessionFile: "/tmp/renamed.jsonl",
 		});
 		expect(fs.existsSync(path.join(directory, "sess-1.sock"))).toBe(true);
+	});
+
+	it("publishes broker terminal coordinates only when the process owns a broker PTY", async () => {
+		const coordinates: RpcSessionSocketTerminal = {
+			protocolVersion: 1,
+			projectDir: "/fixture/project",
+			name: "mind-a",
+			id: "generation-a",
+		};
+		const { socket } = await publish(undefined, () => coordinates);
+		expect(readSidecar(directory).terminal).toEqual(coordinates);
+		await socket.close();
+
+		await publish();
+		expect(readSidecar(directory)).not.toHaveProperty("terminal");
+	});
+
+	it("keeps broker coordinates and a consistent discovery pair across a session rebind", async () => {
+		const coordinates: RpcSessionSocketTerminal = {
+			protocolVersion: 1,
+			projectDir: "/fixture/project",
+			name: "mind-a",
+			id: "generation-a",
+		};
+		const { socket } = await publish(undefined, () => coordinates);
+		let polling = true;
+		const poll = (async () => {
+			while (polling) {
+				const names = fs.readdirSync(directory);
+				const sidecars = names.filter(entry => entry.endsWith(".json"));
+				const sockets = names.filter(entry => entry.endsWith(".sock"));
+				if (sidecars.length === 1) {
+					const metadata = JSON.parse(fs.readFileSync(path.join(directory, sidecars[0]!), "utf8")) as {
+						sessionId?: string;
+						terminal?: unknown;
+					};
+					expect(metadata.terminal).toEqual(coordinates);
+					if (sockets.length === 1) expect(sockets[0]).toBe(`${metadata.sessionId}.sock`);
+				}
+				const yielded = Promise.withResolvers<void>();
+				setImmediate(yielded.resolve);
+				await yielded.promise;
+			}
+		})();
+
+		session.identity = { ...session.identity, sessionId: "sess-2", sessionFile: "/tmp/other.jsonl" };
+		await socket.rebind();
+		polling = false;
+		await poll;
+
+		expect(fs.existsSync(path.join(directory, "sess-1.sock"))).toBe(false);
+		expect(fs.existsSync(path.join(directory, "sess-1.json"))).toBe(false);
+		expect(fs.existsSync(path.join(directory, "sess-2.sock"))).toBe(true);
+		const metadata = readSidecar(directory);
+		expect(metadata).toMatchObject({ pid: process.pid, sessionId: "sess-2" });
+		expect(metadata.terminal).toEqual(coordinates);
 	});
 
 	it("close unlinks its artifacts and severs attached clients", async () => {

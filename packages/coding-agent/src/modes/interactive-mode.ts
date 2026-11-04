@@ -111,6 +111,7 @@ import type { GoalModeState } from "../goals/state";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
 import { copyLocalArtifacts, resolveLocalRoot } from "../internal-urls";
 import { hasNativeJudge } from "../judgment";
+import { sessionOwnerContext } from "../launch/session-owner";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -7910,13 +7911,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	async attachSessionSocket(socket: RpcSessionSocket | undefined, owner?: { generation: string }): Promise<void> {
 		if (!socket || this.#servedSessionSocket) return;
 		const { serveInteractiveSessionSocket } = await import("./rpc/rpc-command-surface");
+		const generation = owner?.generation ?? sessionOwnerContext()?.id;
 		this.#servedSessionSocket = await serveInteractiveSessionSocket({
 			session: this.session,
 			socket,
 			subagentEventBus: this.#subagentEventBus,
-			...(owner
-				? { terminalControl: { generation: owner.generation, refresh: () => this.refreshTerminalAttachment() } }
-				: {}),
+			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
 		});
 	}
 

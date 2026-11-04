@@ -22,6 +22,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { IpcConnection, IpcServer, ipcEndpoint } from "@oh-my-pi/pi-natives";
 import { getBaseConfigRoot, isRecord, logger, toError } from "@oh-my-pi/pi-utils";
+import { sessionOwnerContext } from "../../launch/session-owner";
 import type { AgentSession } from "../../session/agent-session";
 import { RpcClientConnection, type RpcClientConn } from "./client-connection";
 import { MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, RpcFrameEncoder } from "./rpc-frame";
@@ -40,6 +41,14 @@ export interface RpcSessionSocketIdentity {
 	agent: string;
 }
 
+/** Broker coordinates of the PTY that hosts this process as a session owner. */
+export interface RpcSessionSocketTerminal {
+	protocolVersion: 1;
+	projectDir: string;
+	name: string;
+	id: string;
+}
+
 /** Discovery sidecar contents; see the module docs for ownership rules. */
 export interface RpcSessionSocketMetadata {
 	pid: number;
@@ -48,6 +57,7 @@ export interface RpcSessionSocketMetadata {
 	cwd: string;
 	agent: string;
 	startedAt: number;
+	terminal?: RpcSessionSocketTerminal;
 }
 
 export interface RpcSessionSocketOptions {
@@ -57,6 +67,8 @@ export interface RpcSessionSocketOptions {
 	identity: () => RpcSessionSocketIdentity;
 	/** Session event source; the socket broadcasts each event to every attached connection. */
 	subscribe: (listener: (event: object) => void) => () => void;
+	/** Broker coordinates of this process's owner PTY, read for every publication; omit when not an owner. */
+	terminal?: () => RpcSessionSocketTerminal | undefined;
 }
 
 /** Per-connection RPC surface, supplied by the transport owner that speaks the protocol. */
@@ -220,6 +232,7 @@ export class RpcSessionSocket {
 	}
 
 	#metadata(identity: RpcSessionSocketIdentity): RpcSessionSocketMetadata {
+		const terminal = this.#options.terminal?.();
 		return {
 			pid: process.pid,
 			sessionId: identity.sessionId,
@@ -227,6 +240,7 @@ export class RpcSessionSocket {
 			cwd: identity.cwd,
 			agent: identity.agent,
 			startedAt: this.#startedAt,
+			...(terminal === undefined ? {} : { terminal }),
 		};
 	}
 
@@ -351,6 +365,10 @@ export function createAgentSessionSocket(
 			agent: session.model ? `${session.model.provider}/${session.model.id}` : "unknown",
 		}),
 		subscribe: listener => session.subscribe(event => listener(event)),
+		terminal: () => {
+			const context = sessionOwnerContext();
+			return context === undefined ? undefined : { protocolVersion: 1, ...context };
+		},
 	});
 }
 

@@ -4504,8 +4504,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const declaredDiscoverableToolNames = options.toolLoad?.declared
 			? new Set(options.toolLoad.discoverable.filter(name => !options.toolLoad?.eager.includes(name)))
 			: undefined;
-		// A declared `tools:` map is a closed world for extension tools registered
-		// after construction: nothing outside it may become active.
+		// A declared `tools:` map is a closed world for every registration path:
+		// nothing outside it may become active.
 		const declaredToolLoadNames = options.toolLoad?.declared
 			? new Set([...options.toolLoad.names, ...options.toolLoad.eager, ...options.toolLoad.discoverable])
 			: undefined;
@@ -4532,13 +4532,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		// Custom tools and extension-registered tools are always included
 		// unless the effective registry winner is hidden / defaultInactive. Restricted callers own the list.
+		// MCP-origin tools follow the separate `mcps:` declaration, and caller-injected
+		// SDK custom tools are the caller's own protocol surface, not profile discovery.
 		const alwaysInclude: string[] = restrictToolNames
 			? []
 			: [
 					...sdkCustomTools.map(t => t.name),
 					...registeredTools.map(t => t.definition.name),
 					...settingsGatedCustomEntries.keys(),
-				].filter(name => !defaultInactiveToolNames.has(name));
+				].filter(
+					name =>
+						!defaultInactiveToolNames.has(name) &&
+						(declaredToolLoadNames === undefined ||
+							isMCPToolName(name) ||
+							sdkCustomToolNames.has(name) ||
+							declaredToolLoadNames.has(name)),
+				);
 		for (const name of alwaysInclude) {
 			if (toolRegistry.has(name) && !initialToolNames.includes(name)) {
 				initialToolNames.push(name);

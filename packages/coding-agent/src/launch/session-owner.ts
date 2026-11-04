@@ -1,6 +1,20 @@
 import type { DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
 import { SESSION_OWNER_WORKER_ARG } from "../cli/worker-selectors";
+import {
+	FileSessionStorage,
+	type SessionReservation,
+	type SessionStorage,
+	SessionReservationBusyError,
+	SessionReservationUnavailableError,
+} from "../session/session-storage";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
+import {
+	decideSessionAttach,
+	probeSessionAttach,
+	type SessionAttachProbe,
+	type SessionAttachRefusalCode,
+	type SessionAttachTerminal,
+} from "./session-attach";
 
 /** Private launch metadata the broker injects into a session-owner child. */
 export const SESSION_OWNER_CONTEXT_ENV = "OMP_SESSION_OWNER_CONTEXT";
@@ -65,6 +79,62 @@ export function sessionOwnerContext(): SessionOwnerContext | undefined {
 /** True only inside the hidden worker that consumed a broker launch context. */
 export function isSessionOwnerProcess(): boolean {
 	return activeContext !== undefined;
+}
+
+/** What a cold-resume owner does before it may construct a session manager. */
+export type SessionOwnerReservation =
+	| { kind: "reserved"; reservation: SessionReservation }
+	| { kind: "attach"; terminal: SessionAttachTerminal }
+	| { kind: "refuse"; code: SessionAttachRefusalCode };
+
+export interface SessionOwnerReserveOptions {
+	/** Reads the live publication and lease observation for the target; defaults to {@link probeSessionAttach}. */
+	probe?: (sessionId: string) => Promise<SessionAttachProbe>;
+	storage?: SessionStorage;
+}
+
+/**
+ * Decide a cold resume before any session mutation: attach to a live owner,
+ * refuse when ownership is not demonstrably free, or take a strict reservation
+ * of the target. The reservation is rechecked against a publication that
+ * appeared in the window, so a race winner that published after the probe is
+ * attached instead of shadowed. A caller that keeps the reservation must hand
+ * it to the manager's first claim and release it on startup failure.
+ */
+export async function reserveSessionOwnerTarget(
+	sessionId: string,
+	sessionPath: string,
+	options: SessionOwnerReserveOptions = {},
+): Promise<SessionOwnerReservation> {
+	const probe = options.probe ?? ((id: string) => probeSessionAttach(id));
+	const decision = decideSessionAttach(await probe(sessionId));
+	if (decision.kind !== "cold") return decision;
+
+	const storage = options.storage ?? new FileSessionStorage();
+	if (!storage.reserveSession) return { kind: "refuse", code: "ownership-unknown" };
+	let reservation: SessionReservation;
+	try {
+		reservation = storage.reserveSession(sessionId, sessionPath);
+	} catch (error) {
+		if (error instanceof SessionReservationBusyError) {
+			const raced = decideSessionAttach(await probe(sessionId));
+			if (raced.kind === "attach") return raced;
+			return { kind: "refuse", code: raced.kind === "refuse" ? raced.code : "owner-busy" };
+		}
+		if (error instanceof SessionReservationUnavailableError) return { kind: "refuse", code: "ownership-unknown" };
+		throw error;
+	}
+
+	// The reservation itself now answers `owner-busy`, so only a publication
+	// that appeared in the window may divert: a reachable owner is attached to
+	// and an unreachable one is refused rather than shadowed. Anything else is
+	// this reservation, which the caller keeps.
+	const after = decideSessionAttach(await probe(sessionId));
+	if (after.kind === "attach" || (after.kind === "refuse" && after.code === "terminal-unavailable")) {
+		reservation.release();
+		return after;
+	}
+	return { kind: "reserved", reservation };
 }
 
 /** Build the persistent PTY specification that re-enters the CLI as a session owner. */

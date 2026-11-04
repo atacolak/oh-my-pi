@@ -31,6 +31,7 @@ type Frame = Record<string, unknown> & {
 };
 
 interface OwnerEvent extends Frame {
+	id: string;
 	pid: number;
 	generation: string;
 	sessionId: string;

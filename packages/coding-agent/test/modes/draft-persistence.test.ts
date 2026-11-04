@@ -9,8 +9,8 @@ class RecordingDraftStore implements ComposerDraftStore {
 	async saveDraft(text: string): Promise<void> {
 		this.calls.push(`save:${text}`);
 	}
-	async discardDraft(): Promise<void> {
-		this.calls.push("discard");
+	async discardDraft(text: string): Promise<void> {
+		this.calls.push(`discard:${text}`);
 	}
 }
 
@@ -50,15 +50,15 @@ describe("ComposerDraftPersistence", () => {
 		expect(store.calls).toEqual(["save:written", "save:"]);
 	});
 
-	it("forgets a submitted draft even when its debounced write has not landed", async () => {
+	it("archives the submitted text even when its debounced write has not landed", async () => {
 		const store = new RecordingDraftStore();
 		const persistence = new ComposerDraftPersistence(store, 1000);
 
 		persistence.schedule("submitted");
-		await persistence.discard();
+		await persistence.discard("submitted");
 		await persistence.flush();
 
-		expect(store.calls).toEqual(["discard"]);
+		expect(store.calls).toEqual(["discard:submitted"]);
 	});
 
 	it("waits for the debounce before handing the draft to the store", async () => {
@@ -84,8 +84,8 @@ describe("ComposerDraftPersistence", () => {
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
 		const persistence = new ComposerDraftPersistence(
 			{
-				saveDraft: text => session.saveDraft(text),
-				discardDraft: () => session.discardDraft(),
+				saveDraft: (text, source) => session.saveDraft(text, source),
+				discardDraft: (text, source) => session.discardDraft(text, source),
 			},
 			30,
 		);

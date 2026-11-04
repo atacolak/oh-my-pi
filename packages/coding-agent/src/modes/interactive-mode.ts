@@ -2814,13 +2814,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// default through handleNewCommand instead.
 		await this.#applyPlanModeDefault();
 
-		// Restore unsent editor draft from previous session shutdown (Ctrl+D).
-		// One-shot: consumeDraftEntry removes the sidecar after read so the next
-		// resume does not re-restore the same text. Text typed while startup
-		// ran stays after it, where the caret lands. When the live sidecar is
-		// gone, the bounded recovery ring restores the last draft an empty
-		// overwrite (Esc/Ctrl+C clear, teardown race) pushed aside, and the
-		// notice makes that recovery visible instead of silent.
+		// Restore the unsent editor draft from the previous session shutdown
+		// (Ctrl+D). The read is non-destructive: a resume the person abandons,
+		// or a second restart, still finds the same text. Text typed while
+		// startup ran stays after it, where the caret lands.
 		try {
 			const recoveredDraft = await logger.time("InteractiveMode.init:draft", () =>
 				this.sessionManager.consumeDraftEntry(),
@@ -2829,15 +2826,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.editor.setText(recoveredDraft.text + this.editor.getText());
 				this.updateEditorBorderColor();
 				this.ui.requestRender();
-				// Land the restored body on disk now instead of waiting for the
-				// typing debounce: the ring entry was consumed, so a crash in the
-				// next few hundred milliseconds would otherwise take it for good.
+				// Land the merged body on disk now instead of waiting for the
+				// typing debounce, so a crash right after resume keeps the merge.
 				await this.#inputController.flushDraftPersistence();
-				if (recoveredDraft.archivedAt !== undefined) {
-					this.showWarning(
-						`Restored an unsent draft that was cleared or overwritten before the last exit (archived ${new Date(recoveredDraft.archivedAt).toLocaleString()}).`,
-					);
-				}
 			}
 		} catch (err) {
 			logger.warn("Failed to restore session draft", { error: String(err) });

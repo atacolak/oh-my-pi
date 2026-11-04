@@ -6,7 +6,7 @@
 > - **Upstream base:** [OMP 18.16.0 (`650f3a10`)](https://github.com/can1357/oh-my-pi/tree/650f3a108229ee11bf68ba3377f4e8c3391cd424)
 > - **Capabilities:**
 >   - [`cap/agent-flag`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-flag) — root agent launch via `--agent`
->   - [`cap/agent-tool-mcp-surface`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-tool-mcp-surface) — lazy agent tool/MCP mounts + MCPHub discovery
+>   - [`cap/agent-tool-mcp-surface`](https://github.com/atacolak/oh-my-pi/tree/cap/agent-tool-mcp-surface) — lazy agent tool/MCP mounts + MCPHub discovery; profile-declared `tools.discoverable` names mount under `xd://`, an explicit declaration overrides the `XDEV_KEEP_TOP_LEVEL` default, a dissolved `write` declaration stays device-only, and a declared `tools:` list stays closed to extension tools registered after construction
 >   - [`cap/collab-autostart`](https://github.com/atacolak/oh-my-pi/tree/cap/collab-autostart) — opt-in collab auto-hosting
 >   - [`cap/comments-dock`](https://github.com/atacolak/oh-my-pi/tree/cap/comments-dock) — runtime `mg` is comments dock
 >   - [`cap/episode-compaction`](https://github.com/atacolak/oh-my-pi/tree/cap/episode-compaction) — EPISODES ledger, `episode://` routes, root/agent compaction frontmatter over config

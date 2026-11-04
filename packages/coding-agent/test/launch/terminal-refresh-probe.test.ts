@@ -45,7 +45,9 @@ async function waitForEvent(
 		const found = readEvents(file).find(event => event.name === name && predicate(event));
 		if (found) return found;
 		if (Date.now() > deadline) {
-			throw new Error(`child never reported ${name}; saw ${fs.existsSync(file) ? fs.readFileSync(file, "utf8") : ""}`);
+			throw new Error(
+				`child never reported ${name}; saw ${fs.existsSync(file) ? fs.readFileSync(file, "utf8") : ""}`,
+			);
 		}
 		await Bun.sleep(25);
 	}
@@ -98,7 +100,9 @@ function mirror(client: DaemonBrokerClient, subscriptionId: string): Mirror {
 			const deadline = Date.now() + timeoutMs;
 			while (!text.includes(marker)) {
 				if (Date.now() > deadline) {
-					throw new Error(`mirror never showed ${JSON.stringify(marker)}; tail ${JSON.stringify(text.slice(-1500))}`);
+					throw new Error(
+						`mirror never showed ${JSON.stringify(marker)}; tail ${JSON.stringify(text.slice(-1500))}`,
+					);
 				}
 				const { promise, resolve } = Promise.withResolvers<void>();
 				waiters.push({ marker, resolve });

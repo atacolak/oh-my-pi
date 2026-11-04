@@ -332,7 +332,12 @@ import {
 	type SessionObserverChangeKind,
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
-import { createSessionDetach, createSessionTeardown, type SessionDetach, type SessionTeardown } from "./session-teardown";
+import {
+	createSessionDetach,
+	createSessionTeardown,
+	type SessionDetach,
+	type SessionTeardown,
+} from "./session-teardown";
 import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { clearMermaidCache } from "@oh-my-pi/pi-tui/theme/mermaid-cache";
@@ -7875,10 +7880,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * generation of the PTY this publication belongs to, which enables the
 	 * transport-local `terminal_refresh` request for an attaching mirror.
 	 */
-	async attachSessionSocket(
-		socket: RpcSessionSocket | undefined,
-		owner?: { generation: string },
-	): Promise<void> {
+	async attachSessionSocket(socket: RpcSessionSocket | undefined, owner?: { generation: string }): Promise<void> {
 		if (!socket || this.#servedSessionSocket) return;
 		const { serveInteractiveSessionSocket } = await import("./rpc/rpc-command-surface");
 		this.#servedSessionSocket = await serveInteractiveSessionSocket({

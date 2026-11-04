@@ -84,7 +84,8 @@ describe("loadHindsightConfig recall quality", () => {
 		expect(config.recallPrune).toBe(false);
 		expect(config.decisionModelUrl).toBe("http://127.0.0.1:18080");
 		expect(config.decisionModelThreshold).toBe(0.5);
-		expect(loadHindsightConfig(Settings.isolated({ "hindsight.decisionModelUrl": "  " })).decisionModelUrl).toBeNull();
+		expect(
+			loadHindsightConfig(Settings.isolated({ "hindsight.decisionModelUrl": "  " })).decisionModelUrl,
+		).toBeNull();
 	});
 });
-

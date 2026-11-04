@@ -62,22 +62,21 @@ export async function probeSessionAttach(
 	const endpoint = ipcEndpoint(endpointDir, sessionId);
 	const sidecarPath = path.join(endpointDir, `${sessionId}.json`);
 
-	const publication = await observePublication(endpoint, sidecarPath, sessionId);
-	if (publication.kind === "absent") return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	const publication = await readPublication(sidecarPath, sessionId);
 	if (publication.kind === "unknown") return { status: "unknown", sessionId, reason: publication.reason };
 	if (publication.kind === "invalid") return { status: "unreachable", sessionId, endpoint };
 
 	const observation = await observeLiveSession(endpoint, sessionId, timeoutMs);
-	if (observation === "vanished") {
-		const refreshed = await observePublication(endpoint, sidecarPath, sessionId);
-		if (refreshed.kind === "absent") return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
-		if (refreshed.kind === "unknown") return { status: "unknown", sessionId, reason: refreshed.reason };
-		return { status: "unreachable", sessionId, endpoint };
+	if (observation === "live") {
+		const terminal = terminalFromMetadata(publication.kind === "published" ? publication.metadata : undefined);
+		return terminal === undefined ? { status: "live", sessionId } : { status: "live", sessionId, terminal };
 	}
 	if (observation === "unreachable") return { status: "unreachable", sessionId, endpoint };
 
-	const terminal = terminalFromMetadata(publication.metadata);
-	return terminal === undefined ? { status: "live", sessionId } : { status: "live", sessionId, terminal };
+	const refreshed = await readPublication(sidecarPath, sessionId);
+	if (refreshed.kind === "absent") return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	if (refreshed.kind === "unknown") return { status: "unknown", sessionId, reason: refreshed.reason };
+	return { status: "unreachable", sessionId, endpoint };
 }
 
 type PublicationObservation =
@@ -92,28 +91,12 @@ interface SessionAttachMetadata {
 	terminal?: unknown;
 }
 
-async function observePublication(
-	endpoint: string,
-	sidecarPath: string,
-	sessionId: string,
-): Promise<PublicationObservation> {
-	let endpointPresent: boolean;
-	let sidecarPresent: boolean;
-	try {
-		endpointPresent = await pathExists(endpoint);
-		sidecarPresent = await pathExists(sidecarPath);
-	} catch (error) {
-		return { kind: "unknown", reason: toError(error).message };
-	}
-	if (!endpointPresent && !sidecarPresent) return { kind: "absent" };
-	if (!sidecarPresent) return { kind: "published" };
-
+async function readPublication(sidecarPath: string, sessionId: string): Promise<PublicationObservation> {
 	let raw: string;
 	try {
 		raw = await fs.readFile(sidecarPath, "utf8");
 	} catch (error) {
-		if (isEnoent(error)) return { kind: "published" };
-		return { kind: "unknown", reason: toError(error).message };
+		return isEnoent(error) ? { kind: "absent" } : { kind: "unknown", reason: toError(error).message };
 	}
 
 	let parsed: unknown;
@@ -142,16 +125,6 @@ function terminalFromMetadata(metadata: SessionAttachMetadata | undefined): Sess
 	if (typeof name !== "string" || name.length === 0) return undefined;
 	if (typeof id !== "string" || id.length === 0) return undefined;
 	return { protocolVersion: 1, projectDir, name, id };
-}
-
-async function pathExists(file: string): Promise<boolean> {
-	try {
-		await fs.lstat(file);
-		return true;
-	} catch (error) {
-		if (isEnoent(error)) return false;
-		throw error;
-	}
 }
 
 type LiveObservation = "live" | "unreachable" | "vanished";

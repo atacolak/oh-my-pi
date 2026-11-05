@@ -16,7 +16,7 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
 	"budget?": type("'low' | 'mid' | 'high' | 'xhigh' | 'max'").describe(
-		"search depth: low = quick lookup, mid = everyday default, high = multi-hop history, xhigh = score ~2400 recall candidates (measured ~32s), max = score all observations plus pending/failed facts (measured ~14s, critical use only, may truncate) (omitted = session setting)",
+		"how much of your own past experience to bring into view: low = one specific fact or name you know exists, mid = everyday context around current work, high = connected history across sessions and decisions, xhigh = broad deep sweep when phrasing may have shifted, max = every consolidated belief and unmerged fact in scope so nothing hides (omitted = session setting)",
 	),
 	"maxTokens?": type("number").describe(
 		"tokens of surviving memories to return, clamped to 512..16384 (omitted = session setting)",
@@ -33,7 +33,7 @@ const RECALL_MAX_TOKENS_MAX = 16384;
 /** Gears that score a whole candidate pool instead of trusting one server-side ranking. */
 type DeepRecallGear = "xhigh" | "max";
 
-/** Candidates the `xhigh` gear pulls from the recall trace once the server has ranked them. */
+/** Ceiling on the memories the `xhigh` gear ranks in one pass, swept or traced from the server recall. */
 const XHIGH_TRACE_CANDIDATES = 2400;
 
 /** Page size for the bank sweep; one page per round trip keeps the pass a handful of requests. */
@@ -49,7 +49,7 @@ const UNREAD_PROBE_PAGE_SIZE = 200;
 const UNREAD_PROBE_ROW_BUDGET = 2000;
 
 /**
- * Default `max` collections. Consolidated observations carry the durable beliefs, so they come
+ * Default deep-gear collections. Consolidated observations carry the durable beliefs, so they come
  * first; `pending` and `failed` catch raw facts that have not folded into an observation yet.
  * Sweeping the raw `world`/`experience` rows instead would re-score what observations already say.
  */
@@ -68,8 +68,17 @@ function clampRecallMaxTokens(value: number | undefined): number | undefined {
 interface BankSweep {
 	tags?: string[];
 	tagsMatch?: TagsMatch;
+	ceiling: number;
+	/** Stop on the page that proves the scope outgrows the ceiling instead of reading to the cap. */
+	bailOnOverflow: boolean;
 	seen: Set<string>;
 	candidates: RecallResult[];
+}
+
+/** How much of the bank a deep gear wants, and whether an oversized scope is worth paging at all. */
+interface SweepOptions {
+	ceiling: number;
+	bailOnOverflow?: boolean;
 }
 
 interface BankSweepResult {
@@ -78,18 +87,23 @@ interface BankSweepResult {
 	truncated: boolean;
 }
 
-/** Page one `memories/list` collection, deduping into the shared union; true when more rows remain. */
+/**
+ * Page one `memories/list` collection, deduping into the shared union; true when more rows remain.
+ * With `bailOnOverflow`, a page whose reported total would push the union past the ceiling stops
+ * the sweep before its items are read, so the caller can hand the whole scope to a ranked recall.
+ */
 async function sweepCollection(
 	client: HindsightApi,
 	bankId: string,
 	filter: ListMemoriesOptions,
 	sweep: BankSweep,
+	alreadyCollected: number,
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	let offset = 0;
 	let hasMore = true;
-	while (hasMore && sweep.candidates.length < MAX_BANK_SWEEP_CEILING) {
-		const limit = Math.min(BANK_SWEEP_PAGE_SIZE, MAX_BANK_SWEEP_CEILING - sweep.candidates.length);
+	while (hasMore && sweep.candidates.length < sweep.ceiling) {
+		const limit = Math.min(BANK_SWEEP_PAGE_SIZE, sweep.ceiling - sweep.candidates.length);
 		const page = await client.listMemories(bankId, {
 			...filter,
 			tags: sweep.tags,
@@ -98,6 +112,9 @@ async function sweepCollection(
 			offset,
 			signal,
 		});
+		if (sweep.bailOnOverflow && page.total !== undefined && alreadyCollected + page.total > sweep.ceiling) {
+			return true;
+		}
 		const items = page.items ?? [];
 		for (const item of items) {
 			if (sweep.seen.has(item.id)) continue;
@@ -175,7 +192,8 @@ async function hasUnreadRows(
  * Sweep the bank through `memories/list` instead of a ranked recall: the union of every requested
  * collection, deduped by id, capped at the ceiling. Truncation is reported when the cap cut a
  * collection short, or when an unvisited collection holds rows the bounded probe could not prove
- * were already scored.
+ * were already scored. With `bailOnOverflow` the sweep also stops as soon as one page proves the
+ * scope outgrows the ceiling.
  */
 async function sweepBankMemories(
 	client: HindsightApi,
@@ -183,16 +201,25 @@ async function sweepBankMemories(
 	filters: readonly ListMemoriesOptions[],
 	tags: string[] | undefined,
 	tagsMatch: TagsMatch | undefined,
+	options: SweepOptions,
 	signal?: AbortSignal,
 ): Promise<BankSweepResult> {
-	const sweep: BankSweep = { tags, tagsMatch, seen: new Set<string>(), candidates: [] };
+	const sweep: BankSweep = {
+		tags,
+		tagsMatch,
+		ceiling: options.ceiling,
+		bailOnOverflow: options.bailOnOverflow === true,
+		seen: new Set<string>(),
+		candidates: [],
+	};
 	let truncated = false;
 	for (let index = 0; index < filters.length; index++) {
-		if (sweep.candidates.length >= MAX_BANK_SWEEP_CEILING) {
+		if (sweep.candidates.length >= sweep.ceiling) {
 			truncated = await hasUnreadRows(client, bankId, filters.slice(index), sweep, signal);
 			break;
 		}
-		const hasMore = await sweepCollection(client, bankId, filters[index]!, sweep, signal);
+		const alreadyCollected = sweep.candidates.length;
+		const hasMore = await sweepCollection(client, bankId, filters[index]!, sweep, alreadyCollected, signal);
 		if (hasMore) {
 			truncated = true;
 			break;
@@ -215,6 +242,11 @@ function packByTokens(candidates: readonly RecallResult[], maxTokens: number): R
 }
 
 export type MemoryRecallParams = typeof memoryRecallSchema.infer;
+
+/** Collections a deep gear sweeps: the caller's types when given, else the consolidated-first set. */
+function deepSweepFilters(params: MemoryRecallParams): readonly ListMemoriesOptions[] {
+	return params.types && params.types.length > 0 ? params.types.map(item => ({ type: item })) : MAX_SWEEP_COLLECTIONS;
+}
 
 export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	readonly name = "recall";
@@ -318,8 +350,9 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 
 	/**
 	 * Deep gears score a whole candidate pool instead of trusting one server-side ranking.
-	 * `xhigh` asks the server for a `high`-budget recall plus its RRF trace and scores the top
-	 * candidates; `max` skips recall entirely and sweeps the bank through `memories/list`.
+	 * `xhigh` first sweeps the requested collections and, when they fit under its ceiling, scores
+	 * them directly; only a scope past the ceiling hands off to a `high`-budget traced recall.
+	 * `max` always sweeps the bank through `memories/list`.
 	 */
 	async #executeDeepGear(
 		state: HindsightSessionState,
@@ -330,45 +363,75 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 		const config = state.config;
 		const maxTokens = clampRecallMaxTokens(params.maxTokens) ?? config.recallMaxTokens;
 		const tags = mergeRecallTags(state.recallTags, params.tags);
-		let candidates: RecallResult[];
-		let truncated = false;
-		if (gear === "xhigh") {
-			const response = await state.client.recall(state.bankId, params.query, {
-				budget: "high",
-				trace: true,
-				maxTokens: RECALL_MAX_TOKENS_MAX,
-				types: params.types ?? (config.recallTypes.length > 0 ? config.recallTypes : undefined),
-				tags,
-				tagsMatch: state.recallTagsMatch,
-				signal,
-			});
-			candidates = (response.trace?.rrf_merged ?? []).slice(0, XHIGH_TRACE_CANDIDATES).map(candidate => ({
-				id: candidate.node_id,
-				text: candidate.text,
-			}));
-		} else {
-			const filters =
-				params.types && params.types.length > 0
-					? params.types.map(item => ({ type: item }))
-					: MAX_SWEEP_COLLECTIONS;
+		if (gear === "xhigh" && state.recallScorer) {
 			const sweep = await sweepBankMemories(
 				state.client,
 				state.bankId,
-				filters,
+				deepSweepFilters(params),
 				tags,
 				state.recallTagsMatch,
+				{ ceiling: XHIGH_TRACE_CANDIDATES, bailOnOverflow: true },
 				signal,
 			);
-			candidates = sweep.candidates;
-			truncated = sweep.truncated;
+			if (!sweep.truncated) {
+				return this.#packDeepResults(
+					state,
+					params.query,
+					sweep.candidates,
+					{ maxTokens, truncated: false, swept: true },
+					signal,
+				);
+			}
 		}
+		if (gear === "xhigh") {
+			const candidates = await this.#tracedCandidates(state, params, tags, signal);
+			return this.#packDeepResults(
+				state,
+				params.query,
+				candidates,
+				{ maxTokens, truncated: false, swept: false },
+				signal,
+			);
+		}
+		const sweep = await sweepBankMemories(
+			state.client,
+			state.bankId,
+			deepSweepFilters(params),
+			tags,
+			state.recallTagsMatch,
+			{ ceiling: MAX_BANK_SWEEP_CEILING },
+			signal,
+		);
 		return this.#packDeepResults(
 			state,
 			params.query,
-			candidates,
-			{ maxTokens, truncated, swept: gear === "max" },
+			sweep.candidates,
+			{ maxTokens, truncated: sweep.truncated, swept: true },
 			signal,
 		);
+	}
+
+	/** Server-ranked candidates for a scope `xhigh` cannot score directly. */
+	async #tracedCandidates(
+		state: HindsightSessionState,
+		params: MemoryRecallParams,
+		tags: string[] | undefined,
+		signal?: AbortSignal,
+	): Promise<RecallResult[]> {
+		const config = state.config;
+		const response = await state.client.recall(state.bankId, params.query, {
+			budget: "high",
+			trace: true,
+			maxTokens: RECALL_MAX_TOKENS_MAX,
+			types: params.types ?? (config.recallTypes.length > 0 ? config.recallTypes : undefined),
+			tags,
+			tagsMatch: state.recallTagsMatch,
+			signal,
+		});
+		return (response.trace?.rrf_merged ?? []).slice(0, XHIGH_TRACE_CANDIDATES).map(candidate => ({
+			id: candidate.node_id,
+			text: candidate.text,
+		}));
 	}
 
 	/** Score the candidates, drop what falls under the deep floor, then pack into the token budget. */

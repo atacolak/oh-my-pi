@@ -316,14 +316,14 @@ describe("Mnemopi tool factories", () => {
 		};
 
 		expect(reflect.description).toContain("unlike `xd://recall`, blends them");
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		expect(recall.description).toContain("`reflect` synthesizes an answer");
 		expect(recall.description).toContain("Before any `xd://memory_edit update`");
 		expect(edit.description).toContain("Only ids returned by `xd://recall`.");
 
 		// A mounted device without a summary makes catalog summaries read its description;
 		// rendering refs must not depend on them, or this recurses without bound.
 		Object.assign(recall, { summary: undefined });
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		expect(recall.description).toContain("`reflect` synthesizes an answer");
 	});
 });
 

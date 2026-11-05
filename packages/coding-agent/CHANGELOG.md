@@ -16,7 +16,7 @@
 - Added `hindsight.recallCadence` (`boundary` default, `per-turn` opt-in) so a session can re-ask the bank every turn while never repeating a memory the transcript already holds.
 - Added opt-in single-survivor abstention via `hindsight.decisionModelUrl` / `hindsight.decisionModelThreshold`: a lone low-confidence recall result is dropped, and an unreachable decision service keeps the memory.
 - Added per-call `budget`, `maxTokens`, and `types` controls to the `recall` tool, and made tool recall apply the configured single-survivor abstention gate.
-- Added `xhigh` and `max` deep recall gears: `xhigh` traces a `high` recall and scores ~2400 candidates client-side, `max` sweeps the bank through `memories/list`, both prune below the server's own `max(0.20, 0.40 * best)` floor, abstain under the decision threshold, and degrade to unscored candidates when the scorer is unavailable.
+- Added `xhigh` and `max` deep recall gears: `xhigh` sweeps the scoped collections in one pass and scores them client-side, falling back to a traced `high` recall only when that scope is too large or no scorer is configured; `max` sweeps the bank through `memories/list`. Both prune below the server's own `max(0.20, 0.40 * best)` floor, abstain under the decision threshold, and degrade to unscored candidates when the scorer is unavailable.
 
 ### Changed
 

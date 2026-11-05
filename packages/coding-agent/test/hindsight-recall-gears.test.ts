@@ -186,6 +186,28 @@ function stubFailedRows(rows: { id: string; text: string }[]) {
 	});
 }
 
+/** Answers the first sweep page with a full page and a total past any deep ceiling. */
+function stubOversizedBank() {
+	const calls: { collection: string; limit: number; offset: number }[] = [];
+	vi.spyOn(HindsightApi.prototype, "listMemories").mockImplementation(async (_bankId, options) => {
+		const collection = options?.type ?? options?.consolidationState ?? "observation";
+		const offset = options?.offset ?? 0;
+		const limit = options?.limit ?? 0;
+		calls.push({ collection, limit, offset });
+		return {
+			items: Array.from({ length: limit }, (_, index) => ({
+				id: `oversized-${offset + index}`,
+				text: `oversized ${offset + index} body`,
+				fact_type: "observation",
+			})),
+			total: 5001,
+			limit,
+			offset,
+		};
+	});
+	return { calls };
+}
+
 function settings(): Settings {
 	return Settings.isolated({ "memory.backend": "hindsight" });
 }
@@ -336,7 +358,66 @@ describe("recall.execute gears", () => {
 });
 
 describe("recall.execute deep gears", () => {
-	it("translates xhigh into a high-budget traced recall and never sends xhigh to the wire", async () => {
+	it("sweeps every scoped collection for xhigh and skips the recall call", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		const sweep = stubSweep({ observation: 3, pending: 0, failed: 0 });
+		const requests = stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(
+			await recallTool().execute("call-xhigh-sweep", { query: "where is the deploy host?", budget: "xhigh" }),
+		);
+
+		expect(recallSpy).not.toHaveBeenCalled();
+		expect(sweep.calls).toEqual([
+			{ collection: "observation", limit: 1000, offset: 0 },
+			{ collection: "pending", limit: 1000, offset: 0 },
+			{ collection: "failed", limit: 1000, offset: 0 },
+		]);
+		expect(requests.sizes).toEqual([3]);
+		expect(block).toContain("observation 0 body");
+		expect(block).toContain("observation 2 body");
+	});
+
+	it("sweeps only the requested types for xhigh", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		const calls: { type?: string; consolidationState?: string }[] = [];
+		vi.spyOn(HindsightApi.prototype, "listMemories").mockImplementation(async (_bankId, options) => {
+			const offset = options?.offset ?? 0;
+			const limit = options?.limit ?? 0;
+			calls.push({ type: options?.type, consolidationState: options?.consolidationState });
+			const count = Math.max(0, Math.min(limit, 2 - offset));
+			return {
+				items: Array.from({ length: count }, (_, index) => ({
+					id: `world-${offset + index}`,
+					text: `world fact ${offset + index}`,
+					fact_type: "world",
+				})),
+				total: 2,
+				limit,
+				offset,
+			};
+		});
+		const requests = stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(
+			await recallTool().execute("call-xhigh-types", {
+				query: "where is the deploy host?",
+				budget: "xhigh",
+				types: ["world"],
+			}),
+		);
+
+		expect(recallSpy).not.toHaveBeenCalled();
+		expect(calls).toEqual([{ type: "world", consolidationState: undefined }]);
+		expect(requests.sizes).toEqual([2]);
+		expect(block).toContain("world fact 0");
+	});
+
+	it("hands xhigh back to a traced high recall when page one busts the ceiling", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
 			results: [],
@@ -347,19 +428,125 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		const bank = stubOversizedBank();
 		stubDecisionModel(0.9);
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(
-			await recallTool().execute("call-xhigh", { query: "where is the deploy host?", budget: "xhigh" }),
+			await recallTool().execute("call-xhigh-bust", { query: "where is the deploy host?", budget: "xhigh" }),
 		);
 
+		expect(bank.calls).toEqual([{ collection: "observation", limit: 1000, offset: 0 }]);
 		expect(recallSpy.mock.calls.map(call => call[2]?.budget)).toEqual(["high"]);
 		expect(recallSpy).toHaveBeenCalledWith(
 			"test-bank",
 			"where is the deploy host?",
 			expect.objectContaining({ budget: "high", trace: true }),
 		);
+		expect(block).toContain("alpha observation");
+		expect(block).toContain("beta observation");
+	});
+
+	it("hands xhigh back to recall when the collection totals sum past the ceiling", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [],
+			trace: { rrf_merged: [{ node_id: "a", text: "alpha observation" }] },
+		} as never);
+		const calls: { collection: string; limit: number; offset: number }[] = [];
+		vi.spyOn(HindsightApi.prototype, "listMemories").mockImplementation(async (_bankId, options) => {
+			const collection = options?.type ?? options?.consolidationState ?? "observation";
+			const offset = options?.offset ?? 0;
+			const limit = options?.limit ?? 0;
+			calls.push({ collection, limit, offset });
+			const total = collection === "observation" ? 2000 : collection === "pending" ? 500 : 0;
+			const count = Math.max(0, Math.min(limit, total - offset));
+			return {
+				items: Array.from({ length: count }, (_, index) => ({
+					id: `${collection}-${offset + index}`,
+					text: `${collection} ${offset + index} body`,
+					fact_type: "observation",
+				})),
+				total,
+				limit,
+				offset,
+			};
+		});
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(await recallTool().execute("call-xhigh-sum", { query: "q", budget: "xhigh" }));
+
+		expect(calls).toEqual([
+			{ collection: "observation", limit: 1000, offset: 0 },
+			{ collection: "observation", limit: 1000, offset: 1000 },
+			{ collection: "pending", limit: 400, offset: 0 },
+		]);
+		expect(recallSpy.mock.calls.map(call => call[2]?.budget)).toEqual(["high"]);
+		expect(block).toContain("alpha observation");
+	});
+
+	it("hands xhigh back to recall when a total-less bank fills the ceiling", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [],
+			trace: { rrf_merged: [{ node_id: "a", text: "alpha observation" }] },
+		} as never);
+		const offsets: number[] = [];
+		vi.spyOn(HindsightApi.prototype, "listMemories").mockImplementation(async (_bankId, options) => {
+			const offset = options?.offset ?? 0;
+			const limit = options?.limit ?? 0;
+			offsets.push(offset);
+			const count = Math.max(0, Math.min(limit, 3000 - offset));
+			return {
+				items: Array.from({ length: count }, (_, index) => ({
+					id: `observation-${offset + index}`,
+					text: `observation ${offset + index} body`,
+					fact_type: "observation",
+				})),
+				limit,
+				offset,
+			};
+		});
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(await recallTool().execute("call-xhigh-no-total", { query: "q", budget: "xhigh" }));
+
+		expect(offsets).toEqual([0, 1000, 1000, 2000, 2000, 2400]);
+		expect(recallSpy.mock.calls.map(call => call[2]?.budget)).toEqual(["high"]);
+		expect(block).toContain("alpha observation");
+	});
+
+	it("keeps server-ranked order for xhigh when no scorer is configured", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [],
+			trace: {
+				rrf_merged: [
+					{ node_id: "a", text: "alpha observation" },
+					{ node_id: "b", text: "beta observation" },
+				],
+			},
+		} as never);
+		const listSpy = vi.spyOn(HindsightApi.prototype, "listMemories").mockResolvedValue({
+			items: [{ id: "obs-1", text: "swept observation", fact_type: "observation" }],
+			total: 1,
+			limit: 1000,
+			offset: 0,
+		} as never);
+		registerState(client);
+
+		const block = textOf(await recallTool().execute("call-xhigh-unscored", { query: "q", budget: "xhigh" }));
+
+		expect(listSpy).not.toHaveBeenCalled();
+		expect(recallSpy).toHaveBeenCalledWith(
+			"test-bank",
+			"q",
+			expect.objectContaining({ budget: "high", trace: true }),
+		);
+		expect(block).toContain("Scoring unavailable");
+		expect(block).toContain("in recall order");
 		expect(block).toContain("alpha observation");
 		expect(block).toContain("beta observation");
 	});
@@ -475,6 +662,7 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		stubOversizedBank();
 		const requests = stubDecisionModel(memory => (memory === "alpha" ? 0.9 : memory === "beta" ? 0.35 : 0.1));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
@@ -498,6 +686,7 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		stubOversizedBank();
 		stubDecisionModel(memory => (memory === "alpha" ? 0.3 : memory === "beta" ? 0.25 : 0.15));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
@@ -519,6 +708,7 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		stubOversizedBank();
 		stubDecisionModel(memory => (memory === "alpha" ? 0.55 : 0.9));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
@@ -670,6 +860,7 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		stubOversizedBank();
 		stubDecisionModel(memory => (memory === "alpha" ? 0.1 : null));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
@@ -690,6 +881,7 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		stubOversizedBank();
 		stubDecisionModel(memory => (memory === "alpha" ? 0.22 : 0.21));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
@@ -710,6 +902,7 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		stubOversizedBank();
 		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("decision service down"));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
@@ -751,6 +944,7 @@ describe("recall.execute deep gears", () => {
 				],
 			},
 		} as never);
+		stubOversizedBank();
 		stubDecisionModel(memory => (memory === "alpha" ? 0.9 : null));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
@@ -775,6 +969,7 @@ describe("recall.execute deep gears", () => {
 			},
 		} as never);
 		const requests = stubDecisionModel(0.9);
+		stubOversizedBank();
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(

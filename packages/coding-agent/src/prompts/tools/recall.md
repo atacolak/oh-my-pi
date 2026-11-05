@@ -2,15 +2,17 @@ Search long-term memory; return raw relevance-ranked matching entries.
 
 Use proactively before questions about past conversations, user preferences, project decisions, or topics where prior context improves accuracy. When in doubt, recall first.
 
-`{{toolRefs.recall}}`: specific facts or entries. `{{toolRefs.reflect}}`: synthesized answer across many memories.
+`{{toolRefs.recall}}` returns matching entries; `{{toolRefs.reflect}}` synthesizes an answer across many of them.
 
-Recall gears:
-- `budget`: search depth. `low` = quick lookup (server recall ~4s), `mid` = everyday default (~6s), `high` = multi-hop history across linked memories (~11s).
-- `xhigh`: one `high` recall plus client-side scoring of the top 2400 trace candidates (measured ~32s at 2400; scales with scope). Buys precision when one server ranking is not enough.
-- `max`: no recall at all; scores every consolidated observation plus any pending or failed raw facts in the tag-scoped bank. Raw `world`/`experience` rows that observations already represent are not re-scored (measured ~14s at 2k memories; critical use only, scales with scope). Reports truncation (`Deep recall truncated: …`) when the sweep ceiling may have left memories unread; the check is conservative, so a duplicate-only notice is possible.
-- `maxTokens`: size of the return, in tokens of surviving memories, clamped to 512..16384.
-- `types`: fact-type filter: `observation`, `world`, or `experience`.
+Recall depth follows how much of your own past experience the question needs in view:
+- `low`: one specific fact or name you know exists.
+- `mid`: everyday context around the current work.
+- `high`: connected history across sessions and decisions.
+- `xhigh`: a broad deep sweep when phrasing may have shifted.
+- `max`: every consolidated belief and unmerged fact in scope, so nothing hides.
 
-Omitted gears use the session's configured recall controls. Start at `mid`; raise to `high` when the question spans history or several linked decisions; drop to `low` for one narrow lookup. Spend `xhigh`/`max` only on hard or high-stakes questions that justify the seconds.
+Start at `mid`; go wider when the answer spans history or several linked decisions, narrower for one lookup.
+
+`types` narrows by memory shape: `observation` carries distilled living beliefs; reach for `world` or `experience` when the answer needs verbatim detail — an exact SHA, an error string, or a dated event.
 
 Results: content preview. Trailing `…`: truncation (`truncated: true`; `full_length`: original size). Before any `{{toolRefs.memory_edit}} update`, MUST fetch full row: `read memory://<id>`.

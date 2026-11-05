@@ -814,6 +814,11 @@ export class HindsightSessionState {
 		});
 	}
 
+	/** Decide whether a lone recall survivor is worth delivering; unset decision model keeps it. */
+	async keepLoneRecallSurvivor(query: string, memory: string, signal?: AbortSignal): Promise<boolean> {
+		return this.#recallDecision ? this.#recallDecision.keep(query, memory, signal) : true;
+	}
+
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
 		const generation = this.#recallGeneration;
 		try {
@@ -832,8 +837,8 @@ export class HindsightSessionState {
 			// Hindsight keeps every candidate above its relevance floor, so a bank with no
 			// matching memory still returns one survivor; only a lone result can be a floor
 			// artefact. Two results already show a real match cleared the floor.
-			if (results.length === 1 && this.#recallDecision) {
-				if (!(await this.#recallDecision.keep(query, results[0]!.text, signal))) {
+			if (results.length === 1) {
+				if (!(await this.keepLoneRecallSurvivor(query, results[0]!.text, signal))) {
 					return { context: null, ok: true, delivered: [] };
 				}
 				if (signal?.aborted) return { context: null, ok: false, delivered: [] };

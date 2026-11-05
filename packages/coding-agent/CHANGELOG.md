@@ -76,6 +76,7 @@
 - Added `hindsight.recallPreferObservations`, `hindsight.recallPrune`, and `hindsight.recallDedup` (default on) so recall can prefer observations over superseded facts and use server-side pruning/dedup where the decision model supports it.
 - Added `hindsight.recallCadence` (`boundary` default, `per-turn` opt-in) so a session can re-ask the bank every turn while never repeating a memory the transcript already holds.
 - Added opt-in single-survivor abstention via `hindsight.decisionModelUrl` / `hindsight.decisionModelThreshold`: a lone low-confidence recall result is dropped, and an unreachable decision service keeps the memory.
+- Added per-call `budget`, `maxTokens`, and `types` controls to the `recall` tool, and made tool recall apply the configured single-survivor abstention gate.
 
 ### Changed
 

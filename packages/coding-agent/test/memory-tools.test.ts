@@ -1897,6 +1897,21 @@ describe("Mnemopi backend lifecycle", () => {
 		}
 	});
 });
+/** Answers every System One request with one `noul`; counts how many were made. */
+function stubDecisionModel(noul: number): { count: number } {
+	const state = { count: 0 };
+	vi.spyOn(globalThis, "fetch").mockImplementation(
+		Object.assign(
+			async (): Promise<Response> => {
+				state.count += 1;
+				return Response.json({ answers: { m0: { type: "noul", noul } } });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		),
+	);
+	return state;
+}
+
 describe("recall.execute", () => {
 	beforeEach(() => {
 		resetSettingsForTest();
@@ -1952,6 +1967,140 @@ describe("recall.execute", () => {
 			"anything",
 			expect.objectContaining({ tags: ["project:pi"], tagsMatch: "any" }),
 		);
+	});
+
+	it("forwards a per-call budget to the client", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		registerState(client, settings);
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		await tool.execute("call-budget", { query: "anything", budget: "high" });
+
+		expect(recallSpy).toHaveBeenCalledWith("test-bank", "anything", expect.objectContaining({ budget: "high" }));
+	});
+
+	it("forwards a per-call maxTokens instead of the configured size", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		registerState(client, settings);
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		await tool.execute("call-max-tokens", { query: "anything", maxTokens: 4096 });
+
+		expect(recallSpy).toHaveBeenCalledWith("test-bank", "anything", expect.objectContaining({ maxTokens: 4096 }));
+	});
+
+	it("clamps a per-call maxTokens into the documented 512..16384 range", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		registerState(client, settings);
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		await tool.execute("call-max-tokens-low", { query: "anything", maxTokens: 100 });
+		await tool.execute("call-max-tokens-high", { query: "anything", maxTokens: 1_000_000 });
+
+		expect(recallSpy).toHaveBeenNthCalledWith(
+			1,
+			"test-bank",
+			"anything",
+			expect.objectContaining({ maxTokens: 512 }),
+		);
+		expect(recallSpy).toHaveBeenNthCalledWith(
+			2,
+			"test-bank",
+			"anything",
+			expect.objectContaining({ maxTokens: 16384 }),
+		);
+	});
+
+	it("forwards a per-call type filter instead of the configured types", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		registerState(client, settings);
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		await tool.execute("call-types", { query: "anything", types: ["observation"] });
+
+		expect(recallSpy).toHaveBeenCalledWith(
+			"test-bank",
+			"anything",
+			expect.objectContaining({ types: ["observation"] }),
+		);
+	});
+
+	it("falls back to the configured controls when the caller omits them", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		registerState(client, settings);
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		await tool.execute("call-defaults", { query: "anything" });
+
+		expect(recallSpy).toHaveBeenCalledWith(
+			"test-bank",
+			"anything",
+			expect.objectContaining({ budget: "mid", maxTokens: 1024, types: ["world", "experience"] }),
+		);
+	});
+
+	it("drops a lone survivor the decision model rejects", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [{ text: "unrelated trivia", type: "world", id: "1" }],
+		} as never);
+		const requests = stubDecisionModel(0.1);
+		registerState(client, settings, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		const result = await tool.execute("call-lone-reject", { query: "where is the deploy host?" });
+
+		expect(result.content[0]).toEqual({ type: "text", text: "No relevant memories found." });
+		expect(requests.count).toBe(1);
+	});
+
+	it("returns two results without consulting the decision model", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [
+				{ text: "fact one", type: "world", id: "1" },
+				{ text: "fact two", type: "world", id: "2" },
+			],
+		} as never);
+		const requests = stubDecisionModel(0);
+		registerState(client, settings, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		const result = await tool.execute("call-two-results", { query: "where is the deploy host?" });
+		const block = (result.content[0] as { text: string }).text;
+
+		expect(block).toContain("fact one");
+		expect(block).toContain("fact two");
+		expect(requests.count).toBe(0);
+	});
+
+	it("keeps a lone survivor the decision model accepts", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [{ text: "deploy host is beta-9", type: "world", id: "1" }],
+		} as never);
+		const requests = stubDecisionModel(0.9);
+		registerState(client, settings, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
+		const result = await tool.execute("call-lone-keep", { query: "where is the deploy host?" });
+		const block = (result.content[0] as { text: string }).text;
+
+		expect(block).toContain("deploy host is beta-9");
+		expect(requests.count).toBe(1);
 	});
 
 	it("rethrows underlying client errors", async () => {

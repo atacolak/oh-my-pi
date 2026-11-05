@@ -5,3 +5,11 @@ This agent has long-term memory.
 - Use `{{toolRefs.recall}}` proactively before answering questions about past conversations, project history, or user preferences.
 - Use `{{toolRefs.retain}}` to store durable facts (decisions, preferences, project context) the agent should remember in future sessions.
 - Use `{{toolRefs.reflect}}` for questions that need a synthesised answer over many memories.
+
+Bank topology:
+- `observation`: consolidated durable beliefs; highest signal.
+- `world`: atomic extracted facts.
+- `experience`: dated events.
+- `knowledge://` pages: curated architecture and decision documents.
+
+Narrow recall with tags: `area:<subsystem>` restricts to one area, `memory_shape:<shape>` to one memory shape; provided tags merge with the session's scope tags instead of replacing them.

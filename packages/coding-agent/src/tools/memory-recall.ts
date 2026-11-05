@@ -11,8 +11,26 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
+	"budget?": type("'low' | 'mid' | 'high'").describe(
+		"search depth: low = quick lookup, mid = everyday default, high = multi-hop history (omitted = session setting)",
+	),
+	"maxTokens?": type("number").describe(
+		"tokens of surviving memories to return, clamped to 512..16384 (omitted = session setting)",
+	),
+	"types?": type("('observation' | 'world' | 'experience')[]").describe(
+		"restrict results to these memory types (omitted = session setting)",
+	),
 	"tags?": type("string[]").describe("additional tag filters merged with the session's recall scope"),
 });
+
+const RECALL_MAX_TOKENS_MIN = 512;
+const RECALL_MAX_TOKENS_MAX = 16384;
+
+/** Per-call return size, clamped into the documented window instead of rejected. */
+function clampRecallMaxTokens(value: number | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	return Math.min(RECALL_MAX_TOKENS_MAX, Math.max(RECALL_MAX_TOKENS_MIN, Math.round(value)));
+}
 
 export type MemoryRecallParams = typeof memoryRecallSchema.infer;
 
@@ -79,13 +97,16 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 
 			try {
 				const response = await state.client.recall(state.bankId, params.query, {
-					budget: state.config.recallBudget,
-					maxTokens: state.config.recallMaxTokens,
-					types: state.config.recallTypes.length > 0 ? state.config.recallTypes : undefined,
+					budget: params.budget ?? state.config.recallBudget,
+					maxTokens: clampRecallMaxTokens(params.maxTokens) ?? state.config.recallMaxTokens,
+					types: params.types ?? (state.config.recallTypes.length > 0 ? state.config.recallTypes : undefined),
 					tags: mergeRecallTags(state.recallTags, params.tags),
 					tagsMatch: state.recallTagsMatch,
 				});
-				const results = response.results ?? [];
+				let results = response.results ?? [];
+				if (results.length === 1 && !(await state.keepLoneRecallSurvivor(params.query, results[0]!.text, signal))) {
+					results = [];
+				}
 				if (results.length === 0) {
 					return {
 						content: [{ type: "text", text: "No relevant memories found." }],

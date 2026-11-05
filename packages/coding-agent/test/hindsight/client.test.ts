@@ -275,6 +275,7 @@ describe("HindsightRecallDecision scoreBatch", () => {
 
 	it("keeps in-flight requests at two while a rejected chunk splits", async () => {
 		const hold = Promise.withResolvers<void>();
+		const splitStarted = Promise.withResolvers<void>();
 		let calls = 0;
 		let inFlight = 0;
 		let peak = 0;
@@ -282,6 +283,7 @@ describe("HindsightRecallDecision scoreBatch", () => {
 			Object.assign(
 				async (_input: FetchInput, init?: FetchInit): Promise<Response> => {
 					calls += 1;
+					if (calls === 3) splitStarted.resolve();
 					const body = JSON.parse(String(init?.body)) as QuestionBody;
 					const questions = body.questions ?? {};
 					const keys = Object.keys(questions);
@@ -303,8 +305,8 @@ describe("HindsightRecallDecision scoreBatch", () => {
 		const memories = Array.from({ length: 160 }, (_, index) => String((index + 1) / 100));
 		const done = scorer.scoreBatch("where is the deploy host?", memories);
 
-		await new Promise(resolve => setTimeout(resolve, 50));
-		expect(calls).toBeGreaterThan(2);
+		await splitStarted.promise;
+		await Promise.resolve();
 		expect(peak).toBeLessThanOrEqual(2);
 
 		hold.resolve();

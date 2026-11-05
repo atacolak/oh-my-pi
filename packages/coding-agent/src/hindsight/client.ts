@@ -756,6 +756,12 @@ interface DecisionChunkItem {
 	text: string;
 }
 
+/** One queued System One batch: items still to score and how many splits it may still undergo. */
+interface DecisionBatchTask {
+	items: DecisionChunkItem[];
+	retriesLeft: number;
+}
+
 /** Absolute score floor the server itself applies to recall candidates. */
 export const RECALL_SCORE_FLOOR = 0.2;
 /** Relative score floor: candidates within this ratio of the best score survive the server's prune. */
@@ -782,15 +788,20 @@ function estimateQuestionTokens(memory: string): number {
 	return countTokens(memory) + decisionTaskTokens + DECISION_QUESTION_OVERHEAD_TOKENS;
 }
 
-/** Greedy packing under the per-request item and token caps; an oversized memory still gets its own batch. */
-function packDecisionChunks(memories: readonly string[]): DecisionChunkItem[][] {
+/**
+ * Greedy packing under the per-request item and token caps; the query rides every request as its
+ * state, so its rendered tokens come out of the batch budget first. An oversized memory still gets
+ * its own single-question batch, and never an empty one: the server rejects a zero-question request.
+ */
+function packDecisionChunks(memories: readonly string[], queryTokens: number): DecisionChunkItem[][] {
+	const budget = DECISION_CHUNK_MAX_TOKENS - queryTokens;
 	const chunks: DecisionChunkItem[][] = [];
 	let current: DecisionChunkItem[] = [];
 	let tokens = 0;
 	for (let index = 0; index < memories.length; index++) {
 		const text = memories[index]!;
 		const estimate = estimateQuestionTokens(text);
-		if (current.length >= DECISION_CHUNK_MAX_ITEMS || tokens + estimate > DECISION_CHUNK_MAX_TOKENS) {
+		if (current.length > 0 && (current.length >= DECISION_CHUNK_MAX_ITEMS || tokens + estimate > budget)) {
 			chunks.push(current);
 			current = [];
 			tokens = 0;
@@ -841,48 +852,45 @@ export class HindsightRecallDecision {
 	/**
 	 * Score every memory against `query`, aligned to the input. A memory the service leaves
 	 * unanswered scores `null` — no evidence either way — while a failed request throws so the
-	 * caller can fall back to unscored candidates.
+	 * caller can fall back to unscored candidates. A batch the server refuses for
+	 * `max_tokens_exceeded` is split back into the shared queue, so in-flight requests never exceed
+	 * the configured concurrency, and a single memory that still cannot fit scores `null`.
 	 */
 	async scoreBatch(query: string, memories: readonly string[], signal?: AbortSignal): Promise<(number | null)[]> {
 		if (memories.length === 0) return [];
-		const chunks = packDecisionChunks(memories);
+		const queryTokens = countTokens(`Question: ${query}`);
+		if (queryTokens >= DECISION_CHUNK_MAX_TOKENS) {
+			return Array.from({ length: memories.length }, () => null);
+		}
+		const tasks: DecisionBatchTask[] = packDecisionChunks(memories, queryTokens).map(items => ({
+			items,
+			retriesLeft: 1,
+		}));
 		const scores: (number | null)[] = Array.from({ length: memories.length }, () => null);
 		let next = 0;
 		const worker = async (): Promise<void> => {
-			while (next < chunks.length) {
-				const chunk = chunks[next++]!;
-				const batch = await this.#scoreChunkWithRetry(
-					query,
-					chunk.map(item => item.text),
-					signal,
-					1,
-				);
-				for (let index = 0; index < chunk.length; index++) {
-					scores[chunk[index]!.index] = batch[index] ?? null;
+			while (next < tasks.length) {
+				const task = tasks[next++]!;
+				try {
+					const batch = await this.#scoreChunk(
+						query,
+						task.items.map(item => item.text),
+						signal,
+					);
+					for (let index = 0; index < task.items.length; index++) {
+						scores[task.items[index]!.index] = batch[index] ?? null;
+					}
+				} catch (err) {
+					if (!isMaxTokensExceeded(err)) throw err;
+					if (task.items.length < 2 || task.retriesLeft <= 0) continue;
+					const mid = Math.ceil(task.items.length / 2);
+					tasks.push({ items: task.items.slice(0, mid), retriesLeft: task.retriesLeft - 1 });
+					tasks.push({ items: task.items.slice(mid), retriesLeft: task.retriesLeft - 1 });
 				}
 			}
 		};
-		await Promise.all(Array.from({ length: Math.min(DECISION_CHUNK_CONCURRENCY, chunks.length) }, () => worker()));
+		await Promise.all(Array.from({ length: Math.min(DECISION_CHUNK_CONCURRENCY, tasks.length) }, () => worker()));
 		return scores;
-	}
-
-	async #scoreChunkWithRetry(
-		query: string,
-		memories: readonly string[],
-		signal: AbortSignal | undefined,
-		retriesLeft: number,
-	): Promise<(number | null)[]> {
-		try {
-			return await this.#scoreChunk(query, memories, signal);
-		} catch (err) {
-			if (retriesLeft <= 0 || memories.length < 2 || !isMaxTokensExceeded(err)) throw err;
-			const mid = Math.ceil(memories.length / 2);
-			const [head, tail] = await Promise.all([
-				this.#scoreChunkWithRetry(query, memories.slice(0, mid), signal, retriesLeft - 1),
-				this.#scoreChunkWithRetry(query, memories.slice(mid), signal, retriesLeft - 1),
-			]);
-			return [...head, ...tail];
-		}
 	}
 
 	async #scoreChunk(query: string, memories: readonly string[], signal?: AbortSignal): Promise<(number | null)[]> {

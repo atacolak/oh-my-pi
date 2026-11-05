@@ -16,7 +16,7 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
 	"budget?": type("'low' | 'mid' | 'high' | 'xhigh' | 'max'").describe(
-		"search depth: low = quick lookup, mid = everyday default, high = multi-hop history, xhigh = score ~2400 recall candidates (~15-25s), max = sweep and score the whole bank (~20-40s, critical use only, may truncate) (omitted = session setting)",
+		"search depth: low = quick lookup, mid = everyday default, high = multi-hop history, xhigh = score ~2400 recall candidates (measured ~32s), max = score all observations plus pending/failed facts (measured ~14s, critical use only, may truncate) (omitted = session setting)",
 	),
 	"maxTokens?": type("number").describe(
 		"tokens of surviving memories to return, clamped to 512..16384 (omitted = session setting)",
@@ -111,10 +111,32 @@ async function sweepCollection(
 	return hasMore;
 }
 
+/** Any row left in a collection the cap never reached means the sweep stopped short. */
+async function hasUnreadRows(
+	client: HindsightApi,
+	bankId: string,
+	filters: readonly ListMemoriesOptions[],
+	sweep: BankSweep,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	for (const filter of filters) {
+		const page = await client.listMemories(bankId, {
+			...filter,
+			tags: sweep.tags,
+			tagsMatch: sweep.tagsMatch,
+			limit: 1,
+			offset: 0,
+			signal,
+		});
+		if ((page.items ?? []).length > 0) return true;
+	}
+	return false;
+}
+
 /**
  * Sweep the bank through `memories/list` instead of a ranked recall: the union of every requested
- * collection, deduped by id, capped at the ceiling. A collection the cap left unread makes the
- * result truncated, so the caller can say what it did not score.
+ * collection, deduped by id, capped at the ceiling. Truncation is reported only when rows were
+ * actually left unread — the collection the cap cut short, or one the cap never reached.
  */
 async function sweepBankMemories(
 	client: HindsightApi,
@@ -126,13 +148,16 @@ async function sweepBankMemories(
 ): Promise<BankSweepResult> {
 	const sweep: BankSweep = { tags, tagsMatch, seen: new Set<string>(), candidates: [] };
 	let truncated = false;
-	for (const filter of filters) {
+	for (let index = 0; index < filters.length; index++) {
 		if (sweep.candidates.length >= MAX_BANK_SWEEP_CEILING) {
+			truncated = await hasUnreadRows(client, bankId, filters.slice(index), sweep, signal);
+			break;
+		}
+		const hasMore = await sweepCollection(client, bankId, filters[index]!, sweep, signal);
+		if (hasMore) {
 			truncated = true;
 			break;
 		}
-		const hasMore = await sweepCollection(client, bankId, filter, sweep, signal);
-		if (hasMore && sweep.candidates.length >= MAX_BANK_SWEEP_CEILING) truncated = true;
 	}
 	return { candidates: sweep.candidates, truncated };
 }
@@ -346,11 +371,16 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 			if (best < state.config.decisionModelThreshold) {
 				return { content: [{ type: "text", text: "No relevant memories found." }], details: {}, useless: true };
 			}
+			const unscored = scores.filter(score => score === null).length;
+			if (unscored > 0) notes.push(`${unscored} candidates could not be scored.`);
 			const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
 			ordered = candidates
 				.map((candidate, index) => ({ candidate, score: scores[index] ?? null }))
-				.filter(({ score }) => score === null || score >= floor)
-				.sort((left, right) => (right.score ?? -1) - (left.score ?? -1))
+				.filter(
+					(entry): entry is { candidate: RecallResult; score: number } =>
+						entry.score !== null && entry.score >= floor,
+				)
+				.sort((left, right) => right.score - left.score)
 				.map(({ candidate }) => candidate);
 		}
 		const packed = packByTokens(ordered, options.maxTokens);

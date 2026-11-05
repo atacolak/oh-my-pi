@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { ImageContent, UserMessage } from "@oh-my-pi/pi-ai";
+import { wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { normalizeModelContextImages } from "@oh-my-pi/pi-coding-agent/utils/image-loading";
 import { ensureSupportedImageInput } from "@oh-my-pi/pi-tui/chat/image-loading";
 
@@ -70,5 +72,38 @@ describe("normalizeModelContextImages", () => {
 		expect(wideDims.height).toBeLessThanOrEqual(1568);
 		expect(tallDims.width).toBeLessThanOrEqual(1568);
 		expect(tallDims.height).toBeLessThanOrEqual(1568);
+	});
+
+	test("keeps a caller-supplied image that omits the type discriminant", async () => {
+		const untyped = { data: RED_1X1_PNG_BASE64, mimeType: "image/png" } as unknown as ImageContent;
+
+		const normalized = await normalizeModelContextImages([untyped]);
+
+		const steering: UserMessage = {
+			role: "user",
+			content: [{ type: "text", text: "look at this" }, ...normalized!],
+			steering: true,
+			attribution: "user",
+			timestamp: 1,
+		};
+		const wrapped = wrapSteeringForModel([steering])[0]!;
+		const wrappedContent = "content" in wrapped ? wrapped.content : undefined;
+		const images =
+			typeof wrappedContent === "string" || wrappedContent === undefined
+				? []
+				: wrappedContent.filter((part): part is ImageContent => part.type === "image");
+		expect(images).toHaveLength(1);
+		expect(normalized).toHaveLength(1);
+		expect(normalized?.[0]?.type).toBe("image");
+	});
+
+	test("refuses an image element whose type is not image", async () => {
+		const mislabeled = {
+			type: "text",
+			data: RED_1X1_PNG_BASE64,
+			mimeType: "image/png",
+		} as unknown as ImageContent;
+
+		await expect(normalizeModelContextImages([mislabeled])).rejects.toThrow(/received type "text"/);
 	});
 });

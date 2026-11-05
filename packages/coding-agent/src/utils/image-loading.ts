@@ -265,21 +265,29 @@ export async function normalizeModelContextImages(
 		: options?.resize;
 	const normalized: ImageContent[] = [];
 	for (const image of images) {
+		const declaredType: unknown = isRecord(image) ? image.type : undefined;
+		if (declaredType !== undefined && declaredType !== null && declaredType !== "image") {
+			throw new Error(
+				`Image content must declare type "image"; received type ${JSON.stringify(declaredType)}. Expected { type: "image", data, mimeType }.`,
+			);
+		}
+		const typedImage: ImageContent =
+			declaredType === undefined || declaredType === null ? { ...image, type: "image" } : image;
 		try {
-			if (excludesWebP && isWebPImage(image)) {
-				const converted = await memoizedStbImageNormalization(image, options?.resize);
+			if (excludesWebP && isWebPImage(typedImage)) {
+				const converted = await memoizedStbImageNormalization(typedImage, options?.resize);
 				// Mixed-content callers reassemble normalized images positionally, so
 				// preserve one output slot per input. The provider-boundary pass replaces
 				// an undecodable WebP with an omission note before dispatch.
-				normalized.push(converted ?? image);
+				normalized.push(converted ?? typedImage);
 				continue;
 			}
-			const resized = await resizeImage(image, resize);
-			normalized.push({ ...image, data: resized.data, mimeType: resized.mimeType });
+			const resized = await resizeImage(typedImage, resize);
+			normalized.push({ ...typedImage, data: resized.data, mimeType: resized.mimeType });
 		} catch {
 			// Preserve existing caller behavior for decode/resize failures: keep the
 			// user's image block rather than dropping it from the turn.
-			normalized.push(image);
+			normalized.push(typedImage);
 		}
 	}
 	return normalized;

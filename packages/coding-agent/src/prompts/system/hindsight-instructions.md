@@ -5,6 +5,7 @@ This agent has long-term memory.
 - Use `{{toolRefs.recall}}` proactively before answering questions about past conversations, project history, or user preferences.
 - Use `{{toolRefs.retain}}` to store durable facts (decisions, preferences, project context) the agent should remember in future sessions.
 - Use `{{toolRefs.reflect}}` for questions that need a synthesised answer over many memories.
+- Recalled entries link their bank id as `[memory://<id>]`; `read memory://<id>` returns the full memory with its source memories and consolidation history.
 
 Bank topology:
 - `observation`: distilled living beliefs; the default signal.

@@ -1946,8 +1946,8 @@ describe("recall.execute", () => {
 		const result = await tool.execute("call-4", { query: "anything" });
 		const block = (result.content[0] as { text: string }).text;
 		expect(block).toMatch(/^Found 2 relevant memories \(as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/);
-		expect(block).toContain("- fact one [world]");
-		expect(block).toContain("- fact two");
+		expect(block).toContain("- fact one [memory://1] [world]");
+		expect(block).toContain("- fact two [memory://2]");
 	});
 
 	it("forwards recall tags + tagsMatch from session state when present", async () => {

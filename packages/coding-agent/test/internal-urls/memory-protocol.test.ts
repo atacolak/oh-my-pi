@@ -303,7 +303,7 @@ describe("MemoryProtocolHandler", () => {
 	it("throws for unknown memory namespace when no mnemopi backend is active", async () => {
 		await withMemoryFixture(async () => {
 			const router = InternalUrlRouter.instance();
-			await expect(router.resolve("memory://other/memory_summary.md")).rejects.toThrow(
+			await expect(router.resolve("memory://other")).rejects.toThrow(
 				/Unknown memory namespace: other\. Supported: root/,
 			);
 		});
@@ -787,7 +787,7 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 					cwd: dbDir.path(),
 					sessionFile: childSessionFile,
 				}),
-			).rejects.toThrow("Hindsight memories are not addressable via memory://");
+			).rejects.toThrow("was not found in the current memory scope");
 		});
 	});
 
@@ -809,18 +809,37 @@ describe("MemoryProtocolHandler — mnemopi bridge (issue #4443)", () => {
 	});
 });
 
+interface HindsightFixture {
+	bankId: string;
+	recallTags?: string[];
+	recallTagsMatch?: string;
+	scoping?: string;
+	memory?: Record<string, unknown> | null;
+}
+
 /**
- * Register a live session simulating memory.backend=hindsight: it exposes a
- * Hindsight state but no mnemopi state, so the handler must treat memory://<id>
- * as unaddressable and return a corrective pointer (issue #7587).
+ * Register a live main session simulating memory.backend=hindsight: the session owns a bank whose
+ * `GET /memories/{id}` returns `memory` and whose scope tags answer `memory://<id>` reads.
  */
-function withHindsightSession(fn: () => Promise<void>): Promise<void> {
+function withHindsightSession(state: HindsightFixture, fn: () => Promise<void>): Promise<void> {
+	const unit = state.memory ?? {
+		id: "a1b2c3d4e5f6",
+		text: "deploy host is beta-9",
+		tags: ["scope:project:alpha"],
+	};
+	const hindsightState = {
+		bankId: state.bankId,
+		recallTags: state.recallTags ?? ["scope:project:alpha"],
+		recallTagsMatch: state.recallTagsMatch ?? "all_strict",
+		config: { scoping: state.scoping ?? "per-project-tagged" },
+		client: { getMemory: async () => unit },
+	};
 	const session = {
-		getHindsightSessionState: () => ({ bankId: "test-bank" }),
+		getHindsightSessionState: () => hindsightState,
 	} as unknown as AgentSession;
 	AgentRegistry.global().register({
-		id: "test-hindsight",
-		displayName: "test-hindsight",
+		id: `test-hindsight-${state.bankId}`,
+		displayName: `test-hindsight-${state.bankId}`,
 		kind: "main",
 		session,
 		sessionFile: null,
@@ -828,7 +847,7 @@ function withHindsightSession(fn: () => Promise<void>): Promise<void> {
 	return fn();
 }
 
-describe("MemoryProtocolHandler — hindsight (issue #7587)", () => {
+describe("MemoryProtocolHandler — hindsight memory reads", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		InternalUrlRouter.resetForTests();
@@ -839,25 +858,78 @@ describe("MemoryProtocolHandler — hindsight (issue #7587)", () => {
 		InternalUrlRouter.resetForTests();
 	});
 
-	it("returns a corrective error for memory://<id> when hindsight is active", async () => {
-		await withHindsightSession(async () => {
-			const router = InternalUrlRouter.instance();
-			await expect(router.resolve("memory://a1b2c3d4e5f6")).rejects.toThrow(
-				/Hindsight memories are not addressable via memory:\/\/.*use `recall`.*`reflect`/s,
-			);
+	it("resolves memory://<id> to the full memory with sources, history, and provenance", async () => {
+		await withHindsightSession(
+			{
+				bankId: "test-bank",
+				memory: {
+					id: "mem-1",
+					text: "deploy host is beta-9",
+					type: "observation",
+					mentioned_at: "2026-01-01T00:00:00Z",
+					tags: ["scope:project:alpha"],
+					metadata: { episode_id: "episode-1" },
+					source_memories: [{ id: "src-1", text: "raw fact", type: "world", mentioned_at: "2025-12-01" }],
+					history: [{ previous_text: "deploy host was alpha-1", changed_at: "2026-01-02" }],
+				},
+			},
+			async () => {
+				const resource = await InternalUrlRouter.instance().resolve("memory://mem-1");
+				expect(resource.url).toBe("memory://mem-1");
+				expect(resource.contentType).toBe("text/markdown");
+				expect(resource.immutable).toBe(true);
+				expect(resource.content).toStartWith(
+					"# memory://mem-1\ntype: observation\nmentioned_at: 2026-01-01T00:00:00Z\n",
+				);
+				expect(resource.content).toContain("tags: scope:project:alpha");
+				expect(resource.content).toContain("episode: episode://episode-1");
+				expect(resource.content).toContain("deploy host is beta-9");
+				expect(resource.content).toContain("## Source Memories");
+				expect(resource.content).toContain("- memory://src-1 [world] (2025-12-01) raw fact");
+				expect(resource.content).toContain("## History");
+				expect(resource.content).toContain("- (2026-01-02) deploy host was alpha-1");
+			},
+		);
+	});
+
+	it("fails closed for a personal memory read from a project scope", async () => {
+		await withHindsightSession(
+			{
+				bankId: "test-bank",
+				memory: { id: "mem-2", text: "personal secret", tags: ["scope:personal"] },
+			},
+			async () => {
+				await expect(InternalUrlRouter.instance().resolve("memory://mem-2")).rejects.toThrow(
+					"Memory mem-2 was not found in the current memory scope.",
+				);
+			},
+		);
+	});
+
+	it("fails closed when more than one primary bank could answer a contextless read", async () => {
+		await withHindsightSession({ bankId: "bank-one" }, async () => {
+			await withHindsightSession({ bankId: "bank-two" }, async () => {
+				await expect(InternalUrlRouter.instance().resolve("memory://a1b2c3d4e5f6")).rejects.toThrow(
+					"Memory a1b2c3d4e5f6 was not found in the current memory scope.",
+				);
+			});
 		});
 	});
 
 	it("uses the calling session backend when hindsight and mnemopi sessions coexist", async () => {
 		await withMnemopiSession(async () => {
-			await withHindsightSession(async () => {
-				const router = InternalUrlRouter.instance();
+			await withHindsightSession({ bankId: "test-bank" }, async () => {
 				const settings = Settings.isolated({ "memory.backend": "hindsight" });
-				await expect(router.resolve("memory://a1b2c3d4e5f6", { settings })).rejects.toThrow(
-					/Hindsight memories are not addressable via memory:\/\//,
-				);
+				const resource = await InternalUrlRouter.instance().resolve("memory://a1b2c3d4e5f6", { settings });
+				expect(resource.content).toContain("deploy host is beta-9");
 			});
 		});
+	});
+
+	it("rejects extra path segments on a memory id", async () => {
+		await expect(InternalUrlRouter.instance().resolve("memory://mem-1/extra")).rejects.toThrow(
+			/memory:\/\/<memory-id> takes no path/,
+		);
 	});
 
 	it("keeps the generic namespace error when no memory backend is active", async () => {
@@ -891,7 +963,7 @@ describe("MemoryProtocolHandler — file-backed root vs non-local backends (issu
 			await Bun.write(path.join(memoryRoot, "memory_summary.md"), "stale local summary");
 			const settings = Settings.isolated({ "memory.backend": "hindsight" });
 			await expect(InternalUrlRouter.instance().resolve("memory://root", { cwd, settings })).rejects.toThrow(
-				"File-backed memory artifacts only exist with memory.backend=local (active backend: hindsight). Use `recall`/`reflect` to search Hindsight memories.",
+				"File-backed memory artifacts only exist with memory.backend=local (active backend: hindsight). Use `recall`/`reflect` to search Hindsight memories, or `read memory://<memory-id>` for a full memory.",
 			);
 		} finally {
 			setAgentDir(previousAgentDir);

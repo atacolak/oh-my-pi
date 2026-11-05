@@ -308,6 +308,7 @@ describe("recall.execute gears", () => {
 			results: [{ text: "unrelated trivia", type: "world", id: "1" }],
 		} as never);
 		const requests = stubDecisionModel(0.1);
+		stubOversizedBank();
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const result = await recallTool().execute("call-lone-reject", { query: "where is the deploy host?" });
@@ -325,6 +326,7 @@ describe("recall.execute gears", () => {
 			],
 		} as never);
 		const requests = stubDecisionModel(0);
+		stubOversizedBank();
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(await recallTool().execute("call-two-results", { query: "where is the deploy host?" }));
@@ -340,6 +342,7 @@ describe("recall.execute gears", () => {
 			results: [{ text: "deploy host is beta-9", type: "world", id: "1" }],
 		} as never);
 		const requests = stubDecisionModel(0.9);
+		stubOversizedBank();
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(await recallTool().execute("call-lone-keep", { query: "where is the deploy host?" }));
@@ -980,5 +983,57 @@ describe("recall.execute deep gears", () => {
 		expect(block).toContain("Scoring unavailable");
 		expect(block).toContain("alpha");
 		expect(block).toContain("beta");
+	});
+});
+
+describe("recall.execute uniform sweep gears", () => {
+	it("sweeps a fitted low scope inside its cap and skips the server recall", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		const sweep = stubSweep({ observation: 3, pending: 0, failed: 0 });
+		const requests = stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(
+			await recallTool().execute("call-low-sweep", { query: "where is the deploy host?", budget: "low" }),
+		);
+
+		expect(recallSpy).not.toHaveBeenCalled();
+		expect(sweep.calls.map(call => call.collection)).toEqual(["observation", "pending", "failed"]);
+		expect(sweep.calls[0]).toEqual({ collection: "observation", limit: 300, offset: 0 });
+		expect(requests.sizes).toEqual([3]);
+		expect(block).toContain("observation 0 body");
+	});
+
+	it("keeps a sweep that exactly fills the mid cap instead of ranking it", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		const sweep = stubSweep({ observation: 600, pending: 0, failed: 0 });
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const result = await recallTool().execute("call-mid-full", { query: "q", budget: "mid" });
+
+		expect(recallSpy).not.toHaveBeenCalled();
+		expect(result.details).toEqual({ truncated: false });
+		expect(sweep.calls[0]).toEqual({ collection: "observation", limit: 600, offset: 0 });
+	});
+
+	it("hands a scope past the gear cap to the server-ranked recall", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [{ id: "ranked-1", text: "ranked memory body", type: "observation" }],
+		} as never);
+		const bank = stubOversizedBank();
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(await recallTool().execute("call-mid-bust", { query: "q", budget: "mid" }));
+
+		expect(bank.calls).toEqual([{ collection: "observation", limit: 600, offset: 0 }]);
+		expect(recallSpy).toHaveBeenCalledTimes(1);
+		expect(recallSpy).toHaveBeenCalledWith("test-bank", "q", expect.objectContaining({ budget: "mid" }));
+		expect(recallSpy.mock.calls[0]![2]?.trace).toBeUndefined();
+		expect(block).toContain("ranked memory body");
 	});
 });

@@ -16,6 +16,7 @@ import {
 	reloadMentalModelsForSession,
 } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
+import type { HindsightAgentMemoryPolicy } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { HindsightRetainQueue, type HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { MemoryReflectTool } from "@oh-my-pi/pi-coding-agent/tools/memory-reflect";
@@ -57,6 +58,7 @@ interface FakeSessionDeps {
 	settings?: Settings;
 	xdevEntries?: Array<{ name: string; summary: string }>;
 	agentProfile?: string;
+	agentMemory?: HindsightAgentMemoryPolicy;
 }
 
 function makeFakeSession(deps: FakeSessionDeps) {
@@ -107,6 +109,7 @@ function makeFakeSession(deps: FakeSessionDeps) {
 			return () => listeners.delete(listener);
 		},
 		getAgentProfileName: () => deps.agentProfile,
+		getAgentMemoryPolicy: () => deps.agentMemory,
 		refreshBaseSystemPrompt: vi.fn().mockResolvedValue(undefined),
 		settleMemoryBackend: async () => {},
 		getHindsightSessionState: () => hindsightState,
@@ -1659,5 +1662,54 @@ describe("hindsightBackend retain queue flush on session teardown", () => {
 		await state!.flushRetainQueue();
 
 		expect(retainBatchSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe("hindsightBackend agent memory policy", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		delete process.env.HINDSIGHT_AUTO_RETAIN;
+	});
+
+	const startWithPolicy = async (
+		agentMemory: HindsightAgentMemoryPolicy,
+	): Promise<HindsightSessionState | undefined> => {
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		const session = makeFakeSession({ sessionId: "policy-session", settings, agentMemory });
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		return session.getHindsightSessionState();
+	};
+
+	it("narrows the session's auto retain from the root agent frontmatter", async () => {
+		const state = await startWithPolicy({ autoRetain: false });
+		expect(state).toBeDefined();
+		expect(state!.config.autoRetain).toBe(false);
+		expect(state!.config.autoRecall).toBe(true);
+	});
+
+	it("keeps the settings default when the agent declares no policy", async () => {
+		const state = await startWithPolicy({});
+		expect(state!.config.autoRetain).toBe(true);
+		expect(state!.config.autoRecall).toBe(true);
+	});
+
+	it("lets HINDSIGHT_AUTO_RETAIN override the agent policy", async () => {
+		process.env.HINDSIGHT_AUTO_RETAIN = "true";
+		const state = await startWithPolicy({ autoRetain: false });
+		expect(state!.config.autoRetain).toBe(true);
 	});
 });

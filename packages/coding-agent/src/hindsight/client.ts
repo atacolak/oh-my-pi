@@ -115,6 +115,29 @@ export interface ListMemoriesResponse {
 	offset?: number;
 }
 
+/** One source memory behind a consolidated memory, as `GET /memories/{id}` reports it. */
+export interface HindsightMemorySource {
+	id?: string;
+	text?: string;
+	type?: string | null;
+	context?: string | null;
+	mentioned_at?: string | null;
+}
+
+/** A single memory unit with its provenance: the shape `GET /v1/default/banks/{bank_id}/memories/{id}` returns. */
+export interface HindsightMemoryUnit {
+	id: string;
+	text: string;
+	type?: string | null;
+	fact_type?: string | null;
+	date?: string | null;
+	mentioned_at?: string | null;
+	tags?: string[] | null;
+	metadata?: Record<string, unknown> | null;
+	history?: Record<string, unknown>[] | null;
+	source_memories?: HindsightMemorySource[] | null;
+}
+
 export interface DocumentResponse {
 	[key: string]: unknown;
 }
@@ -502,6 +525,20 @@ export class HindsightApi {
 				},
 				signal: options?.signal,
 			},
+		);
+	}
+
+	/** Read one memory unit (with source memories and history); null when the bank has no such id. */
+	async getMemory(
+		bankId: string,
+		memoryId: string,
+		options?: HindsightRequestOptions,
+	): Promise<HindsightMemoryUnit | null> {
+		return this.#request<HindsightMemoryUnit | null>(
+			"GET",
+			`/v1/default/banks/${encodeURIComponent(bankId)}/memories/${encodeURIComponent(memoryId)}`,
+			"getMemory",
+			{ allow404: true, signal: options?.signal },
 		);
 	}
 

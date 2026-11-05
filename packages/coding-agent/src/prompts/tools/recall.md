@@ -15,4 +15,4 @@ Start at `mid`; go wider when the answer spans history or several linked decisio
 
 `types` narrows by memory shape: `observation` carries distilled living beliefs; reach for `world` or `experience` when the answer needs verbatim detail — an exact SHA, an error string, or a dated event.
 
-Results: content preview. Trailing `…`: truncation (`truncated: true`; `full_length`: original size). Before any `{{toolRefs.memory_edit}} update`, MUST fetch full row: `read memory://<id>`.
+Results: content preview. Trailing `…`: truncation (`truncated: true`; `full_length`: original size). Each entry links its bank id as `[memory://<id>]`; `read memory://<id>` returns the full memory with its source memories and consolidation history. Before any `{{toolRefs.memory_edit}} update`, MUST fetch the full row first.

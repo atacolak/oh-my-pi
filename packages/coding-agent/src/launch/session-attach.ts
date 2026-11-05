@@ -169,14 +169,16 @@ export async function probeSessionAttach(
 	}
 	if (observation === "unreachable") {
 		const current = await readPublication(sidecarPath, sessionId);
-		if (current.kind === "published" && current.metadata !== undefined && !isPidAlive(current.metadata.pid)) {
+		if (publisherProvablyGone(current)) {
 			return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
 		}
 		return { status: "unreachable", sessionId, endpoint };
 	}
 
 	const refreshed = await readPublication(sidecarPath, sessionId);
-	if (refreshed.kind === "absent") return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	if (refreshed.kind === "absent" || publisherProvablyGone(refreshed)) {
+		return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	}
 	if (refreshed.kind === "unknown") return { status: "unknown", sessionId, reason: refreshed.reason };
 	return { status: "unreachable", sessionId, endpoint };
 }
@@ -186,6 +188,12 @@ type PublicationObservation =
 	| { kind: "published"; metadata?: SessionAttachMetadata }
 	| { kind: "invalid" }
 	| { kind: "unknown"; reason: string };
+
+function publisherProvablyGone(publication: PublicationObservation): boolean {
+	return (
+		publication.kind === "published" && publication.metadata !== undefined && !isPidAlive(publication.metadata.pid)
+	);
+}
 
 interface SessionAttachMetadata {
 	pid: number;

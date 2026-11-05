@@ -25,6 +25,11 @@ async function stalePublication(sessionId: string): Promise<void> {
 	fs.writeFileSync(fixture!.endpointFor(sessionId), "", { mode: 0o600 });
 }
 
+/** A sidecar left by a dead publisher whose socket path has been removed. */
+async function vanishedPublication(sessionId: string): Promise<void> {
+	fixture!.writeSidecar(sessionId, { ...metadataFor(sessionId, TERMINAL), pid: await deadOwnerPid() });
+}
+
 function targetFor(fixture: AttachFixture, sessionId: string): ResolvedSessionTarget {
 	return {
 		session: {
@@ -69,6 +74,53 @@ describe("stale session endpoints", () => {
 		fixture = new AttachFixture();
 		const sessionId = sessionIdFor();
 		await stalePublication(sessionId);
+		const target = targetFor(fixture, sessionId);
+		const lease = tryAcquireSessionLease(sessionId);
+		expect(lease).not.toBeNull();
+		try {
+			const probe = await probeSessionAttach(sessionId, { endpointDir: fixture.runDir, timeoutMs: 500 });
+
+			expect(decideSessionAttach(probe)).toEqual({ kind: "refuse", code: "owner-busy" });
+
+			const gate = await gateSessionTarget(target, {
+				cwd: fixture.temp.path(),
+				sessionDir: fixture.sessionsDir,
+				endpointDir: fixture.runDir,
+			});
+			expect(gate).toEqual({ kind: "refuse", sessionId, code: "owner-busy" });
+		} finally {
+			lease?.release();
+		}
+	});
+
+	it("reports a dead publisher whose socket path is gone as absent, so the gate may resume cold", async () => {
+		fixture = new AttachFixture();
+		const sessionId = sessionIdFor();
+		await vanishedPublication(sessionId);
+		const target = targetFor(fixture, sessionId);
+		expect(fs.existsSync(fixture.endpointFor(sessionId))).toBe(false);
+
+		const probe = await probeSessionAttach(sessionId, { endpointDir: fixture.runDir, timeoutMs: 500 });
+
+		expect(probe).toEqual({ status: "absent", sessionId, leaseHeld: false });
+		expect(decideSessionAttach(probe)).toEqual({ kind: "cold", sessionId });
+
+		const gate = await gateSessionTarget(target, {
+			cwd: fixture.temp.path(),
+			sessionDir: fixture.sessionsDir,
+			endpointDir: fixture.runDir,
+		});
+		try {
+			expect(gate.kind).toBe("cold");
+		} finally {
+			if (gate.kind === "cold") gate.reservation.release();
+		}
+	});
+
+	it("keeps refusing a dead publisher's vanished endpoint while the session lease is held", async () => {
+		fixture = new AttachFixture();
+		const sessionId = sessionIdFor();
+		await vanishedPublication(sessionId);
 		const target = targetFor(fixture, sessionId);
 		const lease = tryAcquireSessionLease(sessionId);
 		expect(lease).not.toBeNull();

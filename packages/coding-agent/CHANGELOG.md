@@ -325,6 +325,10 @@
 
 - `omp --resume`, `--continue`, and the session picker now reconnect to a session that is already running in another omp process instead of opening a second copy; a live session that cannot be attached, or whose owner cannot be verified, refuses with a non-zero exit, and only a session with no owner opens cold
 
+### Fixed
+
+- Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
+
 ## [18.16.0] - 2026-11-02
 
 ### Added

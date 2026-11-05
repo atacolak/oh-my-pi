@@ -39,7 +39,7 @@ Behavior notes:
 Before opening an existing session, startup reads that session's owner publication (socket + discovery sidecar). The result is the launch's only decision:
 
 - **LIVE**: attach. `--resume <id>`, `--resume <path>`, `--continue`, auto-resume, and a picker selection mirror the owner's PTY and request a full repaint. Attach needs an interactive terminal; `-p` and RPC refuse instead.
-- **STALE** (publication present, endpoint unreachable) or **UNKNOWN** (ownership unreadable): refuse with a non-zero exit; no session is opened.
+- **STALE** (publication present, endpoint unreachable, publisher pid not provably gone) or **UNKNOWN** (ownership unreadable): refuse with a non-zero exit; no session is opened. A publication whose publisher pid is provably dead falls to the **ABSENT** bullets: the ownership lease decides between a cold strict reservation and an `owner-busy` refusal.
 - **ABSENT** with a free ownership lease: open cold under a strict reservation.
 - **ABSENT** with the lease held: refuse as `owner-busy`; the reservation is never bypassed.
 - `--fork`, `--from-claude`/`--from-codex`, `--no-session`, and a process re-entering its own owner role do not consult the decision.

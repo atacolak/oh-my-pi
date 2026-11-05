@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { IpcConnection, ipcEndpoint } from "@oh-my-pi/pi-natives";
-import { getBaseConfigRoot, isEnoent, isRecord, toError, withTimeout } from "@oh-my-pi/pi-utils";
+import { getBaseConfigRoot, isEnoent, isPidAlive, isRecord, toError, withTimeout } from "@oh-my-pi/pi-utils";
 import { isSessionLeaseHeld } from "../session/session-storage";
 
 export interface SessionAttachTerminal {
@@ -167,10 +167,18 @@ export async function probeSessionAttach(
 		const terminal = terminalFromMetadata(publication.kind === "published" ? publication.metadata : undefined);
 		return terminal === undefined ? { status: "live", sessionId } : { status: "live", sessionId, terminal };
 	}
-	if (observation === "unreachable") return { status: "unreachable", sessionId, endpoint };
+	if (observation === "unreachable") {
+		const current = await readPublication(sidecarPath, sessionId);
+		if (publisherProvablyGone(current)) {
+			return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+		}
+		return { status: "unreachable", sessionId, endpoint };
+	}
 
 	const refreshed = await readPublication(sidecarPath, sessionId);
-	if (refreshed.kind === "absent") return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	if (refreshed.kind === "absent" || publisherProvablyGone(refreshed)) {
+		return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	}
 	if (refreshed.kind === "unknown") return { status: "unknown", sessionId, reason: refreshed.reason };
 	return { status: "unreachable", sessionId, endpoint };
 }
@@ -180,6 +188,12 @@ type PublicationObservation =
 	| { kind: "published"; metadata?: SessionAttachMetadata }
 	| { kind: "invalid" }
 	| { kind: "unknown"; reason: string };
+
+function publisherProvablyGone(publication: PublicationObservation): boolean {
+	return (
+		publication.kind === "published" && publication.metadata !== undefined && !isPidAlive(publication.metadata.pid)
+	);
+}
 
 interface SessionAttachMetadata {
 	pid: number;

@@ -7,6 +7,8 @@
 - RPC clients can now manage MCP servers: `get_mcp_status` lists configured, disabled and plugin servers with their live state, `set_mcp_enabled` persists and applies enablement, and `mcp_reauth` runs the OAuth flow on the calling connection; the `compact` command accepts an explicit `mode` (`soft`, `remote` or `snapcompact`) and refuses unknown values
 - Interactive sessions now publish an owner-only attach endpoint (`~/.omp/run/<session-id>.sock` plus a JSON discovery sidecar) that serves the same RPC command surface as `--mode rpc`, so external clients can attach, negotiate, prompt or steer, receive session events and register host tools; the endpoint moves when the session switches, and a client disconnect detaches only that client instead of ending the session
 - `omp --mode rpc` and `--mode rpc-ui` now run in RPC bridge mode against the same brokered session owner as interactive launches: a live session is reached through a stdio-to-socket bridge, a cold launch starts one detached owner, and closing stdin only closes the bridge, leaving the session, its turn, and its endpoint running; a `bridge-<pid>.json` sidecar lets detached keepers find the bridge, while `--no-ui` and `--no-session` keep the in-process stdio lifecycle; WebUI clients attach to `<session-id>.sock` directly, not through the stdio bridge
+- Generation-managed sessions now report their birth generation and the current generation in `get_state.generation` (with a `behind` flag) and carry the running generation in the `<session-id>.json` sidecar, so hosts can show an upgrade badge as soon as the `current` symlink moves
+- Added the typed `upgrade_runtime` RPC command: it re-executes a busy session owner in place once it settles (or immediately with `force`), steps onto `generations/current`, keeps the same pid, PTY, session, and socket, and returns `whenIdle` scheduling or typed refusal reasons; the stdio bridge reconnects to the rebinding socket across the image replacement
 - Attached socket clients can answer the terminal's `select`, `confirm`, `input`, `editor`, and opted-in `ask` dialogs: the first answer settles the dialog and cancels the sibling presentation, and a client disconnect never cancels a dialog the terminal or another client can still answer; a shared session socket refuses `new_session`, `switch_session`, `open_session`, `fork`, and `handoff`, and serves per-view event filters, branch navigation, `/btw`, goals, live voice, dictation, login, and `mcp_*`
 
 ### Changed
@@ -15,6 +17,7 @@
 
 ### Fixed
 
+- Child-process RPC tests now run with hermetic `OMP_RUN_DIR`, `HOME`, and `PI_CODING_AGENT_DIR`, and `--no-session` launches no longer publish an attach socket that could never be resumed, so running the suite leaves no dead `.json`/`.sock` sidecars in `~/.omp/run`
 - Session attach endpoints now honor `OMP_RUN_DIR` for publication and discovery, matching RPC clients, so sessions kept in a custom run directory can be resumed, attached, and refreshed from the directory they publish in
 - Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
 

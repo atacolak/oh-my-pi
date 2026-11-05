@@ -52,6 +52,7 @@ A CLI `--mode rpc` / `--mode rpc-ui` launch without `--no-session` and without `
 - Otherwise the process starts a detached brokered PTY owner with `--mode rpc` / `--mode=rpc` / `--mode rpc-ui` / `--mode=rpc-ui` removed from its argv, so the owner boots `InteractiveMode` and publishes both `terminal` and `<session-id>.sock`. It waits for that publication before bridging.
 - The bridge forwards each JSONL frame in both directions, including the endpoint's own `ready` frame. EOF on stdin closes only the bridge: the owner, its socket, its terminal publication, and any running turn survive. If the socket closes because the owner quit, the bridge exits `0`. A WebUI client must connect to `<session-id>.sock` directly; the stdio bridge is a command channel, not a WebUI attach surface.
 - The bridge writes an owner-only (`0600`) `bridge-<pid>.json` sidecar in the endpoint directory (`{ pid, sessionId, ownerPid, startedAt }`) before forwarding `ready`, and removes it on exit, so detached-keeper launchers can find the session by the bridge process id instead of parsing `<session-id>.json`.
+- When the owner's socket closes while stdin is still open and the published `ownerPid` is still alive, the bridge keeps reconnecting to the same `<session-id>.sock` for up to 15 seconds. An owner `/restart` or `upgrade_runtime` re-executes in place (same pid) and rebinds the socket, so the bridge and its clients ride through the image replacement without losing the session.
 - `--no-ui` and `--no-session` keep the historical in-process stdio lifecycle; so do print mode, ACP, and re-entry into an owner process. Only brokered sockets refuse transcript swaps (`new_session`, `switch_session`, `open_session`, `fork`, `handoff`); `set_event_filter`, `set_ask_dialog`, branch navigation, `/btw`, goals, live voice, dictation, login, and `mcp_*` are served per view.
 - When an interactive owner has attached socket clients, its TUI dialogs (`select`, `confirm`, `input`, `editor`, and opt-in `ask`) also broadcast as `extension_ui_request` frames. The first answer settles the dialog and cancels the other presentation; a client disconnect never cancels a dialog the terminal or another client can still answer.
 
@@ -166,6 +167,7 @@ Important edge behavior from runtime:
 ### State
 
 - `{ id?, type: "get_state" }`
+- `{ id?, type: "upgrade_runtime", whenIdle?: boolean, force?: boolean }`
 - `{ id?, type: "set_fast_mode", enabled: boolean }`
 - `{ id?, type: "set_slow_mode", enabled: boolean }`
 - `{ id?, type: "goal", op: "get" | "create" | "resume" | "pause" | "drop", objective?: string, token_budget?: number }`
@@ -564,6 +566,14 @@ field is absent outside both stages. No event carries it, so re-read
 
 Fields whose values are `undefined` are omitted from JSON, including an unset
 model/thinking level, session name/file, or unavailable `contextUsage`.
+
+`generation` is present only when the running entry lives inside a managed
+`<root>/generations/<40-hex>/...` layout. `running` is the generation this
+process was born in; `current` is what the `current` symlink resolves to at read
+time, read fresh on every `get_state`. `behind` is `true` when the two differ,
+so a long-lived owner reports an upgrade as soon as `current` is repointed on
+disk. The `<session-id>.json` discovery sidecar carries the owner's `generation`
+string alongside its pid and session id.
 `dumpTools` may also include each tool's `examples` alongside its schema.
 It lists only the agent's **top-level tool definitions**, not the full mounted
 inventory. With the default `tools.xdev: true`, enabled discoverable tools,
@@ -598,6 +608,22 @@ Clients should render the queue from these snapshots instead of tracking chips
 independently, and treat removal responses as confirmation rather than a second
 source of truth. `queuedMessageCount` also includes advisor cards and pending
 next-turn messages, so it is not necessarily the number of user-authored chips.
+
+### `upgrade_runtime` payload
+
+`upgrade_runtime` re-executes the owner on `generations/current` when the
+running generation is behind it, keeping the same pid, PTY, session, and socket:
+
+- `{ upgraded: false, scheduled: false, reason: "not_generation_managed" }` when the process is not generation-managed.
+- `{ upgraded: false, scheduled: false, running, current, reason: "already_current" }` when `running === current`; any armed idle upgrade is cancelled.
+- `{ upgraded: false, scheduled: true, running, current, reason: "scheduled_on_idle" }` for `whenIdle: true` while the session is busy; the upgrade runs as soon as the session settles and is still behind.
+- `success: false, code: "session_busy"` while streaming, compacting, or holding queued or async work without `force: true` or `whenIdle: true`.
+- `{ upgraded: true, scheduled: false, running, current }` when settled or forced; the restart begins after the response frame flushes.
+- `success: false, code: "upgrade_unavailable"` when the serving process cannot replace its own image (for example headless `--no-ui`).
+
+The command is served whenever the owner wires a restart callback, including
+interactive sessions and their attach socket. Over the stdio bridge it reaches
+the owner through `<session-id>.sock`.
 
 ### `goal` payload
 

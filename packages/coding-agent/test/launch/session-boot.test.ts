@@ -1,12 +1,22 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { IpcServer, ipcEndpoint } from "@oh-my-pi/pi-natives";
+import { removeSyncWithRetries, withTimeout } from "@oh-my-pi/pi-utils";
 import { describe, expect, test } from "bun:test";
 import {
 	type BrokeredLaunchSelection,
 	ownerArgvForSession,
+	runStdioRpcBridge,
 	shouldBootBrokeredSession,
 	stripBareResumeArgs,
 	stripRpcModeArgs,
 } from "../../src/launch/session-boot";
-import { consumeSessionOwnerContext, SESSION_OWNER_CONTEXT_ENV } from "../../src/launch/session-owner";
+import {
+	consumeSessionOwnerContext,
+	resetSessionOwnerContextForTest,
+	SESSION_OWNER_CONTEXT_ENV,
+} from "../../src/launch/session-owner";
 
 function selection(overrides: Partial<BrokeredLaunchSelection> = {}): BrokeredLaunchSelection {
 	return {
@@ -26,10 +36,12 @@ function selection(overrides: Partial<BrokeredLaunchSelection> = {}): BrokeredLa
 function outsideOwner<T>(run: () => T): T {
 	const previous = process.env[SESSION_OWNER_CONTEXT_ENV];
 	delete process.env[SESSION_OWNER_CONTEXT_ENV];
+	resetSessionOwnerContextForTest();
 	try {
 		return run();
 	} finally {
 		if (previous !== undefined) process.env[SESSION_OWNER_CONTEXT_ENV] = previous;
+		resetSessionOwnerContextForTest();
 	}
 }
 
@@ -144,4 +156,59 @@ describe("ownerArgvForSession", () => {
 			"019f",
 		]);
 	});
+});
+
+describe("runStdioRpcBridge", () => {
+	test("delivers frames above the write high-water mark exactly once", async () => {
+		const endpointDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-bridge-highwater-"));
+		const sessionId = "bridge-highwater";
+		const endpoint = ipcEndpoint(endpointDir, sessionId);
+		const sizes: number[] = [];
+		const ack = Promise.withResolvers<void>();
+		const server = await IpcServer.listen(endpoint, { framing: "lines" }, connection => {
+			connection.start(
+				line => {
+					if (line.includes('"probe":"done"')) {
+						connection.send('{"type":"probe_ack"}');
+						return;
+					}
+					sizes.push(Buffer.byteLength(line));
+				},
+				() => {},
+			);
+		});
+		let controller!: ReadableStreamDefaultController<Uint8Array>;
+		const input = new ReadableStream<Uint8Array>({
+			start(c) {
+				controller = c;
+			},
+		});
+		const output = {
+			write(chunk: string) {
+				if (chunk.includes("probe_ack")) ack.resolve();
+				return true;
+			},
+		};
+		const bridge = runStdioRpcBridge({ sessionId, socketPath: endpoint, endpointDir, input, output });
+		let inputClosed = false;
+		try {
+			const encoder = new TextEncoder();
+			const big = "x".repeat(1_200_000);
+			for (let index = 0; index < 3; index++) {
+				controller.enqueue(encoder.encode(`{"id":"big-${index}","pad":"${big}"}\n`));
+			}
+			controller.enqueue(encoder.encode('{"probe":"done"}\n'));
+			await withTimeout(ack.promise, 15_000, "bridge did not deliver the probe ack");
+			expect(sizes).toHaveLength(3);
+			for (const size of sizes) expect(size).toBeGreaterThan(1_000_000);
+		} finally {
+			if (!inputClosed) {
+				inputClosed = true;
+				controller.close();
+			}
+			await withTimeout(bridge, 15_000, "bridge did not exit after stdin closed").catch(() => undefined);
+			await server.close();
+			removeSyncWithRetries(endpointDir);
+		}
+	}, 20_000);
 });

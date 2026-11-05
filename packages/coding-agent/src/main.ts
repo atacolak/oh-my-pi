@@ -3061,10 +3061,14 @@ export async function runRootCommand(
 			}
 
 			// The live session is fully initialized here, before any mode owns stdio or
-			// the terminal. RPC and terminal sessions publish an attach endpoint; the
-			// listener starts when the runner wires its command surface.
+			// the terminal. Persistent RPC and terminal sessions publish an attach
+			// endpoint; the listener starts when the runner wires its command surface.
+			// `--no-session` sessions have no on-disk transcript to resume or attach
+			// to, so publishing an endpoint for them only leaves dead sidecars behind.
 			const sessionSocket =
-				mode === "rpc" || mode === "rpc-ui" || isInteractive
+				(mode === "rpc" || mode === "rpc-ui" || isInteractive) &&
+				parsedArgs.noSession !== true &&
+				session.sessionFile !== undefined
 					? (await import("./modes/rpc/rpc-socket")).createAgentSessionSocket(session)
 					: undefined;
 

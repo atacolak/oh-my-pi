@@ -58,6 +58,7 @@ import type {
 	RpcSubagentProgressFrame,
 	RpcSubagentSnapshot,
 	RpcSubagentSubscriptionLevel,
+	RpcUpgradeRuntimeResult,
 } from "./rpc-types";
 
 /** Distributive Omit that works with union types */
@@ -845,6 +846,20 @@ export class RpcClient {
 					? state.tokensPerSecond
 					: null,
 		};
+	}
+
+	/**
+	 * Restart this session owner onto `generations/current` when it is behind.
+	 * `whenIdle` arms the upgrade until the session settles; `force` runs it even
+	 * while a turn is streaming.
+	 */
+	async upgradeRuntime(options: { whenIdle?: boolean; force?: boolean } = {}): Promise<RpcUpgradeRuntimeResult> {
+		const response = await this.#send({
+			type: "upgrade_runtime",
+			whenIdle: options.whenIdle,
+			force: options.force,
+		});
+		return this.#getData(response);
 	}
 
 	/**

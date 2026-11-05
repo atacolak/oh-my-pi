@@ -3065,6 +3065,37 @@ impl<'de> Deserialize<'de> for UsageLimitState {
 	}
 }
 
+/// Runtime generation layout of the process serving the session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeGenerationState {
+	/// Generation directory the process was born in.
+	pub running: String,
+	/// The running generation is no longer the one `current` selects.
+	pub behind: bool,
+	/// Generation `generations/current` points at, when readable.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub current: Option<String>,
+}
+
+/// Outcome of `upgrade_runtime`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpgradeRuntimeResult {
+	/// The owner is restarting onto `current` now.
+	pub upgraded: bool,
+	/// An idle-triggered upgrade is armed.
+	#[serde(default = "default_upgrade_runtime_result_scheduled")]
+	pub scheduled: bool,
+	/// Generation the owner runs now.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub running: Option<String>,
+	/// Generation `generations/current` selects, when readable.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub current: Option<String>,
+	/// Why no upgrade is running now.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<UpgradeRuntimeResultReason>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
@@ -3128,6 +3159,9 @@ pub struct SessionState {
 	pub dump_tools: Vec<ToolDescriptor>,
 	#[serde(rename = "contextUsage", default, skip_serializing_if = "Option::is_none")]
 	pub context_usage: Option<ContextUsage>,
+	/// Runtime generation of this process; absent when the entrypoint is not generation-managed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub generation: Option<RuntimeGenerationState>,
 	/// Current goal mode; null when the session has no goal.
 	#[serde(default = "default_session_state_goal")]
 	pub goal: Option<GoalModeState>,
@@ -5330,6 +5364,14 @@ pub struct OpenSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpgradeRuntimeParams {
+	#[serde(rename = "whenIdle", default, skip_serializing_if = "Option::is_none")]
+	pub when_idle: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub force: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetFastModeParams {
 	pub enabled: bool,
 }
@@ -6030,6 +6072,27 @@ impl<'de> Deserialize<'de> for LitCompleted {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum UpgradeRuntimeResultReason {
+	#[serde(rename = "already_current")]
+	AlreadyCurrent,
+	#[serde(rename = "not_generation_managed")]
+	NotGenerationManaged,
+	#[serde(rename = "scheduled_on_idle")]
+	ScheduledOnIdle,
+}
+
+impl UpgradeRuntimeResultReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::AlreadyCurrent => "already_current",
+			Self::NotGenerationManaged => "not_generation_managed",
+			Self::ScheduledOnIdle => "scheduled_on_idle",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LogoutAccountType {
 	#[serde(rename = "api_key")]
 	ApiKey,
@@ -6133,6 +6196,10 @@ impl HostUriResultContentType {
 
 fn default_queued_messages_state_live_steered() -> i64 {
 	serde_json::from_str("0").expect("valid wire default")
+}
+
+fn default_upgrade_runtime_result_scheduled() -> bool {
+	serde_json::from_str("false").expect("valid wire default")
 }
 
 fn default_session_state_is_streaming() -> bool {
@@ -6446,6 +6513,25 @@ impl Command for GetStateCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SessionState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Restart the session owner onto the current runtime generation, now or when idle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UpgradeRuntimeCommand {
+	#[serde(rename = "whenIdle", default, skip_serializing_if = "Option::is_none")]
+	pub when_idle: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub force: Option<bool>,
+}
+
+impl Command for UpgradeRuntimeCommand {
+	const NAME: &'static str = "upgrade_runtime";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = UpgradeRuntimeResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<UpgradeRuntimeResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

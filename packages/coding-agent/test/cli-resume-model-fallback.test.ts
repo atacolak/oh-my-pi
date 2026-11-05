@@ -99,6 +99,7 @@ describe("headless startup resume", () => {
 							HOME: tempDir.join("home"),
 							// os.homedir() reads USERPROFILE on Windows.
 							USERPROFILE: tempDir.join("home"),
+							OMP_RUN_DIR: tempDir.join("run"),
 							TMPDIR: process.env.TMPDIR,
 							NO_COLOR: "1",
 						},
@@ -271,6 +272,7 @@ describe("headless runtime session switch", () => {
 					PATH: process.env.PATH,
 					HOME: path.join(cwd, "home"),
 					USERPROFILE: path.join(cwd, "home"),
+					OMP_RUN_DIR: path.join(cwd, "run"),
 					TMPDIR: process.env.TMPDIR,
 					NO_COLOR: "1",
 				},

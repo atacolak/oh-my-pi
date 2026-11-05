@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { IpcConnection, ipcEndpoint } from "@oh-my-pi/pi-natives";
-import { isRecord, isEnoent, readLines, Snowflake, toError } from "@oh-my-pi/pi-utils";
+import { isEnoent, isPidAlive, isRecord, readLines, Snowflake, toError } from "@oh-my-pi/pi-utils";
 import { flagConsumesValue } from "../cli/flag-tables";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import type { DaemonBrokerClient } from "./client";
@@ -107,6 +107,12 @@ const OWNER_SESSION_SELECTORS: Readonly<Record<string, true>> = {
 	"--from-claude": true,
 	"--from-codex": true,
 };
+
+/** How long a stdio bridge follows an owner that re-publishes its socket in place. */
+const BRIDGE_RECONNECT_BUDGET_MS = 15_000;
+const BRIDGE_RECONNECT_INITIAL_DELAY_MS = 50;
+const BRIDGE_RECONNECT_MAX_DELAY_MS = 500;
+const BRIDGE_RECONNECT_CONNECT_TIMEOUT_MS = 1_000;
 
 /**
  * Point an owner relaunch at the exact session the parent gate resolved,
@@ -507,6 +513,11 @@ function unlinkBridgeSync(file: string): void {
  * Forward stdio RPC frames to the session socket and the socket's frames back.
  * Stdin EOF closes only this connection: the owner, its socket and its terminal
  * stay alive for the next client.
+ *
+ * An owner `/restart` or `upgrade_runtime` keeps the same pid and re-publishes
+ * the same socket path in place, so a socket close is retried while stdin
+ * stays open and the owner pid is alive; frames written in between are held and
+ * flushed on the next connection.
  */
 export async function runStdioRpcBridge(options: StdioRpcBridgeOptions): Promise<number> {
 	const input = options.input ?? Bun.stdin.stream();
@@ -525,29 +536,96 @@ export async function runStdioRpcBridge(options: StdioRpcBridgeOptions): Promise
 	process.on("exit", onProcessExit);
 	process.on("SIGINT", onSignal);
 	process.on("SIGTERM", onSignal);
-	const connection = await IpcConnection.connect(options.socketPath, { framing: "lines", timeoutMs: 10_000 });
+	let connection: IpcConnection | undefined = await IpcConnection.connect(options.socketPath, {
+		framing: "lines",
+		timeoutMs: 10_000,
+	});
 	const finished = Promise.withResolvers<void>();
 	const decoder = new TextDecoder();
+	const buffered: string[] = [];
+	let flushChain: Promise<void> = Promise.resolve();
+	const flushBuffered = (target: IpcConnection): Promise<void> => {
+		const run = async (): Promise<void> => {
+			while (buffered.length > 0 && !target.closed) {
+				const pending = buffered[0] as string;
+				const belowHighWater = target.send(pending);
+				if (!belowHighWater && target.closed) return;
+				buffered.shift();
+				if (belowHighWater) continue;
+				await target.drained();
+				if (connection !== target) return;
+			}
+		};
+		const next = flushChain.then(run);
+		flushChain = next.then(
+			() => undefined,
+			() => undefined,
+		);
+		return next;
+	};
 	let pumping = true;
+	let inputClosed = false;
+	const ownerAlive = (): boolean => options.ownerPid !== undefined && isPidAlive(options.ownerPid);
 	const pump = (async () => {
 		try {
 			for await (const line of readLines(input)) {
 				if (!pumping) return;
 				const text = decoder.decode(line).trim();
-				if (text.length > 0) connection.send(text);
+				if (text.length === 0) continue;
+				if (connection && !connection.closed && buffered.length === 0) {
+					const current: IpcConnection = connection;
+					const belowHighWater = current.send(text);
+					if (!belowHighWater && current.closed) {
+						buffered.push(text);
+						continue;
+					}
+					if (!belowHighWater) {
+						await current.drained();
+						if (connection === current) await flushBuffered(current);
+					}
+					continue;
+				}
+				buffered.push(text);
 			}
 		} catch {
 			// A closed or failing stdin ends the wrapper, never the owner.
 		} finally {
+			inputClosed = true;
 			finished.resolve();
 		}
 	})();
 	try {
-		connection.start(
-			line => output.write(`${line}\n`),
-			() => finished.resolve(),
-		);
-		await finished.promise;
+		let reconnectDelayMs = BRIDGE_RECONNECT_INITIAL_DELAY_MS;
+		for (;;) {
+			const current = connection;
+			if (!current) return 0;
+			const closed = Promise.withResolvers<void>();
+			current.start(
+				line => output.write(`${line}\n`),
+				() => closed.resolve(),
+			);
+			await flushBuffered(current);
+			await Promise.race([finished.promise, closed.promise]);
+			current.destroy();
+			connection = undefined;
+			if (inputClosed || !ownerAlive()) break;
+			const reconnectDeadline = Date.now() + BRIDGE_RECONNECT_BUDGET_MS;
+			while (!inputClosed && ownerAlive() && Date.now() < reconnectDeadline) {
+				await Bun.sleep(reconnectDelayMs);
+				reconnectDelayMs = Math.min(reconnectDelayMs * 2, BRIDGE_RECONNECT_MAX_DELAY_MS);
+				if (inputClosed || !ownerAlive()) break;
+				try {
+					connection = await IpcConnection.connect(options.socketPath, {
+						framing: "lines",
+						timeoutMs: BRIDGE_RECONNECT_CONNECT_TIMEOUT_MS,
+					});
+				} catch {
+					connection = undefined;
+				}
+				if (connection) break;
+			}
+			if (!connection) break;
+		}
 		return 0;
 	} finally {
 		pumping = false;
@@ -559,6 +637,6 @@ export async function runStdioRpcBridge(options: StdioRpcBridgeOptions): Promise
 			await input.cancel();
 		} catch {}
 		void pump.catch(() => undefined);
-		connection.destroy();
+		connection?.destroy();
 	}
 }

@@ -73,6 +73,7 @@ import {
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
 import { restartArgv } from "../cli/flag-tables";
+import { SESSION_OWNER_WORKER_ARG } from "../cli/worker-selectors";
 import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
@@ -110,7 +111,8 @@ import type { GoalModeState } from "../goals/state";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
 import { copyLocalArtifacts, resolveLocalRoot } from "../internal-urls";
 import { hasNativeJudge } from "../judgment";
-import { sessionOwnerContext } from "../launch/session-owner";
+import { resolveUpgradedCliEntryCmd } from "../launch/runtime-generation";
+import { SESSION_OWNER_CONTEXT_ENV, sessionOwnerContext } from "../launch/session-owner";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -7895,6 +7897,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			firstResponder: this.dialogFirstResponder,
 			mcpManager: this.mcpManager,
 			isShuttingDown: () => this.#isShuttingDown,
+			upgradeRuntime: () => void this.restart(),
 			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
 		});
 	}
@@ -8130,29 +8133,52 @@ export class InteractiveMode implements InteractiveModeContext {
 		const sessionFile = this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined;
 		// Pass the profile explicitly: native exec does not inherit Bun's process.env updates.
 		const activeProfile = getActiveProfile();
-		const cmd = [
-			...resolveCliEntryCmd(),
+		const owner = sessionOwnerContext();
+		const launchArgv = process.argv.slice(2);
+		if (launchArgv[0] === SESSION_OWNER_WORKER_ARG) launchArgv.shift();
+		const entry = resolveUpgradedCliEntryCmd(resolveCliEntryCmd());
+		const cmd = [...entry.cmd];
+		if (owner) cmd.push(SESSION_OWNER_WORKER_ARG);
+		cmd.push(
 			...restartArgv(
-				process.argv.slice(2),
+				launchArgv,
 				sessionFile ? path.resolve(sessionFile) : undefined,
 				activeProfile ? { "--profile": true } : undefined,
 			),
-		];
+		);
 		if (activeProfile) cmd.push("--profile", activeProfile);
+		// Re-enter the owner route across execReplace: native exec inherits the
+		// real process environment, not the JS process.env mutations that
+		// consumed the launch context, so the context rides the command line.
+		// A configured running-entry override must name the entry actually
+		// executed, including the upgraded generation.
+		const carriedEnv: [string, string][] = [];
+		if (owner) carriedEnv.push([SESSION_OWNER_CONTEXT_ENV, JSON.stringify(owner)]);
+		const runningEntryOverride = process.env.OMP_RUNNING_GENERATION_ENTRY?.trim();
+		if (entry.upgraded && runningEntryOverride && entry.entry) {
+			carriedEnv.push(["OMP_RUNNING_GENERATION_ENTRY", entry.entry]);
+		}
+		const replaceCmd =
+			carriedEnv.length > 0 && process.platform !== "win32"
+				? ["env", ...carriedEnv.map(([key, value]) => `${key}=${value}`), ...cmd]
+				: cmd;
 		await postmortem.cleanup();
 		await postmortem.drainStdout();
 		if (process.platform !== "win32") {
 			try {
-				execReplace(cmd); // never returns on success
+				execReplace(replaceCmd); // never returns on success
 			} catch (err) {
 				process.stderr.write(`${chalk.red(`Restart exec failed: ${err instanceof Error ? err.message : err}`)}\n`);
 			}
 		}
 		try {
-			const child = Bun.spawn(cmd, {
+			const child = Bun.spawn(replaceCmd, {
 				stdin: "inherit",
 				stdout: "inherit",
 				stderr: "inherit",
+				...(carriedEnv.length > 0 && process.platform === "win32"
+					? { env: { ...process.env, ...Object.fromEntries(carriedEnv) } }
+					: {}),
 			});
 			await postmortem.quit(await child.exited);
 		} catch (err) {

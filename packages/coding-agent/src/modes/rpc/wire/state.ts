@@ -103,6 +103,27 @@ export const stateDefs = {
 		"UsageLimitLowPriority | UsageLimitWrapUp",
 		"Provider-neutral state of an account past its usage limit, discriminated by `stage`.",
 	),
+	RuntimeGenerationState: doc(
+		{
+			running: doc("string", "Generation directory the process was born in."),
+			"current?": doc("string", "Generation `generations/current` points at, when readable."),
+			behind: doc("boolean", "The running generation is no longer the one `current` selects."),
+		},
+		"Runtime generation layout of the process serving the session.",
+	),
+	UpgradeRuntimeResult: doc(
+		{
+			upgraded: doc("boolean", "The owner is restarting onto `current` now."),
+			scheduled: absentAs(doc("boolean", "An idle-triggered upgrade is armed."), false),
+			"running?": doc("string", "Generation the owner runs now."),
+			"current?": doc("string", "Generation `generations/current` selects, when readable."),
+			"reason?": doc(
+				"'already_current' | 'not_generation_managed' | 'scheduled_on_idle'",
+				"Why no upgrade is running now.",
+			),
+		},
+		"Outcome of `upgrade_runtime`.",
+	),
 	SessionState: {
 		"model?": "ModelInfo",
 		"thinkingLevel?": "ThinkingLevel",
@@ -143,6 +164,10 @@ export const stateDefs = {
 		systemPrompt: absentAs(doc("string[]", "System prompt sections, for session dumps."), []),
 		dumpTools: absentAs("ToolDescriptor[]", []),
 		"contextUsage?": "ContextUsage",
+		"generation?": doc(
+			"RuntimeGenerationState",
+			"Runtime generation of this process; absent when the entrypoint is not generation-managed.",
+		),
 		goal: absentAs(doc("GoalModeState | null", "Current goal mode; null when the session has no goal."), null),
 	},
 

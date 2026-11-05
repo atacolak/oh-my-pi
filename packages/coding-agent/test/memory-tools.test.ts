@@ -37,6 +37,18 @@ import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
 import { currentLoopPhase, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
+import { isolateHindsightEnv, type RestoreHindsightEnv } from "./helpers/hindsight-env";
+
+// `HINDSIGHT_*` variables override every settings layer, so a host that retains out-of-process
+// (`HINDSIGHT_AUTO_RETAIN=false`) would otherwise turn retention assertions into no-ops.
+let restoreHindsightEnv: RestoreHindsightEnv = () => {};
+beforeEach(() => {
+	restoreHindsightEnv = isolateHindsightEnv();
+});
+afterEach(() => {
+	restoreHindsightEnv();
+});
+
 // Mnemopi is lazy-loaded at runtime; preload it for synchronous state construction.
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);
 

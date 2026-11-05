@@ -2658,6 +2658,7 @@ export class AgentSession implements SettingsScope {
 				this.#maintenance.resolveContextPromotionTarget(model, contextWindow, signal),
 			resolveCompactionModelCandidates: (model, availableModels) =>
 				this.#maintenance.resolveCompactionModelCandidates(model, availableModels),
+			modelFallbackDisabled: () => this.#disableModelFallback,
 			resolveRetryFallbackRole: (selector, model, roleHint) =>
 				this.#recovery.resolveRetryFallbackRole(selector, model, roleHint),
 			retryFallbackChainKeys: (selector, model, options) =>

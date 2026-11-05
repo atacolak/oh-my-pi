@@ -283,7 +283,7 @@ import { parseCommandArgs } from "../utils/command-args";
 import type { EditModeSetting } from "../edit/settings";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
-import { normalizeModelContextImages } from "../utils/image-loading";
+import { isImageShapedContent, normalizeModelContextImages } from "../utils/image-loading";
 import { TokenRateMeter } from "../utils/token-rate";
 import { resumeCommand } from "../utils/resume-command";
 import {
@@ -8856,7 +8856,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const hasSkillImages =
 			isUserInvokedSkillPrompt(customMessage) &&
 			Array.isArray(customMessage.content) &&
-			customMessage.content.some(part => part.type === "image");
+			customMessage.content.some(isImageShapedContent);
 		const preparationGeneration = this.#promptGeneration;
 		const preparedMessage = hasSkillImages ? await this.#normalizeAgentMessageImages(customMessage) : customMessage;
 		const descriptionNotice = hasSkillImages

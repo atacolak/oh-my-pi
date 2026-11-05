@@ -12,7 +12,7 @@ import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { deobfuscateSessionContext, obfuscateMessages } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { stripPendingSecretPlaceholderSuffix } from "../secrets/placeholder";
-import { normalizeModelContextImages } from "../utils/image-loading";
+import { isImageShapedContent, normalizeModelContextImages } from "../utils/image-loading";
 import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { describeAttachedImagesForTextModel, shouldDescribeImagesForTextModel } from "../utils/image-vision-fallback";
 import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
@@ -351,12 +351,12 @@ export class SessionProviderBoundary {
 		content: string | NormalizableContentBlock[],
 	): Promise<string | NormalizableContentBlock[]> {
 		if (typeof content === "string") return content;
-		const images = content.filter((part): part is ImageContent => part.type === "image");
+		const images = content.filter(isImageShapedContent);
 		if (images.length === 0) return content;
 		const normalizedImages = await this.normalizeImagesForModel(images);
 		if (!normalizedImages) return content;
 		let imageIndex = 0;
-		return content.map(part => (part.type === "image" ? normalizedImages[imageIndex++]! : part));
+		return content.map(part => (isImageShapedContent(part) ? normalizedImages[imageIndex++]! : part));
 	}
 
 	#obfuscatePreservedArchiveText(

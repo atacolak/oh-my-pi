@@ -1,7 +1,9 @@
 import { afterEach, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponseSource } from "@oh-my-pi/pi-ai/providers/mock";
+import { partitionVisionContent } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -170,4 +172,64 @@ it("drops an image-bearing skill when aborted during vision preprocessing", asyn
 	expect(visionCalls()).toBe(1);
 	expect(mock.calls.length).toBe(0);
 	expect(session.messages.length).toBe(0);
+});
+
+it("keeps a typed skill image on the provider call shape it had before the filter widened", async () => {
+	const { session, mock, visionCalls } = setup();
+	await session.promptCustomMessage(skill);
+	expect(visionCalls()).toBe(1);
+	expect(mock.calls).toHaveLength(1);
+	const messages = mock.calls[0]?.context.messages ?? [];
+	expect(messages.map(message => message.role)).toEqual(["developer", "user"]);
+	const skillMessage = messages.find(
+		message => message.role === "user" && JSON.stringify(message.content).includes("Expanded skill."),
+	);
+	const content = skillMessage && typeof skillMessage.content !== "string" ? skillMessage.content : [];
+	const parts = content.filter(
+		(part): part is ImageContent | TextContent => part.type === "image" || part.type === "text",
+	);
+	expect(content.map(part => part.type)).toEqual(["text", "image"]);
+	expect(partitionVisionContent(parts, true).imageBlocks).toHaveLength(1);
+});
+
+const untypedImageShapes: Array<[string, unknown]> = [
+	["absent", { data: PNG, mimeType: "image/png" }],
+	["undefined", { data: PNG, mimeType: "image/png", type: undefined }],
+	["null", { data: PNG, mimeType: "image/png", type: null }],
+];
+
+for (const [label, untypedImage] of untypedImageShapes) {
+	it(`normalizes an image whose type is ${label} in an idle user-invoked skill before the model call`, async () => {
+		const { session, mock, visionCalls } = setup();
+		await session.promptCustomMessage({
+			...skill,
+			content: [{ type: "text", text: "Expanded skill. What is in the image?" }, untypedImage as ImageContent],
+		});
+		expect(mock.calls).toHaveLength(1);
+		const messages = mock.calls[0]?.context.messages ?? [];
+		const skillMessage = messages.find(
+			message => message.role === "user" && JSON.stringify(message.content).includes("Expanded skill."),
+		);
+		const content = skillMessage && typeof skillMessage.content !== "string" ? skillMessage.content : [];
+		const parts = content.filter(
+			(part): part is ImageContent | TextContent => part.type === "image" || part.type === "text",
+		);
+		expect(content.map(part => part.type)).toEqual(["text", "image"]);
+		expect(partitionVisionContent(parts, true).imageBlocks).toHaveLength(1);
+		expect(visionCalls()).toBe(1);
+	});
+}
+
+it("refuses a contradictory image type in a skill prompt instead of dropping it", async () => {
+	const { session, mock } = setup();
+	await expect(
+		session.promptCustomMessage({
+			...skill,
+			content: [
+				{ type: "text", text: "Expanded skill. What is in the image?" },
+				{ type: "text", data: PNG, mimeType: "image/png" } as unknown as ImageContent,
+			],
+		}),
+	).rejects.toThrow(/received type "text"/);
+	expect(mock.calls).toHaveLength(0);
 });

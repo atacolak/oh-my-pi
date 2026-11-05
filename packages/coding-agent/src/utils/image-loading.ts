@@ -60,6 +60,10 @@ function imageFromBase64DataUrl(imageUrl: unknown): ImageContent | undefined {
 	return { type: "image", mimeType, data: imageUrl.slice(separatorIndex + separator.length) };
 }
 
+export function isImageShapedContent(value: unknown): value is ImageContent {
+	return isRecord(value) && typeof value.data === "string" && typeof value.mimeType === "string";
+}
+
 function modelBoundaryImageCacheKey(image: ImageContent, resize: ImageResizeOptions | undefined): string {
 	const resizeKey = JSON.stringify([
 		resize?.maxWidth,

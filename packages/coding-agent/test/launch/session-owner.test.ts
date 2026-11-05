@@ -22,7 +22,7 @@ import { terminalSpec, withTerminalBroker } from "./terminal-fixture";
 const OWNER_CHILD = path.join(import.meta.dir, "../fixtures/session-owner-child.ts");
 const LAUNCHER = path.join(import.meta.dir, "../fixtures/session-owner-launcher.ts");
 const CLI_ENTRY = path.join(import.meta.dir, "../../src/cli.ts");
-const REPO_ROOT = path.resolve(import.meta.dir, "../../../..");
+const PACKAGE_ROOT = path.resolve(import.meta.dir, "../..");
 
 interface OwnerReport {
 	pid: number;
@@ -338,7 +338,7 @@ describe("session owner through the broker", () => {
 						'const m = await import("@oh-my-pi/pi-coding-agent/launch/session-owner"); process.stdout.write(String(m.isSessionOwnerProcess() === false && m.sessionOwnerContext() === undefined));',
 					],
 					{
-						cwd: REPO_ROOT,
+						cwd: PACKAGE_ROOT,
 						env: { ...process.env, [SESSION_OWNER_CONTEXT_ENV]: JSON.stringify(forged) },
 						stdout: "pipe",
 						stderr: "pipe",

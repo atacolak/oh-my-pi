@@ -81,6 +81,11 @@ export function isSessionOwnerProcess(): boolean {
 	return activeContext !== undefined;
 }
 
+/** Drop the process-local owner role between in-process tests. */
+export function resetSessionOwnerContextForTest(): void {
+	activeContext = undefined;
+}
+
 /** What a cold-resume owner does before it may construct a session manager. */
 export type SessionOwnerReservation =
 	| { kind: "reserved"; reservation: SessionReservation }

@@ -17,31 +17,32 @@
  * stdin/stdout lifecycle.
  */
 import * as fs from "node:fs";
-import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { $env, isRecord, logger, Snowflake, toError } from "@oh-my-pi/pi-utils";
 import { theme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import {
-	type ExtensionAskDialogQuestion,
-	type ExtensionAskDialogResult,
-	type ExtensionAskDialogSubmitResult,
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
 	type ExtensionUISelectItem,
 	type ExtensionWidgetOptions,
-	getExtensionUISelectOptionLabel,
-	timedOutAskDialogResult,
 } from "../../extensibility/extensions";
 import type { MCPManager } from "../../mcp/manager";
 import type { AgentSession } from "../../session/agent-session";
-import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { initializeExtensions } from "../runtime-init";
-import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
-import type { RpcClientConn } from "./client-connection";
+import { isRpcHostToolResult, isRpcHostToolUpdate } from "./host-tools";
 import { RpcClientConnection, RpcClientRegistry } from "./client-connection";
 import { isRpcHostUriResult } from "./host-uris";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
 import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
+import {
+	requestRpcAskDialog,
+	requestRpcConfirm,
+	requestRpcDialog,
+	requestRpcEditor,
+	requestRpcInput,
+	requestRpcSelect,
+} from "./rpc-dialog-requests";
 import { RpcBtwController } from "./rpc-btw";
+import { loginOverRpc } from "./rpc-login";
 import { RpcDictationBridge, type RpcDictationControllerFactory } from "./rpc-dictation";
 import { RpcGoalController } from "./rpc-goal";
 import { RpcLiveBridge, type RpcLiveSessionFactory } from "./rpc-live";
@@ -55,7 +56,6 @@ import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
-	RpcExtensionUISelectOptionDetail,
 	RpcHostToolResult,
 	RpcHostToolUpdate,
 	RpcHostUriResult,
@@ -80,7 +80,6 @@ import {
 	type RpcSessionChangeCommand,
 	type RpcSessionChangeResult,
 	type RpcSessionChangeSession,
-	SESSION_CHANGE_TYPES,
 	type RpcSkillCommandResult,
 	type RpcSkillCommandSession,
 	type RpcSkillInvocation,
@@ -124,6 +123,12 @@ export {
 	handleRpcSessionChange,
 	handleRpcSteerSubagent,
 	openRpcSession,
+	requestRpcAskDialog,
+	requestRpcConfirm,
+	requestRpcDialog,
+	requestRpcEditor,
+	requestRpcInput,
+	requestRpcSelect,
 	RpcPendingExtensionRequests,
 	RpcUserInputGate,
 	RpcWordPredictor,
@@ -389,295 +394,11 @@ export class RpcShutdownCoordinator {
 	}
 }
 
-function parseValueDialogResponse(
-	response: RpcExtensionUIResponse,
-	dialogOptions: ExtensionUIDialogOptions | undefined,
-): string | undefined {
-	if ("cancelled" in response && response.cancelled) {
-		if (response.timedOut) dialogOptions?.onTimeout?.();
-		return undefined;
-	}
-	if ("value" in response) return response.value;
-	return undefined;
-}
-
 function shouldEmitRpcTitles(): boolean {
 	const raw = $env.PI_RPC_EMIT_TITLE;
 	if (!raw) return false;
 	const normalized = raw.trim().toLowerCase();
 	return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-}
-
-export function requestRpcSelect(
-	pendingRequests: Map<string, PendingExtensionRequest>,
-	output: RpcOutput,
-	title: string,
-	options: ExtensionUISelectItem[],
-	dialogOptions?: ExtensionUIDialogOptions,
-): Promise<string | undefined> {
-	// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
-	const labels = new Array<string>(options.length);
-	let optionDetails: RpcExtensionUISelectOptionDetail[] | undefined;
-	for (let index = 0; index < options.length; index++) {
-		const option = options[index]!;
-		labels[index] = getExtensionUISelectOptionLabel(option);
-		if (typeof option === "string") continue;
-		const description = option.description?.trim();
-		if (!description) continue;
-		optionDetails ??= Array.from({ length: options.length }, () => ({}));
-		optionDetails[index] = { description };
-	}
-
-	return requestRpcDialog(
-		pendingRequests,
-		output,
-		dialogOptions,
-		undefined,
-		{
-			method: "select",
-			title,
-			options: labels,
-			...(optionDetails ? { optionDetails } : {}),
-			timeout: dialogOptions?.timeout,
-		},
-		response => parseValueDialogResponse(response, dialogOptions),
-	);
-}
-
-/** Sends an RPC input request, passing optional secret masking and timeout metadata. */
-export function requestRpcInput(
-	pendingRequests: Map<string, PendingExtensionRequest>,
-	output: RpcOutput,
-	title: string,
-	placeholder?: string,
-	dialogOptions?: ExtensionUIDialogOptions,
-): Promise<string | undefined> {
-	return requestRpcDialog(
-		pendingRequests,
-		output,
-		dialogOptions,
-		undefined,
-		{
-			method: "input",
-			title,
-			placeholder,
-			timeout: dialogOptions?.timeout,
-			...(dialogOptions?.secret !== undefined ? { secret: dialogOptions.secret } : {}),
-		},
-		response => parseValueDialogResponse(response, dialogOptions),
-	);
-}
-
-/** Validates `ask` answers against the questions; any mismatch throws instead of guessing. */
-function parseAskDialogResponse(
-	response: RpcExtensionUIResponse,
-	questions: ExtensionAskDialogQuestion[],
-	dialogOptions: ExtensionUIDialogOptions,
-): ExtensionAskDialogSubmitResult | undefined {
-	if ("cancelled" in response && response.cancelled) {
-		if (response.timedOut) dialogOptions.onTimeout?.();
-		return undefined;
-	}
-	const answers: unknown = "answers" in response ? response.answers : undefined;
-	if (!Array.isArray(answers) || answers.length !== questions.length) {
-		throw new Error(`Ask dialog response must carry ${questions.length} answers in question order`);
-	}
-	return {
-		kind: "submit",
-		results: questions.map((question, index) => {
-			const answer: unknown = answers[index];
-			if (!isRecord(answer) || answer.id !== question.id) {
-				throw new Error(`Ask dialog answer ${index} must have id ${JSON.stringify(question.id)}`);
-			}
-			const labels = question.options.map(option => option.label);
-			const multi = question.multi ?? false;
-			const { selectedOptions, customInput } = answer;
-			if (!Array.isArray(selectedOptions)) {
-				throw new Error(`Ask dialog answer ${JSON.stringify(question.id)} must carry a selectedOptions array`);
-			}
-			const selected: string[] = [];
-			for (const label of selectedOptions) {
-				if (typeof label !== "string" || !labels.includes(label)) {
-					throw new Error(
-						`Ask dialog answer ${JSON.stringify(question.id)} selected unknown option ${JSON.stringify(label)}`,
-					);
-				}
-				if (selected.includes(label)) {
-					throw new Error(
-						`Ask dialog answer ${JSON.stringify(question.id)} selected ${JSON.stringify(label)} twice`,
-					);
-				}
-				selected.push(label);
-			}
-			if (customInput !== undefined && typeof customInput !== "string") {
-				throw new Error(`Ask dialog answer ${JSON.stringify(question.id)} customInput must be a string`);
-			}
-			const custom = customInput?.trim() || undefined;
-			if (!multi && (selected.length > 1 || (selected.length > 0 && custom !== undefined))) {
-				throw new Error(
-					`Ask dialog answer ${JSON.stringify(question.id)} is single-select but carries more than one answer`,
-				);
-			}
-			return {
-				id: question.id,
-				question: question.question,
-				options: labels,
-				multi,
-				selectedOptions: selected,
-				customInput: custom,
-			};
-		}),
-	};
-}
-
-/** Sends all ask questions as one RPC `ask` dialog; a timeout answers every question with its recommended option. */
-export async function requestRpcAskDialog(
-	pendingRequests: Map<string, PendingExtensionRequest>,
-	output: RpcOutput,
-	questions: ExtensionAskDialogQuestion[],
-	dialogOptions?: ExtensionUIDialogOptions,
-): Promise<ExtensionAskDialogResult | undefined> {
-	let timedOut = false;
-	const opts: ExtensionUIDialogOptions = {
-		...dialogOptions,
-		onTimeout: () => {
-			timedOut = true;
-			dialogOptions?.onTimeout?.();
-		},
-	};
-	const result = await requestRpcDialog(
-		pendingRequests,
-		output,
-		opts,
-		undefined,
-		{ method: "ask", questions, timeout: dialogOptions?.timeout },
-		response => parseAskDialogResponse(response, questions, opts),
-	);
-	return timedOut ? timedOutAskDialogResult(questions) : result;
-}
-
-export function requestRpcEditor(
-	pendingRequests: Map<string, PendingExtensionRequest>,
-	output: RpcOutput,
-	title: string,
-	prefill?: string,
-	dialogOptions?: ExtensionUIDialogOptions,
-	editorOptions?: { promptStyle?: boolean },
-): Promise<string | undefined> {
-	if (dialogOptions?.signal?.aborted) return Promise.resolve(undefined);
-
-	const id = Snowflake.next() as string;
-	const { promise, resolve, reject } = Promise.withResolvers<string | undefined>();
-	let settled = false;
-
-	const cleanup = () => {
-		dialogOptions?.signal?.removeEventListener("abort", onAbort);
-		pendingRequests.delete(id);
-	};
-	const finish = (value: string | undefined) => {
-		if (settled) return;
-		settled = true;
-		cleanup();
-		resolve(value);
-	};
-	const fail = (error: Error) => {
-		if (settled) return;
-		settled = true;
-		cleanup();
-		reject(error);
-	};
-	const onAbort = () => {
-		output({
-			type: "extension_ui_request",
-			id: Snowflake.next() as string,
-			method: "cancel",
-			targetId: id,
-		} as RpcExtensionUIRequest);
-		finish(undefined);
-	};
-
-	dialogOptions?.signal?.addEventListener("abort", onAbort, { once: true });
-	pendingRequests.set(id, {
-		resolve: response => {
-			if ("cancelled" in response && response.cancelled) {
-				finish(undefined);
-			} else if ("value" in response) {
-				finish(response.value);
-			} else {
-				finish(undefined);
-			}
-		},
-		reject: fail,
-	});
-	output({
-		type: "extension_ui_request",
-		id,
-		method: "editor",
-		title,
-		prefill,
-		promptStyle: editorOptions?.promptStyle,
-	} as RpcExtensionUIRequest);
-	return promise;
-}
-
-/** Sends an RPC extension dialog and cancels the remote presentation when its signal aborts. */
-export function requestRpcDialog<T>(
-	pendingRequests: Map<string, PendingExtensionRequest>,
-	output: RpcOutput,
-	opts: ExtensionUIDialogOptions | undefined,
-	defaultValue: T,
-	request: Record<string, unknown>,
-	parseResponse: (response: RpcExtensionUIResponse) => T,
-): Promise<T> {
-	if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
-
-	const id = Snowflake.next() as string;
-	const { promise, resolve, reject } = Promise.withResolvers<T>();
-	let timeoutId: NodeJS.Timeout | undefined;
-
-	const cleanup = () => {
-		clearTimeout(timeoutId);
-		opts?.signal?.removeEventListener("abort", onAbort);
-		pendingRequests.delete(id);
-	};
-	// Tells the host to close a dialog omp has already settled, so a late answer
-	// cannot look actionable after abort or timeout.
-	const cancelHostDialog = () =>
-		output({
-			type: "extension_ui_request",
-			id: Snowflake.next() as string,
-			method: "cancel",
-			targetId: id,
-		} as RpcExtensionUIRequest);
-	const onAbort = () => {
-		cancelHostDialog();
-		cleanup();
-		resolve(defaultValue);
-	};
-	opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-	if (opts?.timeout !== undefined) {
-		timeoutId = setTimeout(() => {
-			opts.onTimeout?.();
-			cancelHostDialog();
-			cleanup();
-			resolve(defaultValue);
-		}, opts.timeout);
-	}
-
-	pendingRequests.set(id, {
-		resolve: response => {
-			cleanup();
-			try {
-				resolve(parseResponse(response));
-			} catch (err) {
-				reject(err);
-			}
-		},
-		reject,
-	});
-	output({ type: "extension_ui_request", id, ...request } as RpcExtensionUIRequest);
-	return promise;
 }
 
 /**
@@ -897,21 +618,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		}
 
 		confirm(title: string, message: string, dialogOptions?: ExtensionUIDialogOptions): Promise<boolean> {
-			return requestRpcDialog(
-				this.pendingRequests,
-				this.output,
-				dialogOptions,
-				false,
-				{ method: "confirm", title, message, timeout: dialogOptions?.timeout },
-				response => {
-					if ("cancelled" in response && response.cancelled) {
-						if (response.timedOut) dialogOptions?.onTimeout?.();
-						return false;
-					}
-					if ("confirmed" in response) return response.confirmed;
-					return false;
-				},
-			);
+			return requestRpcConfirm(this.pendingRequests, this.output, title, message, dialogOptions);
 		}
 
 		input(
@@ -1089,74 +796,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	 * prompt input), so it stays with the stdio runner and reaches the shared
 	 * command surface as a host service.
 	 */
-	const loginViaRpc = async (command: RpcCommand & { type: "login" }): Promise<RpcResponse> => {
-		const error = (id: string | undefined, type: string, message: string): RpcResponse => ({
-			id,
-			type: "response",
-			command: type,
-			success: false,
-			error: message,
-		});
-		const knownProvider = getOAuthProviders().find(p => p.id === command.providerId);
-		if (!knownProvider) {
-			return error(command.id, "login", `Unknown OAuth provider: ${command.providerId}`);
-		}
-		const uiCtx = new RpcExtensionUIContext(pendingExtensionRequests, uiOutput);
-		// Track whether onAuth has fired. Providers that require interactive
-		// input before a browser URL cannot be satisfied headlessly; after
-		// onAuth, prompt input is the pasted OAuth code/redirect URL path.
-		let authEmitted = false;
-		try {
-			await session.modelRegistry.authStorage.oauth.login(command.providerId, {
-				onAuth: info => {
-					authEmitted = true;
-					uiOutput({
-						type: "extension_ui_request",
-						id: Snowflake.next() as string,
-						method: "open_url",
-						url: info.url,
-						launchUrl: info.launchUrl,
-						instructions: info.instructions,
-					} as RpcExtensionUIRequest);
-				},
-				onProgress: message => {
-					uiCtx.notify(message, "info");
-				},
-				onPrompt: async prompt => {
-					if (prompt.secret) {
-						throw new Error(
-							`Provider '${command.providerId}' requires secret input, ` +
-								"which is not supported in RPC mode. Use the terminal UI to log in.",
-						);
-					}
-					if (!authEmitted) {
-						// onPrompt called before any auth URL — provider requires
-						// interactive input that cannot be satisfied headlessly.
-						return Promise.reject(
-							new Error(
-								`Provider '${command.providerId}' requires interactive prompts ` +
-									"which are not supported in RPC mode. Use the terminal UI to log in.",
-							),
-						);
-					}
-					return (await uiCtx.input(prompt.message, prompt.placeholder, { timeout: 600_000 })) ?? "";
-				},
-			});
-			// Provider-scoped online refresh so the just-persisted credential
-			// re-runs discovery instead of reusing a fresh authoritative cache
-			// row (#5780).
-			await session.modelRegistry.refreshProvider(knownProvider.storeCredentialsAs ?? knownProvider.id, "online");
-			return {
-				id: command.id,
-				type: "response",
-				command: "login",
-				success: true,
-				data: { providerId: command.providerId },
-			};
-		} catch (err: unknown) {
-			return error(command.id, "login", err instanceof Error ? err.message : String(err));
-		}
-	};
+	const loginViaRpc = (command: RpcCommand & { type: "login" }): Promise<RpcResponse> =>
+		loginOverRpc({ session, command, pendingExtensionRequests, output: uiOutput });
 
 	// Read stdin from now on: `session_start` may be waiting on a dialog only the client can answer. Until the
 	// command loop below exists, a dialog answer and the ask-dialog opt-in are handled at once and every other

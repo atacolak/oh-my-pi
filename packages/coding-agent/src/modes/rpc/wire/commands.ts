@@ -86,6 +86,15 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 
 	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
 	{
+		name: "upgrade_runtime",
+		doc: "Restart the session owner onto the current runtime generation, now or when idle.",
+		params: {
+			"whenIdle?": "boolean",
+			"force?": "boolean",
+		},
+		result: "UpgradeRuntimeResult",
+	},
+	{
 		name: "set_fast_mode",
 		doc: "Enable or disable fast mode for the session.",
 		params: { enabled: "boolean" },

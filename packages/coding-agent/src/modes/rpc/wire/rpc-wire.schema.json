@@ -142,6 +142,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "upgrade_runtime",
+				"doc": "Restart the session owner onto the current runtime generation, now or when idle.",
+				"params": "UpgradeRuntimeParams",
+				"result": "UpgradeRuntimeResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "set_fast_mode",
 				"doc": "Enable or disable fast mode for the session.",
 				"params": "SetFastModeParams",
@@ -2657,6 +2668,63 @@
 			],
 			"description": "Provider-neutral state of an account past its usage limit, discriminated by `stage`."
 		},
+		"RuntimeGenerationState": {
+			"type": "object",
+			"properties": {
+				"running": {
+					"type": "string",
+					"description": "Generation directory the process was born in."
+				},
+				"behind": {
+					"type": "boolean",
+					"description": "The running generation is no longer the one `current` selects."
+				},
+				"current": {
+					"type": "string",
+					"description": "Generation `generations/current` points at, when readable."
+				}
+			},
+			"required": [
+				"running",
+				"behind"
+			],
+			"description": "Runtime generation layout of the process serving the session."
+		},
+		"UpgradeRuntimeResult": {
+			"type": "object",
+			"properties": {
+				"upgraded": {
+					"type": "boolean",
+					"description": "The owner is restarting onto `current` now."
+				},
+				"scheduled": {
+					"type": "boolean",
+					"description": "An idle-triggered upgrade is armed.",
+					"default": false
+				},
+				"running": {
+					"type": "string",
+					"description": "Generation the owner runs now."
+				},
+				"current": {
+					"type": "string",
+					"description": "Generation `generations/current` selects, when readable."
+				},
+				"reason": {
+					"enum": [
+						"already_current",
+						"not_generation_managed",
+						"scheduled_on_idle"
+					],
+					"type": "string",
+					"description": "Why no upgrade is running now."
+				}
+			},
+			"required": [
+				"upgraded"
+			],
+			"description": "Outcome of `upgrade_runtime`."
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
@@ -2787,6 +2855,10 @@
 				},
 				"contextUsage": {
 					"$ref": "#/$defs/ContextUsage"
+				},
+				"generation": {
+					"$ref": "#/$defs/RuntimeGenerationState",
+					"description": "Runtime generation of this process; absent when the entrypoint is not generation-managed."
 				},
 				"goal": {
 					"anyOf": [
@@ -6319,6 +6391,17 @@
 			"required": [
 				"sessionDir"
 			]
+		},
+		"UpgradeRuntimeParams": {
+			"type": "object",
+			"properties": {
+				"whenIdle": {
+					"type": "boolean"
+				},
+				"force": {
+					"type": "boolean"
+				}
+			}
 		},
 		"SetFastModeParams": {
 			"type": "object",

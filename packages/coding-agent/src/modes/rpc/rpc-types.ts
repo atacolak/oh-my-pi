@@ -19,6 +19,7 @@ import type {
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { RuntimeGenerationInfo } from "../../launch/runtime-generation";
 import type { SessionLeaseReport } from "../../session/session-storage";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
@@ -65,6 +66,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "upgrade_runtime"; whenIdle?: boolean; force?: boolean }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
 	| {
@@ -219,6 +221,8 @@ export interface RpcSessionState {
 	/** For session dump / export (plain-text parity with /dump). */
 	systemPrompt?: string[];
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
+	/** Runtime generation layout of this process, when the entrypoint is generation-managed. */
+	generation?: RuntimeGenerationInfo;
 	/** Current context window usage. */
 	contextUsage?: ContextUsage;
 	/** Current goal-mode state; `null` when the session has no goal. */
@@ -380,6 +384,15 @@ export interface RpcAbortAndRestoreQueueResult {
 	truncated?: true;
 }
 
+/** `upgrade_runtime` outcome: whether the owner is moving, is already current, or when it will move. */
+export interface RpcUpgradeRuntimeResult {
+	upgraded: boolean;
+	scheduled: boolean;
+	running?: string;
+	current?: string;
+	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle";
+}
+
 export interface RpcReadyFrame {
 	type: "ready";
 	protocolVersion: 1;
@@ -468,6 +481,13 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| {
+			id?: string;
+			type: "response";
+			command: "upgrade_runtime";
+			success: true;
+			data: RpcUpgradeRuntimeResult;
+	  }
 	| {
 			id?: string;
 			type: "response";

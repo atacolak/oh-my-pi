@@ -669,6 +669,32 @@ class UsageLimitWrapUp:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class RuntimeGenerationState:
+    """Runtime generation layout of the process serving the session."""
+    running: str
+    """Generation directory the process was born in."""
+    behind: bool
+    """The running generation is no longer the one `current` selects."""
+    current: str | None = None
+    """Generation `generations/current` points at, when readable."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class UpgradeRuntimeResult:
+    """Outcome of `upgrade_runtime`."""
+    upgraded: bool
+    """The owner is restarting onto `current` now."""
+    scheduled: bool = False
+    """An idle-triggered upgrade is armed."""
+    running: str | None = None
+    """Generation the owner runs now."""
+    current: str | None = None
+    """Generation `generations/current` selects, when readable."""
+    reason: Literal["already_current", "not_generation_managed", "scheduled_on_idle"] | None = None
+    """Why no upgrade is running now."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
     model: ModelInfo | None = None
@@ -704,6 +730,8 @@ class SessionState:
     """System prompt sections, for session dumps."""
     dump_tools: tuple[ToolDescriptor, ...] = ()
     context_usage: ContextUsage | None = None
+    generation: RuntimeGenerationState | None = None
+    """Runtime generation of this process; absent when the entrypoint is not generation-managed."""
     goal: GoalModeState | None = None
     """Current goal mode; null when the session has no goal."""
 
@@ -2049,6 +2077,26 @@ def parse_usage_limit_wrap_up(value: object, path: str = "UsageLimitWrapUp") -> 
     )
 
 
+def parse_runtime_generation_state(value: object, path: str = "RuntimeGenerationState") -> RuntimeGenerationState:
+    payload = expect_object(value, path)
+    return RuntimeGenerationState(
+        running=required(payload, "running", decode_str, path),
+        behind=required(payload, "behind", decode_bool, path),
+        current=optional(payload, "current", decode_str, path),
+    )
+
+
+def parse_upgrade_runtime_result(value: object, path: str = "UpgradeRuntimeResult") -> UpgradeRuntimeResult:
+    payload = expect_object(value, path)
+    return UpgradeRuntimeResult(
+        upgraded=required(payload, "upgraded", decode_bool, path),
+        scheduled=defaulted(payload, "scheduled", decode_bool, path, False),
+        running=optional(payload, "running", decode_str, path),
+        current=optional(payload, "current", decode_str, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["already_current", "not_generation_managed", "scheduled_on_idle"]]', literal(frozenset({"already_current", "not_generation_managed", "scheduled_on_idle"}))), path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
@@ -2079,6 +2127,7 @@ def parse_session_state(value: object, path: str = "SessionState") -> SessionSta
         system_prompt=defaulted(payload, "systemPrompt", scalar_or_array(decode_str), path, ()),
         dump_tools=defaulted(payload, "dumpTools", array(parse_tool_descriptor), path, ()),
         context_usage=optional(payload, "contextUsage", parse_context_usage, path),
+        generation=optional(payload, "generation", parse_runtime_generation_state, path),
         goal=defaulted(payload, "goal", nullable(parse_goal_mode_state), path, None),
     )
 
@@ -3423,6 +3472,15 @@ class WireClient:
         params: dict[str, object] = {}
         return parse_session_state(self._command("get_state", params), "get_state")
 
+    def upgrade_runtime(self, *, when_idle: bool | None = None, force: bool | None = None) -> UpgradeRuntimeResult:
+        """Restart the session owner onto the current runtime generation, now or when idle."""
+        params: dict[str, object] = {}
+        if when_idle is not None:
+            params["whenIdle"] = when_idle
+        if force is not None:
+            params["force"] = force
+        return parse_upgrade_runtime_result(self._command("upgrade_runtime", params), "upgrade_runtime")
+
     def set_fast_mode(self, enabled: bool) -> FastModeResult:
         """Enable or disable fast mode for the session."""
         params: dict[str, object] = {}
@@ -4190,6 +4248,7 @@ __all__ = [
     "RpcAgentEvent",
     "RpcFrameErrorEvent",
     "RpcNotification",
+    "RuntimeGenerationState",
     "SelectOptionDetail",
     "SelectUiRequest",
     "SessionCredits",
@@ -4244,6 +4303,7 @@ __all__ = [
     "TtsrTriggeredEvent",
     "TurnEndEvent",
     "TurnStartEvent",
+    "UpgradeRuntimeResult",
     "Usage",
     "UsageCost",
     "UsageLimitLowPriority",
@@ -4371,6 +4431,7 @@ __all__ = [
     "parse_retry_fallback_succeeded_event",
     "parse_rpc_agent_event",
     "parse_rpc_frame_error_event",
+    "parse_runtime_generation_state",
     "parse_select_option_detail",
     "parse_select_ui_request",
     "parse_session_credits",
@@ -4414,6 +4475,7 @@ __all__ = [
     "parse_ttsr_triggered_event",
     "parse_turn_end_event",
     "parse_turn_start_event",
+    "parse_upgrade_runtime_result",
     "parse_usage",
     "parse_usage_cost",
     "parse_usage_limit_low_priority",

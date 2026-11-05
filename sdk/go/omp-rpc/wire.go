@@ -2542,6 +2542,87 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+// Runtime generation layout of the process serving the session.
+type RuntimeGenerationState struct {
+	// Generation directory the process was born in.
+	Running string `json:"running"`
+	// The running generation is no longer the one `current` selects.
+	Behind bool `json:"behind"`
+	// Generation `generations/current` points at, when readable.
+	Current *string `json:"current,omitempty"`
+}
+
+func (v *RuntimeGenerationState) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RuntimeGenerationState", v.decodeFrom)
+}
+
+func (v *RuntimeGenerationState) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RuntimeGenerationState
+	d := fieldDecoder{raw: raw, owner: "RuntimeGenerationState"}
+	d.required("running", &out.Running)
+	d.required("behind", &out.Behind)
+	d.optional("current", &out.Current)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Outcome of `upgrade_runtime`.
+type UpgradeRuntimeResult struct {
+	// The owner is restarting onto `current` now.
+	Upgraded bool `json:"upgraded"`
+	// An idle-triggered upgrade is armed.
+	Scheduled bool `json:"scheduled"`
+	// Generation the owner runs now.
+	Running *string `json:"running,omitempty"`
+	// Generation `generations/current` selects, when readable.
+	Current *string `json:"current,omitempty"`
+	// Why no upgrade is running now.
+	Reason *UpgradeRuntimeResultReason `json:"reason,omitempty"`
+}
+
+func (v *UpgradeRuntimeResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "UpgradeRuntimeResult", v.decodeFrom)
+}
+
+func (v *UpgradeRuntimeResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out UpgradeRuntimeResult
+	d := fieldDecoder{raw: raw, owner: "UpgradeRuntimeResult"}
+	d.required("upgraded", &out.Upgraded)
+	d.defaulted("scheduled", &out.Scheduled, `false`)
+	d.optional("running", &out.Running)
+	d.optional("current", &out.Current)
+	d.optional("reason", &out.Reason)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type UpgradeRuntimeResultReason string
+
+const (
+	UpgradeRuntimeResultReasonAlreadyCurrent       UpgradeRuntimeResultReason = "already_current"
+	UpgradeRuntimeResultReasonNotGenerationManaged UpgradeRuntimeResultReason = "not_generation_managed"
+	UpgradeRuntimeResultReasonScheduledOnIdle      UpgradeRuntimeResultReason = "scheduled_on_idle"
+)
+
+func (v *UpgradeRuntimeResultReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "UpgradeRuntimeResultReason")
+	if err != nil {
+		return err
+	}
+	switch value := UpgradeRuntimeResultReason(s); value {
+	case UpgradeRuntimeResultReasonAlreadyCurrent, UpgradeRuntimeResultReasonNotGenerationManaged, UpgradeRuntimeResultReasonScheduledOnIdle:
+		*v = value
+		return nil
+	}
+	return unknownValue("UpgradeRuntimeResultReason", s)
+}
+
 type SessionState struct {
 	SessionID             string         `json:"sessionId"`
 	Model                 *ModelInfo     `json:"model,omitempty"`
@@ -2577,6 +2658,8 @@ type SessionState struct {
 	SystemPrompt []string         `json:"systemPrompt"`
 	DumpTools    []ToolDescriptor `json:"dumpTools"`
 	ContextUsage *ContextUsage    `json:"contextUsage,omitempty"`
+	// Runtime generation of this process; absent when the entrypoint is not generation-managed.
+	Generation *RuntimeGenerationState `json:"generation,omitempty"`
 	// Current goal mode; null when the session has no goal.
 	Goal *GoalModeState `json:"goal"`
 }
@@ -2616,6 +2699,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.defaulted("systemPrompt", &out.SystemPrompt, `[]`)
 	d.defaulted("dumpTools", &out.DumpTools, `[]`)
 	d.optional("contextUsage", &out.ContextUsage)
+	d.optional("generation", &out.Generation)
 	d.defaulted("goal", &out.Goal, `null`)
 	if d.err != nil {
 		return d.err
@@ -8026,6 +8110,19 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	var out SessionState
 	err := c.call(ctx, "get_state", nil, 0, &out)
+	return out, err
+}
+
+// UpgradeRuntimeCommand holds the parameters of "upgrade_runtime".
+type UpgradeRuntimeCommand struct {
+	WhenIdle *bool `json:"whenIdle,omitempty"`
+	Force    *bool `json:"force,omitempty"`
+}
+
+// UpgradeRuntime sends "upgrade_runtime": Restart the session owner onto the current runtime generation, now or when idle.
+func (c Commands) UpgradeRuntime(ctx context.Context, p UpgradeRuntimeCommand) (UpgradeRuntimeResult, error) {
+	var out UpgradeRuntimeResult
+	err := c.call(ctx, "upgrade_runtime", p, 0, &out)
 	return out, err
 }
 

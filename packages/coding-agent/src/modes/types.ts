@@ -31,6 +31,7 @@ import type {
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
+import type { DialogFirstResponder } from "./rpc/dialog-first-responder";
 import type { AgentSession } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
@@ -369,6 +370,8 @@ export interface InteractiveModeContext {
 	checkShutdownRequested(): Promise<void>;
 
 	// Extension UI integration
+	/** Races TUI dialogs against this session's attached socket clients. */
+	readonly dialogFirstResponder: DialogFirstResponder;
 	setToolUIContext(uiContext: ExtensionUIContext, hasUI: boolean): void;
 	initializeHookRunner(uiContext: ExtensionUIContext, hasUI: boolean): void;
 	/** Stack extension autocomplete behavior on top of the built-in editor provider. */

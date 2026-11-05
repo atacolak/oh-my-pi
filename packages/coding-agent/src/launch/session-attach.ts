@@ -163,6 +163,32 @@ export function decideSessionAttach(probe: SessionAttachProbe): SessionAttachDec
 	}
 }
 
+export type RpcSessionAttachDecision =
+	| { kind: "attach" }
+	| { kind: "cold"; sessionId: string }
+	| { kind: "refuse"; code: SessionAttachRefusalCode };
+
+/**
+ * RPC bridges need the live session socket, not the terminal generation: a
+ * live, probed endpoint is attachable even when its publication carries no
+ * terminal coordinates (e.g. an older RPC-only host). Everything else keeps
+ * the ownership refusal semantics of {@link decideSessionAttach}.
+ */
+export function decideRpcSessionAttach(probe: SessionAttachProbe): RpcSessionAttachDecision {
+	switch (probe.status) {
+		case "live":
+			return { kind: "attach" };
+		case "unreachable":
+			return { kind: "refuse", code: "owner-unreachable" };
+		case "unknown":
+			return { kind: "refuse", code: "ownership-unknown" };
+		case "absent":
+			if (probe.leaseHeld === true) return { kind: "refuse", code: "owner-busy" };
+			if (probe.leaseHeld === null) return { kind: "refuse", code: "ownership-unknown" };
+			return { kind: "cold", sessionId: probe.sessionId };
+	}
+}
+
 export async function probeSessionAttach(
 	sessionId: string,
 	options: SessionAttachProbeOptions = {},

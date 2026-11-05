@@ -105,6 +105,11 @@ export class RpcClientRegistry {
 		return this.#subagentSubscriptions.get(conn) ?? "off";
 	}
 
+	/** Whether at least one attached view is still open. */
+	hasOpenClients(): boolean {
+		return this.#connections.some(conn => conn.isOpen);
+	}
+
 	/** Highest level any open view asked for, so the shared bus emits for the union. */
 	maxSubagentSubscription(): RpcSubagentSubscriptionLevel {
 		let max: RpcSubagentSubscriptionLevel = "off";

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionUIDialogOptions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
@@ -200,6 +201,32 @@ describe("terminal hangup detaches the view, not the session", () => {
 		const state = await readState(endpoint);
 		expect(state.success).toBe(true);
 		expect(state).toMatchObject({ data: { sessionId: session.sessionId } });
+	}, 60_000);
+
+	it("keeps a pending dialog answerable by an attached client across the hangup", async () => {
+		const { endpoint } = await startMode();
+		const peer = await SocketPeer.connect(endpoint);
+		try {
+			await peer.next(frame => frame.type === "ready");
+			const tui = Promise.withResolvers<string | undefined>();
+			const pending = mode!.dialogFirstResponder.select(
+				(dialogOptions?: ExtensionUIDialogOptions) => {
+					dialogOptions?.signal?.addEventListener("abort", () => tui.resolve(undefined), { once: true });
+					return tui.promise;
+				},
+				"Pick one",
+				["one", "two"],
+			);
+			const request = await peer.next(frame => frame.type === "extension_ui_request" && frame.method === "select");
+
+			await mode!.detachForHangup();
+			expect(mode!.dialogFirstResponder.hasAttachedClients()).toBe(true);
+
+			peer.send({ type: "extension_ui_response", id: request.id, value: "two" });
+			await expect(pending).resolves.toBe("two");
+		} finally {
+			peer.close();
+		}
 	}, 60_000);
 
 	it("still performs the full teardown on an explicit exit", async () => {

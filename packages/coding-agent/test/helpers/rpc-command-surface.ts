@@ -56,6 +56,8 @@ export type CompactMock = Mock<(instructions?: string, options?: { mode: Compact
 export interface RpcSurfaceHarnessOptions {
 	session?: SessionOverrides;
 	mcpManager?: MCPManager;
+	/** In-place runtime upgrade hook exposed as `upgrade_runtime`. */
+	upgradeRuntime?: () => void;
 }
 
 export function createRpcSurfaceHarness(options: RpcSurfaceHarnessOptions = {}): RpcSurfaceHarness {
@@ -85,6 +87,7 @@ export function createRpcSurfaceHarness(options: RpcSurfaceHarnessOptions = {}):
 		promptResults,
 		extensionUserMessageTracker: new RpcExtensionUserMessageTracker(),
 		...(options.mcpManager ? { mcpManager: options.mcpManager } : {}),
+		...(options.upgradeRuntime ? { upgradeRuntime: options.upgradeRuntime } : {}),
 	});
 
 	return {

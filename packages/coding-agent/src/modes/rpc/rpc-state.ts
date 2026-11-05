@@ -1,4 +1,5 @@
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { readRuntimeGeneration } from "../../launch/runtime-generation";
 import type { AgentSession } from "../../session/agent-session";
 import { isSessionSettled } from "../../session/session-settle";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
@@ -48,6 +49,7 @@ export function getRpcSessionState(session: AgentSession, scheduledTurn?: () => 
 			examples: tool.examples,
 		})),
 		contextUsage: session.getContextUsage(),
+		generation: readRuntimeGeneration(),
 		goal: session.getGoalModeState() ?? null,
 	};
 }

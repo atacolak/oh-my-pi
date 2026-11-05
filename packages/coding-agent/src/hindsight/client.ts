@@ -30,7 +30,8 @@ const DEFAULT_DECISION_TIMEOUT_MS = 2_000;
 const DECISION_TASK =
 	"Showing this memory to someone answering the question would help them, rather than distract them.";
 
-export type Budget = "low" | "mid" | "high" | string;
+/** Server-side recall depth; the deep gears translate into these, never forward to the client. */
+export type Budget = "low" | "mid" | "high";
 export type TagsMatch = "any" | "all" | "any_strict" | "all_strict";
 export type UpdateMode = "replace" | "append";
 export type ConsolidationState = "failed" | "pending" | "done";

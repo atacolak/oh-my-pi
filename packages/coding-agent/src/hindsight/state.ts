@@ -819,6 +819,11 @@ export class HindsightSessionState {
 		return this.#recallDecision ? this.#recallDecision.keep(query, memory, signal) : true;
 	}
 
+	/** Scorer for the deep recall gears; undefined when no decision model is configured. */
+	get recallScorer(): HindsightRecallDecision | undefined {
+		return this.aliasOf ? this.aliasOf.recallScorer : this.#recallDecision;
+	}
+
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
 		const generation = this.#recallGeneration;
 		try {

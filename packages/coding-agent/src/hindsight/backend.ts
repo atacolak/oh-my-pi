@@ -15,11 +15,38 @@ import hindsightInstructions from "../prompts/system/hindsight-instructions.md" 
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, computeBankScope } from "./bank";
 import { createHindsightClient } from "./client";
-import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig, resolveProvenanceTags } from "./config";
+import {
+	type HindsightAgentMemoryPolicy,
+	type HindsightConfig,
+	isHindsightConfigured,
+	loadHindsightConfig,
+	resolveProvenanceTags,
+} from "./config";
+import { cfgHindsightAutoRecall, cfgHindsightAutoRetain } from "./settings";
 import { HindsightSessionState } from "./state";
 import { countRetainableUserTurns } from "./transcript";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
+
+/**
+ * Apply the root agent's `memory:` policy over the session settings. An explicit agent flag wins
+ * over the setting; the operator's `HINDSIGHT_AUTO_*` environment stays the top layer.
+ */
+function applyAgentMemoryPolicy(
+	config: HindsightConfig,
+	agentMemory: HindsightAgentMemoryPolicy | undefined,
+): HindsightConfig {
+	const autoRetain = cfgHindsightAutoRetain.envValue() ?? agentMemory?.autoRetain ?? config.autoRetain;
+	const autoRecall = cfgHindsightAutoRecall.envValue() ?? agentMemory?.autoRecall ?? config.autoRecall;
+	return autoRetain === config.autoRetain && autoRecall === config.autoRecall
+		? config
+		: { ...config, autoRetain, autoRecall };
+}
+
+/** Root agent memory policy, when the composed runtime's agent definitions provide one. */
+function readAgentMemoryPolicy(session: AgentSession): HindsightAgentMemoryPolicy | undefined {
+	return (session as { getAgentMemoryPolicy?: () => HindsightAgentMemoryPolicy | undefined }).getAgentMemoryPolicy?.();
+}
 
 /** Reload the active session's mental-model cache and prompt. */
 export async function reloadMentalModelsForSession(session: AgentSession): Promise<boolean> {
@@ -261,7 +288,7 @@ async function installPrimaryState(
 	const sessionId = session.hindsightDocumentId || session.sessionManager.getSessionId() || session.sessionId;
 	if (!sessionId) return undefined;
 
-	const config = loadHindsightConfig(settings);
+	const config = applyAgentMemoryPolicy(loadHindsightConfig(settings), readAgentMemoryPolicy(session));
 	if (!isHindsightConfigured(config)) return undefined;
 
 	const client = createHindsightClient(config);
@@ -346,7 +373,7 @@ async function reconcilePrimaryState(session: AgentSession): Promise<boolean> {
 	if (current?.aliasOf) return false;
 
 	const settings = session.settings;
-	const config = loadHindsightConfig(settings);
+	const config = applyAgentMemoryPolicy(loadHindsightConfig(settings), readAgentMemoryPolicy(session));
 	const selected = cfgMemoryBackend.get(settings) === "hindsight" && isHindsightConfigured(config);
 
 	// The selection itself moved — a project layer switched `memory.backend`,

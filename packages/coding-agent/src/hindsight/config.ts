@@ -49,6 +49,15 @@ import {
 
 export type HindsightScoping = "global" | "per-project" | "per-project-tagged";
 
+/**
+ * Root agent memory policy from a `memory:` frontmatter block. A field the agent omits
+ * inherits the session setting; `HINDSIGHT_AUTO_*` remains the operator's override.
+ */
+export interface HindsightAgentMemoryPolicy {
+	autoRetain?: boolean;
+	autoRecall?: boolean;
+}
+
 export interface HindsightConfig {
 	hindsightApiUrl: string | null;
 	hindsightApiToken: string | null;

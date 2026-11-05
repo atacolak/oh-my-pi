@@ -4,7 +4,8 @@
  */
 import { register } from "../config/registry";
 
-const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
+/** Server default recall types; `world` + `experience` pair with `preferObservations` on the recall endpoint. */
+export const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
 
 /** Integer `HINDSIGHT_*` variables: base-10 `parseInt` prefix (`5000ms` → 5000, `2.5` → 2); other text is unset. */
 function parseEnvInteger(raw: string): number | undefined {

@@ -11,6 +11,8 @@ import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { Settings as SettingsClass } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	HindsightApi,
+	type ListMemoriesOptions,
+	type ListMemoriesResponse,
 	type MemoryItemInput,
 	type RecallOptions,
 	type RecallResponse,
@@ -74,14 +76,39 @@ class RecordingApi extends HindsightApi {
 	readonly recallCalls: { query: string; options?: RecallOptions }[] = [];
 	readonly retainCalls: { content: string; metadata?: Record<string, string>; documentId?: string }[] = [];
 	readonly batchCalls: MemoryItemInput[][] = [];
+	readonly listCalls: { type?: string; consolidationState?: string; limit?: number; offset?: number }[] = [];
 	recallResponse: RecallResponse = { results: [{ id: "m1", text: "deploy host is beta-9", type: "world" }] };
+	listRows: { id: string; text: string }[] = [];
+	listTotal = 0;
 
 	constructor() {
 		super({ baseUrl: "http://localhost" });
 	}
 
+	/** Bank contents the sweep reads: rows past `listRows` are synthesized to honor `listTotal`. */
+	sweepBank(rows: { id: string; text: string }[], total = rows.length): void {
+		this.listRows = rows;
+		this.listTotal = total;
+	}
+
 	override async createBank(): Promise<Record<string, unknown>> {
 		return {};
+	}
+
+	override async listMemories(_bankId: string, options?: ListMemoriesOptions): Promise<ListMemoriesResponse> {
+		const offset = options?.offset ?? 0;
+		const limit = options?.limit ?? 0;
+		this.listCalls.push({ type: options?.type, consolidationState: options?.consolidationState, limit, offset });
+		const count = Math.max(0, Math.min(limit, this.listTotal - offset));
+		const items = Array.from({ length: count }, (_, index) => {
+			const row = this.listRows[offset + index];
+			return {
+				id: row?.id ?? `swept-${offset + index}`,
+				text: row?.text ?? `swept memory ${offset + index}`,
+				fact_type: "observation",
+			};
+		});
+		return { items, total: this.listTotal, limit, offset };
 	}
 
 	override async retain(_bankId: string, content: string, options?: RetainOptions): Promise<RetainResponse> {
@@ -118,6 +145,7 @@ afterEach(async () => {
 		harness.state.dispose();
 		await harness.sessionManager.close();
 	}
+	vi.restoreAllMocks();
 });
 
 function makeHarness(
@@ -452,13 +480,24 @@ type FetchInput = string | URL | Request;
 type FetchInit = RequestInit | BunFetchRequestInit;
 
 /** Answers every System One request with one `noul`; returns the requests so their bodies can be asserted. */
-function stubDecisionModel(noul: number): { url: string; body: Record<string, unknown> }[] {
+function stubDecisionModel(
+	noul: number | ((memory: string) => number | null),
+): { url: string; body: Record<string, unknown> }[] {
 	const requests: { url: string; body: Record<string, unknown> }[] = [];
 	vi.spyOn(globalThis, "fetch").mockImplementation(
 		Object.assign(
 			async (input: FetchInput, init?: FetchInit): Promise<Response> => {
-				requests.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-				return Response.json({ answers: { m0: { type: "noul", noul } } });
+				const body = JSON.parse(String(init?.body)) as {
+					questions?: Record<string, { instructions?: { memory?: string } }>;
+				};
+				requests.push({ url: String(input), body });
+				const answers = Object.fromEntries(
+					Object.entries(body.questions ?? {}).map(([key, question]) => {
+						const memory = question.instructions?.memory ?? "";
+						return [key, { type: "noul", noul: typeof noul === "function" ? noul(memory) : noul }];
+					}),
+				);
+				return Response.json({ answers });
 			},
 			{ preconnect: globalThis.fetch.preconnect },
 		),
@@ -476,6 +515,7 @@ describe("decision-model abstention", () => {
 	it("keeps a lone survivor above the threshold and asks about the question and the memory", async () => {
 		const requests = stubDecisionModel(0.9);
 		const client = new RecordingApi();
+		client.sweepBank([], 5000);
 		const harness = makeHarness(client, { config: decisionConfig() });
 
 		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
@@ -499,6 +539,7 @@ describe("decision-model abstention", () => {
 	it("drops a lone survivor below the threshold without recording it as delivered", async () => {
 		const requests = stubDecisionModel(0.1);
 		const client = new RecordingApi();
+		client.sweepBank([], 5000);
 		const harness = makeHarness(client, { config: decisionConfig() });
 
 		const preparation = await harness.state.beforeAgentStartPrompt("where is the deploy host?");
@@ -519,6 +560,7 @@ describe("decision-model abstention", () => {
 			),
 		);
 		const client = new RecordingApi();
+		client.sweepBank([], 5000);
 		const harness = makeHarness(client, { config: decisionConfig() });
 
 		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
@@ -531,6 +573,7 @@ describe("decision-model abstention", () => {
 			}),
 		);
 		const client = new RecordingApi();
+		client.sweepBank([], 5000);
 		const harness = makeHarness(client, { config: decisionConfig() });
 
 		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
@@ -545,6 +588,7 @@ describe("decision-model abstention", () => {
 				{ id: "m2", text: "deploy host moved to gamma-2", type: "world" },
 			],
 		};
+		client.sweepBank([], 5000);
 		const harness = makeHarness(client, { config: decisionConfig() });
 
 		const block = await deliverRecall(harness, "where is the deploy host?");
@@ -579,5 +623,72 @@ describe("recall refresh boundaries", () => {
 		expect(client.recallCalls).toHaveLength(2);
 		expect(client.recallCalls[1]!.query).toContain("Prior context:");
 		expect(client.recallCalls[1]!.query).toContain("second question");
+	});
+});
+
+describe("swept recall", () => {
+	it("scores the whole fitted scope in rank order and skips the server-ranked recall", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([
+			{ id: "m1", text: "alpha fact" },
+			{ id: "m2", text: "beta fact" },
+			{ id: "m3", text: "gamma fact" },
+		]);
+		const requests = stubDecisionModel(memory =>
+			memory === "alpha fact" ? 0.9 : memory === "beta fact" ? 0.5 : 0.1,
+		);
+		const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+
+		const block = await deliverRecall(harness, "where is the deploy host?");
+
+		expect(client.recallCalls).toHaveLength(0);
+		expect(client.listCalls.map(call => call.consolidationState ?? call.type)).toEqual([
+			"observation",
+			"pending",
+			"failed",
+		]);
+		expect(requests).toHaveLength(1);
+		expect(block).toContain("alpha fact");
+		expect(block).toContain("beta fact");
+		expect(block).not.toContain("gamma fact");
+		expect(block!.indexOf("alpha fact")).toBeLessThan(block!.indexOf("beta fact"));
+	});
+
+	it("delivers nothing when the best swept score misses the decision threshold", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([
+			{ id: "m1", text: "alpha fact" },
+			{ id: "m2", text: "beta fact" },
+		]);
+		stubDecisionModel(() => 0.1);
+		const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toBeUndefined();
+		expect(client.listCalls.length).toBeGreaterThan(0);
+		expect(client.recallCalls).toHaveLength(0);
+	});
+
+	it("falls through to the server recall when the sweep cannot be scored", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([{ id: "m1", text: "alpha fact" }]);
+		stubDecisionModel(() => null);
+		const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("deploy host is beta-9");
+		expect(client.recallCalls).toHaveLength(1);
+	});
+
+	it("falls back to the server recall when the scope outgrows the gear cap", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([], 5000);
+		stubDecisionModel(() => 0.9);
+		const harness = makeHarness(client, {
+			config: makeConfig({ decisionModelUrl: "http://decision.local", recallBudget: "low" }),
+		});
+
+		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("deploy host is beta-9");
+		expect(client.listCalls).toEqual([{ type: "observation", consolidationState: undefined, limit: 300, offset: 0 }]);
+		expect(client.recallCalls).toHaveLength(1);
+		expect(client.recallCalls[0]!.options?.budget).toBe("low");
 	});
 });

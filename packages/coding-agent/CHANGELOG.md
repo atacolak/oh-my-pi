@@ -77,7 +77,10 @@
 - Added `hindsight.recallCadence` (`boundary` default, `per-turn` opt-in) so a session can re-ask the bank every turn while never repeating a memory the transcript already holds.
 - Added opt-in single-survivor abstention via `hindsight.decisionModelUrl` / `hindsight.decisionModelThreshold`: a lone low-confidence recall result is dropped, and an unreachable decision service keeps the memory.
 - Added per-call `budget`, `maxTokens`, and `types` controls to the `recall` tool, and made tool recall apply the configured single-survivor abstention gate.
-- Added `xhigh` and `max` deep recall gears: `xhigh` traces a `high` recall and scores ~2400 candidates client-side, `max` sweeps the bank through `memories/list`, both prune below the server's own `max(0.20, 0.40 * best)` floor, abstain under the decision threshold, and degrade to unscored candidates when the scorer is unavailable.
+- Added `xhigh` and `max` deep recall gears: `xhigh` sweeps the scoped collections in one pass and scores them client-side, falling back to a traced `high` recall only when that scope is too large or no scorer is configured; `max` sweeps the bank through `memories/list`. Both prune below the server's own `max(0.20, 0.40 * best)` floor, abstain under the decision threshold, and degrade to unscored candidates when the scorer is unavailable.
+- Hindsight `read memory://<id>` now resolves a bank memory natively, and recalled bullets link the id as `[memory://<id>]`; the read renders the full text with provenance, source memories, and consolidation history, and fails closed with one opaque error for missing and out-of-scope ids alike.
+- Added a root agent `memory:` policy (`autoRetain` / `autoRecall`) that narrows the session's Hindsight flags, with `HINDSIGHT_AUTO_*` environment overrides still winning.
+- Hindsight recall now sweeps each gear's own `<=` cap directly (`low` 300, `mid` 600, `high` 1200, `xhigh` 2400, `max` 4800) in both the hidden `<memories>` refresh and the `recall` tool when a decision scorer is configured, skipping the server-ranked `/memories/recall` call whenever the whole scope fits under the cap; an oversized scope still falls back to the server ranking (or the traced `high` recall for `xhigh`).
 
 ### Changed
 

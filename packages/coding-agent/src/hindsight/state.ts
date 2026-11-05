@@ -9,7 +9,14 @@ import {
 import type { MemoryPromptPreparation } from "../memory-backend/types";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { type BankScope, ensureBankExists } from "./bank";
-import { HindsightRecallDecision, type HindsightApi, type MemoryItemInput, type UpdateMode } from "./client";
+import {
+	HindsightRecallDecision,
+	type HindsightApi,
+	type MemoryItemInput,
+	RECALL_SCORE_FLOOR,
+	RECALL_SCORE_FLOOR_RATIO,
+	type UpdateMode,
+} from "./client";
 import type { HindsightConfig } from "./config";
 import {
 	composeRecallQuery,
@@ -28,6 +35,7 @@ import {
 	resolveSeedsForScope,
 	tryLoadMentalModelsBlock,
 } from "./mental-models";
+import { GEAR_SWEEP_CAPS, packByTokens, resolveSweepCollections, sweepBankMemories } from "./sweep";
 import { countRetainableUserTurns, extractMessages } from "./transcript";
 
 /** `notice` source of Hindsight recall/retain failures; print mode writes these to stderr. */
@@ -827,6 +835,11 @@ export class HindsightSessionState {
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
 		const generation = this.#recallGeneration;
 		try {
+			if (this.recallScorer) {
+				const swept = await this.#recallSweptContext(query, signal);
+				if (swept) return swept;
+				if (signal?.aborted) return { context: null, ok: false, delivered: [] };
+			}
 			const response = await this.client.recall(this.bankId, query, {
 				budget: this.config.recallBudget,
 				maxTokens: this.config.recallMaxTokens,
@@ -874,6 +887,66 @@ export class HindsightSessionState {
 			}
 			return { context: null, ok: false, delivered: [] };
 		}
+	}
+
+	/**
+	 * Gears whose scope fits under their cap are ranked here instead of asking the server for a
+	 * shortlist: every matching memory is scored, so a small bank is not trimmed by one ranking.
+	 * Undefined means the scope outgrew the cap or scoring produced no evidence, leaving the
+	 * server-ranked recall as the fallback.
+	 */
+	async #recallSweptContext(query: string, signal?: AbortSignal): Promise<RecallOutcome | undefined> {
+		const scorer = this.recallScorer;
+		if (!scorer) return undefined;
+		const sweep = await sweepBankMemories(
+			this.client,
+			this.bankId,
+			resolveSweepCollections(undefined, this.config),
+			this.recallTags,
+			this.recallTagsMatch,
+			{ ceiling: GEAR_SWEEP_CAPS[this.config.recallBudget], bailOnOverflow: true },
+			signal,
+		);
+		if (signal?.aborted) return { context: null, ok: false, delivered: [] };
+		if (sweep.truncated || sweep.candidates.length === 0) {
+			return sweep.truncated ? undefined : { context: null, ok: true, delivered: [] };
+		}
+		let scores: (number | null)[];
+		try {
+			scores = await scorer.scoreBatch(
+				query,
+				sweep.candidates.map(candidate => candidate.text),
+				signal,
+			);
+		} catch (err) {
+			logger.warn("Hindsight: swept recall scoring failed", {
+				bankId: this.bankId,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return undefined;
+		}
+		if (signal?.aborted) return { context: null, ok: false, delivered: [] };
+		const scored = sweep.candidates.flatMap((candidate, index) => {
+			const score = scores[index];
+			return score === null || score === undefined ? [] : [{ candidate, score }];
+		});
+		if (scored.length === 0) return undefined;
+		const best = Math.max(...scored.map(entry => entry.score));
+		if (best < this.config.decisionModelThreshold) return { context: null, ok: true, delivered: [] };
+		const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
+		const fresh = scored
+			.filter(entry => entry.score >= floor && !this.recalledMemoryIds.has(recallMemoryKey(entry.candidate)))
+			.sort((left, right) => right.score - left.score)
+			.map(entry => entry.candidate);
+		const packed = packByTokens(fresh, this.config.recallMaxTokens);
+		if (packed.length === 0) return { context: null, ok: true, delivered: [] };
+		const formatted = formatMemories(packed);
+		const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
+		return {
+			context: block,
+			ok: true,
+			delivered: packed.map(result => ({ id: result.id ?? recallMemoryKey(result), text: result.text })),
+		};
 	}
 
 	#sessionSourceTimestamp(): Date | undefined {

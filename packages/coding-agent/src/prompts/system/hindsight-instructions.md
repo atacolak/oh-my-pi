@@ -5,13 +5,14 @@ This agent has long-term memory.
 - Use `{{toolRefs.recall}}` proactively before answering questions about past conversations, project history, or user preferences.
 - Use `{{toolRefs.retain}}` to store durable facts (decisions, preferences, project context) the agent should remember in future sessions.
 - Use `{{toolRefs.reflect}}` for questions that need a synthesised answer over many memories.
+- Recalled entries link their bank id as `[memory://<id>]`; `read memory://<id>` returns the full memory with its source memories and consolidation history.
 
 Bank topology:
-- `observation`: consolidated durable beliefs; highest signal.
-- `world`: atomic extracted facts.
-- `experience`: dated events.
+- `observation`: distilled living beliefs; the default signal.
+- `world`: atomic facts.
+- `experience`: dated events; `world` and `experience` preserve verbatim detail that observations distil away.
 - `knowledge://` pages: curated architecture and decision documents.
 
 Narrow recall with tags: `area:<subsystem>` restricts to one area, `memory_shape:<shape>` to one memory shape; provided tags merge with the session's scope tags instead of replacing them.
 
-Recall gears: `budget: xhigh` re-scores ~2400 traced candidates after a `high` recall (measured ~32s); `budget: max` scores every consolidated observation plus pending/failed raw facts — not the raw rows observations already represent — with no recall call. Both are critical-use only and scale with scope; `max` may report truncation.
+Choose recall depth by how much of your own past experience you need in view: from a single known fact (`low`) or everyday working context (`mid`), up to connected cross-session history (`high`), a broad deep sweep when phrasing may differ (`xhigh`), or reading every consolidated belief in scope so nothing hides (`max`).

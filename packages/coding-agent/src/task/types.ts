@@ -319,6 +319,12 @@ export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): b
 	return maxRecursionDepth < 0 || taskDepth < maxRecursionDepth;
 }
 
+/** Root agent `memory` frontmatter policy for the Hindsight backend. */
+export interface AgentMemoryPolicy {
+	autoRetain?: boolean;
+	autoRecall?: boolean;
+}
+
 /** Agent definition (bundled or discovered) */
 export interface AgentDefinition {
 	name: string;
@@ -331,6 +337,8 @@ export interface AgentDefinition {
 	spawns?: string[] | "*";
 	/** Root-only durable authoring grant. Absent means no `automation_author` authority. */
 	automationAuthor?: AutomationAuthorPolicy;
+	/** Root-only memory policy: `HINDSIGHT_AUTO_*` env wins, then these values, then settings. */
+	memory?: AgentMemoryPolicy;
 
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;

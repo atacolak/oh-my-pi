@@ -561,6 +561,7 @@ import { cfgSteeringMode } from "../modes/settings";
 import { cfgDisabledProviders, cfgModelRoles } from "../config/model-settings";
 import { cfgEvalJs, cfgEvalPy, cfgEvalToolsEnabled, cfgEvalWorkpoolFreshAgents } from "../eval/settings";
 import { cfgExtensions, type SkillsSettings } from "../extensibility/settings";
+import { cfgHindsightAutoRecall, cfgHindsightAutoRetain } from "../hindsight/settings";
 import {
 	cfgImagesAutoResize,
 	cfgMagicKeyword,
@@ -3335,6 +3336,14 @@ export class AgentSession implements SettingsScope {
 	/** Hint forwarded to provider calls that support websocket transport; read live from `providers.openaiWebsockets`. */
 	get preferWebsockets(): boolean | undefined {
 		return resolveOpenAIWebsocketPreference(this.settings);
+	}
+
+	/** Effective Hindsight policy: `HINDSIGHT_AUTO_*` env > root agent `memory` > settings. */
+	getAgentMemoryPolicy(): { autoRetain: boolean; autoRecall: boolean } {
+		return {
+			autoRetain: cfgHindsightAutoRetain.get(this.settings),
+			autoRecall: cfgHindsightAutoRecall.get(this.settings),
+		};
 	}
 
 	getHindsightSessionState(): HindsightSessionState | undefined {

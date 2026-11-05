@@ -398,4 +398,61 @@ describe("parseAgentFields", () => {
 		expect(Object.keys(schema.properties)).toEqual(["foo-bar"]);
 		expect(Object.keys(schema.optionalProperties)).toEqual(["cache-key"]);
 	});
+
+	test("parses a camelCase memory policy and keeps it on the agent definition", () => {
+		const fields = parseAgentFields({
+			name: "pr-maintainer",
+			description: "desc",
+			memory: { autoRetain: false, autoRecall: true },
+		});
+		expect(fields?.memory).toEqual({ autoRetain: false, autoRecall: true });
+
+		const agent = parseAgent(
+			"pr-maintainer.md",
+			["---", "name: pr-maintainer", 'description: "desc"', "memory: {autoRetain: false}", "---", "body"].join("\n"),
+			"project",
+		);
+		expect(agent.memory).toEqual({ autoRetain: false });
+	});
+
+	test("parses kebab-case memory keys whether normalizing or raw", () => {
+		const direct = parseAgentFields({
+			name: "pr-maintainer",
+			description: "desc",
+			memory: { "auto-retain": false, "auto-recall": false },
+		});
+		expect(direct?.memory).toEqual({ autoRetain: false, autoRecall: false });
+
+		const { frontmatter } = parseFrontmatter(
+			[
+				"---",
+				"name: pr-maintainer",
+				'description: "desc"',
+				"memory:",
+				"  auto-retain: false",
+				"  auto-recall: false",
+				"---",
+				"body",
+			].join("\n"),
+			{ rawKeys: true },
+		);
+		expect(frontmatter.memory).toEqual({ "auto-retain": false, "auto-recall": false });
+		expect(parseAgentFields(frontmatter)?.memory).toEqual({ autoRetain: false, autoRecall: false });
+	});
+
+	test("ignores malformed memory declarations and keeps only valid booleans", () => {
+		expect(
+			parseAgentFields({ name: "pr-maintainer", description: "desc", memory: "invalid" })?.memory,
+		).toBeUndefined();
+		expect(parseAgentFields({ name: "pr-maintainer", description: "desc", memory: {} })?.memory).toBeUndefined();
+		expect(parseAgentFields({ name: "pr-maintainer", description: "desc", memory: [] })?.memory).toBeUndefined();
+		expect(parseAgentFields({ name: "pr-maintainer", description: "desc" })?.memory).toBeUndefined();
+		expect(
+			parseAgentFields({
+				name: "pr-maintainer",
+				description: "desc",
+				memory: { autoRetain: "sometimes", autoRecall: false },
+			})?.memory,
+		).toEqual({ autoRecall: false });
+	});
 });

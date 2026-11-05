@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { restartArgv, STRING_VALUE_FLAGS } from "@oh-my-pi/pi-coding-agent/cli/flag-tables";
 import {
@@ -13,9 +14,13 @@ import {
 import { CliUsageError } from "@oh-my-pi/pi-coding-agent/cli/usage-error";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgHindsightAutoRecall, cfgHindsightAutoRetain } from "@oh-my-pi/pi-coding-agent/hindsight/settings";
 import { buildSessionOptions } from "@oh-my-pi/pi-coding-agent/main";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 const FLAG_PROBE_MD = [
 	"---",
@@ -38,6 +43,10 @@ const HIDDEN_PROBE_MD = FLAG_PROBE_MD.replace("name: flag-probe", "name: hidden-
 const NO_FALLBACK_PROBE_MD = FLAG_PROBE_MD.replace(
 	"name: flag-probe",
 	"name: no-fallback-probe\nmodel-fallback: false",
+);
+const MEMORY_PROBE_MD = FLAG_PROBE_MD.replace(
+	"name: flag-probe",
+	"name: memory-probe\nmemory: {autoRetain: false, autoRecall: false}",
 );
 const AUTHOR_PROBE_MD = [
 	"---",
@@ -227,6 +236,7 @@ describe("buildSessionOptions — --agent", () => {
 	afterEach(() => {
 		authStorage?.close();
 		authStorage = undefined;
+		restoreHindsightEnv();
 	});
 
 	async function optionsFor(argv: string[], cwd?: string, agentCwd?: string) {
@@ -239,7 +249,7 @@ describe("buildSessionOptions — --agent", () => {
 		const parsed = parseArgs(argv);
 		if (cwd) parsed.cwd = cwd;
 		if (agentCwd) parsed.agentCwd = agentCwd;
-		return { parsed, options: await buildSessionOptions(parsed, [], undefined, registry, settings) };
+		return { parsed, settings, options: await buildSessionOptions(parsed, [], undefined, registry, settings) };
 	}
 
 	it("applies project agent tools, thinking, body, and inherit-session model", async () => {
@@ -503,5 +513,162 @@ describe("buildSessionOptions — --agent", () => {
 			await fs.rm(roleRoot, { recursive: true, force: true });
 			await fs.rm(executionCwd, { recursive: true, force: true });
 		}
+	});
+
+	it("applies the root agent memory policy over the settings default", async () => {
+		const cwd = await writeProjectAgent(MEMORY_PROBE_MD);
+		try {
+			setHindsightEnv({});
+			const { options, settings } = await optionsFor(["--agent", "memory-probe"], cwd);
+			expect(options.agentMemory).toEqual({ autoRetain: false, autoRecall: false });
+			expect(cfgHindsightAutoRetain.get(settings)).toBe(false);
+			expect(cfgHindsightAutoRecall.get(settings)).toBe(false);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps HINDSIGHT_AUTO_RETAIN above the root agent memory policy", async () => {
+		const cwd = await writeProjectAgent(MEMORY_PROBE_MD);
+		try {
+			setHindsightEnv({ HINDSIGHT_AUTO_RETAIN: "true" });
+			const { options, settings } = await optionsFor(["--agent", "memory-probe"], cwd);
+			expect(options.agentMemory).toEqual({ autoRetain: false, autoRecall: false });
+			expect(cfgHindsightAutoRetain.get(settings)).toBe(true);
+			expect(cfgHindsightAutoRecall.get(settings)).toBe(false);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("applies the memory policy resolved from --agent-cwd independently of execution cwd", async () => {
+		const roleRoot = await writeProjectAgent(MEMORY_PROBE_MD);
+		const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-work-"));
+		try {
+			setHindsightEnv({});
+			const { options, settings } = await optionsFor(
+				["--agent", "memory-probe", "--agent-cwd", roleRoot, "--cwd", executionCwd],
+				executionCwd,
+				roleRoot,
+			);
+			expect(options.cwd).toBe(executionCwd);
+			expect(options.agentMemory).toEqual({ autoRetain: false, autoRecall: false });
+			expect(cfgHindsightAutoRetain.get(settings)).toBe(false);
+			expect(cfgHindsightAutoRecall.get(settings)).toBe(false);
+		} finally {
+			await fs.rm(roleRoot, { recursive: true, force: true });
+			await fs.rm(executionCwd, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves the memory settings untouched when the agent declares no policy", async () => {
+		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+		try {
+			setHindsightEnv({});
+			const { options, settings } = await optionsFor(["--agent", "flag-probe"], cwd);
+			expect(options.agentMemory).toBeUndefined();
+			expect(cfgHindsightAutoRetain.get(settings)).toBe(true);
+			expect(cfgHindsightAutoRecall.get(settings)).toBe(true);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+const HINDSIGHT_ENV_NAMES = ["HINDSIGHT_AUTO_RETAIN", "HINDSIGHT_AUTO_RECALL"] as const;
+const savedHindsightEnv = new Map(HINDSIGHT_ENV_NAMES.map(name => [name, Bun.env[name]]));
+
+function setHindsightEnv(env: Partial<Record<(typeof HINDSIGHT_ENV_NAMES)[number], string>>): void {
+	for (const name of HINDSIGHT_ENV_NAMES) delete Bun.env[name];
+	Object.assign(Bun.env, env);
+}
+
+function restoreHindsightEnv(): void {
+	for (const [name, value] of savedHindsightEnv) {
+		if (value === undefined) delete Bun.env[name];
+		else Bun.env[name] = value;
+	}
+}
+
+describe("createAgentSession — agentMemory", () => {
+	const OPENAI_TEST_MODEL = getBundledModel("openai", "gpt-4o-mini");
+	let authStorage: AuthStorage | undefined;
+	let session: AgentSession | undefined;
+
+	afterEach(async () => {
+		await session?.dispose();
+		session = undefined;
+		authStorage?.close();
+		authStorage = undefined;
+		restoreHindsightEnv();
+	});
+
+	async function createSession(
+		tempDir: TempDir,
+		agentMemory: { autoRetain?: boolean; autoRecall?: boolean },
+		options: { taskDepth?: number; parentTaskPrefix?: string } = {},
+	): Promise<Settings> {
+		authStorage = await AuthStorage.create(tempDir.join("auth.db"));
+		authStorage.keys.setRuntime("openai", "test-key");
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"marketplace.autoUpdate": "off",
+		});
+		const created = await createAgentSession({
+			cwd: tempDir.path(),
+			agentDir: tempDir.path(),
+			authStorage,
+			model: OPENAI_TEST_MODEL,
+			settings,
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			workspaceTree: {
+				rootPath: tempDir.path(),
+				rendered: "",
+				truncated: false,
+				totalLines: 0,
+				agentsMdFiles: [],
+			},
+			enableMCP: false,
+			enableLsp: false,
+			agentMemory,
+			...options,
+		});
+		session = created.session;
+		return settings;
+	}
+
+	it("applies agentMemory to a root session over the settings default", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-memory-sdk-");
+		setHindsightEnv({});
+		const settings = await createSession(tempDir, { autoRetain: false, autoRecall: false });
+		expect(cfgHindsightAutoRetain.get(settings)).toBe(false);
+		expect(cfgHindsightAutoRecall.get(settings)).toBe(false);
+	});
+
+	it("lets HINDSIGHT_AUTO_RECALL win over agentMemory for a root session", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-memory-env-");
+		setHindsightEnv({ HINDSIGHT_AUTO_RECALL: "true" });
+		const settings = await createSession(tempDir, { autoRetain: false, autoRecall: false });
+		expect(cfgHindsightAutoRetain.get(settings)).toBe(false);
+		expect(cfgHindsightAutoRecall.get(settings)).toBe(true);
+	});
+
+	it("does not apply agentMemory to a subagent session", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-memory-sub-");
+		setHindsightEnv({});
+		const settings = await createSession(tempDir, { autoRetain: false, autoRecall: false }, { taskDepth: 1 });
+		expect(cfgHindsightAutoRetain.get(settings)).toBe(true);
+		expect(cfgHindsightAutoRecall.get(settings)).toBe(true);
+	});
+
+	it("exposes the effective memory policy on the session", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-memory-view-");
+		setHindsightEnv({ HINDSIGHT_AUTO_RETAIN: "true" });
+		await createSession(tempDir, { autoRetain: false, autoRecall: false });
+		expect(session?.getAgentMemoryPolicy()).toEqual({ autoRetain: true, autoRecall: false });
 	});
 });

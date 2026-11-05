@@ -146,6 +146,7 @@ import {
 	setActiveSkills,
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
+import { applyAgentMemoryPolicy } from "./hindsight/agent-memory-policy";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions, outRepliesActive } from "./internal-urls";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
@@ -258,7 +259,7 @@ import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
 import { isScoutSpawnable } from "./task/spawn-policy";
-import type { AutomationAuthorPolicy } from "./task/types";
+import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "./task/types";
 import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import {
 	AUTO_THINKING,
@@ -879,6 +880,11 @@ export interface CreateAgentSessionOptions {
 	rootAgentName?: string;
 	/** Effective durable authoring grant from the resolved root AgentDefinition. */
 	automationAuthor?: AutomationAuthorPolicy;
+	/**
+	 * Root agent `memory` policy. Applied to session settings when this is a root
+	 * session (`taskDepth === 0`, no parent task); `HINDSIGHT_AUTO_*` wins over it.
+	 */
+	agentMemory?: AgentMemoryPolicy;
 	/**
 	 * Agent definition name used to evaluate rule `agents` scoping. Defaults to
 	 * "main" for a top-level session / "sub" for a subagent.
@@ -1951,6 +1957,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const settings = await (options.settings ??
 		options.settingsManager ??
 		logger.time("settings", Settings.init, { cwd, agentDir }));
+	if (!options.parentTaskPrefix && !options.taskDepth) {
+		applyAgentMemoryPolicy(settings, options.agentMemory);
+	}
 	// Discovery provider toggles and process-wide setting effects (theme, request limits, …)
 	// follow the newest holder: each top-level session holds both on its settings until disposed,
 	// then hands them back to the previous holder. Subagents and helper sessions never take them,

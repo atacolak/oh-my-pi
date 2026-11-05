@@ -31,7 +31,7 @@ import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
-import type { AutomationAuthorPolicy } from "../task/types";
+import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
 
@@ -330,6 +330,8 @@ export interface ParsedAgentFields {
 	hide?: boolean;
 	/** `true` = keep `yield` and the output schema when `task.structured` is off. */
 	structured?: boolean;
+	/** Root-only Hindsight policy: kebab-case keys inside `memory` are accepted. */
+	memory?: AgentMemoryPolicy;
 	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
@@ -408,6 +410,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 	const hide = parseBoolean(frontmatter.hide);
 	const structured = parseBoolean(frontmatter.structured);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
+	const memory = parseAgentMemoryPolicy(frontmatter.memory);
 	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
 	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
 	if (prewalk === undefined && typeof frontmatter.prewalk === "string") {
@@ -434,6 +437,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		modelFallback,
 		output,
 		thinkingLevel,
+		memory,
 		blocking,
 		hide,
 		structured,
@@ -442,6 +446,20 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		prewalk,
 		advisor,
 		automationAuthor,
+	};
+}
+
+function parseAgentMemoryPolicy(value: unknown): AgentMemoryPolicy | undefined {
+	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = withCamelCaseAliases(value as Record<string, unknown>);
+	const autoRetain = parseBoolean(record.autoRetain);
+	const autoRecall = parseBoolean(record.autoRecall);
+	if (autoRetain === undefined && autoRecall === undefined) return undefined;
+	return {
+		...(autoRetain !== undefined ? { autoRetain } : {}),
+		...(autoRecall !== undefined ? { autoRecall } : {}),
 	};
 }
 

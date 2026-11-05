@@ -161,6 +161,7 @@ import { CliUsageError } from "./cli/usage-error";
 import { scheduleGcAutoCompress } from "./cli/gc-auto-compress";
 import { cfgGcAutoCompress } from "./cli/gc-settings";
 import { cfgGoalEnabled } from "./goals/settings";
+import { applyAgentMemoryPolicy } from "./hindsight/agent-memory-policy";
 import { cfgPlanDefaultOnStartup, cfgPlanEnabled } from "./plan-mode/settings";
 
 import { cfgAdvisorEnabled } from "./advisor/settings";
@@ -1813,6 +1814,10 @@ export async function buildSessionOptions(
 		options.agentDisplayName = launchAgent.name;
 		if (launchAgent.automationAuthor) {
 			options.automationAuthor = launchAgent.automationAuthor;
+		}
+		if (launchAgent.memory) {
+			options.agentMemory = launchAgent.memory;
+			applyAgentMemoryPolicy(activeSettings, launchAgent.memory);
 		}
 		if (launchAgent.modelFallback === false) {
 			options.disableModelFallback = true;

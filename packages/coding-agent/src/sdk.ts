@@ -3341,7 +3341,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					}
 				}
 				const usageReservePolicy = cfgRetryUsageReservePolicy.get(settings);
-				const modelFallbackEnabled = cfgRetryModelFallback.get(settings);
+				const modelFallbackEnabled = cfgRetryModelFallback.get(settings) && !options.disableModelFallback;
 				if (
 					((modelFallbackEnabled && (hasUsageFallbackCandidate || usageFallbackTriggered)) ||
 						usageReservePolicy === "fail-closed") &&

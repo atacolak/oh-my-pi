@@ -212,6 +212,28 @@ export function parseArrayOrCSV(value: unknown): string[] | undefined {
 	return undefined;
 }
 
+/**
+ * Add camelCase aliases for a record's kebab-case keys, leaving it untouched
+ * when every key is already camelCase.
+ *
+ * `parseFrontmatter` normalizes keys unless a caller parses with `rawKeys`
+ * (JSON/YAML definitions, extension loaders), so both spellings must resolve.
+ * An existing camelCase key always wins over its kebab-case alias. Values are
+ * carried over by reference: nested data such as an opaque `output` schema is
+ * never rewritten.
+ */
+function withCamelCaseAliases(record: Record<string, unknown>): Record<string, unknown> {
+	let aliased: Record<string, unknown> | undefined;
+	for (const [key, value] of Object.entries(record)) {
+		if (!key.includes("-")) continue;
+		const camel = key.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+		if (camel === key || record[camel] !== undefined) continue;
+		aliased ??= { ...record };
+		aliased[camel] = value;
+	}
+	return aliased ?? record;
+}
+
 interface RuleMarkdownOptions {
 	ruleName?: string;
 	stripNamePattern?: RegExp;
@@ -327,7 +349,8 @@ export interface ParsedAgentFields {
  * Parse agent fields from frontmatter.
  * Returns null if required fields (name, description) are missing.
  */
-export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAgentFields | null {
+export function parseAgentFields(rawFrontmatter: Record<string, unknown>): ParsedAgentFields | null {
+	const frontmatter = withCamelCaseAliases(rawFrontmatter);
 	const name = typeof frontmatter.name === "string" ? frontmatter.name : undefined;
 	const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined;
 
@@ -434,7 +457,7 @@ function parseAutomationAuthor(value: unknown): AutomationAuthorPolicy | undefin
 	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
 		return undefined;
 	}
-	const record = value as Record<string, unknown>;
+	const record = withCamelCaseAliases(value as Record<string, unknown>);
 	const jurisdiction = record.jurisdiction;
 	if (jurisdiction !== "descendants" && jurisdiction !== "scope") return undefined;
 	const allowed = record.allowedAgents;

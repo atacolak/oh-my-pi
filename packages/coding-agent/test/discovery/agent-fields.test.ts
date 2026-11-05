@@ -5,6 +5,7 @@ import { parseAgentFields } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { resolveBuiltinToolPlan, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
+import { parseFrontmatter } from "@oh-my-pi/pi-utils";
 
 describe("parseAgentFields", () => {
 	test("rejects the reserved `main` and `sub` agent definition names", () => {
@@ -332,5 +333,98 @@ describe("parseAgentFields", () => {
 				automationAuthor: { allowedAgents: "*", jurisdiction: "universe" },
 			})?.automationAuthor,
 		).toBeUndefined();
+	});
+
+	test("parses kebab-case multi-word fields from raw frontmatter", () => {
+		const fields = parseAgentFields({
+			name: "pinned",
+			description: "desc",
+			"model-fallback": false,
+			"read-summarize": false,
+			"thinking-level": "high",
+			"autoload-skills": ["user-created-skill-a", "user-created-skill-b"],
+			"automation-author": {
+				jurisdiction: "descendants",
+				"allowed-agents": ["scout"],
+			},
+		});
+
+		expect(fields?.modelFallback).toBe(false);
+		expect(fields?.readSummarize).toBe(false);
+		expect(fields?.thinkingLevel).toBe(Effort.High);
+		expect(fields?.autoloadSkills).toEqual(["user-created-skill-a", "user-created-skill-b"]);
+		expect(fields?.automationAuthor).toEqual({ allowedAgents: ["scout"], jurisdiction: "descendants" });
+	});
+
+	test("prefers camelCase over a kebab-case spelling supplied on the same record", () => {
+		const fields = parseAgentFields({
+			name: "pinned",
+			description: "desc",
+			modelFallback: true,
+			"model-fallback": false,
+			readSummarize: true,
+			"read-summarize": false,
+			thinkingLevel: "low",
+			"thinking-level": "high",
+			autoloadSkills: ["camel"],
+			"autoload-skills": ["kebab"],
+			automationAuthor: { jurisdiction: "scope", allowedAgents: "*" },
+			"automation-author": { jurisdiction: "descendants", "allowed-agents": ["kebab"] },
+		});
+
+		expect(fields?.modelFallback).toBe(true);
+		expect(fields?.readSummarize).toBe(true);
+		expect(fields?.thinkingLevel).toBe(Effort.Low);
+		expect(fields?.autoloadSkills).toEqual(["camel"]);
+		expect(fields?.automationAuthor).toEqual({ allowedAgents: "*", jurisdiction: "scope" });
+	});
+
+	test("parses kebab-case fields from strict rawKeys frontmatter", () => {
+		const { frontmatter } = parseFrontmatter(
+			[
+				"---",
+				"name: pinned",
+				'description: "desc"',
+				"model-fallback: false",
+				"read-summarize: false",
+				"thinking-level: high",
+				"autoload-skills:",
+				"  - user-created-skill-a",
+				"automation-author:",
+				"  jurisdiction: descendants",
+				"  allowed-agents:",
+				"    - scout",
+				"---",
+				"body",
+			].join("\n"),
+			{ rawKeys: true },
+		);
+
+		expect(frontmatter["model-fallback"]).toBe(false);
+		const fields = parseAgentFields(frontmatter);
+		expect(fields?.modelFallback).toBe(false);
+		expect(fields?.readSummarize).toBe(false);
+		expect(fields?.thinkingLevel).toBe(Effort.High);
+		expect(fields?.autoloadSkills).toEqual(["user-created-skill-a"]);
+		expect(fields?.automationAuthor).toEqual({ allowedAgents: ["scout"], jurisdiction: "descendants" });
+	});
+
+	test("keeps an opaque output schema verbatim while reading kebab-case keys", () => {
+		const output = {
+			properties: { "foo-bar": { type: "string" } },
+			optionalProperties: { "cache-key": { type: "string" } },
+		};
+		const fields = parseAgentFields({
+			name: "schema-agent",
+			description: "desc",
+			"model-fallback": false,
+			output,
+		});
+
+		expect(fields?.modelFallback).toBe(false);
+		expect(fields?.output).toBe(output);
+		const schema = fields?.output as typeof output;
+		expect(Object.keys(schema.properties)).toEqual(["foo-bar"]);
+		expect(Object.keys(schema.optionalProperties)).toEqual(["cache-key"]);
 	});
 });

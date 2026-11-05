@@ -331,6 +331,7 @@
 
 - Session attach endpoints now honor `OMP_RUN_DIR` for publication and discovery, matching RPC clients, so sessions kept in a custom run directory can be resumed, attached, and refreshed from the directory they publish in
 - Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
+- Agent definitions accept `model-fallback: false` to pin that agent's sessions to their resolved model: root `--agent` launches, resume restores, spawned subagents (including cold-revived ones), and their advisors skip client-side retry fallback, context promotion, usage-aware startup fallback, and server-side fallback for that agent, while omitting the key keeps `retry.modelFallback` in charge. Agent frontmatter also reads every multi-word key under either spelling (`model-fallback`, `read-summarize`, `thinking-level`, `autoload-skills`, `automation-author`/`allowed-agents`), so raw-key parsers stop dropping them; camelCase wins when a record supplies both.
 
 ## [18.16.0] - 2026-11-02
 

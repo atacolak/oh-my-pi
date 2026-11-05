@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tryAcquireSessionLease } from "../../src/session/session-storage";
 import {
+	decideRpcSessionAttach,
 	decideSessionAttach,
 	probeSessionAttach,
 	type SessionAttachProbe,
@@ -60,6 +61,21 @@ describe("decideSessionAttach", () => {
 		];
 		const cold = probes.map(decideSessionAttach).filter(decision => decision.kind === "cold");
 		expect(cold).toEqual([{ kind: "cold", sessionId: "s" }]);
+	});
+});
+
+describe("decideRpcSessionAttach", () => {
+	it("attaches a live socket even when the publication carries no terminal", () => {
+		expect(decideRpcSessionAttach(liveWithTerminal)).toEqual({ kind: "attach" });
+		expect(decideRpcSessionAttach(liveWithoutTerminal)).toEqual({ kind: "attach" });
+	});
+
+	it("refuses unsafe owners and opens only a free absent target cold", () => {
+		expect(decideRpcSessionAttach(unreachable)).toEqual({ kind: "refuse", code: "owner-unreachable" });
+		expect(decideRpcSessionAttach(unknown)).toEqual({ kind: "refuse", code: "ownership-unknown" });
+		expect(decideRpcSessionAttach(absentHeld)).toEqual({ kind: "refuse", code: "owner-busy" });
+		expect(decideRpcSessionAttach(absentUnknown)).toEqual({ kind: "refuse", code: "ownership-unknown" });
+		expect(decideRpcSessionAttach(absentFree)).toEqual({ kind: "cold", sessionId: "s" });
 	});
 });
 

@@ -250,6 +250,58 @@ describe("a terminal mirror", () => {
 		expect(broker.operations.some(operation => operation.op === "terminal_detach")).toBe(false);
 	});
 
+	it("replays buffered first frames before live output without reattaching", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		const running = startMirror(terminal, broker.client, {
+			alreadyAttached: true,
+			initialFrames: [outputFrame(1, "first"), outputFrame(2, "second")],
+		});
+		await broker.waitForOperation(
+			operation => operation.op === "terminal_ack" && operation.sequence === 2,
+			"buffered frames were never acknowledged",
+		);
+		expect(broker.operations.some(operation => operation.op === "terminal_attach")).toBe(false);
+		expect(terminal.writes.join("")).toBe("firstsecond");
+
+		broker.emit(outputFrame(3, "third"));
+		await broker.waitForOperation(
+			operation => operation.op === "terminal_ack" && operation.sequence === 3,
+			"live frame after replay was never acknowledged",
+		);
+		expect(terminal.writes.join("")).toBe("firstsecondthird");
+
+		broker.emit(exitFrame(0));
+		expect(await running).toEqual({ detached: false, exitCode: 0, reason: "exit" });
+	});
+
+	it("clamps invalid local sizes before attaching and resizing", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		let columns = 0;
+		let rows = -1;
+		const running = startMirror(terminal, broker.client, {
+			size: () => ({ columns, rows }),
+		});
+		const attached = await broker.waitForOperation(
+			operation => operation.op === "terminal_attach",
+			"mirror never attached",
+		);
+		expect(attached).toMatchObject({ columns: 120, rows: 40 });
+
+		columns = Number.NaN;
+		rows = 0;
+		terminal.resize();
+		const resized = await broker.waitForOperation(
+			operation => operation.op === "terminal_resize",
+			"resize was never forwarded",
+		);
+		expect(resized).toMatchObject({ columns: 120, rows: 40 });
+
+		broker.emit(exitFrame(0));
+		expect(await running).toEqual({ detached: false, exitCode: 0, reason: "exit" });
+	});
+
 	it("waits for a local drain before acknowledging a backpressured write", async () => {
 		const broker = fakeBroker();
 		const terminal = new FakeTerminal();

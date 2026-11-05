@@ -13,6 +13,7 @@ async function expectRpcOwnsStdin(): Promise<void> {
 			extensionPath,
 			"--mode",
 			"rpc",
+			"--no-ui",
 			"--provider",
 			"anthropic",
 			"--model",

@@ -6,6 +6,12 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockHandler, type MockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type {
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResult,
+	ExtensionAskDialogSubmitResult,
+	ExtensionUIDialogOptions,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { createAgentSessionSocket, type RpcSessionSocket } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-socket";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -481,7 +487,7 @@ describe("an interactive session's published endpoint", () => {
 			subscriber.send({ id: "subscribe-off", type: "set_subagent_subscription", level: "off" });
 			expect(await frameOf(subscriber, "subscribe-off")).toMatchObject({ success: true, data: { level: "off" } });
 			subagentEventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, subagentProgress(transcriptFile));
-			await observer.next(frame => listed(observer.seen) === 2);
+			await observer.next(() => listed(observer.seen) === 2);
 			subscriber.send({ id: "subscriber-state", type: "get_state" });
 			await frameOf(subscriber, "subscriber-state");
 			expect(listed(subscriber.seen)).toBe(deliveredWhileSubscribed);
@@ -490,4 +496,137 @@ describe("an interactive session's published endpoint", () => {
 			observer.close();
 		}
 	}, 30_000);
+
+	interface PendingTuiDialog<T> {
+		readonly present: (dialogOptions?: ExtensionUIDialogOptions) => Promise<T>;
+		readonly signal: () => AbortSignal | undefined;
+		readonly resolve: (value: T) => void;
+	}
+
+	function pendingTuiDialog<T>(cancelValue: T): PendingTuiDialog<T> {
+		const { promise, resolve } = Promise.withResolvers<T>();
+		let signal: AbortSignal | undefined;
+		return {
+			present: dialogOptions => {
+				signal = dialogOptions?.signal;
+				dialogOptions?.signal?.addEventListener("abort", () => resolve(cancelValue), { once: true });
+				return promise;
+			},
+			signal: () => signal,
+			resolve,
+		};
+	}
+
+	const askQuestions: ExtensionAskDialogQuestion[] = [
+		{ id: "q1", question: "Which one?", options: [{ label: "alpha" }, { label: "beta" }] },
+	];
+
+	describe("terminal dialog fanout", () => {
+		it("lets an attached client answer first and dismisses the terminal prompt", async () => {
+			fixture = await createInteractiveFixture([]);
+			const peer = await SocketPeer.connect(fixture.endpoint);
+			try {
+				await peer.next(frame => frame.type === "ready");
+				const tui = pendingTuiDialog<string | undefined>(undefined);
+				const answer = fixture.mode.dialogFirstResponder.select(tui.present, "Pick one", ["alpha", "beta"]);
+				const request = await peer.next(
+					frame => frame.type === "extension_ui_request" && frame.method === "select",
+				);
+				expect(request.options).toEqual(["alpha", "beta"]);
+
+				peer.send({ type: "extension_ui_response", id: request.id, value: "beta" });
+				await expect(answer).resolves.toBe("beta");
+				expect(tui.signal()?.aborted).toBe(true);
+				const cancel = await peer.next(frame => frame.type === "extension_ui_request" && frame.method === "cancel");
+				expect(cancel.targetId).toBe(request.id);
+			} finally {
+				peer.close();
+			}
+		}, 20_000);
+
+		it("keeps a shared dialog alive when one attached client disconnects", async () => {
+			fixture = await createInteractiveFixture([]);
+			const first = await SocketPeer.connect(fixture.endpoint);
+			const second = await SocketPeer.connect(fixture.endpoint);
+			try {
+				await first.next(frame => frame.type === "ready");
+				await second.next(frame => frame.type === "ready");
+				const tui = pendingTuiDialog<boolean>(false);
+				const answer = fixture.mode.dialogFirstResponder.confirm(
+					tui.present,
+					"Proceed?",
+					"Continue with the change?",
+				);
+				const request = await first.next(
+					frame => frame.type === "extension_ui_request" && frame.method === "confirm",
+				);
+				await second.next(
+					frame => frame.type === "extension_ui_request" && frame.method === "confirm" && frame.id === request.id,
+				);
+
+				first.close();
+				await new Promise<void>(resolve => {
+					setImmediate(resolve);
+				});
+				expect(tui.signal()?.aborted).toBe(false);
+
+				second.send({ type: "extension_ui_response", id: request.id, confirmed: true });
+				await expect(answer).resolves.toBe(true);
+			} finally {
+				first.close();
+				second.close();
+			}
+		}, 20_000);
+
+		it("fans an opted-in ask dialog out and accepts a client submission", async () => {
+			fixture = await createInteractiveFixture([]);
+			const peer = await SocketPeer.connect(fixture.endpoint);
+			try {
+				await peer.next(frame => frame.type === "ready");
+				peer.send({ id: "ask-gate", type: "set_ask_dialog", enabled: true });
+				expect(await frameOf(peer, "ask-gate")).toMatchObject({ success: true });
+
+				const tui = pendingTuiDialog<ExtensionAskDialogResult | undefined>(undefined);
+				const answer = fixture.mode.dialogFirstResponder.askDialog(tui.present, askQuestions);
+				const request = await peer.next(frame => frame.type === "extension_ui_request" && frame.method === "ask");
+				expect(request.questions).toEqual(askQuestions);
+
+				peer.send({
+					type: "extension_ui_response",
+					id: request.id,
+					answers: [{ id: "q1", selectedOptions: ["beta"] }],
+				});
+				const result = (await answer) as ExtensionAskDialogSubmitResult;
+				expect(result.kind).toBe("submit");
+				expect(result.results).toHaveLength(1);
+				expect(result.results[0]).toMatchObject({
+					id: "q1",
+					question: "Which one?",
+					selectedOptions: ["beta"],
+				});
+				expect(tui.signal()?.aborted).toBe(true);
+			} finally {
+				peer.close();
+			}
+		}, 20_000);
+
+		it("only joins an ask dialog after a client opts in", async () => {
+			fixture = await createInteractiveFixture([]);
+			const peer = await SocketPeer.connect(fixture.endpoint);
+			try {
+				await peer.next(frame => frame.type === "ready");
+				const tui = pendingTuiDialog<ExtensionAskDialogResult | undefined>(undefined);
+				const answer = fixture.mode.dialogFirstResponder.askDialog(tui.present, askQuestions);
+				peer.send({ id: "barrier", type: "get_state" });
+				await frameOf(peer, "barrier");
+				expect(peer.seen.some(frame => frame.type === "extension_ui_request" && frame.method === "ask")).toBe(
+					false,
+				);
+				tui.resolve(undefined);
+				await expect(answer).resolves.toBeUndefined();
+			} finally {
+				peer.close();
+			}
+		}, 20_000);
+	});
 });

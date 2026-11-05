@@ -70,6 +70,13 @@ export interface RpcSessionSocketOptions {
 	subscribe: (listener: (event: object) => void) => () => void;
 	/** Broker coordinates of this process's owner PTY, read for every publication; omit when not an owner. */
 	terminal?: () => RpcSessionSocketTerminal | undefined;
+	/**
+	 * Per-connection projection of a broadcast session event. Returning
+	 * `undefined` drops the frame for that connection; the raw event is sent
+	 * when no projector is installed. A terminal-hosted publication uses it for
+	 * per-view `set_event_filter` and message stamping.
+	 */
+	projectEvent?: (event: object, conn: RpcClientConn) => object | undefined;
 }
 
 /** Per-connection RPC surface, supplied by the transport owner that speaks the protocol. */
@@ -116,12 +123,19 @@ export class RpcSessionSocket {
 	#tail: Promise<void> = Promise.resolve();
 	#sequence = 0;
 	#closed = false;
+	#projectEvent: ((event: object, conn: RpcClientConn) => object | undefined) | undefined;
 
 	constructor(options: RpcSessionSocketOptions) {
 		if (typeof options?.identity !== "function") throw new TypeError("RpcSessionSocket requires an identity source");
 		if (typeof options.subscribe !== "function") throw new TypeError("RpcSessionSocket requires a session source");
-		if (!options.endpointDir) throw new TypeError("RpcSessionSocket requires an endpoint directory");
+		if (!options.endpointDir) throw new TypeError("RPC session socket requires an endpoint directory");
 		this.#options = options;
+		this.#projectEvent = options.projectEvent;
+	}
+
+	/** Install or replace the per-connection broadcast projection. */
+	setEventProjector(project: ((event: object, conn: RpcClientConn) => object | undefined) | undefined): void {
+		this.#projectEvent = project;
 	}
 
 	get endpoint(): string | undefined {
@@ -164,7 +178,7 @@ export class RpcSessionSocket {
 			if (this.#closed) return;
 			this.#closed = true;
 			await this.#stopPublication();
-			for (const state of [...this.#connections]) {
+			for (const state of Array.from(this.#connections)) {
 				state.detached = true;
 				this.#connections.delete(state);
 				state.conn.close();
@@ -329,7 +343,22 @@ export class RpcSessionSocket {
 
 	#broadcast(event: object): void {
 		if (this.#closed) return;
-		for (const state of [...this.#connections]) this.#send(state, event);
+		const project = this.#projectEvent;
+		for (const state of Array.from(this.#connections)) {
+			if (!project) {
+				this.#send(state, event);
+				continue;
+			}
+			let projected: object | undefined;
+			try {
+				projected = project(event, state.conn);
+			} catch (error) {
+				logger.warn("RPC socket event projection failed", { error: toError(error).message });
+				this.#send(state, event);
+				continue;
+			}
+			if (projected !== undefined) this.#send(state, projected);
+		}
 	}
 
 	#detach(state: SocketConnectionState, reason: string): void {

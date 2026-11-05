@@ -78,7 +78,13 @@ import {
 	type MarketplaceAutoUpdateOptions,
 } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
-import type { SessionAttachTerminal } from "./launch/session-attach";
+import { sanitizeTerminalGeometry } from "./launch/protocol";
+import {
+	decideRpcSessionAttach,
+	probeSessionAttach,
+	resolveSessionEndpointDir,
+	type SessionAttachTerminal,
+} from "./launch/session-attach";
 import {
 	describeSessionAttachRefusal,
 	gateSessionTarget,
@@ -86,6 +92,14 @@ import {
 	type ResolvedSessionTarget,
 } from "./launch/session-attach-gate";
 import { runLiveSessionAttach } from "./launch/session-attach-run";
+import {
+	type BrokeredLaunchSelection,
+	ownerArgvForSession,
+	type PersistentLaunchTarget,
+	runInteractiveOwnerLaunch,
+	runPersistentRpcLaunch,
+	shouldBootBrokeredSession,
+} from "./launch/session-boot";
 import { isSessionOwnerProcess } from "./launch/session-owner";
 import type { MCPManager } from "./mcp";
 import type { InteractiveMode } from "./modes/interactive-mode";
@@ -1988,6 +2002,62 @@ export async function runRootCommand(
 		// transcripts (or an opened picker) behind a usage error.
 		validateGoalLaunch(parsedArgs, isInteractive);
 		validateRestoreLaunch(parsedArgs, isInteractive);
+
+		const brokeredSelection: BrokeredLaunchSelection = {
+			mode,
+			print: parsedArgs.print === true,
+			noSession: parsedArgs.noSession === true,
+			noUi: parsedArgs.noUi === true,
+			resume: parsedArgs.resume,
+			continue: parsedArgs.continue === true,
+			fork: parsedArgs.fork !== undefined,
+			fromClaude: parsedArgs.fromClaude === true,
+			fromCodex: parsedArgs.fromCodex === true,
+		};
+		// Decided here, dispatched after the ownership gate resolves the exact
+		// target: the outer process must never open a transcript the owner hosts.
+		const brokersPersistentSession =
+			deps === DEFAULT_RUN_ROOT_DEPENDENCIES && shouldBootBrokeredSession(brokeredSelection, isInteractive);
+
+		const runBrokeredOwnerLaunch = async (target: PersistentLaunchTarget, sessionSource?: string): Promise<never> => {
+			const projectDir = parsedArgs.cwd || getProjectDir();
+			const argv = sessionSource === undefined ? rawArgs : ownerArgvForSession(rawArgs, sessionSource);
+			const geometry = sanitizeTerminalGeometry(process.stdout.columns, process.stdout.rows);
+			try {
+				if (isInteractive) {
+					stopPendingStartupComposer();
+					stopStartupWatchdog();
+					logger.endTiming();
+					const code = await runInteractiveOwnerLaunch({
+						projectDir,
+						argv,
+						target,
+						endpointDir: resolveSessionEndpointDir(),
+						columns: geometry.columns,
+						rows: geometry.rows,
+					});
+					process.exit(code);
+				}
+				const endpointDir = resolveSessionEndpointDir();
+				stopStartupWatchdog();
+				process.exit(
+					await runPersistentRpcLaunch({
+						projectDir,
+						argv,
+						target,
+						endpointDir,
+						columns: geometry.columns,
+						rows: geometry.rows,
+						input: rpcInput,
+					}),
+				);
+			} catch (error) {
+				stopStartupWatchdog();
+				const message = error instanceof Error ? error.message : String(error);
+				process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
+				process.exit(1);
+			}
+		};
 		// Without piped text the prompt must come from argv, which only the
 		// post-extension reparse can settle: an extension string flag's value
 		// (`--spawn-peer reviewer`) looks like a prompt here, and a boolean flag
@@ -2244,6 +2314,29 @@ export async function runRootCommand(
 				}
 			} else {
 				if (!isSessionOwnerProcess()) {
+					const explicitRpcResumeId =
+						brokersPersistentSession &&
+						!isInteractive &&
+						parsedArgs.fork === undefined &&
+						parsedArgs.fromClaude !== true &&
+						parsedArgs.fromCodex !== true &&
+						typeof parsedArgs.resume === "string" &&
+						/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsedArgs.resume)
+							? parsedArgs.resume
+							: undefined;
+					if (explicitRpcResumeId !== undefined) {
+						const decision = decideRpcSessionAttach(await probeSessionAttach(explicitRpcResumeId));
+						if (decision.kind === "attach") {
+							await runBrokeredOwnerLaunch({ kind: "attach", sessionId: explicitRpcResumeId });
+						}
+						if (decision.kind === "refuse") {
+							throw new SessionResolutionError(
+								describeSessionAttachRefusal(explicitRpcResumeId, decision.code),
+								"Attach to the running process, or stop it, then retry.",
+							);
+						}
+						await runBrokeredOwnerLaunch({ kind: "cold", sessionId: explicitRpcResumeId }, explicitRpcResumeId);
+					}
 					const gate = await logger.time("resolveStartupSessionGate", resolveStartupSessionGate, {
 						cwd,
 						sessionDir: parsedArgs.sessionDir,
@@ -2263,6 +2356,13 @@ export async function runRootCommand(
 						);
 					}
 					if (gate.kind === "attach") {
+						if (brokersPersistentSession) {
+							await runBrokeredOwnerLaunch({
+								kind: "attach",
+								sessionId: gate.target.session.id,
+								terminal: gate.terminal,
+							});
+						}
 						if (!isInteractive) {
 							throw new SessionResolutionError(
 								`Session "${gate.target.session.id}" is live in another omp process; refusing to open a second transcript.`,
@@ -2272,12 +2372,22 @@ export async function runRootCommand(
 						liveAttach = { sessionId: gate.target.session.id, terminal: gate.terminal };
 					}
 					if (gate.kind === "cold") {
+						if (brokersPersistentSession) {
+							gate.reservation.release();
+							await runBrokeredOwnerLaunch(
+								{ kind: "cold", sessionId: gate.target.session.id },
+								gate.target.session.path,
+							);
+						}
 						ownerAttach = {
 							session: gate.target.session,
 							continuation: gate.target.continuation,
 							reservation: gate.reservation,
 							recent: gate.target.recent,
 						};
+					}
+					if (gate.kind === "none" && brokersPersistentSession && typeof parsedArgs.resume !== "string") {
+						await runBrokeredOwnerLaunch({ kind: "none" });
 					}
 				}
 				if (!liveAttach) {

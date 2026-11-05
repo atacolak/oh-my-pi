@@ -103,6 +103,7 @@ describe("CLI RPC MCP discovery", () => {
 							cli,
 							"--mode",
 							mode,
+							"--no-ui",
 							"--model",
 							"fake/fake-model",
 							"--no-extensions",

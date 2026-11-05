@@ -292,6 +292,7 @@ import { PINNED_HUD_TOGGLE_ID } from "../task/output-manager";
 import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { MAGIC_KEYWORDS } from "./magic-keywords";
 import { sharedComposerCache } from "@oh-my-pi/pi-tui/prompt/composer-cache";
+import { DialogFirstResponder } from "./rpc/dialog-first-responder";
 import { BtwController } from "./controllers/btw-controller";
 import { CleanseCommandController } from "./controllers/cleanse-command-controller";
 import { CommandController } from "./controllers/command-controller";
@@ -1808,6 +1809,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planReviewAnnotationStateBySubmission = new WeakMap<SubmittedUserInput, string>();
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
+	/** Races TUI dialogs against attached socket clients; owned for this mode's lifetime. */
+	readonly dialogFirstResponder = new DialogFirstResponder();
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
 	readonly #codexResetFireworksController: CodexResetFireworksController;
@@ -2431,7 +2434,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#detachSession = createSessionDetach({
 			getDraftText: () => this.#inputController.getDraftText(),
 			saveDraft: text => this.sessionManager.saveDraft(text),
-			stopView: () => this.#teardownView(),
+			stopView: () => this.#teardownView(true),
 		});
 		this.#hangupUnsubscribe = postmortem.registerHangupHandler(this.#detachSession);
 
@@ -7889,7 +7892,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			session: this.session,
 			socket,
 			subagentEventBus: this.#subagentEventBus,
+			firstResponder: this.dialogFirstResponder,
 			mcpManager: this.mcpManager,
+			isShuttingDown: () => this.#isShuttingDown,
 			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
 		});
 	}
@@ -7933,17 +7938,20 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * view-owned controllers and timers, session-event subscriptions used only
 	 * to paint, and process-global UI hooks. Shared by a real close (`stop()`)
 	 * and the SIGHUP detach, which deliberately keeps the session, its
-	 * background jobs, and the attach endpoint alive.
+	 * background jobs, the attach endpoint, and any dialog an attached client
+	 * can still answer alive.
 	 */
-	#teardownView(): void {
+	#teardownView(keepPendingDialogs = false): void {
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
 		this.#appearanceRefreshRequest = undefined;
-		// Settle any pending approval prompt as dismissed (deny). The
-		// controller stays aborted: approvals still queued behind the approval
-		// mutex deny on arrival instead of prompting a torn-down UI. `init`
-		// installs a fresh one.
-		this.#dialogLifetime.abort();
+		// A real close settles pending dialogs as dismissed (deny). A hangup
+		// detach keeps the lifetime armed: the prompt stays in the live component
+		// tree, an attached socket client can still answer it, and a reattached
+		// mirror repaints it instead of denying on detach.
+		if (!keepPendingDialogs) {
+			this.#dialogLifetime.abort();
+		}
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
 		void this.#recorder?.stop();

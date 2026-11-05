@@ -78,6 +78,7 @@ describe("headless startup resume", () => {
 				);
 				const rpc = mode === "rpc" || mode === "rpc-ui";
 				const args = mode === "print" ? ["-p"] : ["--mode", mode];
+				if (rpc) args.push("--no-ui");
 				if (!rpc) args.push("Continue the previous turn.");
 				const proc = Bun.spawn(
 					[
@@ -253,7 +254,17 @@ describe("headless runtime session switch", () => {
 		};
 
 		const proc = Bun.spawn(
-			[process.execPath, cliEntry, "--no-title", "--no-lsp", "--no-extensions", "--no-tools", "--mode", "rpc"],
+			[
+				process.execPath,
+				cliEntry,
+				"--no-title",
+				"--no-lsp",
+				"--no-extensions",
+				"--no-tools",
+				"--mode",
+				"rpc",
+				"--no-ui",
+			],
 			{
 				cwd,
 				env: {

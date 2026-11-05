@@ -15,6 +15,25 @@ export { DAEMON_BROKER_WORKER_ARG } from "../cli/worker-selectors";
 export const DAEMON_PTY_COLUMNS = 120;
 export const DAEMON_PTY_ROWS = 40;
 
+/** Clamp a reported terminal dimension to a positive integer, or use the PTY fallback. */
+export function positiveTerminalDimension(value: number | undefined, fallback: number): number {
+	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/** The PTY geometry a launch should request for the current local terminal. */
+export interface TerminalGeometry {
+	readonly columns: number;
+	readonly rows: number;
+}
+
+/** Normalize local terminal dimensions before they cross the broker boundary. */
+export function sanitizeTerminalGeometry(columns: number | undefined, rows: number | undefined): TerminalGeometry {
+	return {
+		columns: positiveTerminalDimension(columns, DAEMON_PTY_COLUMNS),
+		rows: positiveTerminalDimension(rows, DAEMON_PTY_ROWS),
+	};
+}
+
 /** Environment key carrying the broker's canonical project or synthetic global scope directory. */
 export const DAEMON_PROJECT_DIR_ENV = "OMP_DAEMON_PROJECT_DIR";
 

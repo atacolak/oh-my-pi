@@ -1,10 +1,9 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { DaemonBrokerClient } from "./client";
 import {
-	DAEMON_PTY_COLUMNS,
-	DAEMON_PTY_ROWS,
 	type DaemonTerminalExitNotification,
 	type DaemonTerminalNotification,
+	sanitizeTerminalGeometry,
 } from "./protocol";
 
 /** Raw local bytes and the local terminal modes a mirror borrows while attached. */
@@ -58,6 +57,13 @@ export interface TerminalMirrorOptions {
 	 * live. A rejected refresh detaches only this mirror.
 	 */
 	readonly refresh?: () => Promise<void>;
+	/**
+	 * The subscription is already installed by `terminal_start`; skip the
+	 * redundant attach that would only revalidate and resize the same PTY.
+	 */
+	readonly alreadyAttached?: boolean;
+	/** Frames produced before this mirror replaced the boot sink, replayed in order. */
+	readonly initialFrames?: readonly DaemonTerminalNotification[];
 }
 
 const LOCAL_SIGNALS: readonly TerminalMirrorSignal[] = ["SIGHUP", "SIGTERM", "SIGINT"];
@@ -94,10 +100,11 @@ function defaultOutput(): TerminalMirrorOutput {
 }
 
 function defaultSize(): TerminalMirrorSize {
-	return {
-		columns: process.stdout.columns ?? DAEMON_PTY_COLUMNS,
-		rows: process.stdout.rows ?? DAEMON_PTY_ROWS,
-	};
+	return sanitizeTerminalGeometry(process.stdout.columns, process.stdout.rows);
+}
+
+function normalizeSize(size: TerminalMirrorSize): TerminalMirrorSize {
+	return sanitizeTerminalGeometry(size.columns, size.rows);
 }
 
 function defaultResize(listener: () => void): () => void {
@@ -183,7 +190,7 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 		} catch {}
 	};
 
-	const unsubscribe = options.client.subscribeTerminal(options.subscriptionId, (frame: DaemonTerminalNotification) => {
+	const handleFrame = (frame: DaemonTerminalNotification): void => {
 		if (finished) return;
 		if (frame.event === "terminal_exit") {
 			finishExit(frame);
@@ -201,7 +208,8 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 				})
 				.catch(() => undefined);
 		});
-	});
+	};
+	const unsubscribe = options.client.subscribeTerminal(options.subscriptionId, handleFrame);
 
 	const settle = (result: TerminalMirrorResult): void => {
 		if (finished) return;
@@ -238,10 +246,10 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 	try {
 		input.setRawMode?.(true);
 		input.resume?.();
-		const viewport = size();
+		const viewport = normalizeSize(size());
 		removeResize = onResize(() => {
 			if (finished) return;
-			const current = size();
+			const current = normalizeSize(size());
 			void options.client
 				.request({
 					op: "terminal_resize",
@@ -268,14 +276,18 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 			});
 		});
 
-		await options.client.request({
-			op: "terminal_attach",
-			subscriptionId: options.subscriptionId,
-			name: options.name,
-			id: options.id,
-			columns: viewport.columns,
-			rows: viewport.rows,
-		});
+		if (!options.alreadyAttached) {
+			await options.client.request({
+				op: "terminal_attach",
+				subscriptionId: options.subscriptionId,
+				name: options.name,
+				id: options.id,
+				columns: viewport.columns,
+				rows: viewport.rows,
+			});
+		}
+		for (const frame of options.initialFrames ?? []) handleFrame(frame);
+		if (finished) return finish.promise;
 		if (options.refresh) {
 			try {
 				await options.refresh();

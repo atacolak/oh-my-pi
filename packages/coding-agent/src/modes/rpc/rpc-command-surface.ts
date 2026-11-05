@@ -54,16 +54,25 @@ import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import { cfgSpellingAutocomplete } from "../settings";
 import { RpcMcpCommandError, RpcMcpControl, type RpcMcpUi } from "./rpc-mcp";
-import type { RpcBtwController } from "./rpc-btw";
+import {
+	requestRpcAskDialog,
+	requestRpcConfirm,
+	requestRpcEditor,
+	requestRpcInput,
+	requestRpcSelect,
+} from "./rpc-dialog-requests";
+import type { DialogFirstResponder, DialogRequestHandle, DialogSocketBridge } from "./dialog-first-responder";
+import { RpcBtwController } from "./rpc-btw";
 import type { RpcClientConn } from "./client-connection";
 import { RpcClientConnection, RpcClientRegistry } from "./client-connection";
 import { selectRpcEntries } from "./rpc-compat";
-import type { RpcDictationBridge } from "./rpc-dictation";
+import { RpcDictationBridge } from "./rpc-dictation";
 import { MAX_RPC_FRAME_BYTES } from "./rpc-frame";
-import type { RpcGoalController } from "./rpc-goal";
+import { RpcGoalController } from "./rpc-goal";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
-import type { RpcLiveBridge } from "./rpc-live";
+import { loginOverRpc } from "./rpc-login";
+import { RpcLiveBridge } from "./rpc-live";
 import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } from "./rpc-messages";
 import {
 	RpcExtensionUserMessageTracker,
@@ -71,9 +80,9 @@ import {
 	type RpcPromptTicket,
 	watchAndReportPromptResult,
 } from "./rpc-prompt-results";
-import type { RpcSessionEventForwarder } from "./rpc-session-events";
+import { RpcSessionEventForwarder } from "./rpc-session-events";
 import type { RpcSessionSocket, RpcSessionSocketSurface } from "./rpc-socket";
-import type { RpcSessionSettleWatcher } from "./rpc-session-settle";
+import { RpcSessionSettleWatcher, watchedScheduledTurnProbe } from "./rpc-session-settle";
 import { getRpcSessionState } from "./rpc-state";
 import type { AgentSessionEvent } from "../../session/agent-session-events";
 import type { EventBus } from "../../utils/event-bus";
@@ -88,7 +97,9 @@ import type {
 	RpcHostToolDefinition,
 	RpcHostUriCancelRequest,
 	RpcHostUriRequest,
+	RpcMessageUpdates,
 	RpcOpenSessionResult,
+	RpcProjectedSessionEventFrame,
 	RpcRemoveQueuedMessageResult,
 	RpcResponse,
 	RpcSubagentSubscriptionLevel,
@@ -847,7 +858,8 @@ export interface RpcHostCommandServices {
 	readonly btw: RpcBtwController;
 	readonly live: RpcLiveBridge;
 	readonly dictation: RpcDictationBridge;
-	readonly sessionEvents: RpcSessionEventForwarder;
+	/** The single stdio forwarder; a socket publication filters per connection instead. */
+	readonly sessionEvents?: RpcSessionEventForwarder;
 	readonly subagents?: RpcSubagentRegistry;
 	readonly mcpManager?: MCPManager;
 	/** Whether a goal continuation turn is scheduled or held; `session_settled` accounts for it. */
@@ -883,6 +895,21 @@ export interface RpcCommandSurfaceOptions {
 	 */
 	mcpManager?: MCPManager;
 	/**
+	 * Commands this transport must refuse even when a host exists. A shared
+	 * bound session socket uses it for the transitions that would swap the
+	 * transcript out from under sibling viewers.
+	 */
+	refusedCommands?: Readonly<Record<string, true>>;
+	/**
+	 * Per-connection session-event filtering for a transport with no single
+	 * forwarder (a terminal-hosted publication). Returns the active selection.
+	 */
+	eventFilter?: (
+		conn: RpcClientConn | undefined,
+		events: readonly string[] | null,
+		messageUpdates: RpcMessageUpdates,
+	) => readonly string[] | null;
+	/**
 	 * Subagent registry owned by this surface's transport when it has no RPC
 	 * runner (a terminal-hosted publication). The stdio runner supplies its own
 	 * through `host.subagents`; a client's subscription is filtered per view by
@@ -917,6 +944,14 @@ export class RpcCommandSurface {
 	readonly #mcpManager: MCPManager | undefined;
 	readonly #mcpUiAborts = new WeakMap<RpcClientConn, AbortController>();
 	#mcpControl: RpcMcpControl | undefined;
+	readonly #refusedCommands: Readonly<Record<string, true>> | undefined;
+	readonly #eventFilter:
+		| ((
+				conn: RpcClientConn | undefined,
+				events: readonly string[] | null,
+				messageUpdates: RpcMessageUpdates,
+		  ) => readonly string[] | null)
+		| undefined;
 	readonly #inputGate = new RpcUserInputGate();
 	readonly #builtinCommandAborts = new Set<AbortController>();
 	#unsubscribeObserve: (() => void) | undefined;
@@ -934,6 +969,8 @@ export class RpcCommandSurface {
 		this.#host = options.host;
 		this.#subagents = options.subagents;
 		this.#mcpManager = options.mcpManager ?? options.host?.mcpManager;
+		this.#refusedCommands = options.refusedCommands;
+		this.#eventFilter = options.eventFilter;
 		this.hostToolBridge = new RpcHostToolBridge(options.defaultConn);
 		this.hostUriBridge = new RpcHostUriBridge(options.output);
 	}
@@ -1146,6 +1183,15 @@ export class RpcCommandSurface {
 		);
 	}
 
+	#refuseSharedSessionCommand(command: RpcCommand): RpcResponse {
+		return rpcError(
+			command.id,
+			command.type,
+			`${command.type} is not available on the shared session socket: the terminal session is bound to its transcript and sibling viewers must not have it swapped. Run it in the terminal.`,
+			"shared_session_bound",
+		);
+	}
+
 	async #reloadPluginState(): Promise<void> {
 		const cwd = this.#session.sessionManager.getCwd();
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
@@ -1296,6 +1342,7 @@ export class RpcCommandSurface {
 		const id = command.id;
 		const maxResponseBytes = this.#maxResponseBytes();
 
+		if (this.#refusedCommands?.[command.type]) return this.#refuseSharedSessionCommand(command);
 		if (!host && Object.hasOwn(HOST_COMMANDS, command.type)) return this.#refuseHostCommand(command);
 
 		switch (command.type) {
@@ -1720,8 +1767,18 @@ export class RpcCommandSurface {
 				if (messageUpdates !== "full" && messageUpdates !== "delta") {
 					return rpcError(id, "set_event_filter", 'messageUpdates must be "full" or "delta"');
 				}
+				const eventFilter = host?.sessionEvents;
+				if (eventFilter) {
+					return rpcSuccess(id, "set_event_filter", {
+						events: eventFilter.setFilter(events, messageUpdates),
+						messageUpdates,
+					});
+				}
+				if (!this.#eventFilter) {
+					return rpcError(id, "set_event_filter", "Session event filtering is unavailable on this transport");
+				}
 				return rpcSuccess(id, "set_event_filter", {
-					events: host!.sessionEvents.setFilter(events, messageUpdates),
+					events: this.#eventFilter(conn, events, messageUpdates),
 					messageUpdates,
 				});
 			}
@@ -2250,13 +2307,62 @@ export interface ServedSessionSocket {
 }
 
 /**
+ * One attached view's session-event pipeline. The forwarder both stamps
+ * message ids and applies `set_event_filter`, so each view keeps its own
+ * message ids and its own selection; `project` captures the frame the
+ * forwarder would emit for this event.
+ */
+class SocketEventView {
+	#capture: ((frame: RpcProjectedSessionEventFrame) => void) | undefined;
+	readonly forwarder = new RpcSessionEventForwarder(frame => this.#capture?.(frame));
+
+	project(event: object): object | undefined {
+		let projected: RpcProjectedSessionEventFrame | undefined;
+		this.#capture = frame => {
+			projected = frame;
+		};
+		try {
+			this.forwarder.forward(event as AgentSessionEvent);
+		} finally {
+			this.#capture = undefined;
+		}
+		return projected;
+	}
+
+	setFilter(events: readonly string[] | null, messageUpdates: RpcMessageUpdates): string[] | null {
+		return this.forwarder.setFilter(events, messageUpdates);
+	}
+}
+
+/**
+ * Commands a shared, bound session socket must refuse: they replace the
+ * transcript identity, which would swap the file out from under the terminal
+ * and every sibling viewer. Everything inside the bound session's tree (branch
+ * navigation, btw, goals, live voice, dictation, login, event filters) is
+ * served by the same host services the stdio runner uses.
+ */
+const SHARED_SESSION_REFUSED_COMMANDS: Readonly<Record<string, true>> = {
+	new_session: true,
+	switch_session: true,
+	open_session: true,
+	fork: true,
+	handoff: true,
+};
+
+/**
  * Publish a terminal-hosted (interactive) session's command surface on its
- * endpoint. The surface serves negotiation, state reads, prompts/steers,
- * host tools and per-client authentication; it has no RPC runner, so the
- * host-only commands (session transitions, goal driver, live voice,
- * dictation, /btw, subagent subscription, login) are refused. The session
- * itself is never owned by a client: closing the endpoint or losing a client
- * leaves the session and its turn running.
+ * endpoint. Negotiation, state reads, prompts/steers, host tools, per-client
+ * authentication and the session-scoped host commands (branch navigation,
+ * /btw, goals, live voice, dictation, login, per-view event filters) are
+ * served; session swaps (`new_session`, `switch_session`, `open_session`,
+ * `fork`, `handoff`) are refused because this socket is bound to one transcript.
+ * The session itself is never owned by a client: closing the endpoint or losing
+ * a client leaves the session and its turn running.
+ *
+ * Dialogs raced by the served surface are issued to an attached
+ * {@link DialogFirstResponder}; a pending request is only cancelled by the
+ * client's own dismissal or by this publication closing, never by a sibling
+ * view disconnecting.
  */
 export async function serveInteractiveSessionSocket(options: {
 	session: AgentSession;
@@ -2271,29 +2377,159 @@ export async function serveInteractiveSessionSocket(options: {
 	subagentEventBus?: EventBus;
 	/** The session's live MCP manager; the publication has no host to supply it. */
 	mcpManager?: MCPManager;
+	/** The terminal's dialog fanout, so socket clients can answer terminal dialogs. */
+	firstResponder?: DialogFirstResponder;
+	/** The terminal's shutdown state; `new_session`-free surfaces report it verbatim. */
+	isShuttingDown?: () => boolean;
 }): Promise<ServedSessionSocket> {
+	const session = options.session;
 	const clients = new RpcClientRegistry();
 	const output: RpcOutput = frame => clients.broadcast(frame);
 	const defaultConn = new RpcClientConnection({ id: "interactive", send: frame => clients.broadcast(frame) });
 	const extensionUserMessageTracker = new RpcExtensionUserMessageTracker();
-	const promptResults = new RpcPromptResults(options.session, output, undefined, {
-		costCapRefusal: () => options.session.costCapRefusal,
+	const pendingExtensionRequests = new RpcPendingExtensionRequests();
+	const eventViews = new WeakMap<RpcClientConn, SocketEventView>();
+	const eventView = (conn: RpcClientConn): SocketEventView => {
+		let view = eventViews.get(conn);
+		if (!view) {
+			view = new SocketEventView();
+			eventViews.set(conn, view);
+		}
+		return view;
+	};
+	options.socket.setEventProjector((event, conn) => eventView(conn).project(event));
+
+	const btw = new RpcBtwController(session, output);
+	const goal = new RpcGoalController(session, () => void settleWatcher.check());
+	const goalTurnScheduled = watchedScheduledTurnProbe(
+		() => goal.continuationPending,
+		() => settleWatcher,
+	);
+	const settleWatcher = new RpcSessionSettleWatcher(session, output, goalTurnScheduled);
+	const promptResults = new RpcPromptResults(session, output, goalTurnScheduled, {
+		costCapRefusal: () => session.costCapRefusal,
+		settledWithoutRun: () => void settleWatcher.check(),
 	});
+	const live = new RpcLiveBridge(session, output);
+	const dictation = new RpcDictationBridge(session, output);
 	const subagents = options.subagentEventBus
 		? new RpcSubagentRegistry(options.subagentEventBus, frame => clients.broadcastSubagent(frame))
 		: undefined;
+
+	let sessionChanges = 0;
+	const withSessionChange = async <T>(change: () => Promise<T>): Promise<T> => {
+		sessionChanges++;
+		try {
+			return await change();
+		} finally {
+			sessionChanges--;
+		}
+	};
+	const backgroundTasks = new Set<Promise<void>>();
+	const trackBackgroundTask = (task: Promise<void>): void => {
+		backgroundTasks.add(task);
+		void task
+			.catch(error => logger.warn("Interactive socket background command failed", { error: String(error) }))
+			.finally(() => backgroundTasks.delete(task));
+	};
+
+	const broadcastDialogCancel = (targetId: string): void => {
+		output({
+			type: "extension_ui_request",
+			id: Snowflake.next() as string,
+			method: "cancel",
+			targetId,
+		} as RpcExtensionUIRequest);
+	};
+	const issueDialog = <T>(issue: (issued: (id: string) => void) => Promise<T>): DialogRequestHandle<T> => {
+		let requestId: string | undefined;
+		const promise = issue(id => {
+			requestId = id;
+		});
+		return {
+			id: requestId,
+			promise,
+			cancel: () => {
+				if (requestId !== undefined) broadcastDialogCancel(requestId);
+			},
+		};
+	};
+	const firstResponder = options.firstResponder;
+	const dialogBridge: DialogSocketBridge | undefined = firstResponder
+		? {
+				hasClients: () => clients.hasOpenClients(),
+				select: (title, selectOptions, dialogOptions) =>
+					issueDialog(issued =>
+						requestRpcSelect(pendingExtensionRequests, output, title, selectOptions, dialogOptions, issued),
+					),
+				confirm: (title, message, dialogOptions) =>
+					issueDialog(issued =>
+						requestRpcConfirm(pendingExtensionRequests, output, title, message, dialogOptions, issued),
+					),
+				input: (title, placeholder, dialogOptions) =>
+					issueDialog(issued =>
+						requestRpcInput(pendingExtensionRequests, output, title, placeholder, dialogOptions, issued),
+					),
+				editor: (title, prefill, dialogOptions, editorOptions) =>
+					issueDialog(issued =>
+						requestRpcEditor(
+							pendingExtensionRequests,
+							output,
+							title,
+							prefill,
+							dialogOptions,
+							editorOptions,
+							issued,
+						),
+					),
+				ask: (questions, dialogOptions) =>
+					issueDialog(issued =>
+						requestRpcAskDialog(pendingExtensionRequests, output, questions, dialogOptions, issued),
+					),
+				dismiss: broadcastDialogCancel,
+			}
+		: undefined;
+	if (dialogBridge) firstResponder?.attach(dialogBridge);
+
+	const setAskDialog = (command: RpcCommand & { type: "set_ask_dialog" }): RpcResponse => {
+		const enabled = command.enabled === true;
+		firstResponder?.setAskDialogEnabled(enabled);
+		return rpcSuccess(command.id, "set_ask_dialog", { enabled });
+	};
 	const surface = new RpcCommandSurface({
-		session: options.session,
+		session,
 		output,
 		clients,
 		defaultConn,
 		maxResponseBytes: () => MAX_RPC_FRAME_BYTES,
-		pendingExtensionRequests: new RpcPendingExtensionRequests(),
+		pendingExtensionRequests,
 		promptResults,
 		extensionUserMessageTracker,
 		subagents,
 		mcpManager: options.mcpManager,
+		refusedCommands: SHARED_SESSION_REFUSED_COMMANDS,
+		eventFilter: (conn, events, messageUpdates) => eventView(conn ?? defaultConn).setFilter(events, messageUpdates),
+		host: {
+			goal,
+			settleWatcher,
+			btw,
+			live,
+			dictation,
+			subagents,
+			mcpManager: options.mcpManager,
+			scheduledTurnPending: goalTurnScheduled,
+			isSessionChanging: () => sessionChanges > 0,
+			isShuttingDown: options.isShuttingDown ?? (() => false),
+			stopDictationForSessionChange: async () => {
+				await dictation.stop();
+			},
+			withSessionChange,
+			setAskDialog,
+			login: command => loginOverRpc({ session, command, pendingExtensionRequests, output }),
+			trackBackgroundTask,
+		},
 	});
+	await goal.reconcile();
 	surface.start();
 	const terminalControl = options.terminalControl;
 	const detachWake = await publishSessionSocket(options.socket, surface, (frame, conn) => {
@@ -2308,7 +2544,7 @@ export async function serveInteractiveSessionSocket(options: {
 			conn.send(reply);
 			return true;
 		}
-		const sessionId = options.session.sessionId;
+		const sessionId = session.sessionId;
 		if (refresh.sessionId !== sessionId || refresh.generation !== terminalControl.generation) {
 			const reply: InteractiveTerminalRefreshErrorFrame = {
 				type: "terminal_refresh_error",
@@ -2338,9 +2574,9 @@ export async function serveInteractiveSessionSocket(options: {
 		conn.send(reply);
 		return true;
 	});
-	let publishedSessionId = options.session.sessionId;
-	const unsubscribeIdentity = options.session.subscribe(() => {
-		const sessionId = options.session.sessionId;
+	let publishedSessionId = session.sessionId;
+	const unsubscribeIdentity = session.subscribe(() => {
+		const sessionId = session.sessionId;
 		if (sessionId === publishedSessionId) return;
 		publishedSessionId = sessionId;
 		subagents?.clear();
@@ -2353,8 +2589,12 @@ export async function serveInteractiveSessionSocket(options: {
 		close: async () => {
 			unsubscribeIdentity();
 			detachWake();
+			if (dialogBridge) firstResponder?.detach(dialogBridge);
+			options.socket.setEventProjector(undefined);
 			surface.dispose();
 			subagents?.dispose();
+			dictation.dispose();
+			await Promise.allSettled([btw.close(), live.stop(), ...backgroundTasks]);
 			await options.socket.close();
 		},
 	};

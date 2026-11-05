@@ -14,4 +14,4 @@ Bank topology:
 
 Narrow recall with tags: `area:<subsystem>` restricts to one area, `memory_shape:<shape>` to one memory shape; provided tags merge with the session's scope tags instead of replacing them.
 
-Recall gears: `budget: xhigh` re-scores ~2400 traced candidates after an ~11s recall; `budget: max` sweeps the whole scoped bank and scores every memory over tens of seconds, and may report truncation. Both are critical-use only — the default ladder is `low`/`mid`/`high`.
+Recall gears: `budget: xhigh` re-scores ~2400 traced candidates after a `high` recall (measured ~32s); `budget: max` scores every consolidated observation plus pending/failed raw facts — not the raw rows observations already represent — with no recall call. Both are critical-use only and scale with scope; `max` may report truncation.

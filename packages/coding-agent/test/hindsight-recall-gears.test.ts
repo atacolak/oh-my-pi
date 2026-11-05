@@ -104,9 +104,12 @@ function registerState(client: HindsightApi, opts: RegisterStateOptions = {}) {
 }
 
 /** Answers every System One question with `noul` (or `noul(memory)`); counts requests and questions. */
-function stubDecisionModel(noul: number | ((memory: string) => number)): { count: number; sizes: number[] } {
+function stubDecisionModel(noul: number | null | ((memory: string) => number | null)): {
+	count: number;
+	sizes: number[];
+} {
 	const state = { count: 0, sizes: [] as number[] };
-	const score = (memory: string): number => (typeof noul === "number" ? noul : noul(memory));
+	const score = (memory: string): number | null => (typeof noul === "function" ? noul(memory) : noul);
 	vi.spyOn(globalThis, "fetch").mockImplementation(
 		Object.assign(
 			async (_input: unknown, init?: { body?: unknown }): Promise<Response> => {
@@ -128,6 +131,30 @@ function stubDecisionModel(noul: number | ((memory: string) => number)): { count
 		),
 	);
 	return state;
+}
+
+/** Pages `memories/list` from per-collection totals and records every call. */
+function stubSweep(totals: { observation: number; pending: number; failed: number }) {
+	const calls: { collection: string; limit: number; offset: number }[] = [];
+	vi.spyOn(HindsightApi.prototype, "listMemories").mockImplementation(async (_bankId, options) => {
+		const collection = options?.type ?? options?.consolidationState ?? "observation";
+		const offset = options?.offset ?? 0;
+		const limit = options?.limit ?? 0;
+		calls.push({ collection, limit, offset });
+		const total = totals[collection as keyof typeof totals] ?? 0;
+		const count = Math.max(0, Math.min(limit, total - offset));
+		return {
+			items: Array.from({ length: count }, (_, index) => ({
+				id: `${collection}-${offset + index}`,
+				text: `${collection} ${offset + index} body`,
+				fact_type: collection === "observation" ? "observation" : "world",
+			})),
+			total,
+			limit,
+			offset,
+		};
+	});
+	return { calls };
 }
 
 function settings(): Settings {
@@ -362,6 +389,51 @@ describe("recall.execute deep gears", () => {
 		expect(result.details).toEqual({ truncated: true });
 	});
 
+	it("does not report truncation when the sweep ends exactly at the ceiling", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const sweep = stubSweep({ observation: 4800, pending: 0, failed: 0 });
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const result = await recallTool().execute("call-exact", { query: "anything", budget: "max" });
+		const block = textOf(result);
+
+		expect(block).not.toContain("Deep recall truncated");
+		expect(result.details).toEqual({ truncated: false });
+		expect(sweep.calls).toHaveLength(7);
+		expect(sweep.calls.slice(-2).map(call => [call.collection, call.limit])).toEqual([
+			["pending", 1],
+			["failed", 1],
+		]);
+	});
+
+	it("reports truncation when the bank holds one row past the ceiling", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const sweep = stubSweep({ observation: 4801, pending: 0, failed: 0 });
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const result = await recallTool().execute("call-over", { query: "anything", budget: "max" });
+		const block = textOf(result);
+
+		expect(block).toContain("Deep recall truncated");
+		expect(result.details).toEqual({ truncated: true });
+		expect(sweep.calls).toHaveLength(5);
+	});
+
+	it("reports truncation when a collection the cap never reached still holds rows", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const sweep = stubSweep({ observation: 4800, pending: 0, failed: 1 });
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const result = await recallTool().execute("call-probe", { query: "anything", budget: "max" });
+
+		expect(textOf(result)).toContain("Deep recall truncated");
+		expect(result.details).toEqual({ truncated: true });
+		expect(sweep.calls).toHaveLength(7);
+	});
+
 	it("prunes candidates below 40% of the best deep score", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
@@ -483,5 +555,54 @@ describe("recall.execute deep gears", () => {
 		expect(block).toContain("Scoring unavailable");
 		expect(block).toContain("in bank order");
 		expect(block).toContain("deploy host is beta-9");
+	});
+
+	it("drops candidates the scorer left unanswered and says how many", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [],
+			trace: {
+				rrf_merged: [
+					{ node_id: "a", text: "alpha" },
+					{ node_id: "b", text: "beta" },
+					{ node_id: "c", text: "gamma" },
+					{ node_id: "d", text: "delta" },
+				],
+			},
+		} as never);
+		stubDecisionModel(memory => (memory === "alpha" ? 0.9 : null));
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(await recallTool().execute("call-partial", { query: "q", budget: "xhigh" }));
+
+		expect(block).toContain("3 candidates could not be scored");
+		expect(block).toContain("alpha");
+		expect(block).not.toContain("beta");
+		expect(block).not.toContain("gamma");
+		expect(block).not.toContain("delta");
+	});
+
+	it("degrades to unscored candidates when the query alone busts the scoring budget", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [],
+			trace: {
+				rrf_merged: [
+					{ node_id: "a", text: "alpha" },
+					{ node_id: "b", text: "beta" },
+				],
+			},
+		} as never);
+		const requests = stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const block = textOf(
+			await recallTool().execute("call-big-query", { query: "term ".repeat(20_000), budget: "xhigh" }),
+		);
+
+		expect(requests.count).toBe(0);
+		expect(block).toContain("Scoring unavailable");
+		expect(block).toContain("alpha");
+		expect(block).toContain("beta");
 	});
 });

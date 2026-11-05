@@ -211,6 +211,107 @@ describe("HindsightRecallDecision scoreBatch", () => {
 		expect(scores[0]).toBeCloseTo(0.01, 5);
 		expect(scores[79]).toBeCloseTo(0.8, 5);
 	});
+
+	it("gives an oversized memory its own single-question batch and never sends an empty one", async () => {
+		const sizes: number[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (_input: FetchInput, init?: FetchInit): Promise<Response> => {
+					const body = JSON.parse(String(init?.body)) as QuestionBody;
+					const questions = body.questions ?? {};
+					const keys = Object.keys(questions);
+					sizes.push(keys.length);
+					const answers = Object.fromEntries(keys.map(key => [key, { type: "noul", noul: 0.9 }]));
+					return Response.json({ answers });
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+
+		const scorer = new HindsightRecallDecision({ baseUrl: "http://decision.local", threshold: 0.25 });
+		const huge = "word ".repeat(20_000);
+		const scores = await scorer.scoreBatch("where is the deploy host?", [huge, "0.5", "0.6"]);
+
+		expect(sizes).toEqual([1, 2]);
+		expect(scores).toEqual([0.9, 0.9, 0.9]);
+	});
+
+	it("scores an oversized memory null when even its single question is rejected", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (_input: FetchInput, init?: FetchInit): Promise<Response> => {
+					const body = JSON.parse(String(init?.body)) as QuestionBody;
+					const questions = body.questions ?? {};
+					const keys = Object.keys(questions);
+					if (keys.some(key => questions[key]?.instructions?.memory === "huge")) {
+						return Response.json({ detail: { error_type: "max_tokens_exceeded" } }, { status: 400 });
+					}
+					const answers = Object.fromEntries(keys.map(key => [key, { type: "noul", noul: 0.9 }]));
+					return Response.json({ answers });
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+
+		const scorer = new HindsightRecallDecision({ baseUrl: "http://decision.local", threshold: 0.25 });
+		const scores = await scorer.scoreBatch("where is the deploy host?", ["huge", "0.5"]);
+
+		expect(scores).toEqual([null, 0.9]);
+	});
+
+	it("returns nulls without a request when the query alone exceeds the batch budget", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(async (): Promise<Response> => Response.json({ answers: {} }), {
+				preconnect: globalThis.fetch.preconnect,
+			}),
+		);
+
+		const scorer = new HindsightRecallDecision({ baseUrl: "http://decision.local", threshold: 0.25 });
+		const scores = await scorer.scoreBatch("term ".repeat(20_000), ["alpha", "beta"]);
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(scores).toEqual([null, null]);
+	});
+
+	it("keeps in-flight requests at two while a rejected chunk splits", async () => {
+		const hold = Promise.withResolvers<void>();
+		let calls = 0;
+		let inFlight = 0;
+		let peak = 0;
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (_input: FetchInput, init?: FetchInit): Promise<Response> => {
+					calls += 1;
+					const body = JSON.parse(String(init?.body)) as QuestionBody;
+					const questions = body.questions ?? {};
+					const keys = Object.keys(questions);
+					if (calls === 1) {
+						return Response.json({ detail: { error_type: "max_tokens_exceeded" } }, { status: 400 });
+					}
+					inFlight += 1;
+					peak = Math.max(peak, inFlight);
+					await hold.promise;
+					inFlight -= 1;
+					const answers = Object.fromEntries(keys.map(key => [key, { type: "noul", noul: 0.9 }]));
+					return Response.json({ answers });
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+
+		const scorer = new HindsightRecallDecision({ baseUrl: "http://decision.local", threshold: 0.25 });
+		const memories = Array.from({ length: 160 }, (_, index) => String((index + 1) / 100));
+		const done = scorer.scoreBatch("where is the deploy host?", memories);
+
+		await new Promise(resolve => setTimeout(resolve, 50));
+		expect(calls).toBeGreaterThan(2);
+		expect(peak).toBeLessThanOrEqual(2);
+
+		hold.resolve();
+		const scores = await done;
+		expect(scores).toHaveLength(160);
+		expect(scores.every(score => score === 0.9)).toBe(true);
+	});
 });
 
 describe("HindsightApi per-op timeouts", () => {

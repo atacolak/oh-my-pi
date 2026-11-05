@@ -15,10 +15,12 @@ import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
+import type { CompactMode } from "../../session/compact-modes";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { SessionLeaseReport } from "../../session/session-storage";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
 import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
+import type { McpReauthStatus, McpServerStatusEntry } from "./rpc-mcp";
 import {
 	RPC_MESSAGES_PAGE_BUSY_ERROR,
 	RPC_MESSAGES_PAGE_STALE_ERROR,
@@ -1092,8 +1094,8 @@ export class RpcClient {
 	/**
 	 * Compact session context.
 	 */
-	async compact(customInstructions?: string): Promise<CompactionResult> {
-		const response = await this.#send({ type: "compact", customInstructions });
+	async compact(customInstructions?: string, mode?: CompactMode): Promise<CompactionResult> {
+		const response = await this.#send({ type: "compact", customInstructions, mode });
 		return this.#getData(response);
 	}
 
@@ -1408,6 +1410,28 @@ export class RpcClient {
 	async logout(providerId: string, credentialId: number): Promise<{ remainingSource?: string }> {
 		const response = await this.#send({ type: "logout", providerId, credentialId });
 		return this.#getData<{ remainingSource?: string }>(response);
+	}
+
+	/** Every MCP server the session knows, with live connection state, sorted by name. */
+	async getMcpStatus(): Promise<McpServerStatusEntry[]> {
+		const response = await this.#send({ type: "get_mcp_status" });
+		return this.#getData<{ servers: McpServerStatusEntry[] }>(response).servers;
+	}
+
+	/** Enable or disable an MCP server, persisting the choice and applying it live. */
+	async setMcpEnabled(name: string, enabled: boolean): Promise<McpServerStatusEntry> {
+		const response = await this.#send({ type: "set_mcp_enabled", name, enabled });
+		return this.#getData<{ server: McpServerStatusEntry }>(response).server;
+	}
+
+	/**
+	 * Reauthorize a server's OAuth credentials. Progress arrives as
+	 * `extension_ui_request` frames; answer `input` requests with
+	 * {@link respondToExtensionUIRequest}.
+	 */
+	async reauthorizeMcpServer(name: string): Promise<{ server: McpServerStatusEntry; status: McpReauthStatus }> {
+		const response = await this.#send({ type: "mcp_reauth", name }, 900_000);
+		return this.#getData<{ server: McpServerStatusEntry; status: McpReauthStatus }>(response);
 	}
 
 	/**

@@ -251,7 +251,7 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{
 		name: "compact",
 		doc: "Compact the conversation.",
-		params: { "customInstructions?": "string" },
+		params: { "customInstructions?": "string", "mode?": "CompactMode" },
 		result: "CompactionResult",
 	},
 	{ name: "set_auto_compaction", doc: "Enable or disable auto-compaction.", params: { enabled: "boolean" } },
@@ -376,6 +376,26 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		doc: "Remove one stored credential; fails when it is no longer stored. `remainingSource` names auth that still applies.",
 		params: { providerId: "string", credentialId: "number.integer" },
 		result: { "remainingSource?": "string" },
+	},
+	{
+		name: "get_mcp_status",
+		doc: "List configured, disabled and plugin MCP servers with their live connection state, sorted by name.",
+		result: { servers: "McpServerStatusEntry[]" },
+		unwrap: "servers",
+	},
+	{
+		name: "set_mcp_enabled",
+		doc: "Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.",
+		params: { name: "string", enabled: "boolean" },
+		result: { server: "McpServerStatusEntry" },
+		unwrap: "server",
+	},
+	{
+		name: "mcp_reauth",
+		doc: "Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.",
+		params: { name: "string" },
+		result: { server: "McpServerStatusEntry", status: "McpReauthStatus" },
+		timeoutMs: 900_000,
 	},
 
 	{

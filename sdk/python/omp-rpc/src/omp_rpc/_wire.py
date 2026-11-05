@@ -87,6 +87,11 @@ _CACHE_WARMING_MODE_VALUES: Final[frozenset[str]] = frozenset({"off", "streaming
 _decode_cache_warming_mode = cast("Decoder[CacheWarmingMode]", literal(_CACHE_WARMING_MODE_VALUES))
 
 
+CompactMode: TypeAlias = Literal["soft", "remote", "snapcompact"]
+_COMPACT_MODE_VALUES: Final[frozenset[str]] = frozenset({"soft", "remote", "snapcompact"})
+_decode_compact_mode = cast("Decoder[CompactMode]", literal(_COMPACT_MODE_VALUES))
+
+
 MessageUpdates: TypeAlias = Literal["full", "delta"]
 """`set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches."""
 _MESSAGE_UPDATES_VALUES: Final[frozenset[str]] = frozenset({"full", "delta"})
@@ -144,6 +149,26 @@ BtwStatus: TypeAlias = Literal["running", "complete", "cancelled", "error", "int
 """Side-question turn lifecycle; `interrupted` marks a turn whose process died while it ran."""
 _BTW_STATUS_VALUES: Final[frozenset[str]] = frozenset({"running", "complete", "cancelled", "error", "interrupted"})
 _decode_btw_status = cast("Decoder[BtwStatus]", literal(_BTW_STATUS_VALUES))
+
+
+McpServerScope: TypeAlias = Literal["project", "user", "plugin"]
+_MCP_SERVER_SCOPE_VALUES: Final[frozenset[str]] = frozenset({"project", "user", "plugin"})
+_decode_mcp_server_scope = cast("Decoder[McpServerScope]", literal(_MCP_SERVER_SCOPE_VALUES))
+
+
+McpServerTransport: TypeAlias = Literal["stdio", "http", "sse"]
+_MCP_SERVER_TRANSPORT_VALUES: Final[frozenset[str]] = frozenset({"stdio", "http", "sse"})
+_decode_mcp_server_transport = cast("Decoder[McpServerTransport]", literal(_MCP_SERVER_TRANSPORT_VALUES))
+
+
+McpServerStatusState: TypeAlias = Literal["connected", "connecting", "disconnected", "error", "auth_required"]
+_MCP_SERVER_STATUS_STATE_VALUES: Final[frozenset[str]] = frozenset({"connected", "connecting", "disconnected", "error", "auth_required"})
+_decode_mcp_server_status_state = cast("Decoder[McpServerStatusState]", literal(_MCP_SERVER_STATUS_STATE_VALUES))
+
+
+McpReauthStatus: TypeAlias = Literal["authorized", "no_auth_needed"]
+_MCP_REAUTH_STATUS_VALUES: Final[frozenset[str]] = frozenset({"authorized", "no_auth_needed"})
+_decode_mcp_reauth_status = cast("Decoder[McpReauthStatus]", literal(_MCP_REAUTH_STATUS_VALUES))
 
 
 AutoCompactionReason: TypeAlias = Literal["threshold", "overflow", "idle", "incomplete"]
@@ -957,6 +982,19 @@ class LogoutAccount:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class McpServerStatusEntry:
+    """One MCP server: its definition's provenance plus the live connection state."""
+    name: str
+    scope: McpServerScope
+    transport: McpServerTransport
+    enabled: bool
+    status: McpServerStatusState
+    tool_count: int
+    auth_required: bool
+    last_error: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class HandoffResult:
     saved_path: str | None = None
 
@@ -1672,6 +1710,12 @@ class LogoutResult:
     remaining_source: str | None = None
 
 
+@dataclass(slots=True, frozen=True, kw_only=True)
+class McpReauthResult:
+    server: McpServerStatusEntry
+    status: McpReauthStatus
+
+
 UserContent: TypeAlias = TextContent | ImageContent
 
 
@@ -2345,6 +2389,20 @@ def parse_logout_account(value: object, path: str = "LogoutAccount") -> LogoutAc
         detail=required(payload, "detail", decode_str, path),
         type=required(payload, "type", cast('Decoder[Literal["api_key", "oauth"]]', literal(frozenset({"api_key", "oauth"}))), path),
         active=required(payload, "active", decode_bool, path),
+    )
+
+
+def parse_mcp_server_status_entry(value: object, path: str = "McpServerStatusEntry") -> McpServerStatusEntry:
+    payload = expect_object(value, path)
+    return McpServerStatusEntry(
+        name=required(payload, "name", decode_str, path),
+        scope=required(payload, "scope", _decode_mcp_server_scope, path),
+        transport=required(payload, "transport", _decode_mcp_server_transport, path),
+        enabled=required(payload, "enabled", decode_bool, path),
+        status=required(payload, "status", _decode_mcp_server_status_state, path),
+        tool_count=required(payload, "toolCount", decode_int, path),
+        auth_required=required(payload, "authRequired", decode_bool, path),
+        last_error=optional(payload, "lastError", decode_str, path),
     )
 
 
@@ -3166,6 +3224,14 @@ def parse_logout_result(value: object, path: str = "LogoutResult") -> LogoutResu
     )
 
 
+def parse_mcp_reauth_result(value: object, path: str = "McpReauthResult") -> McpReauthResult:
+    payload = expect_object(value, path)
+    return McpReauthResult(
+        server=required(payload, "server", parse_mcp_server_status_entry, path),
+        status=required(payload, "status", _decode_mcp_reauth_status, path),
+    )
+
+
 def parse_usage_limit_state(value: object, path: str = "UsageLimitState") -> UsageLimitState:
     return dispatch("stage", _USAGE_LIMIT_STATE_CASES)(value, path)
 
@@ -3538,11 +3604,13 @@ class WireClient:
         params["mode"] = mode
         self._command("set_interrupt_mode", params)
 
-    def compact(self, custom_instructions: str | None = None) -> CompactionResult:
+    def compact(self, *, custom_instructions: str | None = None, mode: CompactMode | None = None) -> CompactionResult:
         """Compact the conversation."""
         params: dict[str, object] = {}
         if custom_instructions is not None:
             params["customInstructions"] = custom_instructions
+        if mode is not None:
+            params["mode"] = mode
         return parse_compaction_result(self._command("compact", params), "compact")
 
     def set_auto_compaction(self, enabled: bool) -> None:
@@ -3699,6 +3767,24 @@ class WireClient:
         params["providerId"] = provider_id
         params["credentialId"] = credential_id
         return parse_logout_result(self._command("logout", params), "logout")
+
+    def get_mcp_status(self) -> tuple[McpServerStatusEntry, ...]:
+        """List configured, disabled and plugin MCP servers with their live connection state, sorted by name."""
+        params: dict[str, object] = {}
+        return required(expect_object(self._command("get_mcp_status", params), "get_mcp_status"), "servers", array(parse_mcp_server_status_entry), "get_mcp_status")
+
+    def set_mcp_enabled(self, name: str, *, enabled: bool) -> McpServerStatusEntry:
+        """Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state."""
+        params: dict[str, object] = {}
+        params["name"] = name
+        params["enabled"] = enabled
+        return required(expect_object(self._command("set_mcp_enabled", params), "set_mcp_enabled"), "server", parse_mcp_server_status_entry, "set_mcp_enabled")
+
+    def mcp_reauth(self, name: str) -> McpReauthResult:
+        """Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests."""
+        params: dict[str, object] = {}
+        params["name"] = name
+        return parse_mcp_reauth_result(self._command("mcp_reauth", params, timeout=900), "mcp_reauth")
 
     def predict_word(self, text: str, cursor: int) -> str | None:
         """Ghost-text suffix for the prose word ending at `cursor` (a UTF-16 offset); null when none applies."""
@@ -4013,6 +4099,7 @@ __all__ = [
     "CancelUiRequest",
     "CancellationResult",
     "CommandOutputEvent",
+    "CompactMode",
     "CompactionResult",
     "CompactionSummaryMessage",
     "ConfigUpdateEvent",
@@ -4061,6 +4148,12 @@ __all__ = [
     "LogoutResult",
     "ManualCompactionEndEvent",
     "ManualCompactionStartEvent",
+    "McpReauthResult",
+    "McpReauthStatus",
+    "McpServerScope",
+    "McpServerStatusEntry",
+    "McpServerStatusState",
+    "McpServerTransport",
     "MessageContent",
     "MessageEndEvent",
     "MessageStartEvent",
@@ -4246,6 +4339,8 @@ __all__ = [
     "parse_logout_result",
     "parse_manual_compaction_end_event",
     "parse_manual_compaction_start_event",
+    "parse_mcp_reauth_result",
+    "parse_mcp_server_status_entry",
     "parse_message_end_event",
     "parse_message_start_event",
     "parse_message_update_event",

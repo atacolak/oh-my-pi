@@ -7927,6 +7927,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			session: this.session,
 			socket,
 			subagentEventBus: this.#subagentEventBus,
+			mcpManager: this.mcpManager,
 			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
 		});
 	}

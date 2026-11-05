@@ -59,6 +59,7 @@ import type {
 	RpcSubagentProgressFrame,
 	RpcSubagentSnapshot,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import type { McpServerStatusEntry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mcp";
 import type * as Wire from "@oh-my-pi/pi-coding-agent/modes/rpc/wire/rpc-wire.generated";
 import type { RestoredQueuedMessage } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import type { SessionStats } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -255,6 +256,7 @@ export type State = Assert<
 		queuedMessages: Outbound<RpcSessionState["queuedMessages"], Wire.QueuedMessagesState>;
 		dumpTool: Outbound<NonNullable<RpcSessionState["dumpTools"]>[number], Wire.ToolDescriptor>;
 		contextUsage: Outbound<ContextUsage, Wire.ContextUsage>;
+		mcpServerStatusEntry: Outbound<McpServerStatusEntry, Wire.McpServerStatusEntry>;
 		todoPhase: Outbound<TodoPhase, Wire.TodoPhase>;
 		todoItem: Outbound<TodoItem, Wire.TodoItem>;
 		todoPhaseInbound: Inbound<Wire.TodoPhase, TodoPhase>;

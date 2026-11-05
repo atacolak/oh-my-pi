@@ -1259,6 +1259,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		promptResults,
 		extensionUserMessageTracker,
 		host,
+		mcpManager: options.mcpManager,
 	});
 	surface.start();
 	await goalController.reconcile();

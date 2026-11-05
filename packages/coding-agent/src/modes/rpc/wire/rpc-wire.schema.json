@@ -771,6 +771,39 @@
 				"clientOmit": []
 			},
 			{
+				"name": "get_mcp_status",
+				"doc": "List configured, disabled and plugin MCP servers with their live connection state, sorted by name.",
+				"params": null,
+				"result": "GetMcpStatusResult",
+				"nullable": false,
+				"unwrap": "servers",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "set_mcp_enabled",
+				"doc": "Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.",
+				"params": "SetMcpEnabledParams",
+				"result": "SetMcpEnabledResult",
+				"nullable": false,
+				"unwrap": "server",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "mcp_reauth",
+				"doc": "Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.",
+				"params": "McpReauthParams",
+				"result": "McpReauthResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": 900000,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "predict_word",
 				"doc": "Ghost-text suffix for the prose word ending at `cursor` (a UTF-16 offset); null when none applies.",
 				"params": "PredictWordParams",
@@ -2261,6 +2294,14 @@
 			],
 			"type": "string"
 		},
+		"CompactMode": {
+			"enum": [
+				"soft",
+				"remote",
+				"snapcompact"
+			],
+			"type": "string"
+		},
 		"MessageUpdates": {
 			"enum": [
 				"full",
@@ -3582,6 +3623,78 @@
 				"active"
 			],
 			"description": "A stored credential `logout` can remove; `active` marks credentials the session may be using."
+		},
+		"McpServerScope": {
+			"enum": [
+				"project",
+				"user",
+				"plugin"
+			],
+			"type": "string"
+		},
+		"McpServerTransport": {
+			"enum": [
+				"stdio",
+				"http",
+				"sse"
+			],
+			"type": "string"
+		},
+		"McpServerStatusState": {
+			"enum": [
+				"connected",
+				"connecting",
+				"disconnected",
+				"error",
+				"auth_required"
+			],
+			"type": "string"
+		},
+		"McpReauthStatus": {
+			"enum": [
+				"authorized",
+				"no_auth_needed"
+			],
+			"type": "string"
+		},
+		"McpServerStatusEntry": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"scope": {
+					"$ref": "#/$defs/McpServerScope"
+				},
+				"transport": {
+					"$ref": "#/$defs/McpServerTransport"
+				},
+				"enabled": {
+					"type": "boolean"
+				},
+				"status": {
+					"$ref": "#/$defs/McpServerStatusState"
+				},
+				"toolCount": {
+					"type": "integer"
+				},
+				"authRequired": {
+					"type": "boolean"
+				},
+				"lastError": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"name",
+				"scope",
+				"transport",
+				"enabled",
+				"status",
+				"toolCount",
+				"authRequired"
+			],
+			"description": "One MCP server: its definition's provenance plus the live connection state."
 		},
 		"HandoffResult": {
 			"type": "object",
@@ -6707,6 +6820,9 @@
 			"properties": {
 				"customInstructions": {
 					"type": "string"
+				},
+				"mode": {
+					"$ref": "#/$defs/CompactMode"
 				}
 			}
 		},
@@ -7047,6 +7163,72 @@
 					"type": "string"
 				}
 			}
+		},
+		"GetMcpStatusResult": {
+			"type": "object",
+			"properties": {
+				"servers": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/McpServerStatusEntry"
+					}
+				}
+			},
+			"required": [
+				"servers"
+			]
+		},
+		"SetMcpEnabledParams": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"enabled": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"name",
+				"enabled"
+			]
+		},
+		"SetMcpEnabledResult": {
+			"type": "object",
+			"properties": {
+				"server": {
+					"$ref": "#/$defs/McpServerStatusEntry"
+				}
+			},
+			"required": [
+				"server"
+			]
+		},
+		"McpReauthParams": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"name"
+			]
+		},
+		"McpReauthResult": {
+			"type": "object",
+			"properties": {
+				"server": {
+					"$ref": "#/$defs/McpServerStatusEntry"
+				},
+				"status": {
+					"$ref": "#/$defs/McpReauthStatus"
+				}
+			},
+			"required": [
+				"server",
+				"status"
+			]
 		},
 		"PredictWordParams": {
 			"type": "object",

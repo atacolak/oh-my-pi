@@ -22,6 +22,8 @@ import type { AgentSessionEvent, SessionStats } from "../../session/agent-sessio
 import type { SessionLeaseReport } from "../../session/session-storage";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
+import type { McpReauthStatus, McpServerStatusEntry } from "./rpc-mcp";
+import type { CompactMode } from "../../session/compact-modes";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
@@ -111,7 +113,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_interrupt_mode"; mode: "immediate" | "wait" }
 
 	// Compaction
-	| { id?: string; type: "compact"; customInstructions?: string }
+	| { id?: string; type: "compact"; mode?: CompactMode; customInstructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
 	// Cache warming
@@ -149,6 +151,11 @@ export type RpcCommand =
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "get_logout_accounts"; providerId: string }
 	| { id?: string; type: "logout"; providerId: string; credentialId: number }
+
+	// MCP control
+	| { id?: string; type: "get_mcp_status" }
+	| { id?: string; type: "set_mcp_enabled"; name: string; enabled: boolean }
+	| { id?: string; type: "mcp_reauth"; name: string }
 
 	// Word prediction (composer ghost text); `cursor` is a UTF-16 offset into `text`
 	| { id?: string; type: "predict_word"; text: string; cursor: number }
@@ -576,6 +583,29 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_steering_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_follow_up_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_interrupt_mode"; success: true }
+
+	// MCP control
+	| {
+			id?: string;
+			type: "response";
+			command: "get_mcp_status";
+			success: true;
+			data: { servers: McpServerStatusEntry[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_mcp_enabled";
+			success: true;
+			data: { server: McpServerStatusEntry };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp_reauth";
+			success: true;
+			data: { server: McpServerStatusEntry; status: McpReauthStatus };
+	  }
 
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: CompactionResult }

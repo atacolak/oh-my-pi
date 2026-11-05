@@ -20,7 +20,7 @@ import { cfgRetryFallbackChains, cfgRetryFallbackRevertPolicy, type RetrySetting
 export type RetryFallbackChains = Record<string, string[]>;
 
 /** Policy controlling restoration of a fallback chain's primary model. */
-export type RetryFallbackRevertPolicy = "never" | "cooldown-expiry";
+export type RetryFallbackRevertPolicy = "never" | "cooldown-expiry" | "compaction";
 
 /**
  * Parsed model selector used by retry fallback resolution. `thinkingLevel`
@@ -350,7 +350,9 @@ export function validateRetryFallbackChains(
 
 /** Returns the configured fallback-primary restoration policy. */
 export function getRetryFallbackRevertPolicy(settings: Settings): RetryFallbackRevertPolicy {
-	return cfgRetryFallbackRevertPolicy.get(settings) === "never" ? "never" : "cooldown-expiry";
+	const configured = cfgRetryFallbackRevertPolicy.get(settings);
+	if (configured === "never" || configured === "compaction") return configured;
+	return "cooldown-expiry";
 }
 
 /** Whether `retry.fallbackOn` lets a failure walk the fallback chain. */

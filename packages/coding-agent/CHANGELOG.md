@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `compaction` value to `retry.fallbackRevertPolicy` (`/settings` → Model → Retry & Fallback → "Fallback Revert Policy" → "Next compaction"): return to the primary model only after the context has been compacted, instead of as soon as the primary's cooldown expires.
+
 ### Fixed
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.

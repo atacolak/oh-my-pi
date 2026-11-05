@@ -901,7 +901,7 @@ export const cfgRetryFallbackChains = register({
 export const cfgRetryFallbackRevertPolicy = register({
 	id: "retry.fallbackRevertPolicy",
 	type: "enum",
-	values: ["cooldown-expiry", "never"] as const,
+	values: ["cooldown-expiry", "never", "compaction"] as const,
 	default: "cooldown-expiry",
 	ui: {
 		tab: "model",
@@ -915,6 +915,11 @@ export const cfgRetryFallbackRevertPolicy = register({
 				description: "Return to the primary model after its suppression window ends",
 			},
 			{ value: "never", label: "Never", description: "Stay on the fallback model until manually changed" },
+			{
+				value: "compaction",
+				label: "Next compaction",
+				description: "Return to the primary model only after the context has been compacted",
+			},
 		],
 	},
 });

@@ -8,6 +8,7 @@
  * tests to spy on.
  */
 
+import { countTokens } from "@oh-my-pi/pi-natives";
 import { USER_AGENT, truncate, tryParseJson } from "@oh-my-pi/pi-utils";
 import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
 import type { HindsightConfig } from "./config";
@@ -64,8 +65,22 @@ export interface RecallResult {
 	[key: string]: unknown;
 }
 
+/** One entry of the server's RRF trace: the ranked candidate list behind a recall. */
+export interface RecallTraceCandidate {
+	node_id: string;
+	text: string;
+	rrf_score?: number;
+	source_ranks?: unknown;
+	final_rrf_rank?: number;
+}
+
+export interface RecallTrace {
+	rrf_merged?: RecallTraceCandidate[];
+}
+
 export interface RecallResponse {
 	results: RecallResult[];
+	trace?: RecallTrace;
 	[key: string]: unknown;
 }
 
@@ -82,8 +97,21 @@ export interface BankProfileResponse {
 	[key: string]: unknown;
 }
 
+export interface ListMemoryItem {
+	id: string;
+	text: string;
+	/** Wire name of the recall `type` field. */
+	fact_type?: string | null;
+	tags?: string[];
+	metadata?: Record<string, unknown> | null;
+	mentioned_at?: string | null;
+}
+
 export interface ListMemoriesResponse {
-	[key: string]: unknown;
+	items: ListMemoryItem[];
+	total?: number;
+	limit?: number;
+	offset?: number;
 }
 
 export interface DocumentResponse {
@@ -141,6 +169,8 @@ export interface RecallOptions extends HindsightRequestOptions {
 	preferObservations?: boolean;
 	/** Recall-stage pruning and dedup; a no-op on servers without a recall decision model. */
 	rerank?: { prune?: boolean; dedup?: boolean };
+	/** Ask for the RRF candidate trace (`trace.rrf_merged`), which carries no type or tags. */
+	trace?: boolean;
 }
 
 export interface ReflectOptions extends HindsightRequestOptions {
@@ -161,6 +191,9 @@ export interface ListMemoriesOptions extends HindsightRequestOptions {
 	type?: string;
 	q?: string;
 	consolidationState?: ConsolidationState;
+	/** Repeated `tags` params; combined with `tagsMatch: "all_strict"` they scope the sweep server-side. */
+	tags?: string[];
+	tagsMatch?: TagsMatch;
 }
 
 export interface ListDocumentsOptions extends HindsightRequestOptions {
@@ -405,6 +438,7 @@ export class HindsightApi {
 					tags_match: options?.tagsMatch,
 					prefer_observations: options?.preferObservations,
 					rerank: options?.rerank,
+					trace: options?.trace,
 				},
 				signal: options?.signal,
 				timeoutMs: this.#recallTimeoutMs,
@@ -460,6 +494,8 @@ export class HindsightApi {
 					type: options?.type,
 					q: options?.q,
 					consolidation_state: options?.consolidationState,
+					tags: options?.tags,
+					tags_match: options?.tagsMatch,
 					limit: options?.limit,
 					offset: options?.offset,
 				},
@@ -687,13 +723,7 @@ export class HindsightApi {
 		const parsed = text ? tryParseJson(text) : null;
 
 		if (!response.ok) {
-			const details =
-				(parsed && typeof parsed === "object"
-					? ((parsed as { detail?: unknown; message?: unknown }).detail ??
-						(parsed as { message?: unknown }).message)
-					: undefined) ??
-				parsed ??
-				text;
+			const details = errorDetails(parsed, text);
 			const detailText = typeof details === "string" ? details : JSON.stringify(details);
 			throw new HindsightError(
 				`${operation} failed: ${truncate(detailText, MAX_ERROR_DETAIL_CHARS)}`,
@@ -719,12 +749,81 @@ interface SystemOneResponse {
 	answers?: Record<string, { noul?: unknown } | undefined>;
 }
 
+type DecisionQuestion = { type: "noul"; instructions: { task: string; memory: string } };
+
+interface DecisionChunkItem {
+	index: number;
+	text: string;
+}
+
+/** Absolute score floor the server itself applies to recall candidates. */
+export const RECALL_SCORE_FLOOR = 0.2;
+/** Relative score floor: candidates within this ratio of the best score survive the server's prune. */
+export const RECALL_SCORE_FLOOR_RATIO = 0.4;
+
+/** Rendered-token budget per System One batch; the server rejects requests over 18432 rendered tokens. */
+const DECISION_CHUNK_MAX_TOKENS = 15_000;
+/** Question cap per System One batch; the server accepts at most 700. */
+const DECISION_CHUNK_MAX_ITEMS = 80;
+/** Batches allowed in flight at once; more only queues behind the decision service. */
+const DECISION_CHUNK_CONCURRENCY = 2;
+/** Per-batch deadline (ms); one memory vote keeps the short default, a batch is explicitly slow. */
+const DECISION_BATCH_TIMEOUT_MS = 60_000;
+/** Rendered scaffolding per question: JSON keys, the `noul` type, and the instructions wrapper. */
+const DECISION_QUESTION_OVERHEAD_TOKENS = 24;
+/** Server error type returned when a rendered question set exceeds the token ceiling. */
+const MAX_TOKENS_EXCEEDED = "max_tokens_exceeded";
+
+let decisionTaskTokens: number | undefined;
+
+/** Rendered tokens one question costs: the memory, the shared task string, and JSON scaffolding. */
+function estimateQuestionTokens(memory: string): number {
+	decisionTaskTokens ??= countTokens(DECISION_TASK);
+	return countTokens(memory) + decisionTaskTokens + DECISION_QUESTION_OVERHEAD_TOKENS;
+}
+
+/** Greedy packing under the per-request item and token caps; an oversized memory still gets its own batch. */
+function packDecisionChunks(memories: readonly string[]): DecisionChunkItem[][] {
+	const chunks: DecisionChunkItem[][] = [];
+	let current: DecisionChunkItem[] = [];
+	let tokens = 0;
+	for (let index = 0; index < memories.length; index++) {
+		const text = memories[index]!;
+		const estimate = estimateQuestionTokens(text);
+		if (current.length >= DECISION_CHUNK_MAX_ITEMS || tokens + estimate > DECISION_CHUNK_MAX_TOKENS) {
+			chunks.push(current);
+			current = [];
+			tokens = 0;
+		}
+		current.push({ index, text });
+		tokens += estimate;
+	}
+	if (current.length > 0) chunks.push(current);
+	return chunks;
+}
+
+function isMaxTokensExceeded(err: unknown): boolean {
+	if (!(err instanceof HindsightError) || err.statusCode !== 400) return false;
+	const detail = err.details;
+	const body = typeof detail === "string" ? detail : JSON.stringify(detail ?? "");
+	return `${err.message} ${body}`.includes(MAX_TOKENS_EXCEEDED);
+}
+
+function readNoul(answer: { noul?: unknown } | undefined): number | null {
+	const noul = answer?.noul;
+	return typeof noul === "number" && Number.isFinite(noul) ? noul : null;
+}
+
 /**
  * Hindsight keeps every recall candidate above `max(0.20, 0.40 * best)`, so a bank with no
  * matching memory still returns one survivor; only a lone result can be a floor artefact.
  * A System One decision model scores that memory against the question, and anything but a
  * definite answer below `threshold` keeps it: a decision service that is down never withholds
  * memory, and a short deadline keeps a stalled one from holding the turn.
+ *
+ * Deep gears re-score a whole candidate pool through the same endpoint: `scoreBatch` packs
+ * questions under the rendered-token ceiling, runs two batches at a time, and splits a batch
+ * the server refuses for `max_tokens_exceeded` instead of dropping the pass.
  */
 export class HindsightRecallDecision {
 	#baseUrl: string;
@@ -739,26 +838,102 @@ export class HindsightRecallDecision {
 		this.#timeoutMs = options.timeoutMs ?? DEFAULT_DECISION_TIMEOUT_MS;
 	}
 
-	async keep(query: string, memory: string, signal?: AbortSignal): Promise<boolean> {
+	/**
+	 * Score every memory against `query`, aligned to the input. A memory the service leaves
+	 * unanswered scores `null` — no evidence either way — while a failed request throws so the
+	 * caller can fall back to unscored candidates.
+	 */
+	async scoreBatch(query: string, memories: readonly string[], signal?: AbortSignal): Promise<(number | null)[]> {
+		if (memories.length === 0) return [];
+		const chunks = packDecisionChunks(memories);
+		const scores: (number | null)[] = Array.from({ length: memories.length }, () => null);
+		let next = 0;
+		const worker = async (): Promise<void> => {
+			while (next < chunks.length) {
+				const chunk = chunks[next++]!;
+				const batch = await this.#scoreChunkWithRetry(
+					query,
+					chunk.map(item => item.text),
+					signal,
+					1,
+				);
+				for (let index = 0; index < chunk.length; index++) {
+					scores[chunk[index]!.index] = batch[index] ?? null;
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(DECISION_CHUNK_CONCURRENCY, chunks.length) }, () => worker()));
+		return scores;
+	}
+
+	async #scoreChunkWithRetry(
+		query: string,
+		memories: readonly string[],
+		signal: AbortSignal | undefined,
+		retriesLeft: number,
+	): Promise<(number | null)[]> {
+		try {
+			return await this.#scoreChunk(query, memories, signal);
+		} catch (err) {
+			if (retriesLeft <= 0 || memories.length < 2 || !isMaxTokensExceeded(err)) throw err;
+			const mid = Math.ceil(memories.length / 2);
+			const [head, tail] = await Promise.all([
+				this.#scoreChunkWithRetry(query, memories.slice(0, mid), signal, retriesLeft - 1),
+				this.#scoreChunkWithRetry(query, memories.slice(mid), signal, retriesLeft - 1),
+			]);
+			return [...head, ...tail];
+		}
+	}
+
+	async #scoreChunk(query: string, memories: readonly string[], signal?: AbortSignal): Promise<(number | null)[]> {
+		const questions: Record<string, DecisionQuestion> = {};
+		memories.forEach((memory, index) => {
+			questions[`m${index}`] = { type: "noul", instructions: { task: DECISION_TASK, memory } };
+		});
+		const response = await this.#post(`Question: ${query}`, questions, DECISION_BATCH_TIMEOUT_MS, signal);
+		const text = await response.text();
+		const parsed: unknown = text ? tryParseJson(text) : undefined;
+		if (!response.ok) {
+			const details = errorDetails(parsed, text);
+			const detailText = typeof details === "string" ? details : JSON.stringify(details);
+			throw new HindsightError(
+				`scoreRecallBatch failed: ${truncate(detailText, MAX_ERROR_DETAIL_CHARS)}`,
+				response.status,
+				details,
+			);
+		}
+		const answers = (parsed as SystemOneResponse | undefined)?.answers ?? {};
+		return memories.map((_, index) => readNoul(answers[`m${index}`]));
+	}
+
+	#post(
+		state: string,
+		questions: Record<string, unknown>,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<Response> {
 		const headers: Record<string, string> = { "Content-Type": "application/json" };
 		if (this.#apiKey) headers.Authorization = `Bearer ${this.#apiKey}`;
+		return fetch(`${this.#baseUrl}/v1/systemone`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ model: DECISION_MODEL_ID, state, questions }),
+			signal: withTimeoutSignal(timeoutMs, signal),
+		});
+	}
+
+	async keep(query: string, memory: string, signal?: AbortSignal): Promise<boolean> {
 		try {
-			const response = await fetch(`${this.#baseUrl}/v1/systemone`, {
-				method: "POST",
-				headers,
-				body: JSON.stringify({
-					model: DECISION_MODEL_ID,
-					state: `Question: ${query}`,
-					questions: {
-						m0: { type: "noul", instructions: { task: DECISION_TASK, memory } },
-					},
-				}),
-				signal: withTimeoutSignal(this.#timeoutMs, signal),
-			});
+			const response = await this.#post(
+				`Question: ${query}`,
+				{ m0: { type: "noul", instructions: { task: DECISION_TASK, memory } } },
+				this.#timeoutMs,
+				signal,
+			);
 			if (!response.ok) return true;
 			const parsed = tryParseJson(await response.text()) as SystemOneResponse | undefined;
-			const noul = parsed?.answers?.m0?.noul;
-			return typeof noul !== "number" || !Number.isFinite(noul) || noul >= this.#threshold;
+			const score = readNoul(parsed?.answers?.m0);
+			return score === null || score >= this.#threshold;
 		} catch {
 			return true;
 		}
@@ -839,6 +1014,15 @@ function pruneUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 		if (v !== undefined) out[k] = v;
 	}
 	return out;
+}
+
+/** Server error payload: prefer `detail`, then `message`, then whatever the body was. */
+function errorDetails(parsed: unknown, text: string): unknown {
+	if (parsed && typeof parsed === "object") {
+		if ("detail" in parsed && parsed.detail !== undefined) return parsed.detail;
+		if ("message" in parsed && parsed.message !== undefined) return parsed.message;
+	}
+	return parsed ?? text;
 }
 
 export function createHindsightClient(config: HindsightConfig & { hindsightApiUrl: string }): HindsightApi {

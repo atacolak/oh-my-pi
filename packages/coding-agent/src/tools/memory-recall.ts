@@ -1,8 +1,12 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { countTokens } from "@oh-my-pi/pi-natives";
 import { logger, prompt, untilAborted, toError } from "@oh-my-pi/pi-utils";
+import type { HindsightApi, ListMemoriesOptions, RecallResult, TagsMatch } from "../hindsight/client";
+import { RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO } from "../hindsight/client";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { formatCurrentTime, formatMemories, mergeRecallTags } from "../hindsight/content";
+import type { HindsightSessionState } from "../hindsight/state";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import type { ToolSession } from ".";
@@ -11,8 +15,8 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
-	"budget?": type("'low' | 'mid' | 'high'").describe(
-		"search depth: low = quick lookup, mid = everyday default, high = multi-hop history (omitted = session setting)",
+	"budget?": type("'low' | 'mid' | 'high' | 'xhigh' | 'max'").describe(
+		"search depth: low = quick lookup, mid = everyday default, high = multi-hop history, xhigh = score ~2400 recall candidates (~15-25s), max = sweep and score the whole bank (~20-40s, critical use only, may truncate) (omitted = session setting)",
 	),
 	"maxTokens?": type("number").describe(
 		"tokens of surviving memories to return, clamped to 512..16384 (omitted = session setting)",
@@ -26,10 +30,124 @@ const memoryRecallSchema = type({
 const RECALL_MAX_TOKENS_MIN = 512;
 const RECALL_MAX_TOKENS_MAX = 16384;
 
+/** Gears that score a whole candidate pool instead of trusting one server-side ranking. */
+type DeepRecallGear = "xhigh" | "max";
+
+/** Candidates the `xhigh` gear pulls from the recall trace once the server has ranked them. */
+const XHIGH_TRACE_CANDIDATES = 2400;
+
+/** Page size for the bank sweep; one page per round trip keeps the pass a handful of requests. */
+const BANK_SWEEP_PAGE_SIZE = 1000;
+
+/** Hard cap on memories the `max` gear scores; the sweep stops there and says so. */
+const MAX_BANK_SWEEP_CEILING = 4800;
+
+/**
+ * Default `max` collections. Consolidated observations carry the durable beliefs, so they come
+ * first; `pending` and `failed` catch raw facts that have not folded into an observation yet.
+ * Sweeping the raw `world`/`experience` rows instead would re-score what observations already say.
+ */
+const MAX_SWEEP_COLLECTIONS: readonly ListMemoriesOptions[] = [
+	{ type: "observation" },
+	{ consolidationState: "pending" },
+	{ consolidationState: "failed" },
+];
+
 /** Per-call return size, clamped into the documented window instead of rejected. */
 function clampRecallMaxTokens(value: number | undefined): number | undefined {
 	if (value === undefined) return undefined;
 	return Math.min(RECALL_MAX_TOKENS_MAX, Math.max(RECALL_MAX_TOKENS_MIN, Math.round(value)));
+}
+
+interface BankSweep {
+	tags?: string[];
+	tagsMatch?: TagsMatch;
+	seen: Set<string>;
+	candidates: RecallResult[];
+}
+
+interface BankSweepResult {
+	candidates: RecallResult[];
+	/** The ceiling stopped the sweep while a collection still had unread rows. */
+	truncated: boolean;
+}
+
+/** Page one `memories/list` collection, deduping into the shared union; true when more rows remain. */
+async function sweepCollection(
+	client: HindsightApi,
+	bankId: string,
+	filter: ListMemoriesOptions,
+	sweep: BankSweep,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	let offset = 0;
+	let hasMore = true;
+	while (hasMore && sweep.candidates.length < MAX_BANK_SWEEP_CEILING) {
+		const limit = Math.min(BANK_SWEEP_PAGE_SIZE, MAX_BANK_SWEEP_CEILING - sweep.candidates.length);
+		const page = await client.listMemories(bankId, {
+			...filter,
+			tags: sweep.tags,
+			tagsMatch: sweep.tagsMatch,
+			limit,
+			offset,
+			signal,
+		});
+		const items = page.items ?? [];
+		for (const item of items) {
+			if (sweep.seen.has(item.id)) continue;
+			sweep.seen.add(item.id);
+			sweep.candidates.push({
+				id: item.id,
+				text: item.text,
+				type: item.fact_type ?? undefined,
+				tags: item.tags,
+				metadata: item.metadata,
+				mentioned_at: item.mentioned_at,
+			});
+		}
+		offset += items.length;
+		hasMore = items.length > 0 && (page.total !== undefined ? offset < page.total : items.length >= limit);
+	}
+	return hasMore;
+}
+
+/**
+ * Sweep the bank through `memories/list` instead of a ranked recall: the union of every requested
+ * collection, deduped by id, capped at the ceiling. A collection the cap left unread makes the
+ * result truncated, so the caller can say what it did not score.
+ */
+async function sweepBankMemories(
+	client: HindsightApi,
+	bankId: string,
+	filters: readonly ListMemoriesOptions[],
+	tags: string[] | undefined,
+	tagsMatch: TagsMatch | undefined,
+	signal?: AbortSignal,
+): Promise<BankSweepResult> {
+	const sweep: BankSweep = { tags, tagsMatch, seen: new Set<string>(), candidates: [] };
+	let truncated = false;
+	for (const filter of filters) {
+		if (sweep.candidates.length >= MAX_BANK_SWEEP_CEILING) {
+			truncated = true;
+			break;
+		}
+		const hasMore = await sweepCollection(client, bankId, filter, sweep, signal);
+		if (hasMore && sweep.candidates.length >= MAX_BANK_SWEEP_CEILING) truncated = true;
+	}
+	return { candidates: sweep.candidates, truncated };
+}
+
+/** Take memories in the given order until the token budget is spent; one oversized memory still fits. */
+function packByTokens(candidates: readonly RecallResult[], maxTokens: number): RecallResult[] {
+	const packed: RecallResult[] = [];
+	let used = 0;
+	for (const candidate of candidates) {
+		const cost = countTokens(candidate.text);
+		if (packed.length > 0 && used + cost > maxTokens) break;
+		packed.push(candidate);
+		used += cost;
+	}
+	return packed;
 }
 
 export type MemoryRecallParams = typeof memoryRecallSchema.infer;
@@ -96,6 +214,9 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 			}
 
 			try {
+				if (params.budget === "xhigh" || params.budget === "max") {
+					return await this.#executeDeepGear(state, params, params.budget, signal);
+				}
 				const response = await state.client.recall(state.bankId, params.query, {
 					budget: params.budget ?? state.config.recallBudget,
 					maxTokens: clampRecallMaxTokens(params.maxTokens) ?? state.config.recallMaxTokens,
@@ -129,5 +250,117 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				throw toError(err);
 			}
 		});
+	}
+
+	/**
+	 * Deep gears score a whole candidate pool instead of trusting one server-side ranking.
+	 * `xhigh` asks the server for a `high`-budget recall plus its RRF trace and scores the top
+	 * candidates; `max` skips recall entirely and sweeps the bank through `memories/list`.
+	 */
+	async #executeDeepGear(
+		state: HindsightSessionState,
+		params: MemoryRecallParams,
+		gear: DeepRecallGear,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult> {
+		const config = state.config;
+		const maxTokens = clampRecallMaxTokens(params.maxTokens) ?? config.recallMaxTokens;
+		const tags = mergeRecallTags(state.recallTags, params.tags);
+		let candidates: RecallResult[];
+		let truncated = false;
+		if (gear === "xhigh") {
+			const response = await state.client.recall(state.bankId, params.query, {
+				budget: "high",
+				trace: true,
+				maxTokens: RECALL_MAX_TOKENS_MAX,
+				types: params.types ?? (config.recallTypes.length > 0 ? config.recallTypes : undefined),
+				tags,
+				tagsMatch: state.recallTagsMatch,
+				signal,
+			});
+			candidates = (response.trace?.rrf_merged ?? []).slice(0, XHIGH_TRACE_CANDIDATES).map(candidate => ({
+				id: candidate.node_id,
+				text: candidate.text,
+			}));
+		} else {
+			const filters =
+				params.types && params.types.length > 0
+					? params.types.map(item => ({ type: item }))
+					: MAX_SWEEP_COLLECTIONS;
+			const sweep = await sweepBankMemories(
+				state.client,
+				state.bankId,
+				filters,
+				tags,
+				state.recallTagsMatch,
+				signal,
+			);
+			candidates = sweep.candidates;
+			truncated = sweep.truncated;
+		}
+		return this.#packDeepResults(
+			state,
+			params.query,
+			candidates,
+			{ maxTokens, truncated, swept: gear === "max" },
+			signal,
+		);
+	}
+
+	/** Score the candidates, drop what falls under the deep floor, then pack into the token budget. */
+	async #packDeepResults(
+		state: HindsightSessionState,
+		query: string,
+		candidates: RecallResult[],
+		options: { maxTokens: number; truncated: boolean; swept: boolean },
+		signal?: AbortSignal,
+	): Promise<AgentToolResult> {
+		const notes: string[] = [];
+		if (options.truncated) {
+			notes.push(
+				`Deep recall truncated: swept the first ${MAX_BANK_SWEEP_CEILING} memories; the rest were not scored.`,
+			);
+		}
+		const scorer = state.recallScorer;
+		let scores: (number | null)[] | undefined;
+		if (scorer && candidates.length > 0) {
+			try {
+				scores = await scorer.scoreBatch(
+					query,
+					candidates.map(candidate => candidate.text),
+					signal,
+				);
+			} catch (err) {
+				logger.warn("deep recall scoring failed", { bankId: state.bankId, error: String(err) });
+			}
+		}
+		const answered = scores?.filter((score): score is number => score !== null) ?? [];
+		if (scores && answered.length === 0) scores = undefined;
+		let ordered = candidates;
+		if (!scores) {
+			notes.push(
+				`Scoring unavailable: ${candidates.length} candidates below are unscored, in ${options.swept ? "bank" : "recall"} order.`,
+			);
+		} else {
+			const best = Math.max(...answered);
+			if (best < state.config.decisionModelThreshold) {
+				return { content: [{ type: "text", text: "No relevant memories found." }], details: {}, useless: true };
+			}
+			const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
+			ordered = candidates
+				.map((candidate, index) => ({ candidate, score: scores[index] ?? null }))
+				.filter(({ score }) => score === null || score >= floor)
+				.sort((left, right) => (right.score ?? -1) - (left.score ?? -1))
+				.map(({ candidate }) => candidate);
+		}
+		const packed = packByTokens(ordered, options.maxTokens);
+		if (packed.length === 0) {
+			return { content: [{ type: "text", text: "No relevant memories found." }], details: {}, useless: true };
+		}
+		const header = `Found ${packed.length} relevant ${packed.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):`;
+		return {
+			content: [{ type: "text", text: [header, ...notes, formatMemories(packed)].join("\n\n") }],
+			details: { truncated: options.truncated },
+		};
 	}
 }

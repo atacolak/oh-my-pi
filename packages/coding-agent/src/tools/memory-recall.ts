@@ -106,12 +106,32 @@ async function sweepCollection(
 			});
 		}
 		offset += items.length;
-		hasMore = items.length > 0 && (page.total !== undefined ? offset < page.total : items.length >= limit);
+		if (items.length < limit) {
+			hasMore = false;
+			continue;
+		}
+		if (page.total !== undefined) {
+			hasMore = offset < page.total;
+			continue;
+		}
+		const probe = await client.listMemories(bankId, {
+			...filter,
+			tags: sweep.tags,
+			tagsMatch: sweep.tagsMatch,
+			limit: 1,
+			offset,
+			signal,
+		});
+		hasMore = (probe.items ?? []).length > 0;
 	}
 	return hasMore;
 }
 
-/** Any row left in a collection the cap never reached means the sweep stopped short. */
+/**
+ * Any row left in a collection the cap never reached means the sweep stopped short. The probe reads
+ * a bounded prefix and counts only ids not already scored: a collection whose first page repeats
+ * scored ids loses nothing by being skipped, so a bounded prefix is sound rather than approximate.
+ */
 async function hasUnreadRows(
 	client: HindsightApi,
 	bankId: string,
@@ -124,11 +144,11 @@ async function hasUnreadRows(
 			...filter,
 			tags: sweep.tags,
 			tagsMatch: sweep.tagsMatch,
-			limit: 1,
+			limit: 200,
 			offset: 0,
 			signal,
 		});
-		if ((page.items ?? []).length > 0) return true;
+		if ((page.items ?? []).some(item => !sweep.seen.has(item.id))) return true;
 	}
 	return false;
 }
@@ -367,11 +387,15 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				`Scoring unavailable: ${candidates.length} candidates below are unscored, in ${options.swept ? "bank" : "recall"} order.`,
 			);
 		} else {
+			const unscored = scores.filter(score => score === null).length;
 			const best = Math.max(...answered);
 			if (best < state.config.decisionModelThreshold) {
-				return { content: [{ type: "text", text: "No relevant memories found." }], details: {}, useless: true };
+				const text =
+					unscored > 0
+						? `No relevant memories found. ${unscored} candidates could not be scored.`
+						: "No relevant memories found.";
+				return { content: [{ type: "text", text }], details: {}, useless: true };
 			}
-			const unscored = scores.filter(score => score === null).length;
 			if (unscored > 0) notes.push(`${unscored} candidates could not be scored.`);
 			const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
 			ordered = candidates

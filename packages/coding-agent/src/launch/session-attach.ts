@@ -36,14 +36,29 @@ export interface SessionAttachProbeOptions {
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_REFRESH_TIMEOUT_MS = 5_000;
 
+/** Environment variable naming the run directory shared with RPC clients. */
+export const SESSION_RUN_DIR_ENV = "OMP_RUN_DIR";
+
+/**
+ * The directory that publishes session endpoints. An explicit directory wins;
+ * `OMP_RUN_DIR` (trimmed) matches RPC client discovery; otherwise the
+ * profile-independent config root is used. Distinct from
+ * `OMP_DAEMON_RUNTIME_DIR`, which scopes terminal broker daemons per project.
+ */
+export function resolveSessionEndpointDir(endpointDir?: string): string {
+	if (endpointDir !== undefined) return endpointDir;
+	const configured = process.env[SESSION_RUN_DIR_ENV]?.trim();
+	return configured || path.join(getBaseConfigRoot(), "run");
+}
+
 /**
  * The socket a session owner publishes: one endpoint per session id under the
- * profile-independent run directory. The owner's terminal generation is not
+ * configured session run directory. The owner's terminal generation is not
  * part of the path, so a refreshed owner is reached without rediscovery.
  */
 export function sessionAttachEndpoint(sessionId: string, endpointDir?: string): string {
 	assertSessionId(sessionId);
-	return ipcEndpoint(endpointDir ?? path.join(getBaseConfigRoot(), "run"), sessionId);
+	return ipcEndpoint(resolveSessionEndpointDir(endpointDir), sessionId);
 }
 
 export interface SessionTerminalRefreshOptions {
@@ -154,7 +169,7 @@ export async function probeSessionAttach(
 ): Promise<SessionAttachProbe> {
 	assertSessionId(sessionId);
 	const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
-	const endpointDir = options.endpointDir ?? path.join(getBaseConfigRoot(), "run");
+	const endpointDir = resolveSessionEndpointDir(options.endpointDir);
 	const endpoint = sessionAttachEndpoint(sessionId, endpointDir);
 	const sidecarPath = path.join(endpointDir, `${sessionId}.json`);
 

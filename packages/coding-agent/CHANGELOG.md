@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Session attach endpoints now honor `OMP_RUN_DIR` for publication and discovery, matching RPC clients, so sessions kept in a custom run directory can be resumed, attached, and refreshed from the directory they publish in
 - Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
 
 ## [18.16.0] - 2026-11-02

@@ -51,8 +51,17 @@ function refreshed(frame: Frame, overrides: Partial<Frame> = {}): object {
 }
 
 describe("sessionAttachEndpoint", () => {
-	it("derives the session endpoint from the profile-independent run directory", () => {
-		expect(sessionAttachEndpoint("session-a")).toBe(ipcEndpoint(path.join(getBaseConfigRoot(), "run"), "session-a"));
+	it("falls back to the profile-independent run directory without OMP_RUN_DIR", () => {
+		const previous = process.env.OMP_RUN_DIR;
+		delete process.env.OMP_RUN_DIR;
+		try {
+			expect(sessionAttachEndpoint("session-a")).toBe(
+				ipcEndpoint(path.join(getBaseConfigRoot(), "run"), "session-a"),
+			);
+		} finally {
+			if (previous === undefined) delete process.env.OMP_RUN_DIR;
+			else process.env.OMP_RUN_DIR = previous;
+		}
 	});
 
 	it("honours an explicit endpoint directory", () => {

@@ -21,7 +21,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { IpcConnection, IpcServer, ipcEndpoint } from "@oh-my-pi/pi-natives";
-import { getBaseConfigRoot, isRecord, logger, toError } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, toError } from "@oh-my-pi/pi-utils";
+import { resolveSessionEndpointDir } from "../../launch/session-attach";
 import { sessionOwnerContext } from "../../launch/session-owner";
 import type { AgentSession } from "../../session/agent-session";
 import { RpcClientConnection, type RpcClientConn } from "./client-connection";
@@ -351,13 +352,13 @@ export class RpcSessionSocket {
 	}
 }
 
-/** Build the publication for one live session, under the profile-independent config root. */
+/** Build the publication for one live session, under the configured session run directory. */
 export function createAgentSessionSocket(
 	session: AgentSession,
 	options: { endpointDir?: string } = {},
 ): RpcSessionSocket {
 	return new RpcSessionSocket({
-		endpointDir: options.endpointDir ?? path.join(getBaseConfigRoot(), "run"),
+		endpointDir: resolveSessionEndpointDir(options.endpointDir),
 		identity: () => ({
 			sessionId: session.sessionId,
 			sessionFile: session.sessionFile,

@@ -42,6 +42,12 @@ const BANK_SWEEP_PAGE_SIZE = 1000;
 /** Hard cap on memories the `max` gear scores; the sweep stops there and says so. */
 const MAX_BANK_SWEEP_CEILING = 4800;
 
+/** Rows per request when checking whether a collection the ceiling skipped holds unread rows. */
+const UNREAD_PROBE_PAGE_SIZE = 200;
+
+/** Rows the unread check may read before it reports truncation rather than proving the collection is duplicate. */
+const UNREAD_PROBE_ROW_BUDGET = 2000;
+
 /**
  * Default `max` collections. Consolidated observations carry the durable beliefs, so they come
  * first; `pending` and `failed` catch raw facts that have not folded into an observation yet.
@@ -106,12 +112,34 @@ async function sweepCollection(
 			});
 		}
 		offset += items.length;
-		hasMore = items.length > 0 && (page.total !== undefined ? offset < page.total : items.length >= limit);
+		if (items.length < limit) {
+			hasMore = false;
+			continue;
+		}
+		if (page.total !== undefined) {
+			hasMore = offset < page.total;
+			continue;
+		}
+		const probe = await client.listMemories(bankId, {
+			...filter,
+			tags: sweep.tags,
+			tagsMatch: sweep.tagsMatch,
+			limit: 1,
+			offset,
+			signal,
+		});
+		hasMore = (probe.items ?? []).length > 0;
 	}
 	return hasMore;
 }
 
-/** Any row left in a collection the cap never reached means the sweep stopped short. */
+/**
+ * Any row left in a collection the cap never reached means the sweep stopped short. Walk the
+ * collection until an id absent from `sweep.seen` appears, a short page ends it, or the row budget
+ * is spent. A collection that is entirely duplicates adds nothing when read, but the budget cannot
+ * prove that beyond its bound, so exhausting it reports truncation: a possibly-unnecessary warning
+ * is cheaper than silently dropping a raw fact the gear promised to score.
+ */
 async function hasUnreadRows(
 	client: HindsightApi,
 	bankId: string,
@@ -120,23 +148,34 @@ async function hasUnreadRows(
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	for (const filter of filters) {
-		const page = await client.listMemories(bankId, {
-			...filter,
-			tags: sweep.tags,
-			tagsMatch: sweep.tagsMatch,
-			limit: 1,
-			offset: 0,
-			signal,
-		});
-		if ((page.items ?? []).length > 0) return true;
+		let offset = 0;
+		let read = 0;
+		while (read < UNREAD_PROBE_ROW_BUDGET) {
+			const limit = Math.min(UNREAD_PROBE_PAGE_SIZE, UNREAD_PROBE_ROW_BUDGET - read);
+			const page = await client.listMemories(bankId, {
+				...filter,
+				tags: sweep.tags,
+				tagsMatch: sweep.tagsMatch,
+				limit,
+				offset,
+				signal,
+			});
+			const items = page.items ?? [];
+			if (items.some(item => !sweep.seen.has(item.id))) return true;
+			read += items.length;
+			offset += items.length;
+			if (items.length < limit) break;
+		}
+		if (read >= UNREAD_PROBE_ROW_BUDGET) return true;
 	}
 	return false;
 }
 
 /**
  * Sweep the bank through `memories/list` instead of a ranked recall: the union of every requested
- * collection, deduped by id, capped at the ceiling. Truncation is reported only when rows were
- * actually left unread — the collection the cap cut short, or one the cap never reached.
+ * collection, deduped by id, capped at the ceiling. Truncation is reported when the cap cut a
+ * collection short, or when an unvisited collection holds rows the bounded probe could not prove
+ * were already scored.
  */
 async function sweepBankMemories(
 	client: HindsightApi,
@@ -343,7 +382,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 		const notes: string[] = [];
 		if (options.truncated) {
 			notes.push(
-				`Deep recall truncated: swept the first ${MAX_BANK_SWEEP_CEILING} memories; the rest were not scored.`,
+				`Deep recall truncated: swept the first ${MAX_BANK_SWEEP_CEILING} memories; some rows were left unread.`,
 			);
 		}
 		const scorer = state.recallScorer;
@@ -367,11 +406,15 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				`Scoring unavailable: ${candidates.length} candidates below are unscored, in ${options.swept ? "bank" : "recall"} order.`,
 			);
 		} else {
+			const unscored = scores.filter(score => score === null).length;
 			const best = Math.max(...answered);
 			if (best < state.config.decisionModelThreshold) {
-				return { content: [{ type: "text", text: "No relevant memories found." }], details: {}, useless: true };
+				const text =
+					unscored > 0
+						? `No relevant memories found. ${unscored} candidates could not be scored.`
+						: "No relevant memories found.";
+				return { content: [{ type: "text", text }], details: {}, useless: true };
 			}
-			const unscored = scores.filter(score => score === null).length;
 			if (unscored > 0) notes.push(`${unscored} candidates could not be scored.`);
 			const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
 			ordered = candidates

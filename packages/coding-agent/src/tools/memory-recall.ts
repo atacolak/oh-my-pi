@@ -42,6 +42,12 @@ const BANK_SWEEP_PAGE_SIZE = 1000;
 /** Hard cap on memories the `max` gear scores; the sweep stops there and says so. */
 const MAX_BANK_SWEEP_CEILING = 4800;
 
+/** Rows per request when checking whether a collection the ceiling skipped holds unread rows. */
+const UNREAD_PROBE_PAGE_SIZE = 200;
+
+/** Rows the unread check may read before it reports truncation rather than proving the collection is duplicate. */
+const UNREAD_PROBE_ROW_BUDGET = 2000;
+
 /**
  * Default `max` collections. Consolidated observations carry the durable beliefs, so they come
  * first; `pending` and `failed` catch raw facts that have not folded into an observation yet.
@@ -128,9 +134,11 @@ async function sweepCollection(
 }
 
 /**
- * Any row left in a collection the cap never reached means the sweep stopped short. The probe reads
- * a bounded prefix and counts only ids not already scored: a collection whose first page repeats
- * scored ids loses nothing by being skipped, so a bounded prefix is sound rather than approximate.
+ * Any row left in a collection the cap never reached means the sweep stopped short. Walk the
+ * collection until an id absent from `sweep.seen` appears, a short page ends it, or the row budget
+ * is spent. A collection that is entirely duplicates adds nothing when read, but the budget cannot
+ * prove that beyond its bound, so exhausting it reports truncation: a possibly-unnecessary warning
+ * is cheaper than silently dropping a raw fact the gear promised to score.
  */
 async function hasUnreadRows(
 	client: HindsightApi,
@@ -140,23 +148,34 @@ async function hasUnreadRows(
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	for (const filter of filters) {
-		const page = await client.listMemories(bankId, {
-			...filter,
-			tags: sweep.tags,
-			tagsMatch: sweep.tagsMatch,
-			limit: 200,
-			offset: 0,
-			signal,
-		});
-		if ((page.items ?? []).some(item => !sweep.seen.has(item.id))) return true;
+		let offset = 0;
+		let read = 0;
+		while (read < UNREAD_PROBE_ROW_BUDGET) {
+			const limit = Math.min(UNREAD_PROBE_PAGE_SIZE, UNREAD_PROBE_ROW_BUDGET - read);
+			const page = await client.listMemories(bankId, {
+				...filter,
+				tags: sweep.tags,
+				tagsMatch: sweep.tagsMatch,
+				limit,
+				offset,
+				signal,
+			});
+			const items = page.items ?? [];
+			if (items.some(item => !sweep.seen.has(item.id))) return true;
+			read += items.length;
+			offset += items.length;
+			if (items.length < limit) break;
+		}
+		if (read >= UNREAD_PROBE_ROW_BUDGET) return true;
 	}
 	return false;
 }
 
 /**
  * Sweep the bank through `memories/list` instead of a ranked recall: the union of every requested
- * collection, deduped by id, capped at the ceiling. Truncation is reported only when rows were
- * actually left unread — the collection the cap cut short, or one the cap never reached.
+ * collection, deduped by id, capped at the ceiling. Truncation is reported when the cap cut a
+ * collection short, or when an unvisited collection holds rows the bounded probe could not prove
+ * were already scored.
  */
 async function sweepBankMemories(
 	client: HindsightApi,
@@ -363,7 +382,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 		const notes: string[] = [];
 		if (options.truncated) {
 			notes.push(
-				`Deep recall truncated: swept the first ${MAX_BANK_SWEEP_CEILING} memories; the rest were not scored.`,
+				`Deep recall truncated: swept the first ${MAX_BANK_SWEEP_CEILING} memories; some rows were left unread.`,
 			);
 		}
 		const scorer = state.recallScorer;

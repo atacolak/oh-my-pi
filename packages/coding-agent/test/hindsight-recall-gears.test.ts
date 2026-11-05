@@ -157,6 +157,35 @@ function stubSweep(totals: { observation: number; pending: number; failed: numbe
 	return { calls };
 }
 
+function stubFailedRows(rows: { id: string; text: string }[]) {
+	vi.spyOn(HindsightApi.prototype, "listMemories").mockImplementation(async (_bankId, options) => {
+		const collection = options?.type ?? options?.consolidationState ?? "observation";
+		const offset = options?.offset ?? 0;
+		const limit = options?.limit ?? 0;
+		if (collection === "pending") return { items: [], total: 0, limit, offset };
+		if (collection === "failed") {
+			const count = Math.max(0, Math.min(limit, rows.length - offset));
+			return {
+				items: rows.slice(offset, offset + count).map(row => ({ ...row, fact_type: "world" })),
+				total: rows.length,
+				limit,
+				offset,
+			};
+		}
+		const count = Math.max(0, Math.min(limit, 4800 - offset));
+		return {
+			items: Array.from({ length: count }, (_, index) => ({
+				id: `observation-${offset + index}`,
+				text: `observation ${offset + index} body`,
+				fact_type: "observation",
+			})),
+			total: 4800,
+			limit,
+			offset,
+		};
+	});
+}
+
 function settings(): Settings {
 	return Settings.isolated({ "memory.backend": "hindsight" });
 }
@@ -572,6 +601,60 @@ describe("recall.execute deep gears", () => {
 			{ collection: "pending", limit: 200 },
 			{ collection: "failed", limit: 200 },
 		]);
+	});
+
+	it("walks past duplicates to find an unread raw fact beyond the first probe page", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const failed = Array.from({ length: 201 }, (_, index) => ({
+			id: `observation-${index}`,
+			text: `duplicate ${index}`,
+		}));
+		failed.push({ id: "fresh-1", text: "fresh raw fact" });
+		stubFailedRows(failed);
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const result = await recallTool().execute("call-duplicate-walk", { query: "anything", budget: "max" });
+		const block = textOf(result);
+
+		expect(block).toContain("Deep recall truncated");
+		expect(block).toContain("some rows were left unread");
+		expect(result.details).toEqual({ truncated: true });
+	});
+
+	it("reports truncation when the probe budget is spent proving a collection is all duplicates", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const duplicates = Array.from({ length: 2000 }, (_, index) => ({
+			id: `observation-${index}`,
+			text: `duplicate ${index}`,
+		}));
+		stubFailedRows(duplicates);
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const result = await recallTool().execute("call-duplicate-bound", { query: "anything", budget: "max" });
+		const block = textOf(result);
+
+		expect(block).toContain("Deep recall truncated");
+		expect(block).toContain("some rows were left unread");
+		expect(result.details).toEqual({ truncated: true });
+	});
+
+	it("reports truncation when a small unread collection holds a fresh id on its first page", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		stubFailedRows([
+			{ id: "observation-0", text: "duplicate" },
+			{ id: "fresh-small", text: "fresh raw fact" },
+		]);
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+
+		const result = await recallTool().execute("call-small-collection", { query: "anything", budget: "max" });
+		const block = textOf(result);
+
+		expect(block).toContain("Deep recall truncated");
+		expect(block).toContain("some rows were left unread");
+		expect(result.details).toEqual({ truncated: true });
 	});
 
 	it("says how many candidates went unscored when the best score misses the threshold", async () => {

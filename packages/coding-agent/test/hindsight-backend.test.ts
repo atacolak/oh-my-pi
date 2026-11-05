@@ -29,6 +29,18 @@ import {
 	cfgHindsightScoping,
 } from "@oh-my-pi/pi-coding-agent/hindsight/settings";
 
+import { isolateHindsightEnv, type RestoreHindsightEnv } from "./helpers/hindsight-env";
+
+// `HINDSIGHT_*` variables override every settings layer, so a host that retains out-of-process
+// (`HINDSIGHT_AUTO_RETAIN=false`) would otherwise turn these assertions into no-ops.
+let restoreHindsightEnv: RestoreHindsightEnv = () => {};
+beforeEach(() => {
+	restoreHindsightEnv = isolateHindsightEnv();
+});
+afterEach(() => {
+	restoreHindsightEnv();
+});
+
 function setPath(settings: Settings, id: string, value: unknown) {
 	const handle = lookup(id);
 	if (!handle) throw new Error(`unknown setting ${id}`);

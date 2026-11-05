@@ -171,6 +171,8 @@ export function createMcpManagerStub(overrides?: McpManagerOverrides): MCPManage
 		getServerResources: vi.fn(() => undefined),
 		getServerPrompts: vi.fn(() => undefined),
 		getNotificationState: vi.fn(() => ({ enabled: false, subscriptions: new Map<string, ReadonlySet<string>>() })),
+		addConnectionStatusListener: vi.fn(() => () => {}),
+		waitForStartup: vi.fn(async () => ({ connected: [], pending: [], failed: [] })),
 	} satisfies McpManagerOverrides;
 	if (overrides) layer(stub, overrides);
 	return stub as unknown as MCPManager;

@@ -24,7 +24,7 @@ import type {
 	WordCompletionMethod,
 	WordCompletionQuery,
 } from "@oh-my-pi/pi-tui/prompt/word-completion";
-import { isRecord, logger } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import * as path from "node:path";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -42,6 +42,7 @@ import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentSession, type NavigateTreeResult, SessionBusyError } from "../../session/agent-session";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
+import { findCompactMode } from "../../session/compact-modes";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { findMostRecentNonEmptySession, findRecentSessionContinuation } from "../../session/session-listing";
 import { probeSessionLeases } from "../../session/session-storage";
@@ -52,6 +53,7 @@ import { cfgSttEnabled } from "../../stt/settings";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import { cfgSpellingAutocomplete } from "../settings";
+import { RpcMcpCommandError, RpcMcpControl, type RpcMcpUi } from "./rpc-mcp";
 import type { RpcBtwController } from "./rpc-btw";
 import type { RpcClientConn } from "./client-connection";
 import { RpcClientConnection, RpcClientRegistry } from "./client-connection";
@@ -381,6 +383,12 @@ export function rpcSuccess<T extends RpcCommand["type"]>(
 		return { id, type: "response", command, success: true } as RpcResponse;
 	}
 	return { id, type: "response", command, success: true, data } as RpcResponse;
+}
+
+/** Map a failed MCP command to its wire response, keeping the typed error code. */
+function mcpCommandError(id: string | undefined, command: string, error: unknown): RpcResponse {
+	const message = error instanceof Error ? error.message : String(error);
+	return rpcError(id, command, message, error instanceof RpcMcpCommandError ? error.code : undefined);
 }
 
 export function rpcError(id: string | undefined, command: string, message: string, code?: string): RpcResponse {
@@ -869,6 +877,12 @@ export interface RpcCommandSurfaceOptions {
 	extensionUserMessageTracker: RpcExtensionUserMessageTracker;
 	host?: RpcHostCommandServices;
 	/**
+	 * Live MCP manager this surface controls. Defaults to the host-owned
+	 * manager; a terminal-hosted publication passes the session's own manager
+	 * because it has no host (`login` and MCP control stay available there).
+	 */
+	mcpManager?: MCPManager;
+	/**
 	 * Subagent registry owned by this surface's transport when it has no RPC
 	 * runner (a terminal-hosted publication). The stdio runner supplies its own
 	 * through `host.subagents`; a client's subscription is filtered per view by
@@ -900,6 +914,9 @@ export class RpcCommandSurface {
 	readonly #pendingExtensionRequests: RpcPendingExtensionRequests;
 	readonly #host: RpcHostCommandServices | undefined;
 	readonly #subagents: RpcSubagentRegistry | undefined;
+	readonly #mcpManager: MCPManager | undefined;
+	readonly #mcpUiAborts = new WeakMap<RpcClientConn, AbortController>();
+	#mcpControl: RpcMcpControl | undefined;
 	readonly #inputGate = new RpcUserInputGate();
 	readonly #builtinCommandAborts = new Set<AbortController>();
 	#unsubscribeObserve: (() => void) | undefined;
@@ -916,12 +933,14 @@ export class RpcCommandSurface {
 		this.extensionUserMessageTracker = options.extensionUserMessageTracker;
 		this.#host = options.host;
 		this.#subagents = options.subagents;
+		this.#mcpManager = options.mcpManager ?? options.host?.mcpManager;
 		this.hostToolBridge = new RpcHostToolBridge(options.defaultConn);
 		this.hostUriBridge = new RpcHostUriBridge(options.output);
 	}
 
 	/** Subscribe to the session and announce the current command list. */
 	start(): void {
+		if (this.#mcpManager) void this.#mcp().seed();
 		this.#unsubscribeObserve = this.#session.subscribe(event => this.observe(event));
 		this.#unsubscribeCommandMetadata = this.#session.subscribeCommandMetadataChanged(() => {
 			void this.emitAvailableCommandsUpdate();
@@ -933,6 +952,8 @@ export class RpcCommandSurface {
 		this.#unsubscribeObserve = undefined;
 		this.#unsubscribeCommandMetadata?.();
 		this.#unsubscribeCommandMetadata = undefined;
+		this.#mcpControl?.dispose();
+		this.#mcpControl = undefined;
 	}
 
 	/** Number an accepted frame at read time so a later abort can invalidate it. */
@@ -989,11 +1010,100 @@ export class RpcCommandSurface {
 				void this.#dispatchCommand(command, conn);
 			},
 			close: reason => {
+				this.#mcpUiAborts.get(conn)?.abort(reason);
+				this.#mcpUiAborts.delete(conn);
 				this.#clients.unregister(conn);
 				this.#syncSubagentEmission();
 				void this.#session.refreshRpcHostTools(this.hostToolBridge.removeClient(conn, reason));
 			},
 		};
+	}
+
+	/** The MCP controller for this surface, created on first use. */
+	#mcp(): RpcMcpControl {
+		this.#mcpControl ??= new RpcMcpControl({ session: this.#session, manager: this.#mcpManager });
+		return this.#mcpControl;
+	}
+
+	/**
+	 * Abort signal for one connection's MCP UI: a closed socket cancels a
+	 * pending OAuth flow instead of leaving it waiting on a client that left.
+	 */
+	#mcpUiSignal(conn: RpcClientConn | undefined): AbortSignal | undefined {
+		if (!conn) return undefined;
+		let controller = this.#mcpUiAborts.get(conn);
+		if (!controller) {
+			controller = new AbortController();
+			this.#mcpUiAborts.set(conn, controller);
+		}
+		return controller.signal;
+	}
+
+	/** UI presentation for one connection: frames go to the client that asked. */
+	#mcpUi(conn: RpcClientConn | undefined): RpcMcpUi {
+		const target = conn ?? this.#defaultConn;
+		return {
+			openUrl: info =>
+				target.send({ type: "extension_ui_request", id: Snowflake.next(), method: "open_url", ...info }),
+			notify: (message, level) =>
+				target.send({
+					type: "extension_ui_request",
+					id: Snowflake.next(),
+					method: "notify",
+					message,
+					...(level === undefined ? {} : { notifyType: level }),
+				}),
+			input: (title, placeholder, options) => this.#requestClientInput(target, title, placeholder, options),
+		};
+	}
+
+	/**
+	 * Ask one client for text and await its answer. The pending-request map is
+	 * the same one `extension_ui_response` frames resolve, so the answer is
+	 * handled on the side channel while the command that asked is still running.
+	 */
+	#requestClientInput(
+		conn: RpcClientConn,
+		title: string,
+		placeholder: string,
+		options: { timeoutMs: number; signal?: AbortSignal },
+	): Promise<string | undefined> {
+		const id = Snowflake.next();
+		const { promise, resolve } = Promise.withResolvers<string | undefined>();
+		let settled = false;
+		const deadline: { timer?: NodeJS.Timeout } = {};
+		function onAbort(): void {
+			cancel();
+		}
+		const finish = (value: string | undefined): void => {
+			if (settled) return;
+			settled = true;
+			if (deadline.timer) clearTimeout(deadline.timer);
+			options.signal?.removeEventListener("abort", onAbort);
+			this.#pendingExtensionRequests.delete(id);
+			resolve(value);
+		};
+		const cancel = (): void => {
+			conn.send({ type: "extension_ui_request", id: Snowflake.next(), method: "cancel", targetId: id });
+			finish(undefined);
+		};
+		if (options.signal?.aborted) {
+			cancel();
+			return promise;
+		}
+		options.signal?.addEventListener("abort", onAbort, { once: true });
+		deadline.timer = setTimeout(cancel, options.timeoutMs);
+		deadline.timer.unref();
+		this.#pendingExtensionRequests.set(id, {
+			resolve: response => {
+				if ("value" in response) finish(response.value);
+				else finish(undefined);
+			},
+			reject: () => finish(undefined),
+			conn,
+		});
+		conn.send({ type: "extension_ui_request", id, method: "input", title, placeholder, timeout: options.timeoutMs });
+		return promise;
 	}
 
 	/**
@@ -1750,7 +1860,32 @@ export class RpcCommandSurface {
 			// =================================================================
 
 			case "compact": {
-				const result = await session.compact(command.customInstructions);
+				const requestedMode: unknown = command.mode;
+				const modeDef = typeof requestedMode === "string" ? findCompactMode(requestedMode) : undefined;
+				if (requestedMode !== undefined && modeDef?.name !== requestedMode) {
+					return rpcError(
+						id,
+						"compact",
+						`Invalid compact mode: ${String(requestedMode)}. Expected "soft", "remote", or "snapcompact".`,
+						"invalid_compact_mode",
+					);
+				}
+				if (
+					modeDef?.rejectsFocus === true &&
+					typeof command.customInstructions === "string" &&
+					command.customInstructions.trim().length > 0
+				) {
+					return rpcError(
+						id,
+						"compact",
+						"/compact snapcompact does not take focus instructions.",
+						"invalid_compact_args",
+					);
+				}
+				const result = await session.compact(
+					command.customInstructions,
+					modeDef ? { mode: modeDef.name } : undefined,
+				);
 				return rpcSuccess(id, "compact", result);
 			}
 
@@ -1944,6 +2079,40 @@ export class RpcCommandSurface {
 			}
 
 			// =================================================================
+			// MCP control
+			// =================================================================
+
+			case "get_mcp_status": {
+				return rpcSuccess(id, "get_mcp_status", { servers: await this.#mcp().listServers() });
+			}
+
+			case "set_mcp_enabled": {
+				const name = typeof command.name === "string" ? command.name.trim() : "";
+				if (!name) return rpcError(id, "set_mcp_enabled", "name must be a non-empty string");
+				if (typeof command.enabled !== "boolean") {
+					return rpcError(id, "set_mcp_enabled", "enabled must be a boolean");
+				}
+				try {
+					return rpcSuccess(id, "set_mcp_enabled", {
+						server: await this.#mcp().setEnabled(name, command.enabled),
+					});
+				} catch (error) {
+					return mcpCommandError(id, "set_mcp_enabled", error);
+				}
+			}
+
+			case "mcp_reauth": {
+				const name = typeof command.name === "string" ? command.name.trim() : "";
+				if (!name) return rpcError(id, "mcp_reauth", "name must be a non-empty string");
+				try {
+					const result = await this.#mcp().reauthorize(name, this.#mcpUi(conn), this.#mcpUiSignal(conn));
+					return rpcSuccess(id, "mcp_reauth", result);
+				} catch (error) {
+					return mcpCommandError(id, "mcp_reauth", error);
+				}
+			}
+
+			// =================================================================
 			// Side questions (/btw)
 			// =================================================================
 
@@ -2100,6 +2269,8 @@ export async function serveInteractiveSessionSocket(options: {
 	 * subagent read/control and refuses those commands.
 	 */
 	subagentEventBus?: EventBus;
+	/** The session's live MCP manager; the publication has no host to supply it. */
+	mcpManager?: MCPManager;
 }): Promise<ServedSessionSocket> {
 	const clients = new RpcClientRegistry();
 	const output: RpcOutput = frame => clients.broadcast(frame);
@@ -2121,6 +2292,7 @@ export async function serveInteractiveSessionSocket(options: {
 		promptResults,
 		extensionUserMessageTracker,
 		subagents,
+		mcpManager: options.mcpManager,
 	});
 	surface.start();
 	const terminalControl = options.terminalControl;

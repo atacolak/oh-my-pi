@@ -15,6 +15,7 @@ export const stateDefs = {
 	StreamingBehavior: "'steer' | 'followUp'",
 	QueuedMessageQueue: "'steering' | 'followUp'",
 	CacheWarmingMode: "'off' | 'streaming' | 'idle'",
+	CompactMode: "'soft' | 'remote' | 'snapcompact'",
 	MessageUpdates: doc(
 		"'full' | 'delta'",
 		"`set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches.",
@@ -329,6 +330,23 @@ export const stateDefs = {
 			active: "boolean",
 		},
 		"A stored credential `logout` can remove; `active` marks credentials the session may be using.",
+	),
+	McpServerScope: "'project' | 'user' | 'plugin'",
+	McpServerTransport: "'stdio' | 'http' | 'sse'",
+	McpServerStatusState: "'connected' | 'connecting' | 'disconnected' | 'error' | 'auth_required'",
+	McpReauthStatus: "'authorized' | 'no_auth_needed'",
+	McpServerStatusEntry: doc(
+		{
+			name: "string",
+			scope: "McpServerScope",
+			transport: "McpServerTransport",
+			enabled: "boolean",
+			status: "McpServerStatusState",
+			toolCount: "number.integer",
+			authRequired: "boolean",
+			"lastError?": "string",
+		},
+		"One MCP server: its definition's provenance plus the live connection state.",
 	),
 	HandoffResult: { "savedPath?": "string" },
 	PromptAck: doc(

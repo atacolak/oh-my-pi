@@ -378,6 +378,8 @@ export type QueuedMessageQueue = "steering" | "followUp";
 
 export type CacheWarmingMode = "off" | "streaming" | "idle";
 
+export type CompactMode = "soft" | "remote" | "snapcompact";
+
 /** `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches. */
 export type MessageUpdates = "full" | "delta";
 
@@ -765,6 +767,26 @@ export interface LogoutAccount {
 	detail: string;
 	type: "api_key" | "oauth";
 	active: boolean;
+}
+
+export type McpServerScope = "project" | "user" | "plugin";
+
+export type McpServerTransport = "stdio" | "http" | "sse";
+
+export type McpServerStatusState = "connected" | "connecting" | "disconnected" | "error" | "auth_required";
+
+export type McpReauthStatus = "authorized" | "no_auth_needed";
+
+/** One MCP server: its definition's provenance plus the live connection state. */
+export interface McpServerStatusEntry {
+	name: string;
+	scope: McpServerScope;
+	transport: McpServerTransport;
+	enabled: boolean;
+	status: McpServerStatusState;
+	toolCount: number;
+	authRequired: boolean;
+	lastError?: string;
 }
 
 export interface HandoffResult {
@@ -1732,6 +1754,7 @@ export interface SetInterruptModeParams {
 
 export interface CompactParams {
 	customInstructions?: string;
+	mode?: CompactMode;
 }
 
 export interface SetAutoCompactionParams {
@@ -1852,6 +1875,28 @@ export interface LogoutResult {
 	remainingSource?: string;
 }
 
+export interface GetMcpStatusResult {
+	servers: McpServerStatusEntry[];
+}
+
+export interface SetMcpEnabledParams {
+	name: string;
+	enabled: boolean;
+}
+
+export interface SetMcpEnabledResult {
+	server: McpServerStatusEntry;
+}
+
+export interface McpReauthParams {
+	name: string;
+}
+
+export interface McpReauthResult {
+	server: McpServerStatusEntry;
+	status: McpReauthStatus;
+}
+
 export interface PredictWordParams {
 	text: string;
 	cursor: number;
@@ -1960,6 +2005,9 @@ export interface RpcWireCommands {
 	login: { params: LoginParams; result: LoginResult };
 	get_logout_accounts: { params: GetLogoutAccountsParams; result: GetLogoutAccountsResult };
 	logout: { params: LogoutParams; result: LogoutResult };
+	get_mcp_status: { params: undefined; result: GetMcpStatusResult };
+	set_mcp_enabled: { params: SetMcpEnabledParams; result: SetMcpEnabledResult };
+	mcp_reauth: { params: McpReauthParams; result: McpReauthResult };
 	predict_word: { params: PredictWordParams; result: PredictWordResult };
 	predict_word_feedback: { params: PredictWordFeedbackParams; result: undefined };
 	btw: { params: BtwParams; result: BtwResult };

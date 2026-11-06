@@ -1227,6 +1227,36 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		}
 	});
 
+	test.each(["depleted", "reserve"] as const)(
+		"keeps the startup %s primary when the session disables model fallback",
+		async state => {
+			const settings = Settings.isolated({
+				"retry.usageAwareFallback": true,
+				"retry.usageReservePolicy": "confirm",
+			});
+			settings.setModelRole("task", "runtime-provider/runtime-model,runtime-provider/runtime-fallback-model");
+			const options = buildSessionOptions("task");
+			const usageHealth = vi.spyOn(options.authStorage.health, "model").mockResolvedValue({
+				state,
+				accounts: [{ credentialId: 1, credentialType: "oauth", state }],
+			});
+			const { session } = await createAgentSession({
+				...options,
+				modelPatternFallbackRole: "subagent:usage-aware-disabled",
+				disableModelFallback: true,
+				settings,
+				hasUI: false,
+			});
+			try {
+				expect(usageHealth).not.toHaveBeenCalled();
+				expect(session.model?.provider).toBe("runtime-provider");
+				expect(session.model?.id).toBe("runtime-model");
+			} finally {
+				await session.dispose();
+			}
+		},
+	);
+
 	test("rejects a depleted terminal fallback after startup skips the primary", async () => {
 		const settings = Settings.isolated({
 			"retry.usageAwareFallback": true,

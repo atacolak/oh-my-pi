@@ -10,6 +10,7 @@
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
 - Agent definitions accept `model-fallback: false` to pin that agent's sessions to their resolved model: root `--agent` launches, resume restores, spawned subagents (including cold-revived ones), and their advisors skip client-side retry fallback, context promotion, usage-aware startup fallback, and server-side fallback for that agent, while omitting the key keeps `retry.modelFallback` in charge. Agent frontmatter also reads every multi-word key under either spelling (`model-fallback`, `read-summarize`, `thinking-level`, `autoload-skills`, `automation-author`/`allowed-agents`), so raw-key parsers stop dropping them; camelCase wins when a record supplies both.
 - Agent definitions accept `memory: { autoRetain, autoRecall }` (camelCase or kebab-case keys) to set the root session's Hindsight auto-retain/auto-recall policy, including `--agent-cwd` roles and SDK sessions created with `agentMemory`. Precedence is `HINDSIGHT_AUTO_RETAIN`/`HINDSIGHT_AUTO_RECALL`, then the agent's value, then `hindsight.autoRetain`/`hindsight.autoRecall`; subagent sessions never apply it.
+
 ## [18.17.0] - 2026-11-06
 
 ### Added

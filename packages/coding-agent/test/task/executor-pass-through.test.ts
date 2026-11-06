@@ -343,7 +343,11 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 		const parentMcp = { name: "mcp__youtube_list", mcpServerName: "youtube" };
 		const getTools = vi.fn(() => [parentMcp]);
-		const mcpManager = { getTools, addToolsChangedListener: () => () => {} } as unknown as MCPManager;
+		const mcpManager = {
+			getTools,
+			addToolsChangedListener: () => () => {},
+			openToolScope: () => {},
+		} as unknown as MCPManager;
 
 		const result = await runSubprocess({
 			...baseOptions,
@@ -368,7 +372,11 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 		const parentMcp = { name: "mcp__youtube_list", mcpServerName: "youtube" };
 		const getTools = vi.fn(() => [parentMcp]);
-		const mcpManager = { getTools, addToolsChangedListener: () => () => {} } as unknown as MCPManager;
+		const mcpManager = {
+			getTools,
+			addToolsChangedListener: () => () => {},
+			openToolScope: () => {},
+		} as unknown as MCPManager;
 
 		const result = await runSubprocess({
 			...baseOptions,
@@ -978,6 +986,7 @@ describe("runSubprocess follows the parent's MCP manager", () => {
 		const mcpManager = {
 			getTools: () => parentTools,
 			addToolsChangedListener: () => () => {},
+			openToolScope: () => {},
 		} as unknown as MCPManager;
 		const declaredTools = ["read", "mcp__youtube_list", "mcp__mail_search"];
 		const run = async (id: string, index: number, mcps: string[], names: string[]) =>

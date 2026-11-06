@@ -223,7 +223,9 @@ export class HindsightRetainQueue {
 			timestamp: new Date(),
 			client: state.client,
 			bankId: state.bankId,
-			retainTags: global ? undefined : mergeRetainWriteTags(state.retainTags, state.provenanceTags),
+			retainTags: global
+				? mergeRetainWriteTags(undefined, state.provenanceTags)
+				: mergeRetainWriteTags(state.retainTags, state.provenanceTags),
 			banksSet: state.banksSet,
 			config: state.config,
 			observationScopes: global ? undefined : state.observationScopes,

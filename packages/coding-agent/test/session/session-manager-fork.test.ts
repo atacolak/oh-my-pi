@@ -19,6 +19,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { sessionDirForCwd } from "@oh-my-pi/pi-coding-agent/session/session-paths";
 import { FileSessionStorage, MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { getTerminalId } from "@oh-my-pi/pi-tui";
 import { isTaskToolDetails, type TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
@@ -127,6 +128,32 @@ describe("SessionManager.forkFrom", () => {
 			} else {
 				process.env.TERM_SESSION_ID = previousTermSessionId;
 			}
+			setAgentDir(previousAgentDir);
+		}
+	});
+
+	it("anchors an explicit fork session file to its own directory instead of the cwd default", async () => {
+		using tempDir = TempDir.createSync("@omp-session-fork-explicit-file-");
+		const previousAgentDir = getAgentDir();
+		setAgentDir(path.join(tempDir.path(), "agent"));
+		try {
+			const { cwd, sourceFile } = await createSessionWithArtifacts(tempDir.path());
+			const forkFile = path.join(tempDir.path(), "forks", "explicit.jsonl");
+
+			const forked = await SessionManager.forkFrom(sourceFile, cwd, undefined, undefined, {
+				suppressBreadcrumb: true,
+				sessionFile: forkFile,
+			});
+			try {
+				expect(forked.getSessionFile()).toBe(path.resolve(forkFile));
+				expect(forked.getSessionDir()).toBe(path.dirname(path.resolve(forkFile)));
+				expect(await Bun.file(forkFile).exists()).toBe(true);
+				const defaultDir = sessionDirForCwd(cwd, path.join(tempDir.path(), "agent", "sessions"));
+				await expect(fs.stat(defaultDir)).rejects.toMatchObject({ code: "ENOENT" });
+			} finally {
+				await forked.close();
+			}
+		} finally {
 			setAgentDir(previousAgentDir);
 		}
 	});

@@ -33,10 +33,10 @@ import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
 import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
-import { normalizeToolNames } from "../tools/builtin-names";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
 import { buildPluginDirRoot } from "./plugin-dir-roots";
+import { parseNamedLoadSet, type NamedLoadSet } from "../task/tool-load-spec";
 
 /**
  * Standard paths for each config source.
@@ -313,11 +313,13 @@ export function parseModelList(value: unknown): string[] | undefined {
 	return normalized.length > 0 ? normalized : undefined;
 }
 
-/** Parsed agent fields from frontmatter (excludes source/filePath/systemPrompt) */
 export interface ParsedAgentFields {
 	name: string;
 	description: string;
 	tools?: string[];
+	toolLoad?: NamedLoadSet;
+	mcps?: string[];
+	mcpLoad?: NamedLoadSet;
 	spawns?: string[] | "*";
 	model?: string[];
 	/** `false` = the agent disables client- and server-side model fallback for its sessions. */
@@ -325,6 +327,8 @@ export interface ParsedAgentFields {
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
+	/** Rules this profile always applies, in declared order (array or CSV of rule names). */
+	rules?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
 	hide?: boolean;
@@ -363,18 +367,10 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		return null;
 	}
 
-	// Only absent or null tools select defaults; malformed restrictions must not widen access.
-	const rawTools = frontmatter.tools;
-	let tools = rawTools == null ? undefined : (parseArrayOrCSV(rawTools) ?? []);
-	if (tools?.length === 0 && !(Array.isArray(rawTools) && rawTools.length === 0)) {
-		const valueType = Array.isArray(rawTools) ? "array" : typeof rawTools;
-		logger.warn("Agent tools declaration names no tools; using an empty built-in allowlist", {
-			agent: name,
-			valueType,
-		});
-	}
-	if (tools) tools = normalizeToolNames(tools);
-
+	const toolLoad = parseNamedLoadSet(frontmatter.tools, { agent: name, field: "tools", normalize: true });
+	const tools = toolLoad?.declared ? toolLoad.names : undefined;
+	const mcpLoad = parseNamedLoadSet(frontmatter.mcps, { agent: name, field: "mcps", normalize: false });
+	const mcps = mcpLoad?.declared ? mcpLoad.names : undefined;
 	// Parse spawns field (array, "*", or CSV)
 	let spawns: string[] | "*" | undefined;
 	if (frontmatter.spawns === "*") {
@@ -426,12 +422,19 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
 		?.map(s => s.trim())
 		.filter(Boolean);
+	// `rules` names the rules this profile always applies. Declared order is kept: it is
+	// the order the prompt receives them in, so a profile can rank what it cares about.
+	const rules = parseArrayOrCSV(frontmatter.rules)
+		?.map(s => s.trim())
+		.filter(Boolean);
 	const automationAuthor = parseAutomationAuthor(frontmatter.automationAuthor);
-
 	return {
 		name,
 		description,
 		tools,
+		toolLoad,
+		mcps,
+		mcpLoad,
 		spawns,
 		model,
 		modelFallback,
@@ -442,6 +445,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		hide,
 		structured,
 		autoloadSkills,
+		rules,
 		readSummarize,
 		prewalk,
 		advisor,

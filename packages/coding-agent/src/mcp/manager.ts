@@ -232,6 +232,12 @@ export interface MCPDiscoverOptions {
 	filterExa?: boolean;
 	/** Whether to filter out browser MCP servers when the built-in browser capability is enabled (default: false) */
 	filterBrowser?: boolean;
+	/**
+	 * Restrict discovery and connection to these server names. An empty set dials
+	 * nothing at all, so a session whose policy names no server never reads configs
+	 * or opens a transport.
+	 */
+	serverAllowlist?: ReadonlySet<string>;
 	/** Session-local extension roots for post-startup rediscovery (explicit + mode + configured). */
 	extensionRoots?: EffectiveExtensionRoots;
 	/** Called when MCP server connection state changes. */
@@ -408,6 +414,8 @@ export class MCPManager implements MCPManagerApi {
 	/** Preserved configs for reconnection after connection loss. */
 	#serverConfigs = new Map<string, MCPServerConfig>();
 	#discoverOptions: MCPDiscoverOptions | undefined;
+	/** Server names this manager may dial, remembered across reloads. Undefined dials every discovered server. */
+	#serverAllowlist: ReadonlySet<string> | undefined;
 	#browserFilterMutationTail: Promise<void> = Promise.resolve();
 	/** Settles when the latest {@link MCPManager.discoverAndConnect} call does; reconciles wait on it. */
 	#discoveryInFlight: Promise<unknown> = Promise.resolve();
@@ -755,6 +763,10 @@ export class MCPManager implements MCPManagerApi {
 
 	async #discoverAndConnect(options?: MCPDiscoverOptions): Promise<MCPLoadResult> {
 		this.#discoverOptions = options ? { ...options } : undefined;
+		if (options?.serverAllowlist) this.#serverAllowlist = options.serverAllowlist;
+		if (this.#serverAllowlist?.size === 0) {
+			return { tools: [], errors: new Map(), connectedServers: [], exaApiKeys: [] };
+		}
 		let loadedConfigs: LoadMCPConfigsResult;
 		try {
 			loadedConfigs = await this.loadConfigs(this.cwd, {
@@ -762,6 +774,7 @@ export class MCPManager implements MCPManagerApi {
 				filterExa: options?.filterExa,
 				filterBrowser: options?.filterBrowser,
 				extensionRoots: options?.extensionRoots,
+				authStorage: this.#authStorage,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -770,10 +783,28 @@ export class MCPManager implements MCPManagerApi {
 			this.#emitConnectionStatus({ type: "failed", serverName: ".mcp.json", error: message });
 			throw error;
 		}
-		const { configs, exaApiKeys, sources } = loadedConfigs;
+		const { configs, exaApiKeys, sources } = this.#restrictToAllowlist(loadedConfigs);
 		const result = await this.connectServers(configs, sources, options?.onStatus, options?.startupTimeoutMs);
 		result.exaApiKeys = exaApiKeys;
 		return result;
+	}
+
+	/**
+	 * Drop discovered servers the session's policy does not name. Applied before
+	 * any connect, so a denied server is never spawned or probed.
+	 */
+	#restrictToAllowlist(loaded: LoadMCPConfigsResult): LoadMCPConfigsResult {
+		const allowlist = this.#serverAllowlist;
+		if (!allowlist) return loaded;
+		const configs: Record<string, MCPServerConfig> = {};
+		const sources: Record<string, SourceMeta> = {};
+		for (const [name, config] of Object.entries(loaded.configs)) {
+			if (!allowlist.has(name)) continue;
+			configs[name] = config;
+			const source = loaded.sources[name];
+			if (source) sources[name] = source;
+		}
+		return { configs, exaApiKeys: loaded.exaApiKeys, sources };
 	}
 
 	/**
@@ -804,12 +835,15 @@ export class MCPManager implements MCPManagerApi {
 		const options = this.#discoverOptions;
 		if (!options || (options.enableProjectConfig ?? true) === enabled) return;
 		this.#discoverOptions = { ...options, enableProjectConfig: enabled };
-		const loaded = await this.loadConfigs(this.cwd, {
-			enableProjectConfig: enabled,
-			filterExa: options.filterExa,
-			filterBrowser: options.filterBrowser,
-			extensionRoots: options.extensionRoots,
-		});
+		const loaded = this.#restrictToAllowlist(
+			await this.loadConfigs(this.cwd, {
+				enableProjectConfig: enabled,
+				filterExa: options.filterExa,
+				filterBrowser: options.filterBrowser,
+				extensionRoots: options.extensionRoots,
+				authStorage: this.#authStorage,
+			}),
+		);
 		// Every server whose resolution depends on the flag: project-level ones
 		// known now, plus project-level ones the enabled load resolves.
 		const affected = new Set<string>();
@@ -838,12 +872,15 @@ export class MCPManager implements MCPManagerApi {
 
 	async #applyBrowserFilter(enabled: boolean): Promise<void> {
 		const options = this.#discoverOptions;
-		const loaded = await this.loadConfigs(this.cwd, {
-			enableProjectConfig: options?.enableProjectConfig,
-			filterExa: options?.filterExa,
-			filterBrowser: false,
-			extensionRoots: options?.extensionRoots,
-		});
+		const loaded = this.#restrictToAllowlist(
+			await this.loadConfigs(this.cwd, {
+				enableProjectConfig: options?.enableProjectConfig,
+				filterExa: options?.filterExa,
+				filterBrowser: false,
+				extensionRoots: options?.extensionRoots,
+				authStorage: this.#authStorage,
+			}),
+		);
 		const browserConfigs: Record<string, MCPServerConfig> = {};
 		const browserSources: Record<string, SourceMeta> = {};
 		for (const name in loaded.configs) {

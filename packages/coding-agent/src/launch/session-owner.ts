@@ -174,6 +174,7 @@ export function sessionOwnerSpec(options: SessionOwnerLaunchOptions): DaemonSpec
 	if (application === undefined) throw new Error("CLI entry command is empty");
 	const env = { ...options.env };
 	delete env[SESSION_OWNER_CONTEXT_ENV];
+	for (const key of SESSION_OWNER_IDENTITY_KEYS) delete env[key];
 	return {
 		name: options.name,
 		application,

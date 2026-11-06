@@ -2,10 +2,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { IpcServer, ipcEndpoint } from "@oh-my-pi/pi-natives";
+import type { DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
 import { removeSyncWithRetries, withTimeout } from "@oh-my-pi/pi-utils";
 import { describe, expect, test } from "bun:test";
+import type { DaemonBrokerClient } from "../../src/launch/client";
+import { DAEMON_TERMINAL_PROTOCOL_VERSION } from "../../src/launch/protocol";
 import {
 	type BrokeredLaunchSelection,
+	bootBrokeredOwner,
 	ownerArgvForSession,
 	runStdioRpcBridge,
 	shouldBootBrokeredSession,
@@ -16,6 +20,7 @@ import {
 	consumeSessionOwnerContext,
 	resetSessionOwnerContextForTest,
 	SESSION_OWNER_CONTEXT_ENV,
+	SESSION_OWNER_IDENTITY_KEYS,
 } from "../../src/launch/session-owner";
 
 function selection(overrides: Partial<BrokeredLaunchSelection> = {}): BrokeredLaunchSelection {
@@ -211,4 +216,68 @@ describe("runStdioRpcBridge", () => {
 			removeSyncWithRetries(endpointDir);
 		}
 	}, 20_000);
+});
+
+describe("bootBrokeredOwner", () => {
+	test("declares the owner identity from the launcher environment", async () => {
+		const endpointDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-boot-identity-"));
+		const projectDir = path.join(endpointDir, "project");
+		fs.mkdirSync(projectDir);
+		const pid = 54_321;
+		const sessionId = "019f-boot-identity";
+		fs.writeFileSync(path.join(endpointDir, `${sessionId}.json`), JSON.stringify({ pid, sessionId }));
+		const server = await IpcServer.listen(ipcEndpoint(endpointDir, sessionId), { framing: "lines" }, connection => {
+			connection.start(
+				() => {},
+				() => {},
+			);
+		});
+		const daemon = { name: "omp-session-test", id: "owner-test", state: "running", pid, createdAt: Date.now() };
+		let launched: DaemonSpec | undefined;
+		const client = {
+			projectDir,
+			onCompletion: () => () => {},
+			subscribeTerminal: () => () => {},
+			close: () => {},
+			request: async (operation: { op: string; spec?: DaemonSpec }) => {
+				if (operation.op === "ping") {
+					return { op: "ping", terminalProtocolVersion: DAEMON_TERMINAL_PROTOCOL_VERSION };
+				}
+				if (operation.op === "terminal_start") {
+					launched = operation.spec;
+					return { op: "terminal_start", daemon };
+				}
+				if (operation.op === "describe") return { op: "describe", daemon };
+				throw new Error(`unexpected broker operation ${operation.op}`);
+			},
+		} as unknown as DaemonBrokerClient;
+		const previousIdentity = new Map(SESSION_OWNER_IDENTITY_KEYS.map(key => [key, process.env[key]]));
+		process.env.HCOM_PROCESS_ID = "launcher-process-id";
+		process.env.HCOM_INSTANCE_NAME = "argon";
+		process.env.HCOM_LAUNCHED = "1";
+		process.env.HCOM_OMP_IDENTITY_OWNER = "midi";
+		process.env.HCOM_NAME = "argon";
+		try {
+			const owner = await bootBrokeredOwner({
+				projectDir,
+				argv: ["--resume", sessionId],
+				endpointDir,
+				client,
+				timeoutMs: 2_000,
+			});
+			expect(owner.sessionId).toBe(sessionId);
+		} finally {
+			for (const [key, value] of previousIdentity) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+			await server.close();
+			removeSyncWithRetries(endpointDir);
+		}
+		expect(launched?.identity).toEqual({
+			HCOM_PROCESS_ID: "launcher-process-id",
+			HCOM_INSTANCE_NAME: "argon",
+			HCOM_LAUNCHED: "1",
+		});
+	});
 });

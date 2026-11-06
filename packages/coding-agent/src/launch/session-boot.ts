@@ -160,6 +160,8 @@ export interface BootBrokeredOwnerOptions {
 	columns?: number;
 	rows?: number;
 	timeoutMs?: number;
+	/** Existing broker connection to drive; boot owns and closes it. Leases the project's broker when omitted. */
+	client?: DaemonBrokerClient;
 }
 
 interface OwnerPublication {
@@ -269,7 +271,7 @@ async function ownerFailureOutput(client: DaemonBrokerClient, name: string): Pro
  */
 export async function bootBrokeredOwner(options: BootBrokeredOwnerOptions): Promise<BrokeredOwner> {
 	const endpointDir = resolveSessionEndpointDir(options.endpointDir);
-	const client = await createDaemonBrokerClient(options.projectDir);
+	const client = options.client ?? (await createDaemonBrokerClient(options.projectDir));
 	let started: DaemonSnapshot | undefined;
 	const name = `omp-session-${Snowflake.next()}`;
 	const subscriptionId = `owner-${Snowflake.next()}`;

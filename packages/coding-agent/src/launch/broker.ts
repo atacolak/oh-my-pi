@@ -170,20 +170,21 @@ interface DaemonSpawnEnvironment {
 
 /**
  * Spawn environment for one daemon. A spec that declares `identity` owns those
- * variables outright: the broker drops the same keys inherited from its own
- * environment before applying the spec, so the broker's own identity never
- * reaches the child. Specs without a declaration inherit as before.
+ * variables outright: the broker drops every identity key inherited from its
+ * own environment and every one supplied through `spec.env`, then applies the
+ * declaration, so the broker's identity and stale spec values never reach the
+ * child. Specs without a declaration inherit as before.
  */
 function daemonSpawnEnvironment(spec: DaemonSpec, defaults: Record<string, string> = {}): DaemonSpawnEnvironment {
 	if (spec.identity === undefined) {
 		return { env: workerEnvFromParent({ ...defaults, ...spec.env }), undeclaredIdentity: [] };
 	}
-	const env = workerEnvFromParent();
+	const env = workerEnvFromParent({ ...defaults, ...spec.env });
 	for (const key of SESSION_OWNER_IDENTITY_KEYS) delete env[key];
-	const merged = { ...env, ...defaults, ...spec.env, ...spec.identity };
+	Object.assign(env, spec.identity);
 	return {
-		env: merged,
-		undeclaredIdentity: SESSION_OWNER_IDENTITY_KEYS.filter(key => merged[key] === undefined),
+		env,
+		undeclaredIdentity: SESSION_OWNER_IDENTITY_KEYS.filter(key => env[key] === undefined),
 	};
 }
 

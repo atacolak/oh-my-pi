@@ -102,6 +102,26 @@ describe("session owner identity", () => {
 		expect(spec.identity).toEqual(identity);
 		expect(spec.env).toEqual({});
 	});
+
+	it("keeps identity keys out of the spec env even when the caller repeats them", () => {
+		const spec = sessionOwnerSpec({
+			name: "mind-a",
+			projectDir: "/p",
+			argv: [],
+			identity: { HCOM_PROCESS_ID: "pid-a", HCOM_LAUNCHED: "1" },
+			env: {
+				HCOM_PROCESS_ID: "stale",
+				HCOM_INSTANCE_NAME: "stale",
+				HCOM_NAME: "stale",
+				HCOM_OMP_IDENTITY_OWNER: "stale",
+				HCOM_LAUNCHED: "0",
+				KEEP: "1",
+			},
+		});
+
+		expect(spec.env).toEqual({ KEEP: "1" });
+		expect(spec.identity).toEqual({ HCOM_PROCESS_ID: "pid-a", HCOM_LAUNCHED: "1" });
+	});
 });
 
 describe("session owner identity through the broker", () => {
@@ -153,6 +173,30 @@ describe("session owner identity through the broker", () => {
 
 		expect(alphaReport?.identity).toEqual(alphaIdentity);
 		expect(betaReport?.identity).toEqual(betaIdentity);
+	}, 60_000);
+
+	it("drops identity keys smuggled through spec.env when the declaration is empty", async () => {
+		using tempDir = TempDir.createSync("@omp-owner-env-smuggle-");
+		const projectDir = path.join(tempDir.path(), "project");
+		const reportFile = path.join(tempDir.path(), "report.json");
+		const spec = terminalSpec(projectDir, "", {
+			name: `mind-${Snowflake.next()}`,
+			args: [IDENTITY_CHILD, reportFile],
+			identity: {},
+			env: {
+				HCOM_PROCESS_ID: "sneaky",
+				HCOM_INSTANCE_NAME: "sneaky",
+				HCOM_NAME: "sneaky",
+				HCOM_OMP_IDENTITY_OWNER: "sneaky",
+				HCOM_LAUNCHED: "1",
+				OMP_SESSION_IDENTITY_PROBE: "kept",
+			},
+		});
+
+		const [report] = await runBrokerScenario(tempDir.path(), [{ mode: "terminal", reportFile, spec }]);
+
+		expect(report?.identity).toEqual({});
+		expect(report?.probe).toBe("kept");
 	}, 60_000);
 
 	it("keeps inheriting the broker environment for daemons that declare no identity", async () => {

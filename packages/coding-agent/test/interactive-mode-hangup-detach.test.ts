@@ -158,7 +158,6 @@ describe("terminal hangup detaches the view, not the session", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
 			new Composer({ terminal: new VirtualTerminal(200, 60) }),
 		);
 		spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});

@@ -49,16 +49,7 @@ const session = new AgentSession({
 	toolRegistry: new Map(),
 });
 const socket = createAgentSessionSocket(session, { endpointDir });
-const mode = new InteractiveMode(
-	session,
-	"probe",
-	undefined,
-	undefined,
-	undefined,
-	undefined,
-	undefined,
-	new Composer(),
-);
+const mode = new InteractiveMode(session, "probe", undefined, undefined, undefined, undefined, new Composer());
 const refresh = mode.refreshTerminalAttachment.bind(mode);
 mode.refreshTerminalAttachment = (): void => {
 	emit("refreshed", { draft: mode.editor.getText(), dialogs: mode.editorContainer.children.length });

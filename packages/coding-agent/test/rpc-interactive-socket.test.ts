@@ -142,7 +142,6 @@ async function createInteractiveFixture(
 		undefined,
 		undefined,
 		undefined,
-		undefined,
 		subagentEventBus,
 	);
 	await mode.attachSessionSocket(socket);

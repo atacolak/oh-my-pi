@@ -87,16 +87,7 @@ backgroundJobs.register(
 );
 
 const socket = createAgentSessionSocket(session, { endpointDir });
-const mode = new InteractiveMode(
-	session,
-	"fixture",
-	undefined,
-	undefined,
-	undefined,
-	undefined,
-	undefined,
-	new Composer(),
-);
+const mode = new InteractiveMode(session, "fixture", undefined, undefined, undefined, undefined, new Composer());
 await mode.attachSessionSocket(socket, { generation: owner.id });
 await mode.init({ suppressWelcomeIntro: true });
 

@@ -122,7 +122,6 @@ async function createRefreshFixture(): Promise<RefreshFixture> {
 		undefined,
 		undefined,
 		undefined,
-		undefined,
 		new Composer({ terminal }),
 	);
 	await mode.attachSessionSocket(socket, { generation: GENERATION });

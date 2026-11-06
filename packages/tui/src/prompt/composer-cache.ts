@@ -261,8 +261,6 @@ export class ComposerCache {
 		const keys = projects.map(project => `${project}\0${kind}`);
 		if (keys.every(key => this.#known.get(key) === json)) return;
 		try {
-			const json = JSON.stringify(value);
-			if (this.#known.get(ownKey) === json && this.#known.get(anyKey) === json) return;
 			this.#db.transaction(() => {
 				for (const project of projects) this.#upsert.run(project, kind, json);
 			})();

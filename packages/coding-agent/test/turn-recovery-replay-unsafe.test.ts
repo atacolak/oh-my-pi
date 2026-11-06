@@ -1099,7 +1099,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		expect(recovery.resolveRetryFallbackRole(selector, model)).toBe("default");
 	});
 
-	it("attaches the default chain to an ephemeral-hopped model that is not default's primary (#12421)", () => {
+	it("does not attach a default chain that degenerates to the default role's own primary", () => {
 		const other = getBundledModel("openai", "gpt-4o-mini");
 		if (!other) throw new Error("Expected bundled model gpt-4o-mini");
 		const recovery = new TurnRecovery(
@@ -1113,12 +1113,11 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 				},
 			}),
 		);
-		// Resolving no chain let a wait past retry.maxDelayMs fail-fast with no
-		// walk (#12421), for `/model`-chosen models and ephemeral hops alike. A
-		// walk that produced the hop stays reachable first through
-		// retryFallbackChainKeys' pinned `#activeRetryFallback.role`, so
-		// attaching `default` here cannot displace the owning chain.
-		expect(recovery.resolveRetryFallbackRole(`${other.provider}/${other.id}`, other)).toBe("default");
+		// The chain's only entry is the default role's own primary, so it
+		// supplies no candidate for a model no role owns. Attaching it would claim
+		// a model the chain does not own. A chain with a distinct candidate still
+		// attaches (#12421).
+		expect(recovery.resolveRetryFallbackRole(`${other.provider}/${other.id}`, other)).toBeUndefined();
 	});
 
 	// Gemini reports MALFORMED_FUNCTION_CALL when the model transcribes the call
@@ -1379,5 +1378,105 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			]);
 			expect(new TurnRecovery(createHost(model, modelRegistry)).isRetryableReasonlessAbort(withOutput)).toBe(false);
 		});
+	});
+
+	it("compaction policy: only a committed compaction opens primary restoration", async () => {
+		const fallback = getBundledModel("openai", "gpt-4o-mini");
+		if (!fallback) throw new Error("Expected bundled fallback model");
+
+		const originalIsSuppressed = modelRegistry.isSelectorSuppressed;
+		modelRegistry.isSelectorSuppressed = () => false;
+		try {
+			let activeModel = fallback;
+			const modelChanges: string[] = [];
+			const host = createHost(fallback, modelRegistry);
+			host.settings = Settings.isolated({ "retry.fallbackRevertPolicy": "compaction" });
+			host.model = () => activeModel;
+			host.sessionManager = {
+				appendModelChange: (selector: string) => modelChanges.push(selector),
+				getSessionId: () => "replay-unsafe-session",
+			} as never;
+			host.setModelWithProviderSessionReset = async nextModel => {
+				activeModel = nextModel;
+			};
+			const recovery = new TurnRecovery(host, {
+				initialRetryFallback: {
+					role: "default",
+					originalSelector: `${model.provider}/${model.id}`,
+					originalThinkingLevel: undefined,
+				},
+			});
+
+			expect(await recovery.maybeRestoreRetryFallbackPrimary()).toBe(false);
+			expect(activeModel).toBe(fallback);
+
+			recovery.noteCommittedCompaction();
+			expect(await recovery.maybeRestoreRetryFallbackPrimary()).toBe(true);
+			expect(activeModel.provider).toBe(model.provider);
+			expect(activeModel.id).toBe(model.id);
+			expect(modelChanges).toEqual([`${model.provider}/${model.id}`]);
+		} finally {
+			modelRegistry.isSelectorSuppressed = originalIsSuppressed;
+		}
+	});
+
+	it("compaction policy: a fallback hop resets the compaction credit", async () => {
+		const firstFallback = getBundledModel("openai", "gpt-4o-mini");
+		const secondFallback = getBundledModel("google", "gemini-2.5-flash");
+		if (!firstFallback || !secondFallback) throw new Error("Expected bundled fallback models");
+
+		const originalIsSuppressed = modelRegistry.isSelectorSuppressed;
+		modelRegistry.isSelectorSuppressed = () => false;
+		try {
+			let activeModel = firstFallback;
+			const host = createHost(firstFallback, modelRegistry);
+			host.settings = Settings.isolated({ "retry.fallbackRevertPolicy": "compaction" });
+			host.model = () => activeModel;
+			host.sessionManager = {
+				appendModelChange: () => {},
+				getSessionId: () => "replay-unsafe-session",
+			} as never;
+			host.setModelWithProviderSessionReset = async nextModel => {
+				activeModel = nextModel;
+			};
+			const recovery = new TurnRecovery(host);
+
+			expect(
+				await recovery.applyRetryFallbackCandidate(
+					"default",
+					{
+						raw: `${firstFallback.provider}/${firstFallback.id}`,
+						provider: firstFallback.provider,
+						id: firstFallback.id,
+						thinkingLevel: undefined,
+					},
+					`${model.provider}/${model.id}`,
+					{ apiKey: "test-key" },
+				),
+			).toBe(true);
+			recovery.noteCommittedCompaction();
+
+			expect(
+				await recovery.applyRetryFallbackCandidate(
+					"default",
+					{
+						raw: `${secondFallback.provider}/${secondFallback.id}`,
+						provider: secondFallback.provider,
+						id: secondFallback.id,
+						thinkingLevel: undefined,
+					},
+					`${firstFallback.provider}/${firstFallback.id}`,
+					{ apiKey: "test-key" },
+				),
+			).toBe(true);
+			expect(await recovery.maybeRestoreRetryFallbackPrimary()).toBe(false);
+			expect(activeModel.id).toBe(secondFallback.id);
+
+			recovery.noteCommittedCompaction();
+			expect(await recovery.maybeRestoreRetryFallbackPrimary()).toBe(true);
+			expect(activeModel.id).toBe(model.id);
+		} finally {
+			modelRegistry.isSelectorSuppressed = originalIsSuppressed;
+		}
 	});
 });

@@ -4043,6 +4043,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	async #emitSessionEvent(event: AgentSessionEvent, options: { detachExtensions?: boolean } = {}): Promise<void> {
+		if (
+			(event.type === "auto_compaction_end" && event.result !== undefined && !event.aborted && !event.skipped) ||
+			(event.type === "manual_compaction_end" && event.result !== undefined && !event.aborted)
+		) {
+			this.#recovery.noteCommittedCompaction();
+		}
 		if (event.type === "tool_execution_update") {
 			// Returned background calls have no later tool result to persist their
 			// terminal frame. Keep the latest update for future focus rebuilds;

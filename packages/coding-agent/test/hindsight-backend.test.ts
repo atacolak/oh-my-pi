@@ -113,6 +113,27 @@ function makeFakeSession(deps: FakeSessionDeps) {
 	return session;
 }
 
+/**
+ * Ambient `HINDSIGHT_*` variables (an operator shell, CI) must not steer these
+ * contracts: `HINDSIGHT_AUTO_RETAIN=false` in the parent process would silently
+ * turn every retain assertion into a no-op.
+ */
+const savedHindsightEnv = new Map<string, string | undefined>();
+beforeEach(() => {
+	for (const key of Object.keys(Bun.env)) {
+		if (!key.startsWith("HINDSIGHT_")) continue;
+		savedHindsightEnv.set(key, Bun.env[key]);
+		delete Bun.env[key];
+	}
+});
+afterEach(() => {
+	for (const [key, value] of savedHindsightEnv) {
+		if (value === undefined) delete Bun.env[key];
+		else Bun.env[key] = value;
+	}
+	savedHindsightEnv.clear();
+});
+
 describe("hindsightBackend.start", () => {
 	beforeEach(() => {
 		resetSettingsForTest();

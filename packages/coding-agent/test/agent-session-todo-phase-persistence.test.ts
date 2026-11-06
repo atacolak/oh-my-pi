@@ -77,7 +77,6 @@ describe("passive todo phase durability across a session restart", () => {
 			settings: session.settings,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: persistCommitted,
 		};
 	}
 

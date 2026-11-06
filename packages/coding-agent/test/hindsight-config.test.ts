@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { lookup as lookupSetting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadHindsightConfig, resolveProvenanceTags } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 
+/**
+ * `overrides` land in the global layer, not the runtime-override layer: a declared
+ * environment variable outranks a configured layer but yields to a session override.
+ */
 function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) {
 	const previous = new Map<string, string | undefined>();
 	for (const [key, value] of Object.entries(env)) {
@@ -10,7 +15,12 @@ function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = 
 		else Bun.env[key] = String(value);
 	}
 	try {
-		return loadHindsightConfig(Settings.isolated(overrides as never));
+		const settings = new Settings({ inMemory: true });
+		for (const [id, value] of Object.entries(overrides)) {
+			const setting = lookupSetting(id);
+			if (setting) setting.set(settings, value as never);
+		}
+		return loadHindsightConfig(settings);
 	} finally {
 		for (const [key, value] of previous) {
 			if (value === undefined) delete Bun.env[key];

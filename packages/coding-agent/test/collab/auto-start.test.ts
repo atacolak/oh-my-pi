@@ -179,7 +179,7 @@ describe("collab auto-start", () => {
 		try {
 			const pending = ctx.collabController.start({ access: "control", relay: "ws://localhost:8787" });
 			await waitFor(() => start.mock.calls.length === 1, "host start in flight");
-			ctx.collabGuest = {} as InteractiveModeContext["collabGuest"];
+			Object.assign(ctx, { collabGuest: {} as InteractiveModeContext["collabGuest"] });
 			gate.resolve();
 			await expect(pending).rejects.toThrow("Cannot host while joined as a guest");
 			expect(stop).toHaveBeenCalledWith("guest joined while host was starting");

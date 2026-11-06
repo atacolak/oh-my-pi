@@ -13,7 +13,7 @@ import { memoryToolRefs } from "../memory-backend/tool-names";
 import type { MemoryBackend, MemoryBackendStartOptions, MemoryPromptPreparation } from "../memory-backend/types";
 import hindsightInstructions from "../prompts/system/hindsight-instructions.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
-import { type BankScope, computeBankScope } from "./bank";
+import { type BankScope, computeBankScope, type HindsightBankSet } from "./bank";
 import { createHindsightClient } from "./client";
 import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig, resolveProvenanceTags } from "./config";
 import { HindsightSessionState } from "./state";
@@ -253,7 +253,7 @@ export async function rebindMemoryBackendForCwd(session: AgentSession): Promise<
 async function installPrimaryState(
 	session: AgentSession,
 	settings: Settings,
-	banksSet: Set<string>,
+	banksSet: HindsightBankSet,
 	closeRetainBaselineTurns?: number,
 	loadedMessageCount?: number,
 ): Promise<HindsightSessionState | undefined> {

@@ -9,7 +9,7 @@
  */
 
 import { countTokens } from "@oh-my-pi/pi-natives";
-import type { HindsightApi, ListMemoriesOptions, RecallResult, TagsMatch } from "./client";
+import type { HindsightClientApi, ListMemoriesOptions, RecallResult, TagsMatch } from "./client";
 import type { HindsightConfig } from "./config";
 import { HINDSIGHT_RECALL_TYPES_DEFAULT } from "./settings";
 
@@ -97,7 +97,7 @@ export function resolveSweepCollections(
  * the sweep before its items are read, so the caller can hand the whole scope to a ranked recall.
  */
 async function sweepCollection(
-	client: HindsightApi,
+	client: HindsightClientApi,
 	bankId: string,
 	filter: ListMemoriesOptions,
 	sweep: BankSweep,
@@ -162,7 +162,7 @@ async function sweepCollection(
  * is cheaper than silently dropping a raw fact the gear promised to score.
  */
 async function hasUnreadRows(
-	client: HindsightApi,
+	client: HindsightClientApi,
 	bankId: string,
 	filters: readonly ListMemoriesOptions[],
 	sweep: BankSweep,
@@ -200,7 +200,7 @@ async function hasUnreadRows(
  * scope outgrows the ceiling.
  */
 export async function sweepBankMemories(
-	client: HindsightApi,
+	client: HindsightClientApi,
 	bankId: string,
 	filters: readonly ListMemoriesOptions[],
 	tags: string[] | undefined,

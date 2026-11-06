@@ -835,6 +835,7 @@ function withHindsightSession(state: HindsightFixture, fn: () => Promise<void>):
 		client: { getMemory: async () => unit },
 	};
 	const session = {
+		hindsightActive: true,
 		getHindsightSessionState: () => hindsightState,
 	} as unknown as AgentSession;
 	AgentRegistry.global().register({

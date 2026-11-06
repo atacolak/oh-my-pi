@@ -9,8 +9,8 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
-import type { HindsightSessionState } from "../hindsight/state";
-import type { MnemopiSessionState } from "../mnemopi/state";
+import type { HindsightSessionStateApi } from "../hindsight/state";
+import type { MnemopiSessionStateApi } from "../mnemopi/state";
 import type { AgentSession } from "../session/agent-session";
 
 export type MemoryBackendId = "off" | "local" | "hindsight" | "mnemopi" | "sharpshooter";
@@ -98,8 +98,8 @@ export interface MemoryBackendStartOptions {
 	hindsightCloseRetainBaselineTurns?: number;
 	/** Retainable-message baseline for delayed initial Hindsight startup only. */
 	hindsightLoadedMessageCount?: number;
-	parentHindsightSessionState?: HindsightSessionState;
-	parentMnemopiSessionState?: MnemopiSessionState;
+	parentHindsightSessionState?: HindsightSessionStateApi;
+	parentMnemopiSessionState?: MnemopiSessionStateApi;
 }
 
 /** Model-visible context delivered with a turn instead of the system prompt. */

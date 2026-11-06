@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadHindsightConfig, resolveProvenanceTags } from "@oh-my-pi/pi-coding-agent/hindsight/config";
+import {
+	cfgHindsightProvenanceTags,
+	cfgHindsightRetainStrategy,
+	cfgHindsightRetainUpdateMode,
+} from "@oh-my-pi/pi-coding-agent/hindsight/settings";
 
-function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) {
+function withEnv<T>(env: NodeJS.ProcessEnv, run: () => T): T {
 	const previous = new Map<string, string | undefined>();
 	for (const [key, value] of Object.entries(env)) {
 		previous.set(key, Bun.env[key]);
@@ -10,7 +15,7 @@ function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = 
 		else Bun.env[key] = String(value);
 	}
 	try {
-		return loadHindsightConfig(Settings.isolated(overrides as never));
+		return run();
 	} finally {
 		for (const [key, value] of previous) {
 			if (value === undefined) delete Bun.env[key];
@@ -19,11 +24,25 @@ function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = 
 	}
 }
 
+function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) {
+	return withEnv(env, () => loadHindsightConfig(Settings.isolated(overrides as never)));
+}
+
 describe("loadHindsightConfig retainUpdateMode", () => {
-	it("prefers HINDSIGHT_RETAIN_UPDATE_MODE over settings", () => {
+	it("prefers HINDSIGHT_RETAIN_UPDATE_MODE over a persisted setting", () => {
+		// A persisted layer (config file or `set`) yields to the env var; only a
+		// runtime override — CLI flag, session write, SDK override — outranks it.
+		const settings = Settings.isolated();
+		cfgHindsightRetainUpdateMode.set(settings, "replace");
+		expect(
+			withEnv({ HINDSIGHT_RETAIN_UPDATE_MODE: "append" }, () => loadHindsightConfig(settings)).retainUpdateMode,
+		).toBe("append");
+	});
+
+	it("lets a runtime override outrank HINDSIGHT_RETAIN_UPDATE_MODE", () => {
 		expect(
 			load({ "hindsight.retainUpdateMode": "replace" }, { HINDSIGHT_RETAIN_UPDATE_MODE: "append" }).retainUpdateMode,
-		).toBe("append");
+		).toBe("replace");
 	});
 
 	it("falls back to replace when retainUpdateMode env is invalid", () => {
@@ -38,9 +57,11 @@ describe("loadHindsightConfig retainStrategy", () => {
 		expect(load({}, { HINDSIGHT_RETAIN_STRATEGY: "  " }).retainStrategy).toBeNull();
 	});
 
-	it("prefers HINDSIGHT_RETAIN_STRATEGY over settings", () => {
+	it("prefers HINDSIGHT_RETAIN_STRATEGY over a persisted setting", () => {
+		const settings = Settings.isolated();
+		cfgHindsightRetainStrategy.set(settings, "coding");
 		expect(
-			load({ "hindsight.retainStrategy": "coding" }, { HINDSIGHT_RETAIN_STRATEGY: "personal_chat" }).retainStrategy,
+			withEnv({ HINDSIGHT_RETAIN_STRATEGY: "personal_chat" }, () => loadHindsightConfig(settings)).retainStrategy,
 		).toBe("personal_chat");
 	});
 });
@@ -70,12 +91,12 @@ describe("loadHindsightConfig provenanceTags", () => {
 		]);
 	});
 
-	it("parses HINDSIGHT_PROVENANCE_TAGS as a JSON array and prefers it over settings", () => {
+	it("parses HINDSIGHT_PROVENANCE_TAGS as a JSON array and prefers it over a persisted setting", () => {
+		const settings = Settings.isolated();
+		cfgHindsightProvenanceTags.set(settings, ["role:builder"]);
 		expect(
-			load(
-				{ "hindsight.provenanceTags": ["role:builder"] },
-				{ HINDSIGHT_PROVENANCE_TAGS: '["team:infra","role:navigator"]' },
-			).provenanceTags,
+			withEnv({ HINDSIGHT_PROVENANCE_TAGS: '["team:infra","role:navigator"]' }, () => loadHindsightConfig(settings))
+				.provenanceTags,
 		).toEqual(["team:infra", "role:navigator"]);
 	});
 });

@@ -8,10 +8,10 @@ import {
 } from "../memory-backend/recall-entry";
 import type { MemoryPromptPreparation } from "../memory-backend/types";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
-import { type BankScope, ensureBankExists } from "./bank";
+import { type BankScope, ensureBankExists, type HindsightBankSet } from "./bank";
 import {
 	HindsightRecallDecision,
-	type HindsightApi,
+	type HindsightClientApi,
 	type MemoryItemInput,
 	RECALL_SCORE_FLOOR,
 	RECALL_SCORE_FLOOR_RATIO,
@@ -76,11 +76,11 @@ interface PendingRetainItem {
 	scope: MemoryWriteScope;
 	timestamp: Date;
 	/** Bank routing captured at enqueue so a later primary rebuild cannot reroute this item. */
-	client: HindsightApi;
+	client: HindsightClientApi;
 	bankId: string;
 	retainTags?: string[];
 	observationScopes?: string[][];
-	banksSet: Set<string>;
+	banksSet: HindsightBankSet;
 	config: HindsightConfig;
 }
 
@@ -110,11 +110,33 @@ export interface HindsightConversationTrackingSnapshot {
 	loadedMessageCount: number;
 	loadedPrefixKey: string;
 }
+/**
+ * What a subagent alias reads from its parent state: the routing it copies and the
+ * snippets the developer prompt shows. A subagent worker holds a remote implementation
+ * whose client and bank set are main's live ones.
+ */
+export interface HindsightSessionStateApi {
+	readonly client: HindsightClientApi;
+	readonly bankId: string;
+	readonly retainTags?: string[];
+	/** Deterministic scope tags; seeds derive from these, never from write-only provenance. */
+	readonly resolvedTags?: string[];
+	/** Exact deterministic observation consolidation scopes applied to every retain. */
+	readonly observationScopes?: string[][];
+	readonly recallTags?: string[];
+	readonly recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	readonly config: HindsightConfig;
+	readonly banksSet: HindsightBankSet;
+	readonly lastRecallSnippet?: string;
+	readonly mentalModelsSnippet?: string;
+	/** Live primary this state aliases; absent on a primary. */
+	readonly aliasOf?: HindsightSessionStateApi;
+}
 
 export interface HindsightSessionStateOptions {
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
-	client: HindsightApi;
+	client: HindsightClientApi;
 	bankId: string;
 	/** Fully resolved deterministic scope tags (no write-only provenance). */
 	resolvedTags?: string[];
@@ -133,7 +155,7 @@ export interface HindsightSessionStateOptions {
 	observationScopes?: string[][];
 	config: HindsightConfig;
 	session: AgentSession;
-	banksSet: Set<string>;
+	banksSet: HindsightBankSet;
 	lastRetainedTurn?: number;
 	/** A recall was already delivered for the transcript this state belongs to. */
 	recallDelivered?: boolean;
@@ -153,7 +175,7 @@ export interface HindsightSessionStateOptions {
 	 * auto-retain — those run on the parent only — but the recall/retain/reflect
 	 * tools resolve via the alias so they persist to the same bank as the parent.
 	 */
-	aliasOf?: HindsightSessionState;
+	aliasOf?: HindsightSessionStateApi;
 }
 
 /**
@@ -386,10 +408,10 @@ function retentionPrefixKey(messages: HindsightMessage[], count: number): string
 }
 
 /** Per-session Hindsight runtime state owned by its AgentSession. */
-export class HindsightSessionState {
+export class HindsightSessionState implements HindsightSessionStateApi {
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
-	#client: HindsightApi;
+	#client: HindsightClientApi;
 	#bankId: string;
 	/** Fully resolved deterministic scope tags; seeds derive from these, never from write-only provenance. */
 	#resolvedTags?: string[];
@@ -407,7 +429,7 @@ export class HindsightSessionState {
 	#observationScopes?: string[][];
 	#config: HindsightConfig;
 	session: AgentSession;
-	#banksSet: Set<string>;
+	#banksSet: HindsightBankSet;
 	lastRetainedTurn: number;
 	#lastRetainedMessageIndex: number = 0;
 	#cachedTranscript: string = "";
@@ -446,6 +468,8 @@ export class HindsightSessionState {
 	#recallDecision?: HindsightRecallDecision;
 	/** Cached `<mental_models>` block injected into developer instructions. */
 	mentalModelsSnippet?: string;
+	/** Most recent recall block this state produced; a worker's remote parent reads it. */
+	lastRecallSnippet?: string;
 	/** When the current bootstrap/boundary load settled; gates the first-turn race. */
 	mentalModelsLoadedAt?: number;
 	/**
@@ -465,15 +489,24 @@ export class HindsightSessionState {
 	/**
 	 * When this primary is replaced by a live rebuild, aliases still holding
 	 * the disposed object follow `#successor` to the currently installed parent.
+	 * Only local primaries can be replaced; a worker's remote parent has no
+	 * successor chain.
 	 */
 	#successor?: HindsightSessionState;
 	#aliasOf?: HindsightSessionState;
+	/** A subagent worker's view of its main-thread parent, when the alias crosses processes. */
+	#remoteAliasOf?: HindsightSessionStateApi;
 	#episodeIdFor?: (sessionId: string) => string | null;
 	readonly retainQueue: HindsightRetainQueue;
 
 	constructor(options: HindsightSessionStateOptions) {
 		this.sessionId = options.sessionId;
-		this.#aliasOf = options.aliasOf;
+		// A local parent keeps the live routing delegation (scope rebuilds and
+		// successor chains). A worker's remote parent is already a proxy over
+		// main's live values, so the copied fields above are the whole view.
+		const alias = options.aliasOf;
+		if (alias instanceof HindsightSessionState) this.#aliasOf = alias;
+		else if (alias) this.#remoteAliasOf = alias;
 		this.#client = options.client;
 		this.#bankId = options.bankId;
 		this.#resolvedTags = options.resolvedTags;
@@ -505,8 +538,8 @@ export class HindsightSessionState {
 		this.#captureLoadedBranchIdentity(options.loadedMessageCount);
 	}
 
-	/** Alias states delegate persistence routing to the live primary parent. */
-	get aliasOf(): HindsightSessionState | undefined {
+	/** Live local primary this alias delegates to, following rebuilt successors. */
+	#localPrimary(): HindsightSessionState | undefined {
 		let primary = this.#aliasOf;
 		const seen = new Set<HindsightSessionState>();
 		while (primary && primary.#successor) {
@@ -517,40 +550,54 @@ export class HindsightSessionState {
 		return primary;
 	}
 
-	set aliasOf(value: HindsightSessionState | undefined) {
-		this.#aliasOf = value;
+	/** Alias states delegate persistence routing to the live primary parent. */
+	get aliasOf(): HindsightSessionStateApi | undefined {
+		return this.#localPrimary() ?? this.#remoteAliasOf;
 	}
 
-	get client(): HindsightApi {
-		return this.aliasOf ? this.aliasOf.client : this.#client;
+	set aliasOf(value: HindsightSessionStateApi | undefined) {
+		this.#remoteAliasOf = undefined;
+		this.#aliasOf = value instanceof HindsightSessionState ? value : undefined;
+		if (value && !(value instanceof HindsightSessionState)) this.#remoteAliasOf = value;
 	}
 
-	set client(value: HindsightApi) {
-		if (this.aliasOf) this.aliasOf.client = value;
+	get client(): HindsightClientApi {
+		const primary = this.#localPrimary();
+		return primary ? primary.client : this.#client;
+	}
+
+	set client(value: HindsightClientApi) {
+		const primary = this.#localPrimary();
+		if (primary) primary.client = value;
 		else this.#client = value;
 	}
 
 	get bankId(): string {
-		return this.aliasOf ? this.aliasOf.bankId : this.#bankId;
+		const primary = this.#localPrimary();
+		return primary ? primary.bankId : this.#bankId;
 	}
 
 	set bankId(value: string) {
-		if (this.aliasOf) this.aliasOf.bankId = value;
+		const primary = this.#localPrimary();
+		if (primary) primary.bankId = value;
 		else this.#bankId = value;
 	}
 
 	get retainTags(): string[] | undefined {
-		return this.aliasOf ? this.aliasOf.retainTags : this.#retainTags;
+		const primary = this.#localPrimary();
+		return primary ? primary.retainTags : this.#retainTags;
 	}
 
 	set retainTags(value: string[] | undefined) {
-		if (this.aliasOf) this.aliasOf.retainTags = value;
+		const primary = this.#localPrimary();
+		if (primary) primary.retainTags = value;
 		else this.#retainTags = value;
 	}
 
 	/** Deterministic scope tags shared by the whole alias tree; write-only provenance is never included. */
 	get resolvedTags(): string[] | undefined {
-		return this.aliasOf ? this.aliasOf.resolvedTags : this.#resolvedTags;
+		const primary = this.#localPrimary();
+		return primary ? primary.resolvedTags : this.#resolvedTags;
 	}
 
 	/** Write-only provenance for this state; never inherited from the aliased parent. */
@@ -559,47 +606,57 @@ export class HindsightSessionState {
 	}
 
 	get recallTags(): string[] | undefined {
-		return this.aliasOf ? this.aliasOf.recallTags : this.#recallTags;
+		const primary = this.#localPrimary();
+		return primary ? primary.recallTags : this.#recallTags;
 	}
 
 	set recallTags(value: string[] | undefined) {
-		if (this.aliasOf) this.aliasOf.recallTags = value;
+		const primary = this.#localPrimary();
+		if (primary) primary.recallTags = value;
 		else this.#recallTags = value;
 	}
 
 	get recallTagsMatch(): "any" | "all" | "any_strict" | "all_strict" | undefined {
-		return this.aliasOf ? this.aliasOf.recallTagsMatch : this.#recallTagsMatch;
+		const primary = this.#localPrimary();
+		return primary ? primary.recallTagsMatch : this.#recallTagsMatch;
 	}
 
 	set recallTagsMatch(value: "any" | "all" | "any_strict" | "all_strict" | undefined) {
-		if (this.aliasOf) this.aliasOf.recallTagsMatch = value;
+		const primary = this.#localPrimary();
+		if (primary) primary.recallTagsMatch = value;
 		else this.#recallTagsMatch = value;
 	}
 
 	get observationScopes(): string[][] | undefined {
-		return this.aliasOf ? this.aliasOf.observationScopes : this.#observationScopes;
+		const primary = this.#localPrimary();
+		return primary ? primary.observationScopes : this.#observationScopes;
 	}
 
 	set observationScopes(value: string[][] | undefined) {
-		if (this.aliasOf) this.aliasOf.observationScopes = value;
+		const primary = this.#localPrimary();
+		if (primary) primary.observationScopes = value;
 		else this.#observationScopes = value;
 	}
 
-	get banksSet(): Set<string> {
-		return this.aliasOf ? this.aliasOf.banksSet : this.#banksSet;
+	get banksSet(): HindsightBankSet {
+		const primary = this.#localPrimary();
+		return primary ? primary.banksSet : this.#banksSet;
 	}
 
-	set banksSet(value: Set<string>) {
-		if (this.aliasOf) this.aliasOf.banksSet = value;
+	set banksSet(value: HindsightBankSet) {
+		const primary = this.#localPrimary();
+		if (primary) primary.banksSet = value;
 		else this.#banksSet = value;
 	}
 
 	get config(): HindsightConfig {
-		return this.aliasOf ? this.aliasOf.config : this.#config;
+		const primary = this.#localPrimary();
+		return primary ? primary.config : this.#config;
 	}
 
 	set config(value: HindsightConfig) {
-		if (this.aliasOf) this.aliasOf.config = value;
+		const primary = this.#localPrimary();
+		if (primary) primary.config = value;
 		else this.#config = value;
 	}
 
@@ -826,7 +883,8 @@ export class HindsightSessionState {
 
 	/** Scorer for the deep recall gears; undefined when no decision model is configured. */
 	get recallScorer(): HindsightRecallDecision | undefined {
-		return this.aliasOf ? this.aliasOf.recallScorer : this.#recallDecision;
+		const primary = this.#localPrimary();
+		return primary ? primary.recallScorer : this.#recallDecision;
 	}
 
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
@@ -864,6 +922,7 @@ export class HindsightSessionState {
 			if (fresh.length === 0) return { context: null, ok: true, delivered: [] };
 			const formatted = formatMemories(fresh);
 			const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
+			this.lastRecallSnippet = block;
 			return {
 				context: block,
 				ok: true,
@@ -939,6 +998,7 @@ export class HindsightSessionState {
 		if (packed.length === 0) return { context: null, ok: true, delivered: [] };
 		const formatted = formatMemories(packed);
 		const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
+		this.lastRecallSnippet = block;
 		return {
 			context: block,
 			ok: true,

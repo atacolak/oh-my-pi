@@ -57,10 +57,10 @@ it("sends the parent's recalled memories once from a /tan clone instead of recal
 	// Sessions start Mnemopi in the background: [parent, clone] settle as each start finishes.
 	const mnemopiStarts = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
 	const realStart = mnemopiBackend.start;
-	let startCount = 0;
+	const pendingStarts = [...mnemopiStarts];
 	vi.spyOn(mnemopiBackend, "start").mockImplementation(async options => {
 		await realStart.call(mnemopiBackend, options);
-		mnemopiStarts[startCount++]?.resolve();
+		pendingStarts.shift()?.resolve();
 	});
 	const settings = Settings.isolated({
 		"async.enabled": true,

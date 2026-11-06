@@ -72,7 +72,7 @@ describe("app viewport scroll region", () => {
 		});
 		term = new VirtualTerminal(COLUMNS, ROWS);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		mode = new InteractiveMode(session, "test", () => {}, undefined, undefined, undefined, composer);
 	});
 
 	afterEach(async () => {

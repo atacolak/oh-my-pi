@@ -13,6 +13,8 @@ import type {
 	DocumentResponse,
 	GetMentalModelOptions,
 	HindsightClientApi,
+	HindsightRequestOptions,
+	KnowledgeTreeResponse,
 	ListDocumentsOptions,
 	ListDocumentsResponse,
 	ListMemoriesOptions,
@@ -141,8 +143,8 @@ export class RemoteHindsightClient implements HindsightClientApi {
 		return this.#remote.call("getMemory", bankId, memoryId);
 	}
 
-	getKnowledgeBaseTree(bankId: string): Promise<KnowledgeTreeResponse> {
-		return this.#remote.call("getKnowledgeBaseTree", bankId);
+	getKnowledgeBaseTree(bankId: string, options?: HindsightRequestOptions): Promise<KnowledgeTreeResponse> {
+		return this.#remote.call("getKnowledgeBaseTree", bankId, options);
 	}
 }
 
@@ -192,6 +194,10 @@ export class RemoteHindsightSessionState implements HindsightSessionStateApi {
 
 	get bankId(): string {
 		return this.#remote.callSync("bankId");
+	}
+
+	get resolvedTags(): string[] | undefined {
+		return this.#remote.callSync("resolvedTags");
 	}
 
 	get retainTags(): string[] | undefined {

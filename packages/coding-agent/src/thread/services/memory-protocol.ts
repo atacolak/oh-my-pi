@@ -15,6 +15,8 @@ import type {
 	DocumentResponse,
 	GetMentalModelOptions,
 	HindsightClientApi,
+	HindsightRequestOptions,
+	KnowledgeTreeResponse,
 	ListDocumentsOptions,
 	ListDocumentsResponse,
 	ListMemoriesOptions,
@@ -84,18 +86,20 @@ export type HindsightClientProtocol = {
 	deleteMentalModel: RpcMethod<[bankId: string, mentalModelId: string], boolean>;
 	getMentalModelHistory: RpcMethod<[bankId: string, mentalModelId: string], MentalModelHistoryEntry[]>;
 	getMemory: RpcMethod<[bankId: string, memoryId: string], HindsightMemoryUnit | null>;
-	getKnowledgeBaseTree: RpcMethod<[bankId: string], KnowledgeTreeResponse>;
+	getKnowledgeBaseTree: RpcMethod<[bankId: string, options?: HindsightRequestOptions], KnowledgeTreeResponse>;
 };
 
 /** A parent Hindsight state's fields (read live, synchronously) and its confirmed-bank set (`banks.*`). */
 export type HindsightSessionStateProtocol = {
 	client: RpcMethod<[], HindsightClientApi>;
 	bankId: RpcMethod<[], string>;
+	resolvedTags: RpcMethod<[], string[] | undefined>;
 	retainTags: RpcMethod<[], string[] | undefined>;
 	resolvedTags: RpcMethod<[], string[] | undefined>;
 	observationScopes: RpcMethod<[], string[][] | undefined>;
 	recallTags: RpcMethod<[], string[] | undefined>;
 	recallTagsMatch: RpcMethod<[], "any" | "all" | "any_strict" | "all_strict" | undefined>;
+	observationScopes: RpcMethod<[], string[][] | undefined>;
 	config: RpcMethod<[], HindsightConfig>;
 	lastRecallSnippet: RpcMethod<[], string | undefined>;
 	mentalModelsSnippet: RpcMethod<[], string | undefined>;

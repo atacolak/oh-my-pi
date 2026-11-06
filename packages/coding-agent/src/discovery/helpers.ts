@@ -33,6 +33,7 @@ import { resolveClaudePaths } from "../config/claude-paths";
 import type { MCPRequestIdFormat } from "../mcp/types";
 import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { type AgentCompactionPolicy, parseAgentCompaction } from "../task/agent-compaction";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
 import { buildPluginDirRoot } from "./plugin-dir-roots";
@@ -340,6 +341,8 @@ export interface ParsedAgentFields {
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
 	advisor?: boolean | string;
+	/** Per-agent compaction policy from the `compaction:` block. */
+	compaction?: AgentCompactionPolicy;
 	/** Root-only durable authoring grant. Independent from `spawns`. */
 	automationAuthor?: AutomationAuthorPolicy;
 }
@@ -449,6 +452,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		readSummarize,
 		prewalk,
 		advisor,
+		compaction: parseAgentCompaction(frontmatter.compaction),
 		automationAuthor,
 	};
 }

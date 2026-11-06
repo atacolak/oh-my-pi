@@ -27,7 +27,6 @@ import type {
 	MentalModelListResponse,
 	MentalModelSummary,
 	HindsightMemoryUnit,
-	KnowledgeTreeResponse,
 	RecallOptions,
 	RecallResponse,
 	ReflectOptions,
@@ -95,11 +94,9 @@ export type HindsightSessionStateProtocol = {
 	bankId: RpcMethod<[], string>;
 	resolvedTags: RpcMethod<[], string[] | undefined>;
 	retainTags: RpcMethod<[], string[] | undefined>;
-	resolvedTags: RpcMethod<[], string[] | undefined>;
 	observationScopes: RpcMethod<[], string[][] | undefined>;
 	recallTags: RpcMethod<[], string[] | undefined>;
 	recallTagsMatch: RpcMethod<[], "any" | "all" | "any_strict" | "all_strict" | undefined>;
-	observationScopes: RpcMethod<[], string[][] | undefined>;
 	config: RpcMethod<[], HindsightConfig>;
 	lastRecallSnippet: RpcMethod<[], string | undefined>;
 	mentalModelsSnippet: RpcMethod<[], string | undefined>;

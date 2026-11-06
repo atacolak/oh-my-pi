@@ -2527,7 +2527,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// next real exit runs the disposal above.
 		this.#detachSession = createSessionDetach({
 			getDraftText: () => this.#inputController.getDraftText(),
-			saveDraft: text => this.sessionManager.saveDraft(text),
+			saveDraft: async text => {
+				await this.#inputController.flushDraftPersistence();
+				await this.sessionManager.saveDraft(text);
+			},
 			stopView: () => this.#teardownView(true),
 		});
 		this.#hangupUnsubscribe = postmortem.registerHangupHandler(this.#detachSession);

@@ -299,6 +299,7 @@ export function parseDaemonSpec(value: unknown): DaemonSpec {
 		application: stringValue(source.application, "spec.application"),
 		args: stringArray(source.args, "spec.args"),
 		env: stringRecord(source.env, "spec.env"),
+		identity: source.identity === undefined ? undefined : stringRecord(source.identity, "spec.identity"),
 		cwd: stringValue(source.cwd, "spec.cwd"),
 		pty: booleanValue(source.pty, "spec.pty"),
 		ready: source.ready === undefined ? undefined : readySpec(source.ready),

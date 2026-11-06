@@ -19,6 +19,30 @@ import {
 /** Private launch metadata the broker injects into a session-owner child. */
 export const SESSION_OWNER_CONTEXT_ENV = "OMP_SESSION_OWNER_CONTEXT";
 
+/** Variables hcom derives an owner's identity from; a spec that declares identity owns all of them. */
+export const SESSION_OWNER_IDENTITY_KEYS = [
+	"HCOM_PROCESS_ID",
+	"HCOM_INSTANCE_NAME",
+	"HCOM_NAME",
+	"HCOM_OMP_IDENTITY_OWNER",
+	"HCOM_LAUNCHED",
+] as const;
+
+/**
+ * The identity this launcher declares for the session owner it boots. hcom
+ * binds a session to `HCOM_PROCESS_ID`, with `HCOM_INSTANCE_NAME` as its
+ * recovery fallback; a launcher that carries no process binding declares
+ * nothing, and the nested-owner latch never crosses.
+ */
+export function sessionOwnerIdentity(env: Record<string, string | undefined>): Record<string, string> {
+	const processId = env.HCOM_PROCESS_ID;
+	if (processId === undefined || processId.length === 0) return {};
+	const identity: Record<string, string> = { HCOM_PROCESS_ID: processId, HCOM_LAUNCHED: "1" };
+	const instanceName = env.HCOM_INSTANCE_NAME;
+	if (instanceName !== undefined && instanceName.length > 0) identity.HCOM_INSTANCE_NAME = instanceName;
+	return identity;
+}
+
 /** Broker coordinates of the PTY that hosts this session owner. */
 export interface SessionOwnerContext {
 	projectDir: string;
@@ -30,6 +54,8 @@ export interface SessionOwnerLaunchOptions {
 	name: string;
 	projectDir: string;
 	argv: readonly string[];
+	/** Identity the launcher declares; the owner carries exactly these values. */
+	identity: Record<string, string>;
 	env?: Record<string, string>;
 }
 
@@ -153,6 +179,7 @@ export function sessionOwnerSpec(options: SessionOwnerLaunchOptions): DaemonSpec
 		application,
 		args: [...entryArgs, SESSION_OWNER_WORKER_ARG, ...options.argv],
 		env,
+		identity: { ...options.identity },
 		cwd: options.projectDir,
 		pty: true,
 		persist: true,

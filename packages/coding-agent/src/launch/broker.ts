@@ -14,7 +14,7 @@ import {
 	truncateTailBytes,
 } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
-import { SESSION_OWNER_CONTEXT_ENV, type SessionOwnerContext } from "./session-owner";
+import { SESSION_OWNER_CONTEXT_ENV, SESSION_OWNER_IDENTITY_KEYS, type SessionOwnerContext } from "./session-owner";
 import {
 	DAEMON_META_FILE,
 	DAEMON_SPEC_FILE,
@@ -156,6 +156,35 @@ function terminalState(state: DaemonSnapshot["state"]): boolean {
 
 function settledState(state: DaemonSnapshot["state"]): boolean {
 	return terminalState(state) || state === "restarting";
+}
+
+interface DaemonSpawnEnvironment {
+	env: Record<string, string>;
+	/**
+	 * Identity keys the spec does not declare. A PTY child inherits the broker's
+	 * environment natively, under the explicit spawn env, so only the shell can
+	 * remove them before `exec`.
+	 */
+	undeclaredIdentity: readonly string[];
+}
+
+/**
+ * Spawn environment for one daemon. A spec that declares `identity` owns those
+ * variables outright: the broker drops the same keys inherited from its own
+ * environment before applying the spec, so the broker's own identity never
+ * reaches the child. Specs without a declaration inherit as before.
+ */
+function daemonSpawnEnvironment(spec: DaemonSpec, defaults: Record<string, string> = {}): DaemonSpawnEnvironment {
+	if (spec.identity === undefined) {
+		return { env: workerEnvFromParent({ ...defaults, ...spec.env }), undeclaredIdentity: [] };
+	}
+	const env = workerEnvFromParent();
+	for (const key of SESSION_OWNER_IDENTITY_KEYS) delete env[key];
+	const merged = { ...env, ...defaults, ...spec.env, ...spec.identity };
+	return {
+		env: merged,
+		undeclaredIdentity: SESSION_OWNER_IDENTITY_KEYS.filter(key => merged[key] === undefined),
+	};
 }
 
 function publishesCompletionOwners(request: DaemonWireRequest): boolean {
@@ -1124,9 +1153,10 @@ class DaemonBroker {
 	async #launchPty(record: ManagedDaemon, generation: number): Promise<void> {
 		const session = new PtySession();
 		record.pty = session;
+		const spawn = daemonSpawnEnvironment(record.spec, { TERM: "xterm-256color" });
 		const options = {
 			cwd: record.spec.cwd,
-			env: workerEnvFromParent({ TERM: "xterm-256color", ...record.spec.env }),
+			env: spawn.env,
 			cols: record.terminalColumns ?? DAEMON_PTY_COLUMNS,
 			rows: record.terminalRows ?? DAEMON_PTY_ROWS,
 		};
@@ -1185,7 +1215,8 @@ class DaemonBroker {
 			);
 		} else {
 			const argv = [record.spec.application, ...record.spec.args];
-			const command = `exec ${quotePosixArgv(argv)}`;
+			const unset = spawn.undeclaredIdentity.length === 0 ? "" : `unset -v ${spawn.undeclaredIdentity.join(" ")}; `;
+			const command = `${unset}exec ${quotePosixArgv(argv)}`;
 			const shell = procmgr.getShellConfig().shell;
 			run = session.start({ command, shell, ...options }, onChunk, onStart);
 		}
@@ -1210,7 +1241,7 @@ class DaemonBroker {
 	#launchPipe(record: ManagedDaemon, generation: number): void {
 		const process = Bun.spawn([record.spec.application, ...record.spec.args], {
 			cwd: record.spec.cwd,
-			env: workerEnvFromParent(record.spec.env),
+			env: daemonSpawnEnvironment(record.spec).env,
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
@@ -1235,7 +1266,7 @@ class DaemonBroker {
 		try {
 			const process = Bun.spawn([record.spec.application, ...record.spec.args], {
 				cwd: record.spec.cwd,
-				env: workerEnvFromParent(record.spec.env),
+				env: daemonSpawnEnvironment(record.spec).env,
 				stdio: ["ignore", output.fd, output.fd],
 				...DAEMON_SPAWN_OPTIONS,
 			});

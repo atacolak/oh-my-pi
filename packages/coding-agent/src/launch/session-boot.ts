@@ -20,7 +20,7 @@ import { createDaemonBrokerClient, requireTerminalProtocol } from "./client";
 import { type DaemonTerminalNotification, sanitizeTerminalGeometry } from "./protocol";
 import { resolveSessionEndpointDir, type SessionAttachTerminal } from "./session-attach";
 import { runLiveSessionAttach } from "./session-attach-run";
-import { isSessionOwnerProcess, sessionOwnerSpec } from "./session-owner";
+import { isSessionOwnerProcess, sessionOwnerIdentity, sessionOwnerSpec } from "./session-owner";
 import { runTerminalMirror, type TerminalMirrorOptions } from "./terminal-mirror";
 
 /** The launch shape a brokered decision depends on. */
@@ -283,7 +283,12 @@ export async function bootBrokeredOwner(options: BootBrokeredOwnerOptions): Prom
 		const result = await client.request({
 			op: "terminal_start",
 			subscriptionId,
-			spec: sessionOwnerSpec({ name, projectDir: options.projectDir, argv: options.argv }),
+			spec: sessionOwnerSpec({
+				name,
+				projectDir: options.projectDir,
+				argv: options.argv,
+				identity: sessionOwnerIdentity(process.env),
+			}),
 			columns: geometry.columns,
 			rows: geometry.rows,
 		});

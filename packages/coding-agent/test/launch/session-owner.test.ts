@@ -111,6 +111,7 @@ describe("session owner context", () => {
 			name: "mind-a",
 			projectDir: "/p",
 			argv: ["--resume", "sess-1"],
+			identity: { HCOM_PROCESS_ID: "21b683ec", HCOM_LAUNCHED: "1" },
 			env: { [SESSION_OWNER_CONTEXT_ENV]: "stale", KEEP: "1" },
 		});
 
@@ -121,6 +122,7 @@ describe("session owner context", () => {
 			persist: true,
 			detached: false,
 			restart: "no",
+			identity: { HCOM_PROCESS_ID: "21b683ec", HCOM_LAUNCHED: "1" },
 			env: { KEEP: "1" },
 		});
 		expect(spec.args.slice(-3)).toEqual([SESSION_OWNER_WORKER_ARG, "--resume", "sess-1"]);

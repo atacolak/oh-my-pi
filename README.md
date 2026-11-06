@@ -6,9 +6,12 @@
 > chain still supplies a candidate. Role-owned models keep their own
 > chain, including an explicitly emptied one.
 >
+> Also adds a `compaction` value to `retry.fallbackRevertPolicy`: restore
+> the primary model only after the context has been compacted.
+>
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Status:** fork-local (no upstream PR)
-> - **Upstream base:** [OMP 18.16.0 (`650f3a10`)](https://github.com/can1357/oh-my-pi/tree/650f3a108229ee11bf68ba3377f4e8c3391cd424)
+> - **Upstream base:** [OMP 18.17.0 (`75e7801e`)](https://github.com/can1357/oh-my-pi/tree/75e7801e247d4e3263439d4cc08ccad60dc64bdd)
 >
 > Not stacked on other capabilities; merged into `runtime` independently.
 

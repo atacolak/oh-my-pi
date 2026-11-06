@@ -394,6 +394,7 @@ export class RpcShutdownCoordinator {
 	}
 }
 
+
 function shouldEmitRpcTitles(): boolean {
 	const raw = $env.PI_RPC_EMIT_TITLE;
 	if (!raw) return false;
@@ -635,6 +636,10 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		}
 
 		rerenderMessage(): void {
+			// No transcript is drawn in RPC mode
+		}
+
+		refreshTranscript(): void {
 			// No transcript is drawn in RPC mode
 		}
 
@@ -968,6 +973,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		await outputWriter.close();
 		process.exit(0);
 	};
+
 
 	// Deferred shutdown (pi.shutdown() from an extension) must not kill the
 	// process while a background-dispatched bash still owes the client its

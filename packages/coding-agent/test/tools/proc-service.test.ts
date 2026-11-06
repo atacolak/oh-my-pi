@@ -282,6 +282,7 @@ describe("proc:// background jobs", () => {
 				securityEnabled: false,
 				settingsApproval: false,
 				outReplies: false,
+				subagent: false,
 			})
 			.find(line => line.startsWith("`proc://`"));
 		expect(help).toMatch(/stdin[^;]*services.only/);

@@ -266,6 +266,7 @@
 - Fixed browser `tab.fill` timing out on pages whose animation frames stall.
 - Fixed the first LSP diagnostics request returning no results while a newly started language server is still analyzing.
 - `/shake thinking` now reports the number of tokens freed.
+- Added the `compaction` value to `retry.fallbackRevertPolicy` (`/settings` → Model → Retry & Fallback → "Fallback Revert Policy" → "Next compaction"): return to the primary model only after the context has been compacted, instead of as soon as the primary's cooldown expires.
 
 ### Fixed
 

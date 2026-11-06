@@ -1285,6 +1285,7 @@ export class CommandController {
 			const seeds = resolveSeedsForScope(
 				{
 					bankId: state.bankId,
+					resolvedTags: state.resolvedTags,
 					retainTags: state.retainTags,
 					recallTags: state.recallTags,
 					recallTagsMatch: state.recallTagsMatch,

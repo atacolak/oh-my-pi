@@ -4,7 +4,8 @@
  */
 import { register } from "../config/registry";
 
-const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
+/** Server default recall types; `world` + `experience` pair with `preferObservations` on the recall endpoint. */
+export const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
 
 /** Integer `HINDSIGHT_*` variables: base-10 `parseInt` prefix (`5000ms` → 5000, `2.5` → 2); other text is unset. */
 function parseEnvInteger(raw: string): number | undefined {
@@ -57,6 +58,33 @@ export const cfgHindsightBankId = register({
 });
 
 export const cfgHindsightBankIdPrefix = register({ id: "hindsight.bankIdPrefix", type: "string", default: undefined });
+export const cfgHindsightScopeTags = register({
+	id: "hindsight.scopeTags",
+	type: "array",
+	default: [] as string[],
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Scope Tags",
+		description: "Deterministic tags applied to retain, recall, reflect, and observation consolidation scopes",
+		condition: "hindsightActive",
+	},
+});
+
+export const cfgHindsightProvenanceTags = register({
+	id: "hindsight.provenanceTags",
+	env: "HINDSIGHT_PROVENANCE_TAGS",
+	type: "array",
+	default: [] as string[],
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Provenance Tags",
+		description:
+			"Write-only tags attached to retained memories; never matched by recall or observation scopes. The mounted agent profile adds role:<profile> automatically.",
+		condition: "hindsightActive",
+	},
+});
 
 export const cfgHindsightScoping = register({
 	id: "hindsight.scoping",
@@ -184,6 +212,48 @@ export const cfgHindsightRetainOverlapTurns = register({
 });
 
 export const cfgHindsightRetainContext = register({ id: "hindsight.retainContext", type: "string", default: "omp" });
+export const cfgHindsightRetainUpdateMode = register({
+	id: "hindsight.retainUpdateMode",
+	env: "HINDSIGHT_RETAIN_UPDATE_MODE",
+	type: "enum",
+	values: ["replace", "append"] as const,
+	default: "replace",
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Retain Update Mode",
+		description:
+			"replace = rewrite the full session document; append = send only newly accumulated turns on the same document_id",
+		options: [
+			{
+				value: "replace",
+				label: "Replace",
+				description: "Resend the full session document on each retain (default)",
+			},
+			{
+				value: "append",
+				label: "Append",
+				description: "Append only new conversation turns to the existing session document",
+			},
+		],
+		condition: "hindsightActive",
+	},
+});
+
+export const cfgHindsightRetainStrategy = register({
+	id: "hindsight.retainStrategy",
+	env: "HINDSIGHT_RETAIN_STRATEGY",
+	type: "string",
+	default: undefined,
+	ui: {
+		tab: "memory",
+		group: "Hindsight",
+		label: "Hindsight Retain Strategy",
+		description:
+			"Named Hindsight extraction strategy sent as the per-item strategy field. Leave empty to use the bank default.",
+		condition: "hindsightActive",
+	},
+});
 
 export const cfgHindsightRecallBudget = register({
 	id: "hindsight.recallBudget",
@@ -218,6 +288,57 @@ export const cfgHindsightRecallTypes = register({
 	id: "hindsight.recallTypes",
 	type: "array",
 	default: HINDSIGHT_RECALL_TYPES_DEFAULT,
+});
+
+export const cfgHindsightRecallPreferObservations = register({
+	id: "hindsight.recallPreferObservations",
+	env: "HINDSIGHT_RECALL_PREFER_OBSERVATIONS",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallPrune = register({
+	id: "hindsight.recallPrune",
+	env: "HINDSIGHT_RECALL_PRUNE",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallDedup = register({
+	id: "hindsight.recallDedup",
+	env: "HINDSIGHT_RECALL_DEDUP",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallCadence = register({
+	id: "hindsight.recallCadence",
+	env: "HINDSIGHT_RECALL_CADENCE",
+	type: "enum",
+	values: ["per-turn", "boundary"] as const,
+	default: "boundary",
+});
+
+export const cfgHindsightDecisionModelUrl = register({
+	id: "hindsight.decisionModelUrl",
+	env: "HINDSIGHT_DECISION_MODEL_URL",
+	type: "string",
+	default: undefined,
+});
+
+export const cfgHindsightDecisionModelApiKey = register({
+	id: "hindsight.decisionModelApiKey",
+	env: "HINDSIGHT_DECISION_MODEL_API_KEY",
+	type: "string",
+	credential: true,
+	default: undefined,
+});
+
+export const cfgHindsightDecisionModelThreshold = register({
+	id: "hindsight.decisionModelThreshold",
+	env: "HINDSIGHT_DECISION_MODEL_THRESHOLD",
+	type: "number",
+	default: 0.25,
 });
 
 export const cfgHindsightDebug = register({

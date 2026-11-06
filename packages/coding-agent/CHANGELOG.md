@@ -54,6 +54,56 @@
 
 - Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
 
+- Added optional `episode_id` metadata and an `[ep:<short id>]` recalled-memory footer for runtimes composed with the session-episode substrate; without it no episode is stamped and no footer is rendered.
+- Added `memory_document_id` to Hindsight retain metadata so a stored memory names the document it landed in.
+- Added `hindsight.provenanceTags` (`HINDSIGHT_PROVENANCE_TAGS`) plus an automatic `role:<agent-profile>` tag so retained memories carry write-only actor/role provenance; provenance is merged into retains only and never into recall filters or observation scopes, so stamping it cannot narrow recall.
+- Added optional `tags` to the `recall` and `reflect` tools; omitted keeps the session filter unchanged, provided tags merge additively with it.
+- Added a compact `[role:… actor:…]` provenance badge to recalled memory footers.
+- Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
+- Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
+- Added `hindsight.retainUpdateMode` (`replace` | `append`, default `replace`) so full-session retain can append only newly accumulated turns to the same session document.
+- Added `hindsight.recallPreferObservations`, `hindsight.recallPrune`, and `hindsight.recallDedup` (default on) so recall can prefer observations over superseded facts and use server-side pruning/dedup where the decision model supports it.
+- Added `hindsight.recallCadence` (`boundary` default, `per-turn` opt-in) so a session can re-ask the bank every turn while never repeating a memory the transcript already holds.
+- Added opt-in single-survivor abstention via `hindsight.decisionModelUrl` / `hindsight.decisionModelThreshold`: a lone low-confidence recall result is dropped, and an unreachable decision service keeps the memory.
+- Added per-call `budget`, `maxTokens`, and `types` controls to the `recall` tool, and made tool recall apply the configured single-survivor abstention gate.
+- Added `xhigh` and `max` deep recall gears: `xhigh` sweeps the scoped collections in one pass and scores them client-side, falling back to a traced `high` recall only when that scope is too large or no scorer is configured; `max` sweeps the bank through `memories/list`. Both prune below the server's own `max(0.20, 0.40 * best)` floor, abstain under the decision threshold, and degrade to unscored candidates when the scorer is unavailable.
+- Hindsight `read memory://<id>` now resolves a bank memory natively, and recalled bullets link the id as `[memory://<id>]`; the read renders the full text with provenance, source memories, and consolidation history, and fails closed with one opaque error for missing and out-of-scope ids alike.
+- Added a root agent `memory:` policy (`autoRetain` / `autoRecall`) that narrows the session's Hindsight flags, with `HINDSIGHT_AUTO_*` environment overrides still winning.
+- Hindsight recall now sweeps each gear's own `<=` cap directly (`low` 300, `mid` 600, `high` 1200, `xhigh` 2400, `max` 4800) in both the hidden `<memories>` refresh and the `recall` tool when a decision scorer is configured, skipping the server-ranked `/memories/recall` call whenever the whole scope fits under the cap; an oversized scope still falls back to the server ranking (or the traced `high` recall for `xhigh`).
+
+### Changed
+
+- Recalled `<memories>` now ride a TUI-hidden context entry delivered with the turn instead of being appended to the system prompt, so recall no longer changes the provider prefix-cache key; the same delivery serves Mnemopi.
+- Hindsight recall is per context epoch instead of per session: a committed compaction or a genuine retitle refreshes it against the current transcript, and a resumed session recalls afresh instead of replaying its frozen first-turn block.
+- Hindsight refreshes never repeat memories the transcript already holds, and the persisted recall record seeds that dedupe across resume.
+- Hindsight now retains any remaining below-cadence session tail on clean close (`AgentSession.dispose` / session-memory teardown), independent of `retainUpdateMode`.
+- Hindsight now retains a below-cadence tail when leaving a conversation through `/new`, `/clear`, `/resume`, `/tree`, fork, or branch, and when bank routing rebuilds mid-session.
+
+### Fixed
+
+- Fixed Hindsight tool-initiated retains storing a recalled `<memories>` block verbatim, which let a memory feed on itself.
+- Fixed Hindsight project mental-model seeds inheriting write-only `actor:*`/`role:*` provenance tags; seed tags now derive from the scope's resolved tags.
+- Fixed Hindsight subagent retains using a stale extraction strategy after a live bank-scope rebuild.
+- Hindsight leave-path retain now waits for delayed backend startup before treating a missing live state as having nothing pending.
+- Fixed Hindsight subagent memories queued during a live bank change from being written to the new bank.
+- Fixed Hindsight subagent reflect calls in flight during a live bank change from being sent to the new bank.
+- Fixed Hindsight delayed startup skipping a below-cadence post-switch turn after `/new`, `/clear`, `/resume`, or `/tree`.
+- Hindsight no longer duplicates a retained tail after `/fresh` or a same-file reload.
+- Hindsight close retain now waits through the configured retain timeout during dispose instead of the 5s event-drain deadline.
+- Hindsight close retain now gets a full retain-timeout budget after any in-flight cadence retain settles, instead of sharing one deadline with queued work.
+- Hindsight close drain now budgets bank creation plus retain so a first-use `createBank` cannot starve the close retain.
+- Hindsight close drain now budgets a tool-retain batch plus the session retain so a slow `retainBatch` cannot starve the close tail.
+- Hindsight delayed startup now keeps a `/tree` ask re-answer as a pending tail instead of treating the later assistant reply as loaded history.
+- Hindsight `/clear` now retains post-reset turns under a new document instead of replacing the drained conversation.
+- Hindsight delayed startup now derives loaded history when enabling mid-session instead of treating an off-backend zero as already retained activity.
+- Hindsight delayed startup now restores the loaded-message baseline when a `/resume` rolls back, so idle close does not re-retain the original transcript.
+- Hindsight `/clear` now reconstructs the post-reset document identity from the persisted reset boundary, and branch/fork after `/clear` no longer retain into the source document.
+- Hindsight delayed startup now drops construction baselines when the backend is torn down, so re-enabling does not duplicate already drained history.
+- Hindsight now resets retain cadence after `branch` and `/btw` so a shorter branch cannot inherit the source session's last retained turn.
+- Hindsight `/tree` now resyncs the post-clear document overlay so a pre-reset leaf cannot overwrite the drained post-clear document.
+- Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
+- Fixed Hindsight live retainStrategy refresh from adopting unrelated endpoint, token, or timeout settings that never rebuilt the client.
+- Hindsight session retain now waits for server-side processing before the local append cursor advances, so a failed retain retries the omitted delta instead of appending past it.
 ## [18.17.0] - 2026-11-06
 
 ### Added

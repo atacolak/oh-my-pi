@@ -37,6 +37,18 @@ import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
 import { currentLoopPhase, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
+import { isolateHindsightEnv, type RestoreHindsightEnv } from "./helpers/hindsight-env";
+
+// `HINDSIGHT_*` variables override every settings layer, so a host that retains out-of-process
+// (`HINDSIGHT_AUTO_RETAIN=false`) would otherwise turn retention assertions into no-ops.
+let restoreHindsightEnv: RestoreHindsightEnv = () => {};
+beforeEach(() => {
+	restoreHindsightEnv = isolateHindsightEnv();
+});
+afterEach(() => {
+	restoreHindsightEnv();
+});
+
 // Mnemopi is lazy-loaded at runtime; preload it for synchronous state construction.
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);
 
@@ -52,6 +64,8 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		hindsightApiToken: null,
 		bankId: null,
 		bankIdPrefix: "",
+		scopeTags: [],
+		provenanceTags: [],
 		scoping: "global",
 		globalScope: false,
 		bankMission: "",
@@ -62,12 +76,21 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		retainEveryNTurns: 3,
 		retainOverlapTurns: 2,
 		retainContext: "omp",
+		retainUpdateMode: "replace",
+		retainStrategy: null,
 		recallBudget: "mid",
 		recallMaxTokens: 1024,
 		recallTypes: ["world", "experience"],
 		recallContextTurns: 1,
 		recallMaxQueryChars: 800,
 		recallPromptPreamble: "preamble",
+		recallPreferObservations: true,
+		recallPrune: true,
+		recallDedup: true,
+		recallCadence: "boundary",
+		decisionModelUrl: null,
+		decisionModelApiKey: null,
+		decisionModelThreshold: 0.25,
 		debug: false,
 		requestTimeoutMs: 30_000,
 		reflectTimeoutMs: 120_000,
@@ -119,7 +142,7 @@ function registerState(client: HindsightApi, settings?: Settings, opts: Register
 		} as never,
 		banksSet: new Set(),
 		lastRetainedTurn: 0,
-		hasRecalledForFirstTurn: false,
+		recallDelivered: false,
 	});
 	void settings;
 }
@@ -293,14 +316,14 @@ describe("Mnemopi tool factories", () => {
 		};
 
 		expect(reflect.description).toContain("unlike `xd://recall`, blends them");
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		expect(recall.description).toContain("`reflect` synthesizes an answer");
 		expect(recall.description).toContain("Before any `xd://memory_edit update`");
 		expect(edit.description).toContain("Only ids returned by `xd://recall`.");
 
 		// A mounted device without a summary makes catalog summaries read its description;
 		// rendering refs must not depend on them, or this recurses without bound.
 		Object.assign(recall, { summary: undefined });
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		expect(recall.description).toContain("`reflect` synthesizes an answer");
 	});
 });
 
@@ -1923,8 +1946,8 @@ describe("recall.execute", () => {
 		const result = await tool.execute("call-4", { query: "anything" });
 		const block = (result.content[0] as { text: string }).text;
 		expect(block).toMatch(/^Found 2 relevant memories \(as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/);
-		expect(block).toContain("- fact one [world]");
-		expect(block).toContain("- fact two");
+		expect(block).toContain("- fact one [memory://1] [world]");
+		expect(block).toContain("- fact two [memory://2]");
 	});
 
 	it("forwards recall tags + tagsMatch from session state when present", async () => {

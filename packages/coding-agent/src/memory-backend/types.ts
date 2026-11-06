@@ -88,13 +88,37 @@ export interface MemoryBackendStartOptions {
 	modelRegistry: ModelRegistry;
 	agentDir: string;
 	taskDepth: number;
+	/**
+	 * Resolves the session episode that memory writes and recall links reference.
+	 * Supplied by a runtime composed with the episode substrate; absent otherwise,
+	 * in which case no `episode_id` is stamped and no `ep:` footer is rendered.
+	 */
+	episodeIdFor?: (sessionId: string) => string | null;
+	/** Close-retain baseline for delayed initial Hindsight startup only. */
+	hindsightCloseRetainBaselineTurns?: number;
+	/** Retainable-message baseline for delayed initial Hindsight startup only. */
+	hindsightLoadedMessageCount?: number;
 	parentHindsightSessionState?: HindsightSessionStateApi;
 	parentMnemopiSessionState?: MnemopiSessionStateApi;
 }
 
+/** Model-visible context delivered with a turn instead of the system prompt. */
+export interface MemoryPromptContextEntry {
+	/** Custom message type this entry persists under, so a reader can recognize it. */
+	customType: string;
+	/** Model-facing text; hidden from the TUI. */
+	content: string;
+	details?: unknown;
+}
+
 /** A successful recall, including an empty result, staged until user-turn delivery. */
 export interface MemoryPromptPreparation {
-	context?: string;
+	/**
+	 * Hidden, model-visible context entry delivered with this turn's user message.
+	 * Never appended to the system prompt: the provider prefix cache is keyed on
+	 * those bytes, and a recall that changes them invalidates it.
+	 */
+	contextEntry?: MemoryPromptContextEntry;
 	/**
 	 * Model-facing note delivered with this turn's user message, e.g. what changed in the
 	 * memories a reused recall holds. Persisted in the transcript as a hidden custom message
@@ -156,13 +180,15 @@ export interface MemoryBackend {
 	/** Render pending deltas awaiting consolidation (`/memory queue`). */
 	queuePreview?(context: MemoryBackendOperationContext): Promise<string | undefined>;
 	/**
-	 * Optional hook to inject a backend-specific block into the current turn's
-	 * system prompt before the agent starts generating.
+	 * Optional hook to stage per-turn memory context before the agent starts
+	 * generating.
 	 *
-	 * This is the only place a backend can affect the very first answer of a
-	 * fresh session. Context is appended to the winning base prompt at delivery;
-	 * commit publishes the cached snippet and first-turn consumption together.
-	 * Return undefined for an ineligible or failed recall, not an empty success.
+	 * This is the only place a backend can affect the very first answer of a fresh
+	 * session. The staged {@link MemoryPromptPreparation.contextEntry} is delivered
+	 * as a hidden entry with the turn — never as system-prompt bytes, which are the
+	 * provider prefix-cache key — and `commit` publishes the backend's bookkeeping
+	 * only once delivery is validated. Return undefined for an ineligible or failed
+	 * recall, not an empty success.
 	 */
 	beforeAgentStartPrompt?(
 		session: AgentSession,

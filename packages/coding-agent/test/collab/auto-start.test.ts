@@ -19,10 +19,17 @@ import { FakeWebSocket, installInMemoryRelay, uninstallInMemoryRelay } from "./h
 function context(overrides: Record<string, unknown> = {}, sessionSettings?: Settings): InteractiveModeContext {
 	const settingOverrides = Object.fromEntries(Object.entries(overrides).filter(([key]) => key.startsWith("collab.")));
 	const settings = sessionSettings ?? Settings.isolated(settingOverrides);
+	const { collabGuest: initialGuest, ...rest } = overrides;
+	let guest = initialGuest as InteractiveModeContext["collabGuest"];
 	const ctx = {
 		settings,
 		collabHost: undefined,
-		collabGuest: undefined,
+		get collabGuest(): InteractiveModeContext["collabGuest"] {
+			return guest;
+		},
+		setCollabGuest(next: InteractiveModeContext["collabGuest"]): void {
+			guest = next;
+		},
 		sessionManager: {
 			getSessionId: () => "auto-start-test",
 			getCwd: () => os.tmpdir(),
@@ -59,7 +66,7 @@ function context(overrides: Record<string, unknown> = {}, sessionSettings?: Sett
 		showStatus: () => {},
 		showWarning: () => {},
 		showError: () => {},
-		...overrides,
+		...rest,
 	} as unknown as InteractiveModeContext;
 	ctx.collabController = new CollabController(ctx);
 	return ctx;
@@ -179,7 +186,7 @@ describe("collab auto-start", () => {
 		try {
 			const pending = ctx.collabController.start({ access: "control", relay: "ws://localhost:8787" });
 			await waitFor(() => start.mock.calls.length === 1, "host start in flight");
-			ctx.collabGuest = {} as InteractiveModeContext["collabGuest"];
+			ctx.setCollabGuest({} as NonNullable<InteractiveModeContext["collabGuest"]>);
 			gate.resolve();
 			await expect(pending).rejects.toThrow("Cannot host while joined as a guest");
 			expect(stop).toHaveBeenCalledWith("guest joined while host was starting");

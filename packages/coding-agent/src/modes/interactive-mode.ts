@@ -20,6 +20,7 @@ import type {
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
 import {
+	AppViewportScrollEnd,
 	Container,
 	clearRenderCache,
 	getComposerStyle,
@@ -2534,9 +2535,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.composer.setRuntimeChildren(
 			[
+				// Scrollable tail: the transcript through the editor-anchored HUDs scroll
+				// with the transcript, so a todo or subagent block cannot shrink it.
 				this.chatContainer,
 				this.pendingShellContainer,
-				this.pendingMessagesContainer,
 				this.todoContainer,
 				this.subagentContainer,
 				this.btwContainer,
@@ -2549,10 +2551,15 @@ export class InteractiveMode implements InteractiveModeContext {
 				// Judge batches and automatic downloads stay editor-anchored and update
 				// independently of transcript output, directly above the working/throughput/title row.
 				this.progressHudContainer,
-				// Working loader / transient status sits below the sticky todo + subagent
-				// HUDs, just above the editor's hook-widget top margin — so it reads next to
-				// the prompt while keeping the one-line gap above the editor (the band
-				// composer collapses that gap so its status band sits flush).
+				// The app viewport scrolls everything above and pins everything below.
+				new AppViewportScrollEnd(),
+				// Sticky band: only the compact reply/composer band stays pinned. Queued
+				// messages sit between the working row and the composer, as they do natively.
+				this.pendingMessagesContainer,
+				// Working loader / transient status sits just above the editor's hook-widget
+				// top margin, so it reads next to the prompt while keeping the one-line gap
+				// above the editor (the band composer collapses that gap so its status band
+				// sits flush).
 				this.statusContainer,
 				this.attachmentChipsContainer,
 				this.hookWidgetContainerAbove,

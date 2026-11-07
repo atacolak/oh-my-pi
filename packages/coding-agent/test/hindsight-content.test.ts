@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import {
 	composeRecallQuery,
 	formatCurrentTime,
+	formatHindsightMemoryRead,
 	formatMemories,
 	type HindsightMessage,
 	hasSubstantiveContent,
+	isHindsightMemoryInScope,
 	prepareEmbeddableRetentionTranscript,
 	prepareRetentionTranscript,
 	prepareUserRetentionTranscript,
@@ -358,6 +360,128 @@ describe("formatMemories", () => {
 
 	it("returns an empty string for no results", () => {
 		expect(formatMemories([])).toBe("");
+	});
+
+	it("renders an episode link only when the memory carries a real episode id", () => {
+		const out = formatMemories([
+			{ text: "fact one", type: "world", metadata: { episode_id: "4a91c3f2-77aa-4d2f-9d6b-1e0f7c9a8b21" } },
+			{ text: "fact two", metadata: { session_id: "s-1" } },
+			{ text: "fact three" },
+		]);
+		expect(out).toContain("- fact one [world] [ep:4a91c3f2]");
+		// A document or session id is not an episode: no link, no false promise.
+		expect(out.match(/\[ep:/g)).toHaveLength(1);
+	});
+
+	it("surfaces actor/role provenance as a compact bracketed badge", () => {
+		const out = formatMemories([
+			{ text: "fact one", type: "world", tags: ["project:omp", "role:builder", "actor:HindsightProvenance"] },
+			{ text: "fact two", tags: ["scope:coding"] },
+		]);
+		expect(out).toContain("- fact one [world] [role:builder actor:HindsightProvenance]");
+		expect(out).toContain("- fact two");
+		// Scope tags are not provenance; only actor/role earn a badge.
+		expect(out).not.toContain("[project:omp]");
+		expect(out).not.toContain("[scope:coding]");
+	});
+});
+
+describe("formatMemories memory ids", () => {
+	it("links a recalled memory that carries an id and leaves id-less bullets untouched", () => {
+		const out = formatMemories([
+			{ id: "m-1", text: "fact one", type: "world" },
+			{ text: "fact two", type: "world" },
+		]);
+		expect(out).toContain("- fact one [memory://m-1] [world]");
+		expect(out).toContain("- fact two [world]");
+	});
+
+	it("blanks a whitespace-only id instead of linking it", () => {
+		expect(formatMemories([{ id: "   ", text: "fact" }])).toBe("- fact");
+	});
+});
+
+describe("isHindsightMemoryInScope", () => {
+	const scope = { scoping: "per-project-tagged", recallTags: ["project:omp", "scope:coding"] };
+
+	it("requires every scope tag in all-strict mode", () => {
+		expect(isHindsightMemoryInScope(["project:omp", "scope:coding"], scope)).toBe(true);
+		expect(isHindsightMemoryInScope(["project:omp"], scope)).toBe(false);
+		expect(isHindsightMemoryInScope([], scope)).toBe(false);
+	});
+
+	it("accepts one matching tag in any mode", () => {
+		expect(
+			isHindsightMemoryInScope(["project:omp"], {
+				scoping: "per-project-tagged",
+				recallTags: ["project:omp", "scope:coding"],
+				recallTagsMatch: "any",
+			}),
+		).toBe(true);
+		expect(
+			isHindsightMemoryInScope(["other"], {
+				scoping: "per-project-tagged",
+				recallTags: ["project:omp"],
+				recallTagsMatch: "any_strict",
+			}),
+		).toBe(false);
+	});
+
+	it("fails closed without scope tags unless the scope is plain per-project", () => {
+		expect(isHindsightMemoryInScope(["project:omp"], { scoping: "per-project-tagged" })).toBe(false);
+		expect(isHindsightMemoryInScope([], { scoping: "per-project" })).toBe(true);
+	});
+
+	it("hides a personal memory from every other scope", () => {
+		expect(
+			isHindsightMemoryInScope(["scope:personal"], { scoping: "per-project", recallTags: ["project:omp"] }),
+		).toBe(false);
+		expect(
+			isHindsightMemoryInScope(["scope:personal"], { scoping: "per-project", recallTags: ["scope:personal"] }),
+		).toBe(true);
+	});
+
+	it("trims tags and ignores blanks on both sides", () => {
+		expect(
+			isHindsightMemoryInScope([" project:omp "], { scoping: "per-project", recallTags: ["", "project:omp "] }),
+		).toBe(true);
+	});
+});
+
+describe("formatHindsightMemoryRead", () => {
+	it("renders provenance, sources, and consolidation history", () => {
+		const out = formatHindsightMemoryRead(
+			{
+				id: "mem-1",
+				text: "  deploy host is beta-9  ",
+				fact_type: "observation",
+				date: "2026-01-01",
+				tags: ["project:omp"],
+				metadata: { episode_id: " episode-1 " },
+				source_memories: [{ id: "src-1", text: " raw fact ", type: "world", mentioned_at: "2025-12-01" }],
+				history: [{ previous_text: "old fact", changed_at: "2026-01-02" }, { text: "older fact" }],
+			},
+			"fallback",
+		);
+		expect(out.split("\n").slice(0, 5)).toEqual([
+			"# memory://mem-1",
+			"type: observation",
+			"mentioned_at: 2026-01-01",
+			"tags: project:omp",
+			"episode: episode://episode-1",
+		]);
+		expect(out).toContain("deploy host is beta-9");
+		expect(out).toContain("## Source Memories");
+		expect(out).toContain("- memory://src-1 [world] (2025-12-01) raw fact");
+		expect(out).toContain("## History");
+		expect(out).toContain("- (2026-01-02) old fact");
+		expect(out).toContain("- older fact");
+	});
+
+	it("falls back to the requested id when the unit reports none", () => {
+		expect(formatHindsightMemoryRead({ id: "", text: "only text" }, "requested")).toBe(
+			"# memory://requested\n\nonly text",
+		);
 	});
 });
 

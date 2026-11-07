@@ -22,6 +22,7 @@ import {
 import { countUserTurns, extractMessages } from "../hindsight/transcript";
 import {
 	findPersistedRecall,
+	MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
 	type MemoryRecallChangesDetails,
 	type PersistedRecall,
 	persistRecall,
@@ -37,6 +38,12 @@ import mnemopiInstructions from "../prompts/system/mnemopi-instructions.md" with
 import { type MnemopiBackendConfig, type MnemopiScoping, truncateApproxTokens } from "./config";
 import { mnemopiEmbedClient } from "./embed-client";
 import { cfgMnemopiInjectionTokenLimit } from "./settings";
+
+/** The hidden turn entry carrying a recall block; empty content yields no entry. */
+function recallContextEntry(content: string): MemoryPromptPreparation["contextEntry"] {
+	if (!content) return undefined;
+	return { customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE, content };
+}
 
 /** A rendered recall block and where each tracked memory's text starts in it. */
 interface RecallBlock {
@@ -757,7 +764,7 @@ export class MnemopiSessionState implements MnemopiSessionStateApi {
 			// change for the next resume to report.
 			const changes = this.#recallChanges(persisted.memories);
 			return {
-				context: persisted.text || undefined,
+				contextEntry: recallContextEntry(persisted.text),
 				notice: changes && {
 					content: changes.content,
 					details: { scope, memories: changes.memories } satisfies MemoryRecallChangesDetails,
@@ -776,7 +783,7 @@ export class MnemopiSessionState implements MnemopiSessionStateApi {
 		// The staged block and the transcript carry it as delivered; the session caches the
 		// full one, which every later prompt render cuts to the current budget.
 		return {
-			context: record?.text || undefined,
+			contextEntry: recallContextEntry(record?.text ?? ""),
 			commit: () => this.#commitRecall(generation, recall?.text ?? "", record),
 		};
 	}

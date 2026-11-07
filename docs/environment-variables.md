@@ -551,28 +551,43 @@ Boolean values follow the setting-backed flag rules above: an empty value is ign
 Integer values use the base-10 `parseInt` prefix (`5000ms` reads as `5000`, `2.5` as `2`);
 empty and non-numeric values are ignored, and the parsed integer is not clamped. Enum values
 must match one of the listed lowercase values (surrounding whitespace is ignored); invalid values
-are ignored.
+are ignored. Array values are JSON arrays of strings, e.g.
+`HINDSIGHT_PROVENANCE_TAGS='["team:infra","repo:omp"]'`.
 
-| Variable                           | Setting overridden              | Accepted value / built-in default                                                 |
-| ---------------------------------- | ------------------------------- | --------------------------------------------------------------------------------- |
-| `HINDSIGHT_API_URL`                | `hindsight.apiUrl`              | Non-empty string; default `http://localhost:8888`                                 |
-| `HINDSIGHT_API_TOKEN`              | `hindsight.apiToken`            | Non-empty string; unset by default                                                |
-| `HINDSIGHT_BANK_ID`                | `hindsight.bankId`              | Non-empty string; unset by default, so the selected scoping mode derives the bank |
-| `HINDSIGHT_BANK_MISSION`           | `hindsight.bankMission`         | Non-empty string; default empty string                                            |
-| `HINDSIGHT_RETAIN_MODE`            | `hindsight.retainMode`          | `full-session` or `last-turn`; default `full-session`                             |
-| `HINDSIGHT_RECALL_BUDGET`          | `hindsight.recallBudget`        | `low`, `mid`, or `high`; default `mid`                                            |
-| `HINDSIGHT_AUTO_RECALL`            | `hindsight.autoRecall`          | Boolean; default `true`                                                           |
-| `HINDSIGHT_AUTO_RETAIN`            | `hindsight.autoRetain`          | Boolean; default `true`                                                           |
-| `HINDSIGHT_SCOPING`                | `hindsight.scoping`             | `global`, `per-project`, or `per-project-tagged`; default `per-project-tagged`    |
-| `HINDSIGHT_DEBUG`                  | `hindsight.debug`               | Boolean; default `false`                                                          |
-| `HINDSIGHT_RECALL_MAX_TOKENS`      | `hindsight.recallMaxTokens`     | Integer; default `1024`                                                           |
-| `HINDSIGHT_RECALL_CONTEXT_TURNS`   | `hindsight.recallContextTurns`  | Integer; default `1`                                                              |
-| `HINDSIGHT_RECALL_MAX_QUERY_CHARS` | `hindsight.recallMaxQueryChars` | Integer; default `800`                                                            |
-| `HINDSIGHT_RETAIN_EVERY_N_TURNS`   | `hindsight.retainEveryNTurns`   | Integer; default `3`                                                              |
-| `HINDSIGHT_REQUEST_TIMEOUT_MS`     | `hindsight.requestTimeoutMs`    | Integer milliseconds; default `30000`                                             |
-| `HINDSIGHT_REFLECT_TIMEOUT_MS`     | `hindsight.reflectTimeoutMs`    | Integer milliseconds; default `120000`                                            |
-| `HINDSIGHT_RECALL_TIMEOUT_MS`      | `hindsight.recallTimeoutMs`     | Integer milliseconds; default `30000`                                             |
-| `HINDSIGHT_RETAIN_TIMEOUT_MS`      | `hindsight.retainTimeoutMs`     | Integer milliseconds; default `60000`                                             |
+`HINDSIGHT_PROVENANCE_TAGS` (and the automatic `role:<agent-profile>` tag) is write-only:
+it is attached to retained memories but never merged into recall filters or observation
+consolidation scopes, so stamping provenance cannot narrow what a session recalls.
+
+| Variable                               | Setting overridden                   | Accepted value / built-in default                                                 |
+| -------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------- |
+| `HINDSIGHT_API_URL`                    | `hindsight.apiUrl`                   | Non-empty string; default `http://localhost:8888`                                 |
+| `HINDSIGHT_API_TOKEN`                  | `hindsight.apiToken`                 | Non-empty string; unset by default                                                |
+| `HINDSIGHT_BANK_ID`                    | `hindsight.bankId`                   | Non-empty string; unset by default, so the selected scoping mode derives the bank |
+| `HINDSIGHT_BANK_MISSION`               | `hindsight.bankMission`              | Non-empty string; default empty string                                            |
+| `HINDSIGHT_PROVENANCE_TAGS`            | `hindsight.provenanceTags`           | JSON array of write-only tags; default `[]` (see the note below)                  |
+| `HINDSIGHT_RETAIN_MODE`                | `hindsight.retainMode`               | `full-session` or `last-turn`; default `full-session`                             |
+| `HINDSIGHT_RETAIN_UPDATE_MODE`         | `hindsight.retainUpdateMode`         | `replace` or `append`; default `replace`                                          |
+| `HINDSIGHT_RETAIN_STRATEGY`            | `hindsight.retainStrategy`           | Non-empty strategy; unset omits the request field and uses the bank default       |
+| `HINDSIGHT_RECALL_BUDGET`              | `hindsight.recallBudget`             | `low`, `mid`, or `high`; default `mid`                                            |
+| `HINDSIGHT_AUTO_RECALL`                | `hindsight.autoRecall`               | Boolean; default `true`                                                           |
+| `HINDSIGHT_AUTO_RETAIN`                | `hindsight.autoRetain`               | Boolean; default `true`                                                           |
+| `HINDSIGHT_SCOPING`                    | `hindsight.scoping`                  | `global`, `per-project`, or `per-project-tagged`; default `per-project-tagged`    |
+| `HINDSIGHT_DEBUG`                      | `hindsight.debug`                    | Boolean; default `false`                                                          |
+| `HINDSIGHT_RECALL_MAX_TOKENS`          | `hindsight.recallMaxTokens`          | Integer; default `1024`                                                           |
+| `HINDSIGHT_RECALL_CONTEXT_TURNS`       | `hindsight.recallContextTurns`       | Integer; default `1`                                                              |
+| `HINDSIGHT_RECALL_MAX_QUERY_CHARS`     | `hindsight.recallMaxQueryChars`      | Integer; default `800`                                                            |
+| `HINDSIGHT_RECALL_PREFER_OBSERVATIONS` | `hindsight.recallPreferObservations` | Boolean; default `true`                                                           |
+| `HINDSIGHT_RECALL_PRUNE`               | `hindsight.recallPrune`              | Boolean; default `true`                                                           |
+| `HINDSIGHT_RECALL_DEDUP`               | `hindsight.recallDedup`              | Boolean; default `true`                                                           |
+| `HINDSIGHT_RECALL_CADENCE`             | `hindsight.recallCadence`            | `boundary` or `per-turn`; default `boundary`                                      |
+| `HINDSIGHT_DECISION_MODEL_URL`         | `hindsight.decisionModelUrl`         | Non-empty string; unset disables single-survivor abstention                       |
+| `HINDSIGHT_DECISION_MODEL_API_KEY`     | `hindsight.decisionModelApiKey`      | Non-empty string; unset sends no bearer token                                     |
+| `HINDSIGHT_DECISION_MODEL_THRESHOLD`   | `hindsight.decisionModelThreshold`   | Number; default `0.25`                                                            |
+| `HINDSIGHT_RETAIN_EVERY_N_TURNS`       | `hindsight.retainEveryNTurns`        | Integer; default `3`                                                              |
+| `HINDSIGHT_REQUEST_TIMEOUT_MS`         | `hindsight.requestTimeoutMs`         | Integer milliseconds; default `30000`                                             |
+| `HINDSIGHT_REFLECT_TIMEOUT_MS`         | `hindsight.reflectTimeoutMs`         | Integer milliseconds; default `120000`                                            |
+| `HINDSIGHT_RECALL_TIMEOUT_MS`          | `hindsight.recallTimeoutMs`          | Integer milliseconds; default `30000`                                             |
+| `HINDSIGHT_RETAIN_TIMEOUT_MS`          | `hindsight.retainTimeoutMs`          | Integer milliseconds; default `60000`                                             |
 
 `PI_NO_PTY` is also set internally when CLI `--no-pty` is used.
 

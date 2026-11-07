@@ -23,6 +23,8 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		hindsightApiToken: null,
 		bankId: null,
 		bankIdPrefix: "",
+		scopeTags: [],
+		provenanceTags: [],
 		scoping: "global",
 		globalScope: false,
 		bankMission: "",
@@ -33,12 +35,21 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		retainEveryNTurns: 3,
 		retainOverlapTurns: 2,
 		retainContext: "omp",
+		retainUpdateMode: "replace",
+		retainStrategy: null,
 		recallBudget: "mid",
 		recallMaxTokens: 1024,
 		recallTypes: [],
 		recallContextTurns: 1,
 		recallMaxQueryChars: 800,
 		recallPromptPreamble: "preamble",
+		recallPreferObservations: true,
+		recallPrune: true,
+		recallDedup: true,
+		recallCadence: "boundary",
+		decisionModelUrl: null,
+		decisionModelApiKey: null,
+		decisionModelThreshold: 0.25,
 		debug: false,
 		requestTimeoutMs: 30_000,
 		reflectTimeoutMs: 120_000,
@@ -66,7 +77,7 @@ describe("HindsightSessionState mental-model freeze", () => {
 	function makeState() {
 		const listeners = new Set<AgentSessionEventListener>();
 		const listMentalModels = vi.fn(async () => ({ items: [] }));
-		const client = { listMentalModels } as unknown as HindsightApi;
+		const client = { listMentalModels, getKnowledgeBaseTree: async () => ({ roots: [] }) } as unknown as HindsightApi;
 		const state = new HindsightSessionState({
 			sessionId: "s",
 			client,
@@ -82,7 +93,7 @@ describe("HindsightSessionState mental-model freeze", () => {
 			} as never,
 			banksSet: new Set(),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 		return { state, listeners, listMentalModels };
 	}
@@ -107,7 +118,10 @@ describe("HindsightSessionState mental-model freeze", () => {
 describe("SessionMemory mental-model boundary reload", () => {
 	function makeBoundaryHarness(response: Promise<MentalModelListResponse>, publicationGate?: Promise<void>) {
 		const published: Array<string | undefined> = [];
-		const client = { listMentalModels: () => response } as unknown as HindsightApi;
+		const client = {
+			listMentalModels: () => response,
+			getKnowledgeBaseTree: async () => ({ roots: [] }),
+		} as unknown as HindsightApi;
 		const stateSession: {
 			refreshBaseSystemPrompt: (commitIf?: () => boolean) => Promise<void>;
 			sessionManager: { getEntries: () => never[] };
@@ -123,7 +137,7 @@ describe("SessionMemory mental-model boundary reload", () => {
 			session: stateSession as never,
 			banksSet: new Set(),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 		const publishBoundary = async (commitIf?: () => boolean) => {
 			await publicationGate;
@@ -145,9 +159,9 @@ describe("SessionMemory mental-model boundary reload", () => {
 			setHindsightSessionState: () => {},
 			getMnemopiSessionState: () => undefined,
 			takeMnemopiSessionState: () => undefined,
-			setBaseSystemPrompt: () => {},
 			refreshBaseSystemPrompt: publishReset,
 			replaceMemoryTools: async () => {},
+			rebaseHindsightCloseRetainBaseline: () => {},
 		} as unknown as SessionMemoryHost;
 		return { memory: new SessionMemory(host, {}), published, state };
 	}
@@ -243,6 +257,7 @@ describe("SessionMemory mental-model boundary reload", () => {
 		let request = 0;
 		const client = {
 			listMentalModels: () => (request++ === 0 ? bootstrapResponse.promise : boundaryResponse.promise),
+			getKnowledgeBaseTree: async () => ({ roots: [] }),
 		} as unknown as HindsightApi;
 		const published: Array<string | undefined> = [];
 		const stateSession: {
@@ -262,7 +277,7 @@ describe("SessionMemory mental-model boundary reload", () => {
 			session: stateSession as never,
 			banksSet: new Set(["b"]),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 
 		const bootstrap = state.runMentalModelLoad({ bankId: "b" });

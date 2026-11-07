@@ -58,3 +58,34 @@ describe("loadHindsightConfig HINDSIGHT_* env parsing", () => {
 		expect(config.autoRetain).toBe(true);
 	});
 });
+
+describe("loadHindsightConfig recall quality", () => {
+	it("defaults to preferred observations and pruning, at a boundary cadence with no decision model", () => {
+		const config = loadHindsightConfig(Settings.isolated({}));
+		expect(config.recallPreferObservations).toBe(true);
+		expect(config.recallPrune).toBe(true);
+		expect(config.recallDedup).toBe(true);
+		expect(config.recallCadence).toBe("boundary");
+		expect(config.decisionModelUrl).toBeNull();
+		expect(config.decisionModelApiKey).toBeNull();
+		expect(config.decisionModelThreshold).toBe(0.25);
+	});
+
+	it("reads recall quality overrides and treats a blank decision model URL as unconfigured", () => {
+		const config = loadHindsightConfig(
+			Settings.isolated({
+				"hindsight.recallCadence": "per-turn",
+				"hindsight.recallPrune": false,
+				"hindsight.decisionModelUrl": "http://127.0.0.1:18080",
+				"hindsight.decisionModelThreshold": 0.5,
+			}),
+		);
+		expect(config.recallCadence).toBe("per-turn");
+		expect(config.recallPrune).toBe(false);
+		expect(config.decisionModelUrl).toBe("http://127.0.0.1:18080");
+		expect(config.decisionModelThreshold).toBe(0.5);
+		expect(
+			loadHindsightConfig(Settings.isolated({ "hindsight.decisionModelUrl": "  " })).decisionModelUrl,
+		).toBeNull();
+	});
+});

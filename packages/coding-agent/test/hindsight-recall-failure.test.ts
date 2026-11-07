@@ -9,6 +9,8 @@ const config = {
 	hindsightApiToken: null,
 	bankId: null,
 	bankIdPrefix: "",
+	scopeTags: [],
+	provenanceTags: [],
 	scoping: "global",
 	globalScope: false,
 	bankMission: "",
@@ -19,12 +21,21 @@ const config = {
 	retainEveryNTurns: 3,
 	retainOverlapTurns: 2,
 	retainContext: "omp",
+	retainUpdateMode: "replace",
+	retainStrategy: null,
 	recallBudget: "mid",
 	recallMaxTokens: 1024,
 	recallTypes: [],
 	recallContextTurns: 1,
 	recallMaxQueryChars: 800,
 	recallPromptPreamble: "preamble",
+	recallPreferObservations: true,
+	recallPrune: true,
+	recallDedup: true,
+	recallCadence: "boundary",
+	decisionModelUrl: null,
+	decisionModelApiKey: null,
+	decisionModelThreshold: 0.25,
 	debug: false,
 	requestTimeoutMs: 30_000,
 	reflectTimeoutMs: 30_000,
@@ -87,7 +98,7 @@ describe("Hindsight recall failure notice", () => {
 		const outcome = state.recallForContext("query");
 		client.fail();
 
-		expect(await outcome).toEqual({ context: null, ok: false });
+		expect(await outcome).toEqual({ context: null, ok: false, delivered: [] });
 		expect(notices).toHaveLength(1);
 		const [notice] = notices;
 		expect(notice.level).toBe("warning");

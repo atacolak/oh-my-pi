@@ -24,6 +24,8 @@ import type {
 	MentalModelHistoryEntry,
 	MentalModelListResponse,
 	MentalModelSummary,
+	HindsightMemoryUnit,
+	KnowledgeTreeResponse,
 	RecallOptions,
 	RecallResponse,
 	ReflectOptions,
@@ -81,6 +83,8 @@ export type HindsightClientProtocol = {
 	refreshMentalModel: RpcMethod<[bankId: string, mentalModelId: string], RefreshMentalModelResponse>;
 	deleteMentalModel: RpcMethod<[bankId: string, mentalModelId: string], boolean>;
 	getMentalModelHistory: RpcMethod<[bankId: string, mentalModelId: string], MentalModelHistoryEntry[]>;
+	getMemory: RpcMethod<[bankId: string, memoryId: string], HindsightMemoryUnit | null>;
+	getKnowledgeBaseTree: RpcMethod<[bankId: string], KnowledgeTreeResponse>;
 };
 
 /** A parent Hindsight state's fields (read live, synchronously) and its confirmed-bank set (`banks.*`). */
@@ -88,6 +92,8 @@ export type HindsightSessionStateProtocol = {
 	client: RpcMethod<[], HindsightClientApi>;
 	bankId: RpcMethod<[], string>;
 	retainTags: RpcMethod<[], string[] | undefined>;
+	resolvedTags: RpcMethod<[], string[] | undefined>;
+	observationScopes: RpcMethod<[], string[][] | undefined>;
 	recallTags: RpcMethod<[], string[] | undefined>;
 	recallTagsMatch: RpcMethod<[], "any" | "all" | "any_strict" | "all_strict" | undefined>;
 	config: RpcMethod<[], HindsightConfig>;

@@ -19,6 +19,8 @@ import type {
 	ListMemoriesResponse,
 	ListMentalModelsOptions,
 	MemoryItemInput,
+	HindsightMemoryUnit,
+	KnowledgeTreeResponse,
 	MentalModelHistoryEntry,
 	MentalModelListResponse,
 	MentalModelSummary,
@@ -134,6 +136,14 @@ export class RemoteHindsightClient implements HindsightClientApi {
 	getMentalModelHistory(bankId: string, mentalModelId: string): Promise<MentalModelHistoryEntry[]> {
 		return this.#remote.call("getMentalModelHistory", bankId, mentalModelId);
 	}
+
+	getMemory(bankId: string, memoryId: string): Promise<HindsightMemoryUnit | null> {
+		return this.#remote.call("getMemory", bankId, memoryId);
+	}
+
+	getKnowledgeBaseTree(bankId: string): Promise<KnowledgeTreeResponse> {
+		return this.#remote.call("getKnowledgeBaseTree", bankId);
+	}
 }
 
 /** Main's confirmed-bank set of one parent state; each operation runs synchronously on main's `Set`. */
@@ -186,6 +196,14 @@ export class RemoteHindsightSessionState implements HindsightSessionStateApi {
 
 	get retainTags(): string[] | undefined {
 		return this.#remote.callSync("retainTags");
+	}
+
+	get resolvedTags(): string[] | undefined {
+		return this.#remote.callSync("resolvedTags");
+	}
+
+	get observationScopes(): string[][] | undefined {
+		return this.#remote.callSync("observationScopes");
 	}
 
 	get recallTags(): string[] | undefined {

@@ -375,6 +375,11 @@ export interface AgentSessionConfig {
 	agentId?: string;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
+	/**
+	 * Mounted agent profile name (`--agent` for a root session, the agent
+	 * definition name for a subagent). Used for write-only memory provenance.
+	 */
+	agentProfile?: string;
 	/** Registry whose awaits table records this agent blocked on the user while a dialog waits for their answer. */
 	agentRegistry?: AgentRegistryApi;
 	/** Provider-facing session ID override. */

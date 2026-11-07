@@ -35,6 +35,12 @@ export interface OutboxEvent {
 	content: string;
 	context: string;
 	sessionId: string;
+	/** Server metadata for the event; ids only, never user text. */
+	metadata?: Record<string, string>;
+	/** Per-item extraction strategy override captured at enqueue time. */
+	strategy?: string;
+	/** Exact deterministic observation consolidation scopes for this memory. */
+	observationScopes?: string[][];
 }
 
 export interface RetainCall {
@@ -44,6 +50,12 @@ export interface RetainCall {
 	context: string;
 	/** Tags of project-scoped items; global items are retained untagged. */
 	tags: string[] | undefined;
+	/** Metadata stamped on every event of this call. */
+	metadata?: Record<string, string>;
+	/** Extraction strategy override applied to every item. */
+	strategy?: string;
+	/** Consolidation scopes applied to every project-scoped item. */
+	observationScopes?: string[][];
 }
 
 export interface DrainResult {
@@ -178,6 +190,9 @@ export class HindsightOutbox {
 			content,
 			context,
 			sessionId: this.#clean(call.sessionId),
+			metadata: call.metadata,
+			strategy: call.strategy,
+			observationScopes: scope === "global" ? undefined : call.observationScopes,
 		};
 	}
 
@@ -250,7 +265,9 @@ export class HindsightOutbox {
 					content: event.content,
 					context: event.context,
 					timestamp: new Date(event.timestamp),
-					metadata: { session_id: event.sessionId },
+					metadata: event.metadata ?? { session_id: event.sessionId },
+					strategy: event.strategy,
+					observationScopes: event.observationScopes,
 					tags: event.tags.length > 0 ? event.tags : undefined,
 					documentId: event.id,
 					updateMode: "replace",
@@ -326,7 +343,17 @@ async function readEvent(file: string, now: number): Promise<Pending | undefined
 			Number.isFinite(Date.parse(event.timestamp)) &&
 			typeof event.content === "string" &&
 			typeof event.context === "string" &&
-			typeof event.sessionId === "string";
+			typeof event.sessionId === "string" &&
+			(event.metadata === undefined ||
+				(typeof event.metadata === "object" &&
+					event.metadata !== null &&
+					Object.values(event.metadata).every(value => typeof value === "string"))) &&
+			(event.strategy === undefined || typeof event.strategy === "string") &&
+			(event.observationScopes === undefined ||
+				(Array.isArray(event.observationScopes) &&
+					event.observationScopes.every(
+						group => Array.isArray(group) && group.every(tag => typeof tag === "string"),
+					)));
 		return valid ? { file, event, published } : undefined;
 	} catch {
 		return undefined;

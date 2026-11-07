@@ -46,6 +46,7 @@ export interface DaemonBrokerClientOptions {
 	runtimeDir?: string;
 	/** Last-client shutdown grace override in milliseconds. */
 	idleGraceMs?: number;
+	existingOnly?: boolean;
 }
 
 export interface DaemonCompletionUnregisterOptions {
@@ -140,6 +141,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	#token: string;
 	readonly #seenCompletionIds = new Set<string>();
 	readonly #idleGraceMs: number | undefined;
+	readonly #existingOnly: boolean;
 	readonly #pending = new Map<string, PendingRequest>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
 	readonly #terminalSinks = new Map<string, (notification: DaemonTerminalNotification) => void>();
@@ -159,6 +161,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#endpoint = daemonBrokerEndpoint(runtimeDir);
 		this.#token = token;
 		this.#idleGraceMs = options.idleGraceMs;
+		this.#existingOnly = options.existingOnly === true;
 	}
 
 	async request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
@@ -305,6 +308,10 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	}
 
 	async #connectOnce(): Promise<void> {
+		if (this.#existingOnly) {
+			this.#bindSocket(await IpcConnection.connect(this.#endpoint, { framing: "lines", timeoutMs: 250 }));
+			return;
+		}
 		// The broker authenticates against the token file it read at startup. A
 		// replacement broker may have started from a different file, or a deleted
 		// runtime dir may need a fresh one before any broker can start.
@@ -499,7 +506,9 @@ export async function createDaemonBrokerClient(
 ): Promise<DaemonBrokerClient> {
 	const canonical = await canonicalProjectDir(projectDir);
 	const runtimeDir = options.runtimeDir ?? daemonRuntimeDir(canonical);
-	const token = await readOrCreateToken(runtimeDir);
+	const token = options.existingOnly
+		? (await fs.readFile(path.join(runtimeDir, TOKEN_FILE), "utf8")).trim()
+		: await readOrCreateToken(runtimeDir);
 	return new SocketDaemonClient(canonical, runtimeDir, token, options);
 }
 

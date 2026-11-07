@@ -203,7 +203,7 @@ class LaunchedInteractive {
 		const command = `stty cols 100 rows 30 2>/dev/null; ${[process.execPath, CLI, ...args]
 			.map(part => JSON.stringify(part))
 			.join(" ")}`;
-		this.#child = Bun.spawn([SCRIPT, "-q", "-c", command, "/dev/null"], {
+		this.#child = Bun.spawn([SCRIPT, "-q", "-e", "-c", command, "/dev/null"], {
 			cwd,
 			env: { ...env, PATH: process.env.PATH, TERM: "xterm-256color" },
 			stdin: "pipe",
@@ -246,6 +246,34 @@ class LaunchedInteractive {
 			timeoutMs,
 			"interactive mirror never painted the owner's first frames",
 		);
+	}
+
+	async waitForText(text: string): Promise<void> {
+		const deadline = Date.now() + 30_000;
+		while (Date.now() < deadline) {
+			if (this.output().includes(text)) return;
+			if (this.#child.exitCode !== null) {
+				throw new Error(`attach exited ${this.#child.exitCode}: ${this.output()}`);
+			}
+			await Bun.sleep(25);
+		}
+		throw new Error(`native attach never rendered ${text}: ${this.output()}`);
+	}
+
+	write(data: string): void {
+		this.#child.stdin.write(data);
+		this.#child.stdin.flush();
+	}
+
+	async resize(columns: number, rows: number): Promise<void> {
+		const mirrorPid = await findCliDescendant(this.pid, 10_000);
+		const tty = await fs.readlink(`/proc/${mirrorPid}/fd/1`);
+		const result = Bun.spawnSync([STTY, "-F", tty, "cols", String(columns), "rows", String(rows)], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0) throw new Error(`native viewer resize failed: ${result.stderr.toString()}`);
+		process.kill(mirrorPid, "SIGWINCH");
 	}
 
 	async signalMirrorHangup(): Promise<void> {
@@ -570,7 +598,7 @@ describe("brokered rpc launch", () => {
 			expect(interactive.output()).not.toContain("Still starting after");
 
 			await interactive.signalMirrorHangup();
-			expect(await interactive.waitForExit()).toBe(0);
+			expect(await interactive.waitForExit()).toBe(129);
 			await expect(fs.stat(publicationPath)).resolves.toBeDefined();
 			await expect(fs.stat(socketPath)).resolves.toBeDefined();
 			expect(process.kill(publication.pid, 0)).toBe(true);
@@ -591,6 +619,196 @@ describe("brokered rpc launch", () => {
 		},
 		180_000,
 	);
+
+	for (const noUi of [false, true]) {
+		test.skipIf(!hasPtyHarness)(
+			noUi
+				? "native --attach refuses terminal-less --mode rpc --no-ui without side effects"
+				: "native --attach controls the same persistent --mode rpc conversation",
+			async () => {
+				harness = await createHarness();
+				const requests: string[] = [];
+				const provider = Bun.serve({
+					hostname: "127.0.0.1",
+					port: 0,
+					async fetch(request) {
+						const body = await request.text();
+						requests.push(body);
+						const reply = `NATIVE_CONTROL_REPLY_${requests.length}`;
+						const chunks = [
+							{
+								id: `native-control-${requests.length}`,
+								choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }],
+							},
+							{ id: `native-control-${requests.length}`, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+						];
+						return new Response(
+							`${chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`,
+							{ headers: { "Content-Type": "text/event-stream" } },
+						);
+					},
+				});
+				const viewers: LaunchedInteractive[] = [];
+				let observer: { feed: FrameFeed; send: (frame: object) => void; close: () => void } | undefined;
+				try {
+					const agentDir = harness.env.PI_CODING_AGENT_DIR!;
+					await Bun.write(
+						path.join(agentDir, "config.yml"),
+						JSON.stringify({
+							setupVersion: 99,
+							defaultThinkingLevel: "off",
+							startup: { showSplash: false, setupWizard: false, changelogMode: "hidden", checkUpdate: false },
+							marketplace: { autoUpdate: "off" },
+							telemetry: { otlpExportEnabled: false },
+							compaction: { enabled: false },
+						}),
+					);
+					await Bun.write(
+						path.join(agentDir, "models.yml"),
+						JSON.stringify({
+							providers: {
+								"native-control": {
+									baseUrl: `${provider.url.origin}/v1`,
+									api: "openai-completions",
+									auth: "none",
+									models: [{
+										id: "local",
+										name: "Local native control fixture",
+										reasoning: false,
+										input: ["text"],
+										cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+										contextWindow: 131072,
+										maxTokens: 1024,
+									}],
+								},
+							},
+						}),
+					);
+					const args = [
+						"--mode", "rpc", ...(noUi ? ["--no-ui"] : []),
+						"--model", "native-control/local",
+						"--no-extensions", "--no-skills", "--no-rules", "--no-lsp", "--no-prewalk", "--no-tools",
+					];
+					bridge = new LaunchedBridge(args, harness.project, harness.env);
+					await bridge.saw(frame => frame.type === "ready");
+					owner = await waitForPublication(harness);
+					const originalOwner = owner;
+					const socketPath = path.join(harness.runDir, `${owner.sessionId}.sock`);
+					observer = await connectSocket(socketPath);
+					await observer.feed.wait(frame => frame.type === "ready", 10_000, "independent RPC observer not ready");
+					bridge.write({ type: "prompt", id: "web-warmup", message: "NATIVE_WEB_WARMUP" });
+					await observer.feed.wait(
+						frame => frame.type === "agent_end" && JSON.stringify(frame).includes("NATIVE_CONTROL_REPLY_1"),
+						30_000,
+						"real provider conversation did not complete through RPC",
+					);
+					const sessionPath = await fs.realpath(owner.sessionFile);
+					const sessionDir = path.dirname(sessionPath);
+					const filesBefore = (await fs.readdir(sessionDir)).filter(file => file.endsWith(".jsonl")).sort();
+					const transcriptBefore = await fs.readFile(sessionPath, "utf8");
+					const first = new LaunchedInteractive(["--attach", sessionPath], harness.project, harness.env);
+					viewers.push(first);
+					interactive = first;
+					try {
+						if (noUi) {
+							const nativeAttachExitCode = await first.waitForExit();
+							expect(nativeAttachExitCode).toBe(2);
+							expect(first.output()).toContain("terminal-unavailable");
+							expect(await fs.readFile(sessionPath, "utf8")).toBe(transcriptBefore);
+							expect(requests).toHaveLength(1);
+							observer.send({ type: "get_state", id: "after-native-refusal" });
+							const state = await observer.feed.wait(
+								frame => frame.type === "response" && frame.id === "after-native-refusal",
+								10_000,
+								"independent RPC observer lost its owner after native refusal",
+							);
+							expect(state).toMatchObject({
+								success: true,
+								data: { sessionId: originalOwner.sessionId, sessionFile: sessionPath },
+							});
+							process.stdout.write(`${JSON.stringify({
+								contract: "hcom_bmf_headless_control_gap_v1",
+								nativeAttachExitCode,
+							})}\n`);
+							return;
+						}
+						await first.waitForText("NATIVE_CONTROL_REPLY_1");
+						first.write("NATIVE_TERMINAL_ONE\r");
+						await observer.feed.wait(
+							frame => frame.type === "agent_end" && JSON.stringify(frame).includes("NATIVE_CONTROL_REPLY_2"),
+							30_000,
+							"native terminal input did not execute a turn on the RPC owner's conversation",
+						);
+						expect(requests[1]).toContain("NATIVE_WEB_WARMUP");
+						expect(requests[1]).toContain("NATIVE_TERMINAL_ONE");
+						await first.resize(101, 33);
+						await withTimeout(
+							(async () => {
+								const deadline = Date.now() + 10_000;
+								while (Date.now() < deadline) {
+									const size = await readPtySize(originalOwner.pid);
+									if (size?.columns === 101 && size.rows === 33) return;
+									await Bun.sleep(25);
+								}
+								throw new Error("native viewer resize did not reach the same owner's PTY");
+							})(),
+							10_000,
+							"native viewer resize did not reach the same owner's PTY",
+						);
+						const second = new LaunchedInteractive(["--attach", sessionPath], harness.project, harness.env);
+						viewers.push(second);
+						await second.waitForText("NATIVE_CONTROL_REPLY_2");
+						await first.signalMirrorHangup();
+						expect(await first.waitForExit()).toBe(129);
+						expect(await processAlive(originalOwner.pid)).toBe(true);
+						second.write("NATIVE_TERMINAL_TWO\r");
+						await observer.feed.wait(
+							frame => frame.type === "agent_end" && JSON.stringify(frame).includes("NATIVE_CONTROL_REPLY_3"),
+							30_000,
+							"second native viewer lost control after the first detached",
+						);
+						expect(requests[2]).toContain("NATIVE_TERMINAL_ONE");
+						expect(requests[2]).toContain("NATIVE_TERMINAL_TWO");
+						await second.signalMirrorHangup();
+						expect(await second.waitForExit()).toBe(129);
+						observer.send({ type: "get_state", id: "after-native-detach" });
+						const state = await observer.feed.wait(
+							frame => frame.type === "response" && frame.id === "after-native-detach",
+							10_000,
+							"independent RPC observer lost its owner after both native viewers detached",
+						);
+						expect(state).toMatchObject({
+							success: true,
+							data: { sessionId: originalOwner.sessionId, sessionFile: sessionPath },
+						});
+						const transcript = await fs.readFile(sessionPath, "utf8");
+						expect(transcript).toContain("NATIVE_TERMINAL_ONE");
+						expect(transcript).toContain("NATIVE_TERMINAL_TWO");
+						expect(transcript).toContain("NATIVE_CONTROL_REPLY_3");
+					} finally {
+						expect(await processAlive(originalOwner.pid)).toBe(true);
+						expect(await readPublication(harness)).toEqual(originalOwner);
+						expect((await fs.readdir(sessionDir)).filter(file => file.endsWith(".jsonl")).sort()).toEqual(filesBefore);
+						process.stdout.write(`${JSON.stringify({
+							contract: "hcom_bmf_headless_control_gap_v1",
+							mode: args.slice(0, noUi ? 3 : 2),
+							ownerPid: originalOwner.pid,
+							bridgePid: bridge.pid,
+							sessionId: originalOwner.sessionId,
+							terminal: originalOwner.terminal ?? null,
+							providerTurns: requests.length,
+						})}\n`);
+					}
+				} finally {
+					await Promise.all(viewers.map(viewer => viewer.close()));
+					interactive = undefined;
+					observer?.close();
+					provider.stop(true);
+				}
+			},
+			120_000,
+		);
+	}
 
 	test("--no-ui keeps the rpc lifecycle in process and leaves no detached owner", async () => {
 		harness = await createHarness();

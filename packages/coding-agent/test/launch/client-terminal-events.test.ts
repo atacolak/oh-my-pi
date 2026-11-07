@@ -162,6 +162,20 @@ async function connect(): Promise<{ broker: FakeBroker; client: DaemonBrokerClie
 	return { broker, client };
 }
 
+describe("existing broker connections", () => {
+	it("refuses a missing token without creating runtime files or starting a broker", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-existing-broker-"));
+		cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
+		const projectDir = path.join(root, "project");
+		await fs.mkdir(projectDir);
+		const before = await fs.readdir(root, { recursive: true });
+		await expect(
+			createDaemonBrokerClient(projectDir, { runtimeDir: path.join(root, "runtime"), existingOnly: true }),
+		).rejects.toThrow();
+		expect(await fs.readdir(root, { recursive: true })).toEqual(before);
+	});
+});
+
 describe("terminal event routing", () => {
 	it("routes terminal output and exit to their subscription sink", async () => {
 		const { broker, client } = await connect();

@@ -581,7 +581,7 @@ describe("terminal mirror lifetime", () => {
 		});
 	}, 90_000);
 
-	it("lets a second mirror attach after the first is killed", async () => {
+	it("keeps concurrent mirrors and the web attachment alive when one mirror is killed", async () => {
 		await withTerminalBroker(async ({ client, projectDir, runtimeDir }) => {
 			const f = await startLifetimeFixture(client, projectDir, runtimeDir);
 			try {
@@ -589,20 +589,19 @@ describe("terminal mirror lifetime", () => {
 				await first.waitForStatus("attached");
 				expect(alive(first.proc.pid)).toBe(true);
 
-				const refused = f.mirror();
-				const refusedStatus = await refused.waitForStatus("failed");
-				expect(refusedStatus.message).toContain("already attached");
-				expect(await refused.proc.exited).not.toBe(0);
-				expect(alive(first.proc.pid)).toBe(true);
+				const second = f.mirror();
+				expect((await second.waitForStatus("attached")).name).toBe("attached");
+				expect(alive(second.proc.pid)).toBe(true);
 				expect(alive(f.ownerPid)).toBe(true);
 
 				first.kill();
 				await first.proc.exited;
 				expectMirrorKilled(first);
 
-				const second = f.resumeMirror();
-				expect((await second.waitForStatus("attached")).name).toBe("attached");
+				const fresh = f.resumeMirror();
+				expect((await fresh.waitForStatus("attached")).name).toBe("attached");
 				expect(alive(second.proc.pid)).toBe(true);
+				expect(alive(fresh.proc.pid)).toBe(true);
 				expect(alive(f.ownerPid)).toBe(true);
 
 				f.web.send({ id: "after-kill", type: "get_state" });

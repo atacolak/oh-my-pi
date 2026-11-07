@@ -92,7 +92,7 @@ import {
 	resolveStartupSessionGate,
 	type ResolvedSessionTarget,
 } from "./launch/session-attach-gate";
-import { runLiveSessionAttach } from "./launch/session-attach-run";
+import { runAttachOnly, runLiveSessionAttach } from "./launch/session-attach-run";
 import {
 	type BrokeredLaunchSelection,
 	ownerArgvForSession,
@@ -1899,6 +1899,10 @@ export async function runRootCommand(
 	rawArgs: string[],
 	deps: RunRootCommandDependencies = DEFAULT_RUN_ROOT_DEPENDENCIES,
 ): Promise<void> {
+	if (parsed.attach !== undefined) {
+		await runAttachOnly(parsed.attach);
+		return;
+	}
 	logger.startTiming();
 	startStartupWatchdog();
 	try {

@@ -57,6 +57,7 @@ export interface TerminalMirrorOptions {
 	 * live. A rejected refresh detaches only this mirror.
 	 */
 	readonly refresh?: () => Promise<void>;
+	readonly inputAfterRefresh?: boolean;
 	/**
 	 * The subscription is already installed by `terminal_start`; skip the
 	 * redundant attach that would only revalidate and resize the same PTY.
@@ -164,6 +165,7 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 
 	const finish = Promise.withResolvers<TerminalMirrorResult>();
 	let finished = false;
+	let acceptingInput = options.inputAfterRefresh !== true;
 	let removeInput: (() => void) | undefined;
 	let removeResize: (() => void) | undefined;
 	let removeSignals: (() => void) | undefined;
@@ -248,7 +250,7 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 		input.resume?.();
 		const viewport = normalizeSize(size());
 		removeResize = onResize(() => {
-			if (finished) return;
+			if (finished || !acceptingInput) return;
 			const current = normalizeSize(size());
 			void options.client
 				.request({
@@ -261,12 +263,8 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 				})
 				.catch(() => undefined);
 		});
-		removeSignals = onSignal(signal => {
-			logger.debug("Terminal mirror detaching on local signal", { signal });
-			void detach();
-		});
 		removeInput = input.onData(data => {
-			if (finished) return;
+			if (finished || !acceptingInput) return;
 			void options.client.request({ op: "send", name: options.name, id: options.id, data }).catch(error => {
 				if (finished) return;
 				logger.warn("Terminal mirror input failed; detaching this mirror", {
@@ -274,6 +272,10 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 				});
 				void detach();
 			});
+		});
+		removeSignals = onSignal(signal => {
+			logger.debug("Terminal mirror detaching on local signal", { signal });
+			void detach();
 		});
 
 		if (!options.alreadyAttached) {
@@ -296,6 +298,8 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 				throw error;
 			}
 		}
+		acceptingInput = true;
+		if (finished) return finish.promise;
 	} catch (error) {
 		if (!finished) {
 			finished = true;

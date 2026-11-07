@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { setImmediate as nextImmediate } from "node:timers/promises";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import { withTimeout } from "@oh-my-pi/pi-utils";
 import type { DaemonBrokerClient } from "../../src/launch/client";
@@ -323,6 +324,34 @@ describe("a terminal mirror", () => {
 
 		broker.emit(exitFrame(0));
 		expect(await running).toEqual({ detached: false, exitCode: 0, reason: "exit" });
+	});
+
+	it("does not replay input or resize received before a strict refresh completes", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		const refreshing = Promise.withResolvers<void>();
+		const refresh = Promise.withResolvers<void>();
+		const running = startMirror(terminal, broker.client, {
+			inputAfterRefresh: true,
+			refresh: () => {
+				refreshing.resolve();
+				return refresh.promise;
+			},
+		});
+		await refreshing.promise;
+		terminal.type("must not replay");
+		terminal.resize();
+		expect(broker.operations.map(operation => operation.op)).toEqual(["terminal_attach"]);
+		refresh.resolve();
+		await nextImmediate();
+		terminal.type("explicit input");
+		terminal.resize();
+		expect(broker.operations.filter(operation => operation.op === "send")).toEqual([
+			{ op: "send", name: NAME, id: ID, data: "explicit input" },
+		]);
+		expect(broker.operations.filter(operation => operation.op === "terminal_resize")).toHaveLength(1);
+		terminal.signal("SIGHUP");
+		expect(await running).toEqual({ detached: true });
 	});
 
 	it("forwards raw input unchanged, resizes the owner, and detaches on a local hangup", async () => {

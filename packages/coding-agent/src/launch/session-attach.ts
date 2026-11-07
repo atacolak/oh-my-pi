@@ -31,6 +31,7 @@ export type SessionAttachDecision =
 export interface SessionAttachProbeOptions {
 	endpointDir?: string;
 	timeoutMs?: number;
+	sessionPath?: string;
 }
 
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
@@ -202,9 +203,37 @@ export async function probeSessionAttach(
 	const publication = await readPublication(sidecarPath, sessionId);
 	if (publication.kind === "unknown") return { status: "unknown", sessionId, reason: publication.reason };
 	if (publication.kind === "invalid") return { status: "unreachable", sessionId, endpoint };
+	if (options.sessionPath !== undefined && publication.kind === "absent") {
+		return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
+	}
+	if (
+		options.sessionPath !== undefined &&
+		(publication.kind !== "published" ||
+			publisherProvablyGone(publication) ||
+			!(await matchesSessionPath(publication.metadata?.sessionFile, options.sessionPath)))
+	) {
+		return { status: "unreachable", sessionId, endpoint };
+	}
 
-	const observation = await observeLiveSession(endpoint, sessionId, timeoutMs);
+	const observation = await observeLiveSession(endpoint, sessionId, timeoutMs, options.sessionPath);
 	if (observation === "live") {
+		if (options.sessionPath !== undefined) {
+			const current = await readPublication(sidecarPath, sessionId);
+			const beforeTerminal = terminalFromMetadata(publication.kind === "published" ? publication.metadata : undefined);
+			const afterTerminal = terminalFromMetadata(current.kind === "published" ? current.metadata : undefined);
+			if (
+				current.kind !== "published" ||
+				publisherProvablyGone(current) ||
+				publication.kind !== "published" ||
+				current.metadata?.pid !== publication.metadata?.pid ||
+				beforeTerminal?.projectDir !== afterTerminal?.projectDir ||
+				beforeTerminal?.name !== afterTerminal?.name ||
+				beforeTerminal?.id !== afterTerminal?.id ||
+				!(await matchesSessionPath(current.metadata?.sessionFile, options.sessionPath))
+			) {
+				return { status: "unreachable", sessionId, endpoint };
+			}
+		}
 		const terminal = terminalFromMetadata(publication.kind === "published" ? publication.metadata : undefined);
 		return terminal === undefined ? { status: "live", sessionId } : { status: "live", sessionId, terminal };
 	}
@@ -239,6 +268,7 @@ function publisherProvablyGone(publication: PublicationObservation): boolean {
 interface SessionAttachMetadata {
 	pid: number;
 	sessionId: string;
+	sessionFile?: unknown;
 	terminal?: unknown;
 }
 
@@ -265,7 +295,7 @@ function parseMetadata(value: unknown, sessionId: string): SessionAttachMetadata
 	const { pid, sessionId: observedSessionId } = value;
 	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
 	if (observedSessionId !== sessionId) return undefined;
-	return { pid, sessionId, terminal: value.terminal };
+	return { pid, sessionId, sessionFile: value.sessionFile, terminal: value.terminal };
 }
 
 function terminalFromMetadata(metadata: SessionAttachMetadata | undefined): SessionAttachTerminal | undefined {
@@ -278,11 +308,25 @@ function terminalFromMetadata(metadata: SessionAttachMetadata | undefined): Sess
 	return { protocolVersion: 1, projectDir, name, id };
 }
 
+async function matchesSessionPath(observed: unknown, expected: string): Promise<boolean> {
+	if (typeof observed !== "string" || !path.isAbsolute(observed)) return false;
+	try {
+		return (await fs.realpath(observed)) === expected && (await fs.realpath(expected)) === expected;
+	} catch {
+		return false;
+	}
+}
+
 type LiveObservation = "live" | "unreachable" | "vanished";
 
 let probeSequence = 0;
 
-async function observeLiveSession(endpoint: string, sessionId: string, timeoutMs: number): Promise<LiveObservation> {
+async function observeLiveSession(
+	endpoint: string,
+	sessionId: string,
+	timeoutMs: number,
+	sessionPath?: string,
+): Promise<LiveObservation> {
 	let connection: IpcConnection;
 	try {
 		connection = await IpcConnection.connect(endpoint, { framing: "lines", timeoutMs });
@@ -329,7 +373,9 @@ async function observeLiveSession(endpoint: string, sessionId: string, timeoutMs
 		);
 		if (state.success !== true) return "unreachable";
 		const data = isRecord(state.data) ? state.data : undefined;
-		return data?.sessionId === sessionId ? "live" : "unreachable";
+		if (data?.sessionId !== sessionId) return "unreachable";
+		if (sessionPath !== undefined && !(await matchesSessionPath(data.sessionFile, sessionPath))) return "unreachable";
+		return "live";
 	} catch {
 		return "unreachable";
 	} finally {

@@ -512,7 +512,7 @@ class DaemonBroker {
 	readonly #ownerSockets = new Map<string, { socket: IpcConnection; subscriptionId: string | undefined }>();
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
-	readonly #terminalSubscriptions = new Map<string, TerminalSubscription>();
+	readonly #terminalSubscriptions = new Map<string, Map<string, TerminalSubscription>>();
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<IpcConnection>();
 	/** Abortable `wait`/follow-`logs` requests, keyed by wire request id, so a client can cancel its own poll. */
@@ -600,8 +600,10 @@ class DaemonBroker {
 				for (const [owner, registration] of this.#ownerSockets) {
 					if (registration.socket === socket) this.#ownerSockets.delete(owner);
 				}
-				for (const subscription of this.#terminalSubscriptions.values()) {
-					if (subscription.socket === socket) this.#dropTerminalSubscription(subscription);
+				for (const subscriptions of this.#terminalSubscriptions.values()) {
+					for (const subscription of subscriptions.values()) {
+						if (subscription.socket === socket) this.#dropTerminalSubscription(subscription);
+					}
 				}
 				// Nobody can read these answers any more; stop polling for them.
 				for (const [requestId, inFlight] of this.#inFlight) {
@@ -918,9 +920,11 @@ class DaemonBroker {
 		if (!spec.pty || !spec.persist || spec.detached) {
 			throw new Error("terminal_start requires a persistent, non-detached PTY daemon");
 		}
-		for (const subscription of this.#terminalSubscriptions.values()) {
-			if (subscription.name === spec.name) {
-				throw new Error(`Terminal ${spec.name} is already attached by subscription ${subscription.subscriptionId}`);
+		for (const subscriptions of this.#terminalSubscriptions.values()) {
+			for (const subscription of subscriptions.values()) {
+				if (subscription.name === spec.name) {
+					throw new Error(`Terminal ${spec.name} is already attached by subscription ${subscription.subscriptionId}`);
+				}
 			}
 		}
 		let installed: TerminalSubscription | undefined;
@@ -1003,17 +1007,8 @@ class DaemonBroker {
 		operation: Extract<DaemonOperation, { op: "terminal_detach" }>,
 		socket: IpcConnection,
 	): DaemonRpcResult {
-		const subscription = this.#terminalSubscriptions.get(operation.id);
-		if (subscription) {
-			if (subscription.name !== operation.name || subscription.subscriptionId !== operation.subscriptionId) {
-				throw new Error(
-					`Terminal subscription ${operation.subscriptionId} does not own daemon ${operation.name} generation ${operation.id}`,
-				);
-			}
-			if (subscription.socket !== socket) {
-				throw new Error(`Terminal subscription ${operation.subscriptionId} belongs to another connection`);
-			}
-			this.#dropTerminalSubscription(subscription);
+		if (this.#terminalSubscriptions.has(operation.id)) {
+			this.#dropTerminalSubscription(this.#ownedTerminal(operation, socket));
 		}
 		return {
 			op: "terminal_detach",
@@ -1031,16 +1026,8 @@ class DaemonBroker {
 			id: operation.id,
 			sequence: operation.sequence,
 		};
-		const subscription = this.#terminalSubscriptions.get(operation.id);
-		if (!subscription) return result;
-		if (subscription.name !== operation.name || subscription.subscriptionId !== operation.subscriptionId) {
-			throw new Error(
-				`Terminal subscription ${operation.subscriptionId} does not own daemon ${operation.name} generation ${operation.id}`,
-			);
-		}
-		if (subscription.socket !== socket) {
-			throw new Error(`Terminal subscription ${operation.subscriptionId} belongs to another connection`);
-		}
+		if (!this.#terminalSubscriptions.has(operation.id)) return result;
+		const subscription = this.#ownedTerminal(operation, socket);
 		if (operation.sequence > subscription.sequence) {
 			throw new Error(
 				`Terminal acknowledgment ${operation.sequence} exceeds sent sequence ${subscription.sequence}`,
@@ -1061,11 +1048,9 @@ class DaemonBroker {
 		columns: number,
 		rows: number,
 	): TerminalSubscription {
-		const existing = this.#terminalSubscriptions.get(record.snapshot.id);
-		if (existing) {
-			throw new Error(
-				`Terminal ${record.snapshot.name} is already attached by subscription ${existing.subscriptionId}`,
-			);
+		let subscriptions = this.#terminalSubscriptions.get(record.snapshot.id);
+		if (subscriptions?.has(subscriptionId)) {
+			throw new Error(`Terminal ${record.snapshot.name} is already attached by subscription ${subscriptionId}`);
 		}
 		record.terminalColumns = columns;
 		record.terminalRows = rows;
@@ -1080,7 +1065,11 @@ class DaemonBroker {
 			outstandingBytes: 0,
 			pending: [],
 		};
-		this.#terminalSubscriptions.set(record.snapshot.id, subscription);
+		if (!subscriptions) {
+			subscriptions = new Map();
+			this.#terminalSubscriptions.set(record.snapshot.id, subscriptions);
+		}
+		subscriptions.set(subscriptionId, subscription);
 		return subscription;
 	}
 
@@ -1088,12 +1077,8 @@ class DaemonBroker {
 		operation: { subscriptionId: string; name: string; id: string },
 		socket: IpcConnection,
 	): TerminalSubscription {
-		const subscription = this.#terminalSubscriptions.get(operation.id);
-		if (
-			!subscription ||
-			subscription.name !== operation.name ||
-			subscription.subscriptionId !== operation.subscriptionId
-		) {
+		const subscription = this.#terminalSubscriptions.get(operation.id)?.get(operation.subscriptionId);
+		if (!subscription || subscription.name !== operation.name) {
 			throw new Error(
 				`Terminal subscription ${operation.subscriptionId} does not own daemon ${operation.name} generation ${operation.id}`,
 			);
@@ -1108,8 +1093,10 @@ class DaemonBroker {
 		subscription: TerminalSubscription,
 		notification?: { exitCode?: number; reason?: string },
 	): void {
-		if (this.#terminalSubscriptions.get(subscription.id) !== subscription) return;
-		this.#terminalSubscriptions.delete(subscription.id);
+		const subscriptions = this.#terminalSubscriptions.get(subscription.id);
+		if (subscriptions?.get(subscription.subscriptionId) !== subscription) return;
+		subscriptions.delete(subscription.subscriptionId);
+		if (subscriptions.size === 0) this.#terminalSubscriptions.delete(subscription.id);
 		if (!notification || subscription.socket.closed) return;
 		subscription.socket.send(
 			JSON.stringify({
@@ -1123,30 +1110,31 @@ class DaemonBroker {
 	}
 
 	#publishTerminalOutput(record: ManagedDaemon, generation: number, chunk: string): void {
-		const subscription = this.#terminalSubscriptions.get(record.snapshot.id);
-		if (!subscription) return;
-		if (subscription.generation !== 0 && subscription.generation !== generation) return;
-		subscription.generation = generation;
+		const subscriptions = this.#terminalSubscriptions.get(record.snapshot.id);
+		if (!subscriptions) return;
 		for (const data of splitTerminalFrames(chunk)) {
-			const sequence = ++subscription.sequence;
 			const bytes = Buffer.byteLength(data, "utf8");
-			subscription.outstandingBytes += bytes;
-			subscription.pending.push({ sequence, bytes });
-			if (!subscription.socket.closed) {
-				subscription.socket.send(
-					JSON.stringify({
-						event: "terminal_output",
-						subscriptionId: subscription.subscriptionId,
-						name: subscription.name,
-						id: subscription.id,
-						sequence,
-						data,
-					}),
-				);
-			}
-			if (subscription.outstandingBytes > MAX_TERMINAL_OUTSTANDING_BYTES) {
-				this.#dropTerminalSubscription(subscription, { reason: TERMINAL_BACKPRESSURE_REASON });
-				return;
+			for (const subscription of subscriptions.values()) {
+				if (subscription.generation !== 0 && subscription.generation !== generation) continue;
+				subscription.generation = generation;
+				const sequence = ++subscription.sequence;
+				subscription.outstandingBytes += bytes;
+				subscription.pending.push({ sequence, bytes });
+				if (!subscription.socket.closed) {
+					subscription.socket.send(
+						JSON.stringify({
+							event: "terminal_output",
+							subscriptionId: subscription.subscriptionId,
+							name: subscription.name,
+							id: subscription.id,
+							sequence,
+							data,
+						}),
+					);
+				}
+				if (subscription.outstandingBytes > MAX_TERMINAL_OUTSTANDING_BYTES) {
+					this.#dropTerminalSubscription(subscription, { reason: TERMINAL_BACKPRESSURE_REASON });
+				}
 			}
 		}
 	}
@@ -1415,9 +1403,11 @@ class DaemonBroker {
 		record.snapshot.exitCode = exitCode;
 		record.snapshot.exitReason = error;
 		record.snapshot.readyPending = undefined;
-		const terminalSubscription = this.#terminalSubscriptions.get(record.snapshot.id);
-		if (terminalSubscription) {
-			this.#dropTerminalSubscription(terminalSubscription, { exitCode, reason: error });
+		const terminalSubscriptions = this.#terminalSubscriptions.get(record.snapshot.id);
+		if (terminalSubscriptions) {
+			for (const subscription of terminalSubscriptions.values()) {
+				this.#dropTerminalSubscription(subscription, { exitCode, reason: error });
+			}
 		}
 		const failed = error !== undefined || (exitCode !== undefined && exitCode !== 0);
 		const shouldRestart =

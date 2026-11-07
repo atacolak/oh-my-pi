@@ -10,9 +10,11 @@ import {
 	DAEMON_IDLE_GRACE_ENV,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_RUNTIME_DIR_ENV,
+	DAEMON_TERMINAL_PROTOCOL_VERSION,
 	type DaemonCompletionNotification,
 	type DaemonOperation,
 	type DaemonRpcResult,
+	type DaemonTerminalNotification,
 	type DaemonWireMessage,
 	parseDaemonRpcResult,
 	parseDaemonWireMessage,
@@ -57,6 +59,11 @@ export interface DaemonBrokerClient {
 		owner: string,
 		sink: (notification: DaemonCompletionNotification) => Promise<void> | void,
 	): (options?: DaemonCompletionUnregisterOptions) => void;
+	/**
+	 * Register the sink for one terminal subscription before asking the broker to start or attach it.
+	 * Returns an unsubscribe; dropping a sink never sends a detach, so losing a mirror leaks nothing.
+	 */
+	subscribeTerminal(subscriptionId: string, sink: (notification: DaemonTerminalNotification) => void): () => void;
 	/** Canonical project directory or synthetic directory identifying a global scope. */
 	readonly projectDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
@@ -65,6 +72,21 @@ export interface DaemonBrokerClient {
 
 /** A request reached the broker and the broker rejected the operation. */
 export class DaemonBrokerRejectedError extends Error {}
+
+/** The reached broker predates terminal streams; it must be replaced, never worked around. */
+export class DaemonTerminalUnsupportedError extends Error {}
+
+/** Fail closed unless the reached broker implements terminal streams. */
+export async function requireTerminalProtocol(client: DaemonBrokerClient): Promise<void> {
+	const result = await client.request({ op: "ping" });
+	const version = result.op === "ping" ? result.terminalProtocolVersion : undefined;
+	if (version !== DAEMON_TERMINAL_PROTOCOL_VERSION) {
+		throw new DaemonTerminalUnsupportedError(
+			`Daemon broker ${client.projectDir} does not implement terminal streams (protocol ${version ?? "absent"}); ` +
+				"restart it with a current omp",
+		);
+	}
+}
 
 async function readOrCreateToken(runtimeDir: string): Promise<string> {
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
@@ -120,6 +142,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #idleGraceMs: number | undefined;
 	readonly #pending = new Map<string, PendingRequest>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
+	readonly #terminalSinks = new Map<string, (notification: DaemonTerminalNotification) => void>();
 	readonly #completionUnsubscribes = new Set<string>();
 	readonly #preservedCompletionOwners = new Set<string>();
 	readonly #completionReplays = new Set<string>();
@@ -208,10 +231,20 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#completionReconnectTimer = undefined;
 		this.#socket?.destroy();
 		this.#completionSinks.clear();
+		this.#terminalSinks.clear();
 		this.#preservedCompletionOwners.clear();
 		this.#completionReplays.clear();
 		this.#socket = undefined;
 		this.#rejectPending(new Error("Daemon broker client closed"));
+	}
+
+	subscribeTerminal(subscriptionId: string, sink: (notification: DaemonTerminalNotification) => void): () => void {
+		if (this.#closed) throw new Error("Daemon broker client is closed");
+		this.#terminalSinks.set(subscriptionId, sink);
+		return () => {
+			if (this.#terminalSinks.get(subscriptionId) !== sink) return;
+			this.#terminalSinks.delete(subscriptionId);
+		};
 	}
 
 	onCompletion(
@@ -351,16 +384,23 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				typeof decoded === "object" &&
 				decoded !== null &&
 				"event" in decoded &&
-				decoded.event === "daemon-completed"
+				typeof decoded.event === "string"
 			) {
-				logger.warn("Ignoring malformed daemon completion", { error: parseError.message });
+				logger.warn("Ignoring malformed daemon notification", {
+					event: decoded.event,
+					error: parseError.message,
+				});
 				return;
 			}
 			this.#rejectPending(parseError);
 			return;
 		}
 		if ("event" in message) {
-			void this.#deliverCompletion(message);
+			if (message.event === "daemon-completed") {
+				void this.#deliverCompletion(message);
+			} else {
+				this.#terminalSinks.get(message.subscriptionId)?.(message);
+			}
 			return;
 		}
 		const response = message;

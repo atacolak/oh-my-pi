@@ -19,9 +19,12 @@ import type {
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { RuntimeGenerationInfo } from "../../launch/runtime-generation";
 import type { SessionLeaseReport } from "../../session/session-storage";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
+import type { McpReauthStatus, McpServerStatusEntry } from "./rpc-mcp";
+import type { CompactMode } from "../../session/compact-modes";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
@@ -63,6 +66,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "upgrade_runtime"; whenIdle?: boolean; force?: boolean }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
 	| {
@@ -111,7 +115,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_interrupt_mode"; mode: "immediate" | "wait" }
 
 	// Compaction
-	| { id?: string; type: "compact"; customInstructions?: string }
+	| { id?: string; type: "compact"; mode?: CompactMode; customInstructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
 	// Cache warming
@@ -149,6 +153,11 @@ export type RpcCommand =
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "get_logout_accounts"; providerId: string }
 	| { id?: string; type: "logout"; providerId: string; credentialId: number }
+
+	// MCP control
+	| { id?: string; type: "get_mcp_status" }
+	| { id?: string; type: "set_mcp_enabled"; name: string; enabled: boolean }
+	| { id?: string; type: "mcp_reauth"; name: string }
 
 	// Word prediction (composer ghost text); `cursor` is a UTF-16 offset into `text`
 	| { id?: string; type: "predict_word"; text: string; cursor: number }
@@ -212,6 +221,8 @@ export interface RpcSessionState {
 	/** For session dump / export (plain-text parity with /dump). */
 	systemPrompt?: string[];
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
+	/** Runtime generation layout of this process, when the entrypoint is generation-managed. */
+	generation?: RuntimeGenerationInfo;
 	/** Current context window usage. */
 	contextUsage?: ContextUsage;
 	/** Current goal-mode state; `null` when the session has no goal. */
@@ -373,6 +384,15 @@ export interface RpcAbortAndRestoreQueueResult {
 	truncated?: true;
 }
 
+/** `upgrade_runtime` outcome: whether the owner is moving, is already current, or when it will move. */
+export interface RpcUpgradeRuntimeResult {
+	upgraded: boolean;
+	scheduled: boolean;
+	running?: string;
+	current?: string;
+	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle";
+}
+
 export interface RpcReadyFrame {
 	type: "ready";
 	protocolVersion: 1;
@@ -461,6 +481,13 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| {
+			id?: string;
+			type: "response";
+			command: "upgrade_runtime";
+			success: true;
+			data: RpcUpgradeRuntimeResult;
+	  }
 	| {
 			id?: string;
 			type: "response";
@@ -576,6 +603,29 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_steering_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_follow_up_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_interrupt_mode"; success: true }
+
+	// MCP control
+	| {
+			id?: string;
+			type: "response";
+			command: "get_mcp_status";
+			success: true;
+			data: { servers: McpServerStatusEntry[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_mcp_enabled";
+			success: true;
+			data: { server: McpServerStatusEntry };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp_reauth";
+			success: true;
+			data: { server: McpServerStatusEntry; status: McpReauthStatus };
+	  }
 
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: CompactionResult }

@@ -20,7 +20,7 @@ import { cfgRetryFallbackChains, cfgRetryFallbackRevertPolicy, type RetrySetting
 export type RetryFallbackChains = Record<string, string[]>;
 
 /** Policy controlling restoration of a fallback chain's primary model. */
-export type RetryFallbackRevertPolicy = "never" | "cooldown-expiry";
+export type RetryFallbackRevertPolicy = "never" | "cooldown-expiry" | "compaction";
 
 /**
  * Parsed model selector used by retry fallback resolution. `thinkingLevel`
@@ -350,7 +350,9 @@ export function validateRetryFallbackChains(
 
 /** Returns the configured fallback-primary restoration policy. */
 export function getRetryFallbackRevertPolicy(settings: Settings): RetryFallbackRevertPolicy {
-	return cfgRetryFallbackRevertPolicy.get(settings) === "never" ? "never" : "cooldown-expiry";
+	const configured = cfgRetryFallbackRevertPolicy.get(settings);
+	if (configured === "never" || configured === "compaction") return configured;
+	return "cooldown-expiry";
 }
 
 /** Whether `retry.fallbackOn` lets a failure walk the fallback chain. */
@@ -525,12 +527,21 @@ export function resolveRetryFallbackChainKey(
 	if (matchedRole) return matchedRole;
 	if (effortRole) return effortRole;
 
-	// 4. The default chain. Use it even when `default` has an explicit role
-	//    primary that is a *different* model than the live one (#12421): a
-	//    /model switch or a mid-chain hop onto Fable/Astra must still reach
-	//    glm/grok/… instead of resolving no key and aborting on wait > maxDelayMs.
+	// 4. The default chain, for a model no chain key owns — and only when it
+	//    actually supplies a candidate for that model. Use it even when `default`
+	//    has an explicit role primary that is a *different* model than the live
+	//    one (#12421): a /model switch or a mid-chain hop onto Fable/Astra must
+	//    still reach glm/grok/… instead of resolving no key and aborting on
+	//    wait > maxDelayMs. A default chain whose entries dedupe back to the
+	//    default role's own primary supplies nothing here, so attaching it would
+	//    claim a model it does not own. Roles that matched above keep their own
+	//    chain, including an explicitly emptied one.
 	const defaultChain = context.chains.default;
-	if (Array.isArray(defaultChain) && defaultChain.length > 0) {
+	if (
+		Array.isArray(defaultChain) &&
+		defaultChain.length > 0 &&
+		findRetryFallbackCandidates(context, "default", currentSelector, currentModel).length > 0
+	) {
 		return "default";
 	}
 	return undefined;

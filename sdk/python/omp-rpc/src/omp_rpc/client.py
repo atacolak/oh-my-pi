@@ -32,6 +32,7 @@ from ._wire import (
     ThinkingLevel,
     TodoItem,
     TodoPhase,
+    TodoPhaseKind,
     TodoStatus,
     WireClient,
     parse_agent_message,
@@ -1805,11 +1806,21 @@ class RpcClient(WireClient):
         def normalize_phase(seed: TodoPhaseSeed) -> JsonObject:
             if isinstance(seed, TodoPhase):
                 name = seed.name
+                kind = seed.kind
                 tasks = [normalize_todo_item(task) for task in seed.tasks]
             else:
                 raw_name = seed.get("name")
                 if not isinstance(raw_name, str) or not raw_name.strip():
                     raise RpcError("Todo phases must provide a non-empty 'name' value")
+                raw_kind = seed.get("kind")
+                if raw_kind is not None and raw_kind not in (
+                    "continuing",
+                    "passive",
+                ):
+                    raise RpcError(
+                        "Todo phase 'kind' must be 'continuing' or 'passive'"
+                    )
+                kind = cast(TodoPhaseKind | None, raw_kind)
                 raw_tasks = seed.get("tasks") or ()
                 if not isinstance(raw_tasks, Sequence) or isinstance(
                     raw_tasks, (str, bytes)
@@ -1820,7 +1831,10 @@ class RpcClient(WireClient):
                     normalize_todo_item(cast(TodoSeed, task)) for task in raw_tasks
                 ]
 
-            return {"name": name, "tasks": cast(JsonValue, tasks)}
+            result: JsonObject = {"name": name, "tasks": cast(JsonValue, tasks)}
+            if kind is not None:
+                result["kind"] = kind
+            return result
 
         if any(is_phase_seed(todo) for todo in todos):
             phases: list[JsonObject] = []

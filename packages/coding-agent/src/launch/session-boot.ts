@@ -18,7 +18,7 @@ import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import type { DaemonBrokerClient } from "./client";
 import { createDaemonBrokerClient, requireTerminalProtocol } from "./client";
 import { type DaemonTerminalNotification, sanitizeTerminalGeometry } from "./protocol";
-import { resolveSessionEndpointDir, type SessionAttachTerminal } from "./session-attach";
+import { resolveSessionEndpointDir, SESSION_RUN_DIR_ENV, type SessionAttachTerminal } from "./session-attach";
 import { runLiveSessionAttach } from "./session-attach-run";
 import { isSessionOwnerProcess, sessionOwnerIdentity, sessionOwnerSpec } from "./session-owner";
 import { runTerminalMirror, type TerminalMirrorOptions } from "./terminal-mirror";
@@ -290,6 +290,7 @@ export async function bootBrokeredOwner(options: BootBrokeredOwnerOptions): Prom
 				projectDir: options.projectDir,
 				argv: options.argv,
 				identity: sessionOwnerIdentity(process.env),
+				env: { [SESSION_RUN_DIR_ENV]: endpointDir },
 			}),
 			columns: geometry.columns,
 			rows: geometry.rows,

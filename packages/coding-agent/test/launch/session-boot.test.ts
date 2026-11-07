@@ -7,6 +7,7 @@ import { removeSyncWithRetries, withTimeout } from "@oh-my-pi/pi-utils";
 import { describe, expect, test } from "bun:test";
 import type { DaemonBrokerClient } from "../../src/launch/client";
 import { DAEMON_TERMINAL_PROTOCOL_VERSION } from "../../src/launch/protocol";
+import { SESSION_RUN_DIR_ENV } from "../../src/launch/session-attach";
 import {
 	type BrokeredLaunchSelection,
 	bootBrokeredOwner,
@@ -279,5 +280,6 @@ describe("bootBrokeredOwner", () => {
 			HCOM_INSTANCE_NAME: "argon",
 			HCOM_LAUNCHED: "1",
 		});
+		expect(launched?.env).toEqual({ [SESSION_RUN_DIR_ENV]: endpointDir });
 	});
 });

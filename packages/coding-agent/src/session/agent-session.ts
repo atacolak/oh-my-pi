@@ -279,6 +279,7 @@ import { prewarmSubagentWorker } from "../thread/subagent-worker";
 import { SubagentSpawnSignal } from "../thread/subagent-spawn-signal";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { AgentDefinition } from "../task/types";
+import type { NamedLoadSet } from "../task/tool-load-spec";
 import type { ModelMention } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
 import { ModelMentionRegistry, type ResolvedModelMention } from "./model-mentions";
 import { parseCommandArgs } from "../utils/command-args";
@@ -4660,6 +4661,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#advisors.onPrimaryAgentStart();
 			this.#emitRunState("running");
 			this.#maintenance.noteTurnStarted();
+			// One indexed row per run. The trigger kind is left unset until the caller
+			// that knows it (a prompt source) can name it; inventing "user" here would
+			// mislabel mail- and job-driven runs.
+			// The leaf is the exact entry the run starts from, which is what makes an
+			// episode row joinable to its `.jsonl` slice without guessing by timestamp.
+			this.sessionManager.startAgentEpisode({
+				focusTitle: this.sessionManager.getSessionName() ?? null,
+				startEntryId: this.sessionManager.getLeafId(),
+			});
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
@@ -5945,6 +5955,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	): Promise<void> {
 		this.#settledAgentEnd = event;
 		this.#emitRunState("idle");
+		// A settle that will continue (retry, reminder, compaction) is not the end of the
+		// run, so only a terminal one closes the episode row.
+		if (options?.willContinue !== true) {
+			this.sessionManager.finishAgentEpisode({
+				stepCount: this.#runToolCallIds.size,
+				outcome: this.#prunedTerminalFailure ? "error" : "ok",
+				endEntryId: this.sessionManager.getLeafId(),
+			});
+		}
 		// Tagged isTerminal so subscribers can tell final settles from scheduled
 		// continuations, and `yielded` so they can tell the agent's own follow-up
 		// work (retries, reminders, compaction) from a finished turn that only
@@ -7616,6 +7635,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Selects enabled tools, ignoring names absent from the registry. */
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
 		return this.#tools.setActiveToolsByName(toolNames);
+	}
+
+	/** Apply agent-profile eager/discoverable maps and mcps: filtering. */
+	setAgentLoadPolicy(toolLoad?: NamedLoadSet, mcpLoad?: NamedLoadSet): void {
+		this.#tools.setAgentLoadPolicy(toolLoad, mcpLoad);
 	}
 
 	/** Restores an exact top-level versus `xd://` tool partition. */
@@ -9648,6 +9672,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			model: this.model ?? undefined,
 			models: createExtensionModelQuery(this.#modelRegistry, this.settings, () => this.model ?? undefined),
 			isIdle: () => !this.isStreaming,
+			// The pass is not a turn: without this an extension sees a compacting session as
+			// idle and starts work the summarizer is about to strand.
+			isCompacting: () => this.isCompacting,
 			abort: () => {
 				void this.abort();
 			},

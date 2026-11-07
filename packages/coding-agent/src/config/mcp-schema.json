@@ -37,6 +37,18 @@
         "minLength": 1
       },
       "uniqueItems": true
+    },
+    "hubs": {
+      "type": "object",
+      "description": "MCPHub origins. One OAuth login per origin; discovered servers are http endpoints at <url>/mcp/<name>.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   },
   "$defs": {

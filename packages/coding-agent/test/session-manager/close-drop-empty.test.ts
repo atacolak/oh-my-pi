@@ -35,38 +35,33 @@ class SignalingDeleteStorage extends FileSessionStorage {
 }
 
 describe("SessionManager close() drops empty metadata-only sessions", () => {
-	// Repro of issue #4571: saveDraft(text) materializes the JSONL so the
-	// draft sidecar has a parent. A subsequent saveDraft("") only unlinks
-	// the sidecar — before the fix, close() left the metadata-only file
-	// behind and every ctrl+D cycle leaked another 500–750B zombie.
-	it("drops the session file when close() runs with no user/assistant messages and no draft", async () => {
-		using tempDir = TempDir.createSync("@pi-session-close-drop-empty-");
+	// An empty overwrite preserves the live sidecar (issue #4571's zombie leak
+	// must not come back by unlinking it): the draft still on disk keeps the
+	// metadata-only session resumable so the typed text can be restored.
+	it("keeps the session file when an empty overwrite preserves a draft", async () => {
+		using tempDir = TempDir.createSync("@pi-session-close-keep-preserved-draft-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
 		session.appendModelChange("hai-proxy/anthropic--claude-4.6-opus");
 		session.appendModelChange("litellm/anthropic--claude-4.7-opus", "default");
 
-		await session.saveDraft("some in-progress text"); // materializes JSONL
-		await session.saveDraft(""); // sidecar unlinked; before fix, file survives
+		await session.saveDraft("some in-progress text");
+		await session.saveDraft("");
+		const draftPath = path.join(session.getArtifactsDir()!, "draft.txt");
 
 		const sessionFile = session.getSessionFile();
 		if (!sessionFile) throw new Error("Expected persistent session file");
 
 		await session.close();
 
-		expect(await fileExists(sessionFile)).toBe(false);
+		expect(await fileExists(sessionFile)).toBe(true);
+		expect(await fileExists(draftPath)).toBe(true);
 	});
 
-	// `plan.defaultOnStartup` records a `mode_change` before the composer
-	// restores its draft. Clearing that draft and closing must still drop the
-	// otherwise metadata-only file — mode changes are startup selector state,
-	// not durable conversation.
-	it("drops the session file when only mode/model changes precede a cleared draft", async () => {
-		using tempDir = TempDir.createSync("@pi-session-close-drop-plan-startup-");
+	it("leaves no session file when nothing was ever typed", async () => {
+		using tempDir = TempDir.createSync("@pi-session-close-empty-no-draft-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
 		session.appendModelChange("hai-proxy/anthropic--claude-4.6-opus");
-		session.appendModeChange("plan", { planFilePath: "local://PLAN.md" });
 
-		await session.saveDraft("plan-mode draft");
 		await session.saveDraft("");
 
 		const sessionFile = session.getSessionFile();
@@ -77,7 +72,28 @@ describe("SessionManager close() drops empty metadata-only sessions", () => {
 		expect(await fileExists(sessionFile)).toBe(false);
 	});
 
-	it("drops a resumed draft-only session after consumeDraft removes the sidecar", async () => {
+	// `plan.defaultOnStartup` records a `mode_change` before the composer
+	// restores its draft. Submitting that draft and closing must still drop the
+	// otherwise metadata-only file — mode changes are startup selector state,
+	// not durable conversation.
+	it("drops the session file when only mode/model changes precede a submitted draft", async () => {
+		using tempDir = TempDir.createSync("@pi-session-close-drop-plan-startup-");
+		const session = SessionManager.create(tempDir.path(), tempDir.path());
+		session.appendModelChange("hai-proxy/anthropic--claude-4.6-opus");
+		session.appendModeChange("plan", { planFilePath: "local://PLAN.md" });
+
+		await session.saveDraft("plan-mode draft");
+		await session.discardDraft("plan-mode draft");
+
+		const sessionFile = session.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persistent session file");
+
+		await session.close();
+
+		expect(await fileExists(sessionFile)).toBe(false);
+	});
+
+	it("drops a resumed draft-only session after a submission clears the sidecar", async () => {
 		using tempDir = TempDir.createSync("@pi-session-close-drop-resumed-draft-");
 		const firstRun = SessionManager.create(tempDir.path(), tempDir.path());
 		firstRun.appendModelChange("hai-proxy/anthropic--claude-4.6-opus");
@@ -91,17 +107,16 @@ describe("SessionManager close() drops empty metadata-only sessions", () => {
 		const resumed = SessionManager.create(tempDir.path(), tempDir.path());
 		await resumed.setSessionFile(sessionFile);
 		expect(await resumed.consumeDraft()).toBe("resume me");
-		await resumed.saveDraft("");
+		await resumed.discardDraft("resume me");
 		await resumed.close();
 
 		expect(await fileExists(sessionFile)).toBe(false);
 	});
 
 	// Issue #11497: terminal A materializes a draft-only file and arms the GC,
-	// terminal B resumes it, consumes the draft (removing the sidecar the GC
-	// keys off of), and persists a real conversation. Terminal A then closes
-	// with a stale draft-only in-memory view. The close-time GC must re-read the
-	// file it is about to delete and keep B's transcript intact.
+	// terminal B resumes it and persists a real conversation. Terminal A then
+	// closes with a stale draft-only in-memory view. The close-time GC must
+	// re-read the file it is about to delete and keep B's transcript intact.
 	it("keeps the session file when another process consumed the draft and appended real messages", async () => {
 		using tempDir = TempDir.createSync("@pi-session-close-keep-cross-writer-");
 		const termA = SessionManager.create(tempDir.path(), tempDir.path());
@@ -152,6 +167,9 @@ describe("SessionManager close() drops empty metadata-only sessions", () => {
 		const termB = SessionManager.create(tempDir.path(), tempDir.path());
 		await termB.setSessionFile(sessionFile);
 		expect(await termB.consumeDraft()).toBe("draft in terminal A");
+		// B submits the draft it resumed: only a submission clears the sidecar A's
+		// close-time GC keys on.
+		await termB.discardDraft("draft in terminal A");
 
 		const appender = Bun.spawn(
 			[

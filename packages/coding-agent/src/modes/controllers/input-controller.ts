@@ -46,6 +46,7 @@ import { parseQueueShorthand, splitQueuedMessages } from "@oh-my-pi/pi-tui/promp
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
 import { parseFileSlashInvocation, renderFileSlashCommand } from "../../extensibility/slash-commands";
 import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
+import { ComposerDraftPersistence } from "../draft-persistence";
 import { openLocalFileInEditor } from "../local-file-editor";
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
@@ -275,6 +276,8 @@ const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
 
 export class InputController {
+	readonly #draftPersistence: ComposerDraftPersistence;
+
 	constructor(
 		private ctx: InteractiveModeContext,
 		/** Injectable clipboard reads so tests can drive paste flows without a real clipboard. */
@@ -290,7 +293,12 @@ export class InputController {
 			readMacFileUrls: readMacFileUrlsFromClipboard,
 			isTerminalLocal: isClipboardTerminalLocal,
 		},
-	) {}
+	) {
+		this.#draftPersistence = new ComposerDraftPersistence({
+			saveDraft: (text, source) => this.ctx.sessionManager.saveDraft(text, source),
+			discardDraft: (text, source) => this.ctx.sessionManager.discardDraft(text, source),
+		});
+	}
 
 	/** Resolve the current tiny role at use time so project/session reloads cannot leave a stale model. */
 	#resolveTinyTitleLocalModelKey(): string | undefined {
@@ -332,6 +340,11 @@ export class InputController {
 	/** Return the last full editor snapshot delivered by its change contract. */
 	getDraftText(): string {
 		return this.#draftText ?? this.ctx.editor.getText();
+	}
+
+	/** Land a debounced draft write before teardown snapshots the editor. */
+	async flushDraftPersistence(): Promise<void> {
+		await this.#draftPersistence.flush();
 	}
 
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
@@ -810,6 +823,9 @@ export class InputController {
 		this.ctx.editor.onChange = (text: string) => {
 			const wasComposing = (this.#draftText ?? "").trim() !== "";
 			this.#draftText = text;
+			// Every editor edit is durable within the debounce window: a crash, a
+			// recycled agent, or a cleared composer must never take typed text with it.
+			this.#draftPersistence.schedule(text);
 			// Typing signals an imminent turn; refresh the API connection now so
 			// the handshake overlaps composition instead of delaying the send.
 			if (text) this.ctx.session.prewarmModelConnection();
@@ -1098,6 +1114,12 @@ export class InputController {
 			text = this.#compactDraftImages(text.trim());
 			const hasPendingImages = this.ctx.editor.pendingImages.length > 0;
 			if ((!isSettingsInitialized() || cfgEmojiAutocomplete.get(settings)) && text) text = expandEmoticons(text);
+
+			// The editor cleared its text before this callback ran, so the persisted
+			// draft still holds the submission. It belongs to the message now: cancel
+			// the pending debounce, archive the submitted body in the recovery ring,
+			// and clear the sidecar so a resume cannot resurrect a sent prompt.
+			if (text) void this.#draftPersistence.discard(text);
 
 			// Focused subagent session: the editor is a plain chat box for it.
 			// Everything below (slash/bash/python, loop,

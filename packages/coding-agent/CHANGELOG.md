@@ -17,6 +17,7 @@
 - Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
 - `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.
 - Forking a session into a pinned session file no longer creates an empty cwd-derived session directory; `seance` and subagent forks stay out of the operator's sessions root.
+
 ## [18.18.0] - 2026-11-07
 
 ### Added

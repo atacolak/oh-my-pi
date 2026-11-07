@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import type { HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
@@ -118,6 +120,19 @@ function resetBoundaryEntry(id: string, parentId: string, timestamp: string): Se
 		timestamp,
 	};
 }
+
+// Retained tool items land in a durable outbox under the agent dir; keep it in a temp dir.
+let agentDirTemp: TempDir;
+let previousAgentDir: string;
+beforeEach(() => {
+	previousAgentDir = getAgentDir();
+	agentDirTemp = TempDir.createSync("@hindsight-append-mode-");
+	setAgentDir(agentDirTemp.path());
+});
+afterEach(async () => {
+	setAgentDir(previousAgentDir);
+	await agentDirTemp.remove();
+});
 
 describe("Hindsight append-mode session retention", () => {
 	afterEach(() => {
@@ -1604,7 +1619,7 @@ describe("Hindsight append-mode session retention", () => {
 			banksSet: new Set(["personal"]),
 		});
 
-		state.enqueueRetain("user asked me to remember the deploy token rotation");
+		await state.enqueueRetain("call-1607", [{ content: "user asked me to remember the deploy token rotation" }]);
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).content)).toContain("deploy token rotation");
@@ -1641,7 +1656,7 @@ describe("Hindsight append-mode session retention", () => {
 			closeRetainBaselineTurns: 0,
 		});
 
-		state.enqueueRetain("user asked me to remember the deploy token rotation");
+		await state.enqueueRetain("call-1644", [{ content: "user asked me to remember the deploy token rotation" }]);
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(2);
 		expect(String(firstItem(bodies[0]).content)).toContain("deploy token rotation");

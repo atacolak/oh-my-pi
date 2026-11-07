@@ -71,6 +71,7 @@ export const hindsightBackend: MemoryBackend = {
 			if (!parent) return;
 			const previous = session.setHindsightSessionState(
 				new HindsightSessionState({
+					agentDir: options.agentDir,
 					sessionId,
 					client: parent.client,
 					bankId: parent.bankId,
@@ -285,7 +286,8 @@ async function installPrimaryState(
 	loadedMessageCount?: number,
 	episodeIdFor?: (sessionId: string) => string | null,
 ): Promise<HindsightSessionState | undefined> {
-	const sessionId = session.hindsightDocumentId || session.sessionManager.getSessionId() || session.sessionId;
+	// A session manager without a persisted id (embedded adapters) still has the session id.
+	const sessionId = session.hindsightDocumentId || session.sessionManager?.getSessionId?.() || session.sessionId;
 	if (!sessionId) return undefined;
 
 	const config = applyAgentMemoryPolicy(loadHindsightConfig(settings), readAgentMemoryPolicy(session));
@@ -297,10 +299,9 @@ async function installPrimaryState(
 	// Drain the previous state's pending transcript and retain queue BEFORE
 	// replacing it. A below-cadence turn would otherwise be marked loaded
 	// history on the replacement and never retained to either bank.
-	// `HindsightRetainQueue.#doFlush` also drops the batch if the session
-	// owner changes mid-flush, so finish that work first. Re-read after the
-	// await so a concurrent owner cannot leave the actual current state
-	// undisposed.
+	// Tool retains are already durable in the outbox, but the session tail is
+	// not, so finish that work first. Re-read after the await so a concurrent
+	// owner cannot leave the actual current state undisposed.
 	let previous = session.getHindsightSessionState();
 	if (previous) {
 		await previous.drainOnClose();
@@ -313,19 +314,21 @@ async function installPrimaryState(
 	}
 
 	const state = new HindsightSessionState({
+		agentDir: settings.getAgentDir(),
 		sessionId,
 		client,
 		bankId: scope.bankId,
 		resolvedTags: scope.resolvedTags,
 		retainTags: scope.retainTags,
-		provenanceTags: resolveProvenanceTags(config, session.getAgentProfileName()),
+		provenanceTags: resolveProvenanceTags(config, session.getAgentProfileName?.()),
 		recallTags: scope.recallTags,
 		recallTagsMatch: scope.recallTagsMatch,
 		observationScopes: scope.observationScopes,
 		config,
 		session,
 		banksSet,
-		closeRetainBaselineTurns: closeRetainBaselineTurns ?? countRetainableUserTurns(session.sessionManager),
+		closeRetainBaselineTurns:
+			closeRetainBaselineTurns ?? (session.sessionManager ? countRetainableUserTurns(session.sessionManager) : 0),
 		loadedMessageCount,
 		lastRetainedTurn: 0,
 		recallDelivered: false,
@@ -342,6 +345,8 @@ async function installPrimaryState(
 	previous?.dispose();
 
 	state.attachSessionListeners();
+	// Deliver what earlier processes left in this destination's outbox; stored tags route each event.
+	void state.retainQueue.flush();
 
 	// Kick off mental-model bootstrap. Resolves asynchronously; the first
 	// turn races and is covered in `beforeAgentStartPrompt` via

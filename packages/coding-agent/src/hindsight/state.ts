@@ -1,5 +1,6 @@
 import { logger, sanitizeText, truncate } from "@oh-my-pi/pi-utils";
-import type { MemoryWriteScope } from "../memory-backend/global-scope";
+import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
+import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
 	findPersistedRecall,
 	MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
@@ -12,7 +13,6 @@ import { type BankScope, ensureBankExists, type HindsightBankSet } from "./bank"
 import {
 	HindsightRecallDecision,
 	type HindsightClientApi,
-	type MemoryItemInput,
 	RECALL_SCORE_FLOOR,
 	RECALL_SCORE_FLOOR_RATIO,
 	type UpdateMode,
@@ -36,6 +36,7 @@ import {
 	tryLoadMentalModelsBlock,
 } from "./mental-models";
 import { GEAR_SWEEP_CAPS, packByTokens, resolveSweepCollections, sweepBankMemories } from "./sweep";
+import { type DrainResult, HindsightOutbox, type RetainInput } from "./outbox";
 import { countRetainableUserTurns, extractMessages } from "./transcript";
 
 /** `notice` source of Hindsight recall/retain failures; print mode writes these to stderr. */
@@ -48,6 +49,7 @@ function noticeErrorText(errorText: string): string {
 
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
+const RETAIN_RETRY_MAX_MS = 30 * 60 * 1000;
 const MENTAL_MODEL_LOAD_TIMED_OUT = Symbol("mental-model-load-timed-out");
 /** A prompt this short is an acknowledgement, not a question worth asking the bank. */
 const TRIVIAL_ACK_MAX_CHARS = 12;
@@ -68,27 +70,6 @@ function mergeRetainWriteTags(
 		...new Set([...(retainTags ?? []), ...(provenanceTags ?? [])].map(tag => tag.trim()).filter(Boolean)),
 	];
 	return merged.length > 0 ? merged : undefined;
-}
-
-interface PendingRetainItem {
-	content: string;
-	context?: string;
-	scope: MemoryWriteScope;
-	timestamp: Date;
-	/** Bank routing captured at enqueue so a later primary rebuild cannot reroute this item. */
-	client: HindsightClientApi;
-	bankId: string;
-	retainTags?: string[];
-	observationScopes?: string[][];
-	banksSet: HindsightBankSet;
-	config: HindsightConfig;
-}
-
-interface RetainFailure {
-	count: number;
-	/** `undefined` when the scope has no project tags and every item went in one request. */
-	scope: MemoryWriteScope | undefined;
-	errorText: string;
 }
 
 interface RecallOutcome {
@@ -134,6 +115,7 @@ export interface HindsightSessionStateApi {
 }
 
 export interface HindsightSessionStateOptions {
+	agentDir?: string;
 	/** Session id used for retain-queue metadata. */
 	sessionId: string;
 	client: HindsightClientApi;
@@ -179,8 +161,11 @@ export interface HindsightSessionStateOptions {
 }
 
 /**
- * Debounced batch queue for tool-initiated `retain` calls owned by one
- * Hindsight session state instance.
+ * Debounced delivery of tool-initiated `retain` calls owned by one Hindsight
+ * session state. Items are persisted in the {@link HindsightOutbox} before
+ * `enqueue` resolves; flushes deliver every pending event for the banks this
+ * state wrote to and for the live destination, including ones earlier processes
+ * left behind, so a rebuild cannot strand or reroute a queued memory.
  *
  * Auto-retain (`HindsightSessionState.retainSession`) is intentionally not
  * routed through this queue — it submits a full transcript as one large item
@@ -189,53 +174,86 @@ export interface HindsightSessionStateOptions {
  */
 export class HindsightRetainQueue {
 	readonly #state: HindsightSessionState;
-	#items: PendingRetainItem[] = [];
+	readonly #agentDir: string;
+	/** One outbox per bank this queue has written to, so a rebuild cannot reroute queued memories. */
+	readonly #outboxes = new Map<string, HindsightOutbox>();
 	#timer?: NodeJS.Timeout;
 	#flushing?: Promise<void>;
 	#closed = false;
+	/** Events this queue published since its last drain started. */
+	#pending = 0;
+	/** Consecutive drains stopped by a retryable failure; drives the retry backoff. */
+	#failures = 0;
 
-	constructor(state: HindsightSessionState) {
+	constructor(state: HindsightSessionState, agentDir: string) {
 		this.#state = state;
+		this.#agentDir = agentDir;
 	}
 
-	get depth(): number {
-		return this.#items.length;
+	/** Created on first use: states that never retain touch no disk. */
+	#outboxFor(apiUrl: string, bankId: string): HindsightOutbox {
+		const key = `${apiUrl}\u0000${bankId}`;
+		const cached = this.#outboxes.get(key);
+		if (cached) return cached;
+		const state = this.#state;
+		const outbox = new HindsightOutbox({
+			agentDir: this.#agentDir,
+			apiUrl,
+			bankId,
+			apiToken: state.config.hindsightApiToken,
+			client: state.client,
+			ensureBank: () => ensureBankExists(state.client, bankId, state.config, state.banksSet),
+		});
+		this.#outboxes.set(key, outbox);
+		return outbox;
 	}
 
-	enqueue(content: string, context?: string, scope: MemoryWriteScope = "project"): void {
+	/** Resolves once every item is durable; rejects, queueing nothing, when it cannot be. */
+	async enqueue(toolCallId: string, items: RetainInput[]): Promise<void> {
 		if (this.#closed) {
 			throw new Error("Hindsight retain queue is closed.");
 		}
 		// A recalled block is context the model was given, not something it learned.
 		// Storing it would let the next recall retrieve and re-deliver the block.
-		const stripped = stripMemoryTags(content).trim();
-		if (!hasSubstantiveContent(stripped)) return;
-		if (scope === "global") this.#state.assertGlobalRetainAvailable();
+		const clean: RetainInput[] = [];
+		for (const item of items) {
+			const stripped = stripMemoryTags(item.content).trim();
+			if (!hasSubstantiveContent(stripped)) continue;
+			clean.push({ ...item, content: stripped });
+		}
+		if (clean.length === 0) return;
 		const state = this.#state;
-		// Global items are retained untagged, which every project's `any`-match recall surfaces. They also carry no
-		// project observation scopes: Hindsight tags a request's generated document(s) with the union of item tags, so
-		// a project tag or scope on a global item would make document-level reads treat it as project-scoped.
-		const global = scope === "global";
-		this.#items.push({
-			content: stripped,
-			context,
-			scope,
-			timestamp: new Date(),
-			client: state.client,
-			bankId: state.bankId,
-			retainTags: global ? undefined : mergeRetainWriteTags(state.retainTags, state.provenanceTags),
-			banksSet: state.banksSet,
-			config: state.config,
-			observationScopes: global ? undefined : state.observationScopes,
-		});
-		if (this.#items.length >= RETAIN_FLUSH_BATCH_SIZE) {
+		if (clean.some(item => item.scope === "global")) state.assertGlobalRetainAvailable();
+		// Provenance is stamped per write, on this state's own retains, and never on
+		// global ones: Hindsight unions a request's item tags onto its document, so a
+		// role tag there would make the memory look project-scoped.
+		// The destination is fixed at enqueue time: a later bank rebuild must neither
+		// reroute this memory nor strand it behind the old routing.
+		this.#pending += await this.#outboxFor(state.config.hindsightApiUrl!, state.bankId).enqueue(
+			{
+				sessionId: state.sessionId,
+				toolCallId,
+				context: state.config.retainContext,
+				tags: mergeRetainWriteTags(state.retainTags, state.provenanceTags),
+				metadata: state.buildRetainMetadata(),
+				strategy: state.config.retainStrategy || undefined,
+				observationScopes: state.observationScopes,
+			},
+			clean,
+		);
+		if (this.#pending >= RETAIN_FLUSH_BATCH_SIZE) {
 			void this.flush();
 			return;
 		}
-		if (!this.#timer) {
+		this.#schedule(RETAIN_FLUSH_INTERVAL_MS);
+	}
+
+	#schedule(delay: number): void {
+		if (!this.#closed && !this.#timer) {
 			this.#timer = setTimeout(() => {
+				this.#timer = undefined;
 				void this.flush();
-			}, RETAIN_FLUSH_INTERVAL_MS);
+			}, delay);
 			// Don't pin the event loop alive just for a pending retain flush.
 			this.#timer.unref?.();
 		}
@@ -248,23 +266,73 @@ export class HindsightRetainQueue {
 		}
 
 		if (this.#flushing) {
-			// Coalesce: wait for the in-flight flush, then drain anything that
+			// Coalesce: wait for the in-flight drain, then drain anything that
 			// landed after it started so we don't strand items.
 			await this.#flushing;
-			if (this.#items.length > 0) await this.flush();
+			if (this.#pending > 0) await this.flush();
 			return;
 		}
 
-		if (this.#items.length === 0) return;
-
-		const items = this.#items.splice(0);
-		const flushPromise = this.#doFlush(items);
-		this.#flushing = flushPromise;
+		this.#pending = 0;
+		this.#flushing = this.#drain();
 		try {
-			await flushPromise;
+			await this.#flushing;
 		} finally {
 			this.#flushing = undefined;
 		}
+	}
+
+	async #drain(): Promise<void> {
+		const notice = (message: string) => this.#state.session.emitNotice("warning", message, HINDSIGHT_NOTICE_SOURCE);
+		let outbox: HindsightOutbox;
+		let result: DrainResult = { busy: false, delivered: 0, quarantined: 0, kept: 0 };
+		try {
+			// Deliver every destination this queue wrote to, including banks a rebuild
+			// has since left behind, then the live one for earlier processes' events.
+			outbox = this.#outboxFor(this.#state.config.hindsightApiUrl!, this.#state.bankId);
+			const destinations = new Set([...this.#outboxes.values(), outbox]);
+			for (const destination of destinations) {
+				const drained = await destination.drain();
+				result = {
+					busy: result.busy || drained.busy,
+					delivered: result.delivered + drained.delivered,
+					quarantined: result.quarantined + drained.quarantined,
+					kept: result.kept + drained.kept,
+					error: result.error ?? drained.error,
+				};
+			}
+		} catch (err) {
+			const errorText = err instanceof Error ? err.message : String(err);
+			logger.warn("Hindsight outbox drain failed", { bankId: this.#state.bankId, error: errorText });
+			notice(`Hindsight outbox unavailable: ${noticeErrorText(errorText)}. Undelivered memories stay on disk.`);
+			this.#schedule(RETAIN_FLUSH_INTERVAL_MS);
+			return;
+		}
+		if (result.quarantined > 0) {
+			notice(
+				`${result.quarantined} Hindsight ${result.quarantined === 1 ? "memory" : "memories"} moved to ${shortenPath(outbox.quarantineDir)} (refused by the server, malformed, or undelivered for 7 days); review within 30 days.`,
+			);
+		}
+		if (result.error === undefined) {
+			this.#failures = 0;
+			// Another holder is draining this destination; events it did not list wait for us.
+			if (result.busy) this.#schedule(RETAIN_FLUSH_INTERVAL_MS);
+			return;
+		}
+		logger.warn("Hindsight retain delivery failed", {
+			bankId: this.#state.bankId,
+			kept: result.kept,
+			error: result.error,
+		});
+		// One notice per outage, not per retry.
+		if (++this.#failures === 1) {
+			notice(
+				`Memory retention failed; ${result.kept} ${result.kept === 1 ? "memory" : "memories"} kept in the Hindsight outbox for retry: ${noticeErrorText(result.error)}`,
+			);
+		}
+		// Exponential backoff from the debounce interval; ±20% jitter spreads processes sharing an outage.
+		const backoff = Math.min(RETAIN_RETRY_MAX_MS, RETAIN_FLUSH_INTERVAL_MS * 2 ** (this.#failures - 1));
+		this.#schedule(Math.round(backoff * (0.8 + Math.random() * 0.4)));
 	}
 
 	dispose(): void {
@@ -273,121 +341,7 @@ export class HindsightRetainQueue {
 			clearTimeout(this.#timer);
 			this.#timer = undefined;
 		}
-		this.#items = [];
 	}
-
-	async #doFlush(items: PendingRetainItem[]): Promise<void> {
-		const state = this.#state;
-		const sessionId = state.sessionId;
-		if (state.session.getHindsightSessionState() !== state) {
-			// Session went away before we could flush. We can't notify anyone, so
-			// log and drop — these are best-effort facts, not transactional writes.
-			logger.warn("Hindsight retain queue: session vanished, dropping batch", {
-				providerSessionId: sessionId,
-				items: items.length,
-			});
-			return;
-		}
-
-		// Route identity is a key, not a run of adjacent items: a global item between two project items must not split
-		// them into separate requests. Each group is one request, and its order decides the combined notice wording,
-		// so project-tagged groups stay ahead of global ones.
-		const routes: PendingRetainItem[][] = [];
-		for (const item of items) {
-			const route = routes.find(group => sameRetainRoute(group[0]!, item));
-			if (route) route.push(item);
-			else routes.push([item]);
-		}
-		routes.sort((a, b) => Number(a[0]?.retainTags === undefined) - Number(b[0]?.retainTags === undefined));
-		// One notice per flush, even when several requests failed.
-		const failures: RetainFailure[] = [];
-		for (const route of routes) {
-			const failure = await this.#flushRoute(sessionId, route);
-			if (failure) failures.push(failure);
-		}
-		if (failures.length > 0) this.#notifyRetainFailures(failures);
-	}
-
-	async #flushRoute(sessionId: string, items: PendingRetainItem[]): Promise<RetainFailure | undefined> {
-		const route = items[0];
-		if (!route) return undefined;
-
-		try {
-			// Best-effort and self-catching, so it never rejects.
-			await ensureBankExists(route.client, route.bankId, route.config, route.banksSet);
-			const metadata = this.#state.buildRetainMetadata();
-			const batch: MemoryItemInput[] = items.map(item => ({
-				content: item.content,
-				context: item.context ?? item.config.retainContext,
-				metadata,
-				tags: item.retainTags,
-				timestamp: item.timestamp,
-				strategy: item.config.retainStrategy || undefined,
-				observationScopes: item.observationScopes,
-			}));
-			await route.client.retainBatch(route.bankId, batch, { async: true });
-			if (route.config.debug) {
-				logger.debug("Hindsight retain queue: batch flushed", {
-					providerSessionId: sessionId,
-					bankId: route.bankId,
-					items: items.length,
-					tags: route.retainTags,
-				});
-			}
-			return undefined;
-		} catch (err) {
-			const errorText = err instanceof Error ? err.message : String(err);
-			logger.warn("Hindsight retain queue: batch flush failed", {
-				providerSessionId: sessionId,
-				bankId: route.bankId,
-				items: items.length,
-				scope: route.scope,
-				error: errorText,
-			});
-			// `undefined` keeps the wording for an untagged batch that carried every item.
-			const scope: MemoryWriteScope | undefined = route.retainTags
-				? "project"
-				: route.scope === "global"
-					? "global"
-					: undefined;
-			return { count: items.length, scope, errorText };
-		}
-	}
-
-	#notifyRetainFailures(failures: RetainFailure[]): void {
-		const what = failures
-			.map(({ count, scope }) => {
-				const noun = count === 1 ? "memory" : "memories";
-				return `${count} ${scope === "global" ? `global ${noun}` : noun}`;
-			})
-			.join(" and ");
-		const errorText = [...new Set(failures.map(failure => failure.errorText))].join("; ");
-		this.#state.session.emitNotice(
-			"warning",
-			`Memory retention failed for ${what}: ${noticeErrorText(errorText)}`,
-			HINDSIGHT_NOTICE_SOURCE,
-		);
-	}
-}
-
-function sameRetainRoute(a: PendingRetainItem, b: PendingRetainItem): boolean {
-	if (
-		a.client !== b.client ||
-		a.bankId !== b.bankId ||
-		a.banksSet !== b.banksSet ||
-		a.config !== b.config ||
-		a.observationScopes !== b.observationScopes
-	) {
-		return false;
-	}
-	const aTags = a.retainTags;
-	const bTags = b.retainTags;
-	if (aTags === bTags) return true;
-	if (!aTags || !bTags || aTags.length !== bTags.length) return false;
-	for (let i = 0; i < aTags.length; i++) {
-		if (aTags[i] !== bTags[i]) return false;
-	}
-	return true;
 }
 
 /**
@@ -531,7 +485,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 					threshold: options.config.decisionModelThreshold,
 				})
 			: undefined;
-		this.retainQueue = new HindsightRetainQueue(this);
+		this.retainQueue = new HindsightRetainQueue(this, options.agentDir ?? getAgentDir());
 		this.#closeRetainBaselineTurns =
 			options.closeRetainBaselineTurns ??
 			(this.session.sessionManager ? countRetainableUserTurns(this.session.sessionManager) : 0);
@@ -818,8 +772,8 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	/** Queues a tool-initiated retain; `scope: "global"` retains it untagged (see {@link assertGlobalRetainAvailable}). */
-	enqueueRetain(content: string, context?: string, scope: MemoryWriteScope = "project"): void {
-		this.retainQueue.enqueue(content, context, scope);
+	async enqueueRetain(toolCallId: string, items: RetainInput[]): Promise<void> {
+		await this.retainQueue.enqueue(toolCallId, items);
 	}
 
 	async flushRetainQueue(): Promise<void> {

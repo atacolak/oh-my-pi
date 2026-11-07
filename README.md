@@ -1,15 +1,16 @@
 > [!NOTE]
+>
 > ## `cap/hindsight` — Hindsight retention + locked scope seam
 >
-> Durable local capability: per-retain extraction strategy, conversation source timestamps, append-mode session retention, and the fork-local locked memory-scope seam (`hindsight.scopeTags` → retain/recall/reflect + exact `observation_scopes`, subset mental-model visibility).
+> Durable local capability: per-retain extraction strategy, conversation source timestamps, append-mode session retention, the durable retain outbox (upstream 18.18.0) with fork-local provenance/observation-scope capture, and the fork-local locked memory-scope seam (`hindsight.scopeTags` → retain/recall/reflect + exact `observation_scopes`, subset mental-model visibility).
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PRs:**
->   - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy *(open)*
->   - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps *(merged)*
->   - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention *(open)*
+>    - [#9365](https://github.com/can1357/oh-my-pi/pull/9365) — per-retain extraction strategy _(open)_
+>    - [#9366](https://github.com/can1357/oh-my-pi/pull/9366) — preserve conversation timestamps _(merged)_
+>    - [#9367](https://github.com/can1357/oh-my-pi/pull/9367) — append-mode session retention _(open)_
 > - **Fork-local:** locked `scope:personal` / `scope:coding` + `project:<repo>` routing — no upstream PR yet
-> - **Upstream base:** [OMP 18.17.0 (`75e7801e`)](https://github.com/can1357/oh-my-pi/tree/75e7801e247d4e3263439d4cc08ccad60dc64bdd)
+> - **Upstream base:** [OMP 18.18.0 (`b5a6b2f7`)](https://github.com/can1357/oh-my-pi/tree/b5a6b2f7e5b6606b6562e678ead83f21738f34a0)
 >
 > PR heads stay independently reviewable without this banner.
 
@@ -685,16 +686,16 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 
 ### Rust Crates
 
-| Crate                                      | Description                                                                                              |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| **[pi-natives](crates/pi-natives)**        | Core Rust native addon (N-API `cdylib`) used by `@oh-my-pi/pi-natives`; aggregates the crates below      |
-| **[pi-shell](crates/pi-shell)**            | Embedded bash 5.3 engine (parser, VM, process spawning, sessions), PTY, and process management           |
-| **[pi-ast](crates/pi-ast)**                | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                              |
-| **[pi-iso](crates/pi-iso)**                | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy               |
-| **[pi-voice](crates/pi-voice)**            | Audio capture/playback, Opus codecs, and live WebRTC streaming primitives                                |
-| **[pi-walker](crates/pi-walker)**          | Parallel ignore-aware walker, directory-listing cache, glob, and content search for natives + shell      |
-| **[pi-edit](crates/pi-edit)**              | Edit engine behind the `edit` tool: line-anchored patch/hashline modes, streaming previews, atomic apply |
-| **[pi-builtins](crates/pi-builtins)**      | 67 in-process command-line utilities plus process builtins (ps, top, pgrep, pkill, …)                    |
+| Crate                                 | Description                                                                                              |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **[pi-natives](crates/pi-natives)**   | Core Rust native addon (N-API `cdylib`) used by `@oh-my-pi/pi-natives`; aggregates the crates below      |
+| **[pi-shell](crates/pi-shell)**       | Embedded bash 5.3 engine (parser, VM, process spawning, sessions), PTY, and process management           |
+| **[pi-ast](crates/pi-ast)**           | tree-sitter-based code summarizer and AST utilities (50+ language grammars)                              |
+| **[pi-iso](crates/pi-iso)**           | Task isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy               |
+| **[pi-voice](crates/pi-voice)**       | Audio capture/playback, Opus codecs, and live WebRTC streaming primitives                                |
+| **[pi-walker](crates/pi-walker)**     | Parallel ignore-aware walker, directory-listing cache, glob, and content search for natives + shell      |
+| **[pi-edit](crates/pi-edit)**         | Edit engine behind the `edit` tool: line-anchored patch/hashline modes, streaming previews, atomic apply |
+| **[pi-builtins](crates/pi-builtins)** | 67 in-process command-line utilities plus process builtins (ps, top, pgrep, pkill, …)                    |
 
 ## Contributing
 

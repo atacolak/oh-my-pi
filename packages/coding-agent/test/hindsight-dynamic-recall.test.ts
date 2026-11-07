@@ -6,7 +6,9 @@
  * must recall against its own history instead of replaying a week-old block.
  */
 
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { Settings as SettingsClass } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -214,6 +216,19 @@ async function deliverRecall(harness: Harness, prompt: string): Promise<string |
 	return preparation.contextEntry?.content;
 }
 
+// Retained tool items land in a durable outbox under the agent dir; keep it in a temp dir.
+let agentDirTemp: TempDir;
+let previousAgentDir: string;
+beforeEach(() => {
+	previousAgentDir = getAgentDir();
+	agentDirTemp = TempDir.createSync("@hindsight-dynamic-recall-");
+	setAgentDir(agentDirTemp.path());
+});
+afterEach(async () => {
+	setAgentDir(previousAgentDir);
+	await agentDirTemp.remove();
+});
+
 describe("recall dedupe", () => {
 	it("adds nothing when a refresh recalls only memories the transcript already holds", async () => {
 		const client = new RecordingApi();
@@ -356,7 +371,7 @@ describe("retain provenance", () => {
 		const episodeIdFor = (sessionId: string) => `ep-${sessionId}`;
 		const harness = makeHarness(client, { episodeIdFor });
 		await harness.state.retainSession([{ role: "user", content: "remember tabs" }], { forceReplace: true });
-		harness.state.enqueueRetain("operator uses tabs");
+		await harness.state.enqueueRetain("call-359", [{ content: "operator uses tabs" }]);
 		await harness.state.flushRetainQueue();
 
 		expect(client.retainCalls[0]!.metadata).toMatchObject({
@@ -383,8 +398,12 @@ describe("retain anti-feedback", () => {
 	it("strips a recalled block from a tool-initiated retain so memory cannot feed on itself", async () => {
 		const client = new RecordingApi();
 		const harness = makeHarness(client, {});
-		harness.state.enqueueRetain("<memories>\npreamble\n\n- deploy host is beta-9\n</memories>\noperator uses tabs");
-		harness.state.enqueueRetain("<memories>\npreamble\n\n- only a recall block\n</memories>");
+		await harness.state.enqueueRetain("call-386", [
+			{ content: "<memories>\npreamble\n\n- deploy host is beta-9\n</memories>\noperator uses tabs" },
+		]);
+		await harness.state.enqueueRetain("call-387", [
+			{ content: "<memories>\npreamble\n\n- only a recall block\n</memories>" },
+		]);
 		await harness.state.flushRetainQueue();
 
 		expect(client.batchCalls).toHaveLength(1);

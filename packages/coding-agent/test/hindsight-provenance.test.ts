@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	HindsightApi,
@@ -176,6 +178,19 @@ function makeToolSession(state: HindsightSessionState): ToolSession {
 	} as unknown as ToolSession;
 }
 
+// Retained tool items land in a durable outbox under the agent dir; keep it in a temp dir.
+let agentDirTemp: TempDir;
+let previousAgentDir: string;
+beforeEach(() => {
+	previousAgentDir = getAgentDir();
+	agentDirTemp = TempDir.createSync("@hindsight-provenance-");
+	setAgentDir(agentDirTemp.path());
+});
+afterEach(async () => {
+	setAgentDir(previousAgentDir);
+	await agentDirTemp.remove();
+});
+
 describe("provenance is write-only", () => {
 	it("retain attaches provenance tags while observation scopes stay scope-only", async () => {
 		const client = new RecordingApi();
@@ -209,7 +224,7 @@ describe("provenance is write-only", () => {
 			provenanceTags: ["role:builder"],
 		});
 
-		state.enqueueRetain("operator prefers tabs");
+		await state.enqueueRetain("call-212", [{ content: "operator prefers tabs" }]);
 		await state.flushRetainQueue();
 
 		expect(client.batchCalls).toHaveLength(1);
@@ -244,7 +259,7 @@ describe("provenance is write-only", () => {
 
 		// The same session really stamps provenance on its writes; recall just never
 		// sees it. Without this precondition the invariance assertion above is vacuous.
-		stamped.enqueueRetain("shared fact");
+		await stamped.enqueueRetain("call-247", [{ content: "shared fact" }]);
 		await stamped.flushRetainQueue();
 		expect(stampedClient.batchCalls[0]?.tags).toContain("role:builder");
 		expect(stampedClient.recallCalls[0]?.options?.tags).not.toContain("role:builder");
@@ -270,7 +285,7 @@ describe("provenance is write-only", () => {
 			aliasOf: parent,
 		});
 
-		child.enqueueRetain("subagent discovered a constraint");
+		await child.enqueueRetain("call-273", [{ content: "subagent discovered a constraint" }]);
 		await child.flushRetainQueue();
 
 		expect(client.batchCalls).toHaveLength(1);
@@ -422,7 +437,7 @@ describe("backend provenance wiring", () => {
 		const state = fake.installed();
 		expect(state?.resolvedTags).toEqual(["scope:coding", "project:omp"]);
 		expect(state?.provenanceTags).toEqual(["team:infra", "role:builder"]);
-		state!.enqueueRetain("the tag split is write-only");
+		await state!.enqueueRetain("call-425", [{ content: "the tag split is write-only" }]);
 		await state!.flushRetainQueue();
 
 		const item = retainItem(bodies);
@@ -457,7 +472,7 @@ describe("backend provenance wiring", () => {
 		// No session listeners means no automatic recall or cadence retain.
 		expect(childState?.unsubscribe).toBeUndefined();
 
-		childState!.enqueueRetain("subagent discovered a constraint");
+		await childState!.enqueueRetain("call-460", [{ content: "subagent discovered a constraint" }]);
 		await childState!.flushRetainQueue();
 
 		const item = retainItem(bodies);

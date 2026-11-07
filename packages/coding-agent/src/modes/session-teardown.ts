@@ -60,10 +60,11 @@ export type SessionTeardown = (reason?: postmortem.Reason) => Promise<void>;
  * Build a promise-memoized teardown function. The first call snapshots the
  * draft text, marks the session disposing synchronously, stops collab hosting,
  * runs `saveDraft` (draft-loss protection for `--resume`), then
- * `disposeSession`; subsequent calls await the same settled promise, so the
- * keypress `InteractiveMode.shutdown()` path and the postmortem signal
- * callback cannot double-emit `session_shutdown`, double-dispose the
- * session's async-job manager, or race each other.
+ * `disposeSession`; subsequent
+ * calls await the same settled promise, so the keypress
+ * `InteractiveMode.shutdown()` path and the postmortem signal callback cannot
+ * double-emit `session_shutdown`, double-dispose the session's async-job
+ * manager, or race each other.
  *
  * The postmortem callback forwards its `Reason` so the persisted
  * `session_exit` diagnostic carries the real trigger (`sigterm`, `sighup`,

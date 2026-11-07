@@ -8,6 +8,8 @@
 - Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
 - Resume and fork now restore a session's original `--agent` identity from the session header. An explicit `--agent` on resume switches the profile and records it, so the following resume keeps it (the session's model and thinking level still come from the transcript unless `--model` / `--thinking` are passed); a persisted privileged role that is missing from discovery fails closed.
 - Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
+- Agent definitions accept `model-fallback: false` to pin that agent's sessions to their resolved model: root `--agent` launches, resume restores, spawned subagents (including cold-revived ones), and their advisors skip client-side retry fallback, context promotion, usage-aware startup fallback, and server-side fallback for that agent, while omitting the key keeps `retry.modelFallback` in charge. Agent frontmatter also reads every multi-word key under either spelling (`model-fallback`, `read-summarize`, `thinking-level`, `autoload-skills`, `automation-author`/`allowed-agents`), so raw-key parsers stop dropping them; camelCase wins when a record supplies both.
+- Agent definitions accept `memory: { autoRetain, autoRecall }` (camelCase or kebab-case keys) to set the root session's Hindsight auto-retain/auto-recall policy, including `--agent-cwd` roles and SDK sessions created with `agentMemory`. Precedence is `HINDSIGHT_AUTO_RETAIN`/`HINDSIGHT_AUTO_RECALL`, then the agent's value, then `hindsight.autoRetain`/`hindsight.autoRecall`; subagent sessions never apply it.
 - Agent `tools:` and `mcps:` frontmatter accept `{ eager, discoverable }` maps. Eager names stay top-level; discoverable names mount under `xd://`. An explicit `mcps:` list filters MCP tools by server (`mcps: []` disables them).
 - mcp.json `hubs` entries share one OAuth login per hub origin and auto-register `<hub>/mcp/<name>` HTTP servers.
 - Extension contexts expose `isCompacting()` so a plugin can tell a running compaction pass apart from an idle session.
@@ -66,6 +68,7 @@
 ### Fixed
 
 - Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
+
 - Added optional `episode_id` metadata and an `[ep:<short id>]` recalled-memory footer for runtimes composed with the session-episode substrate; without it no episode is stamped and no footer is rendered.
 - Added `memory_document_id` to Hindsight retain metadata so a stored memory names the document it landed in.
 - Added `hindsight.provenanceTags` (`HINDSIGHT_PROVENANCE_TAGS`) plus an automatic `role:<agent-profile>` tag so retained memories carry write-only actor/role provenance; provenance is merged into retains only and never into recall filters or observation scopes, so stamping it cannot narrow recall.
@@ -123,6 +126,7 @@
 ### Fixed
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
+
 - Agent `tools:` and `mcps:` frontmatter accept `{ eager, discoverable }` maps. Eager names stay top-level; discoverable names mount under `xd://`. An explicit `mcps:` list filters MCP tools by server (`mcps: []` disables them).
 - mcp.json `hubs` entries share one OAuth login per hub origin and auto-register `<hub>/mcp/<name>` HTTP servers.
 - Extension contexts expose `isCompacting()` so a plugin can tell a running compaction pass apart from an idle session.

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "bun:test";
-import { lookup as lookupSetting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadHindsightConfig, resolveProvenanceTags } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import {

@@ -332,7 +332,12 @@ export interface SettingsMirrorState {
 
 /** A write made on a worker mirror, replayed on its main-thread instance; settings travel by id. */
 export type SettingsMirrorWrite =
-	| { readonly op: "writeValue"; readonly id: string; readonly value: unknown; readonly layer: "global" | "override" | "project" }
+	| {
+			readonly op: "writeValue";
+			readonly id: string;
+			readonly value: unknown;
+			readonly layer: "global" | "override" | "project";
+	  }
 	| { readonly op: "unsetGlobalValue"; readonly id: string }
 	| { readonly op: "writeEntry"; readonly id: string; readonly key: string; readonly value: unknown }
 	| { readonly op: "writeMember"; readonly id: string; readonly item: string; readonly member: boolean }

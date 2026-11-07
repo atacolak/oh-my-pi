@@ -22,7 +22,6 @@ import type {
 	ListMentalModelsOptions,
 	MemoryItemInput,
 	HindsightMemoryUnit,
-	KnowledgeTreeResponse,
 	MentalModelHistoryEntry,
 	MentalModelListResponse,
 	MentalModelSummary,
@@ -202,10 +201,6 @@ export class RemoteHindsightSessionState implements HindsightSessionStateApi {
 
 	get retainTags(): string[] | undefined {
 		return this.#remote.callSync("retainTags");
-	}
-
-	get resolvedTags(): string[] | undefined {
-		return this.#remote.callSync("resolvedTags");
 	}
 
 	get observationScopes(): string[][] | undefined {

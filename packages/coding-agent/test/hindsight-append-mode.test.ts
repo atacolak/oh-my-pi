@@ -6,8 +6,6 @@ import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config
 import type { HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { countRetainableUserTurns } from "@oh-my-pi/pi-coding-agent/hindsight/transcript";
-import { TempDir } from "@oh-my-pi/pi-utils";
-import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
@@ -34,7 +32,6 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	scopeTags: [],
 	globalScope: false,
 	provenanceTags: [],
-	globalScope: false,
 	scoping: "per-project-tagged",
 	bankMission: "",
 	retainMission: null,

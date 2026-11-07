@@ -27,7 +27,6 @@ import type {
 	MentalModelListResponse,
 	MentalModelSummary,
 	HindsightMemoryUnit,
-	KnowledgeTreeResponse,
 	RecallOptions,
 	RecallResponse,
 	ReflectOptions,

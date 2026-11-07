@@ -56,10 +56,6 @@ export interface OutboxEvent {
 	sessionId: string;
 	/** Server metadata for the event; ids only, never user text. */
 	metadata?: Record<string, string>;
-	/** Per-item extraction strategy override captured at enqueue time. */
-	strategy?: string;
-	/** Exact deterministic observation consolidation scopes for this memory. */
-	observationScopes?: string[][];
 }
 
 export interface RetainCall {
@@ -75,6 +71,11 @@ export interface RetainCall {
 	strategy?: string;
 	/** Consolidation scopes applied to every project-scoped item. */
 	observationScopes?: string[][];
+	/**
+	 * Write-only provenance tags (actor/role) merged into every event, including
+	 * global ones. Never treated as scope, so provenance cannot narrow recall.
+	 */
+	provenanceTags?: string[];
 }
 
 export interface DrainResult {
@@ -206,14 +207,12 @@ export class HindsightOutbox {
 		// Project observation scopes would scope a global memory to one project, which is
 		// exactly what the global write exists to avoid.
 		const observationScopes =
-			scope === "global"
-				? undefined
-				: call.observationScopes?.map(scopeTags => scopeTags.map(tag => this.#clean(tag)));
+			scope === "global" ? undefined : call.observationScopes?.map(group => group.map(tag => this.#clean(tag)));
 		const strategy = call.strategy ? this.#clean(call.strategy) : undefined;
 		// Tool call ids are not guaranteed unique, so the persisted fields are part of the
 		// identity: a reused id with new content is a new document, not a replacement.
 		const identity = JSON.stringify([call.sessionId, call.toolCallId, index, scope, context, content]);
-		const event: OutboxEvent = {
+		return {
 			version: 1,
 			id: `omp-retain-${new Bun.CryptoHasher("sha256").update(identity).digest("hex").slice(0, 32)}`,
 			scope,
@@ -223,12 +222,9 @@ export class HindsightOutbox {
 			context,
 			sessionId: this.#clean(call.sessionId),
 			metadata: call.metadata,
-			strategy: call.strategy,
-			observationScopes: scope === "global" ? undefined : call.observationScopes,
+			...(strategy ? { strategy } : {}),
+			...(observationScopes ? { observationScopes } : {}),
 		};
-		if (observationScopes && observationScopes.length > 0) event.observationScopes = observationScopes;
-		if (strategy) event.strategy = strategy;
-		return event;
 	}
 
 	/** Events are stored at rest: strip terminal controls, the bearer token, and recognizable secrets. */

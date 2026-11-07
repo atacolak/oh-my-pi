@@ -102,14 +102,10 @@ export interface HindsightSessionStateApi {
 	/** Fully resolved deterministic scope tags (no write-only provenance). */
 	readonly resolvedTags?: string[];
 	readonly retainTags?: string[];
-	/** Deterministic scope tags; seeds derive from these, never from write-only provenance. */
-	readonly resolvedTags?: string[];
 	/** Exact deterministic observation consolidation scopes applied to every retain. */
 	readonly observationScopes?: string[][];
 	readonly recallTags?: string[];
 	readonly recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
-	/** Exact deterministic observation consolidation scopes. */
-	readonly observationScopes?: string[][];
 	readonly config: HindsightConfig;
 	readonly banksSet: HindsightBankSet;
 	readonly lastRecallSnippet?: string;
@@ -238,7 +234,8 @@ export class HindsightRetainQueue {
 				sessionId: state.sessionId,
 				toolCallId,
 				context: state.config.retainContext,
-				tags: mergeRetainWriteTags(state.retainTags, state.provenanceTags),
+				tags: state.retainTags,
+				provenanceTags: state.provenanceTags,
 				metadata: state.buildRetainMetadata(),
 				strategy: state.config.retainStrategy || undefined,
 				observationScopes: state.observationScopes,

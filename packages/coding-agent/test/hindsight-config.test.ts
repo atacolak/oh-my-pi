@@ -15,7 +15,7 @@ function load(overrides: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = 
 		else Bun.env[key] = String(value);
 	}
 	try {
-		const settings = new Settings({ inMemory: true });
+		const settings = Settings.isolated();
 		for (const [id, value] of Object.entries(overrides)) {
 			const setting = lookupSetting(id);
 			if (setting) setting.set(settings, value as never);

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	HindsightApi,
@@ -14,6 +14,8 @@ import {
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall";
@@ -169,6 +171,20 @@ function makeToolSession(state: HindsightSessionState): ToolSession {
 	} as unknown as ToolSession;
 }
 
+let agentDir: TempDir;
+let originalAgentDir: string;
+
+beforeEach(() => {
+	originalAgentDir = getAgentDir();
+	agentDir = TempDir.createSync("@hindsight-provenance-");
+	setAgentDir(agentDir.path());
+});
+
+afterEach(() => {
+	setAgentDir(originalAgentDir);
+	agentDir.removeSync();
+});
+
 describe("provenance is write-only", () => {
 	it("retain attaches provenance tags while observation scopes stay scope-only", async () => {
 		const client = new RecordingApi();
@@ -202,7 +218,7 @@ describe("provenance is write-only", () => {
 			provenanceTags: ["role:builder"],
 		});
 
-		state.enqueueRetain("operator prefers tabs");
+		await state.enqueueRetain("call-tabs", [{ content: "operator prefers tabs" }]);
 		await state.flushRetainQueue();
 
 		expect(client.batchCalls).toHaveLength(1);
@@ -221,7 +237,7 @@ describe("provenance is write-only", () => {
 			config: makeConfig({ globalScope: true }),
 		});
 
-		state.enqueueRetain("shared across projects", undefined, "global");
+		await state.enqueueRetain("call-shared", [{ content: "shared across projects", scope: "global" }]);
 		await state.flushRetainQueue();
 
 		// Tagging a global item with the project's tags would hide it from every other project's
@@ -259,7 +275,7 @@ describe("provenance is write-only", () => {
 
 		// The same session really stamps provenance on its writes; recall just never
 		// sees it. Without this precondition the invariance assertion above is vacuous.
-		stamped.enqueueRetain("shared fact");
+		await stamped.enqueueRetain("call-fact", [{ content: "shared fact" }]);
 		await stamped.flushRetainQueue();
 		expect(stampedClient.batchCalls[0]?.tags).toContain("role:builder");
 		expect(stampedClient.recallCalls[0]?.options?.tags).not.toContain("role:builder");
@@ -285,7 +301,7 @@ describe("provenance is write-only", () => {
 			aliasOf: parent,
 		});
 
-		child.enqueueRetain("subagent discovered a constraint");
+		await child.enqueueRetain("call-child", [{ content: "subagent discovered a constraint" }]);
 		await child.flushRetainQueue();
 
 		expect(client.batchCalls).toHaveLength(1);
@@ -437,7 +453,7 @@ describe("backend provenance wiring", () => {
 		const state = fake.installed();
 		expect(state?.resolvedTags).toEqual(["scope:coding", "project:omp"]);
 		expect(state?.provenanceTags).toEqual(["team:infra", "role:builder"]);
-		state!.enqueueRetain("the tag split is write-only");
+		await state!.enqueueRetain("call-split", [{ content: "the tag split is write-only" }]);
 		await state!.flushRetainQueue();
 
 		const item = retainItem(bodies);
@@ -472,7 +488,7 @@ describe("backend provenance wiring", () => {
 		// No session listeners means no automatic recall or cadence retain.
 		expect(childState?.unsubscribe).toBeUndefined();
 
-		childState!.enqueueRetain("subagent discovered a constraint");
+		await childState!.enqueueRetain("call-child", [{ content: "subagent discovered a constraint" }]);
 		await childState!.flushRetainQueue();
 
 		const item = retainItem(bodies);

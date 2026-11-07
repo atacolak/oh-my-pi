@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import type { HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { countRetainableUserTurns } from "@oh-my-pi/pi-coding-agent/hindsight/transcript";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
@@ -113,8 +115,19 @@ function resetBoundaryEntry(id: string, parentId: string, timestamp: string): Se
 }
 
 describe("Hindsight append-mode session retention", () => {
+	let agentDir: TempDir;
+	let originalAgentDir: string;
+
+	beforeEach(() => {
+		originalAgentDir = getAgentDir();
+		agentDir = TempDir.createSync("@hindsight-append-mode-");
+		setAgentDir(agentDir.path());
+	});
+
 	afterEach(() => {
 		vi.restoreAllMocks();
+		setAgentDir(originalAgentDir);
+		agentDir.removeSync();
 	});
 
 	it("keeps default replace behavior: no update_mode and a full transcript on later retains", async () => {
@@ -1597,7 +1610,7 @@ describe("Hindsight append-mode session retention", () => {
 			banksSet: new Set(["personal"]),
 		});
 
-		state.enqueueRetain("user asked me to remember the deploy token rotation");
+		await state.enqueueRetain("call-drain", [{ content: "user asked me to remember the deploy token rotation" }]);
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).content)).toContain("deploy token rotation");
@@ -1634,7 +1647,7 @@ describe("Hindsight append-mode session retention", () => {
 			closeRetainBaselineTurns: 0,
 		});
 
-		state.enqueueRetain("user asked me to remember the deploy token rotation");
+		await state.enqueueRetain("call-drain", [{ content: "user asked me to remember the deploy token rotation" }]);
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(2);
 		expect(String(firstItem(bodies[0]).content)).toContain("deploy token rotation");

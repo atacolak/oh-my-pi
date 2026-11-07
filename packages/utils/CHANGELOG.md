@@ -28,6 +28,12 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+## [18.18.0] - 2026-11-07
+
+### Fixed
+
+- Fixed abort signals leaving command output reads blocked when a descendant keeps stdout or stderr open after the root process exits. ([#18309](https://github.com/can1357/oh-my-pi/pull/18309) by [@eggpeat](https://github.com/eggpeat))
+
 ## [18.17.0] - 2026-11-06
 
 ### Added

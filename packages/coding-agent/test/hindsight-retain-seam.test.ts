@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import type { HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 function captureBodies(): unknown[] {
@@ -62,6 +64,21 @@ function firstItem(body: unknown): Record<string, unknown> {
 	if (typeof item !== "object" || item === null) throw new Error("retain item is not an object");
 	return item as Record<string, unknown>;
 }
+
+let agentDir: TempDir;
+let originalAgentDir: string;
+
+beforeEach(() => {
+	originalAgentDir = getAgentDir();
+	agentDir = TempDir.createSync("@hindsight-retain-seam-");
+	setAgentDir(agentDir.path());
+});
+
+afterEach(() => {
+	setAgentDir(originalAgentDir);
+	agentDir.removeSync();
+	vi.restoreAllMocks();
+});
 
 describe("Hindsight retain strategy request bodies", () => {
 	afterEach(() => {
@@ -138,7 +155,7 @@ describe("Hindsight retain strategy request bodies", () => {
 			banksSet: new Set(["personal"]),
 		});
 
-		state.enqueueRetain("operator prefers tabs over spaces");
+		await state.enqueueRetain("call-tabs", [{ content: "operator prefers tabs over spaces" }]);
 		await state.flushRetainQueue();
 		const item = firstItem(bodies[0]);
 		expect(item.strategy).toBe("personal_chat");

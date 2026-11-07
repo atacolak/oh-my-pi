@@ -1759,6 +1759,7 @@ const CAPTURE_DROPPED_KEYS = [
 	"approval",
 	"formatApprovalDetails",
 	"approvalCacheTargets",
+	"bindApprovalTargets",
 	"approvalRestrictionPaths",
 	"renderCall",
 	"renderResult",

@@ -44,6 +44,7 @@ export const hindsightBackend: MemoryBackend = {
 			if (!parent) return;
 			const previous = session.setHindsightSessionState(
 				new HindsightSessionState({
+					agentDir: options.agentDir,
 					sessionId,
 					client: parent.client,
 					bankId: parent.bankId,
@@ -269,8 +270,8 @@ async function installPrimaryState(
 	// Drain the previous state's pending transcript and retain queue BEFORE
 	// replacing it. A below-cadence turn would otherwise be marked loaded
 	// history on the replacement and never retained to either bank.
-	// `HindsightRetainQueue.#doFlush` also drops the batch if the session
-	// owner changes mid-flush, so finish that work first. Re-read after the
+	// The queue's outbox is bound to the destination it was created for, and a
+	// rebuild can change the bank, so finish pending delivery first. Re-read after the
 	// await so a concurrent owner cannot leave the actual current state
 	// undisposed.
 	let previous = session.getHindsightSessionState();
@@ -285,6 +286,7 @@ async function installPrimaryState(
 	}
 
 	const state = new HindsightSessionState({
+		agentDir: settings.getAgentDir(),
 		sessionId,
 		client,
 		bankId: scope.bankId,
@@ -313,6 +315,8 @@ async function installPrimaryState(
 	previous?.dispose();
 
 	state.attachSessionListeners();
+	// Deliver what earlier processes left in this destination's outbox; stored tags route each event.
+	void state.retainQueue.flush();
 
 	// Kick off mental-model bootstrap. Resolves asynchronously; the first
 	// turn races and is covered in `beforeAgentStartPrompt` via

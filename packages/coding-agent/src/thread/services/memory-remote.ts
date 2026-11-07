@@ -13,6 +13,8 @@ import type {
 	DocumentResponse,
 	GetMentalModelOptions,
 	HindsightClientApi,
+	HindsightRequestOptions,
+	KnowledgeTreeResponse,
 	ListDocumentsOptions,
 	ListDocumentsResponse,
 	ListMemoriesOptions,
@@ -192,6 +194,10 @@ export class RemoteHindsightSessionState implements HindsightSessionStateApi {
 
 	get bankId(): string {
 		return this.#remote.callSync("bankId");
+	}
+
+	get resolvedTags(): string[] | undefined {
+		return this.#remote.callSync("resolvedTags");
 	}
 
 	get retainTags(): string[] | undefined {

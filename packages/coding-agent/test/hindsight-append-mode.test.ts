@@ -6,6 +6,8 @@ import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config
 import type { HindsightMessage } from "@oh-my-pi/pi-coding-agent/hindsight/content";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { countRetainableUserTurns } from "@oh-my-pi/pi-coding-agent/hindsight/transcript";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
@@ -30,6 +32,7 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	bankId: "personal",
 	bankIdPrefix: "",
 	scopeTags: [],
+	globalScope: false,
 	provenanceTags: [],
 	globalScope: false,
 	scoping: "per-project-tagged",
@@ -135,8 +138,19 @@ afterEach(async () => {
 });
 
 describe("Hindsight append-mode session retention", () => {
+	let agentDir: TempDir;
+	let originalAgentDir: string;
+
+	beforeEach(() => {
+		originalAgentDir = getAgentDir();
+		agentDir = TempDir.createSync("@hindsight-append-mode-");
+		setAgentDir(agentDir.path());
+	});
+
 	afterEach(() => {
 		vi.restoreAllMocks();
+		setAgentDir(originalAgentDir);
+		agentDir.removeSync();
 	});
 
 	it("keeps default replace behavior: no update_mode and a full transcript on later retains", async () => {

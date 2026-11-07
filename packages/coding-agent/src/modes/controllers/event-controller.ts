@@ -490,9 +490,15 @@ export class EventController {
 		} satisfies AgentSessionEventHandlers;
 	}
 
-	/** Surface an idle recap reply in the transcript as a one-line {@link RecapNotice}; a blank reply mounts nothing. */
+	/** Surface an idle recap reply in the transcript as a {@link RecapNotice}; a blank reply mounts nothing. */
 	presentIdleRecap(reply: string): void {
-		const recap = previewLine(reply, TRUNCATE_LENGTHS.RECAP);
+		// The recap is a retrieval anchor (paths, SHAs, next action): keep the full
+		// text and let RecapNotice wrap. Only control characters and blank edge
+		// lines are removed.
+		const lines = sanitizeText(reply).split("\n");
+		while (lines.length > 0 && lines[0]!.trim() === "") lines.shift();
+		while (lines.length > 0 && lines.at(-1)!.trim() === "") lines.pop();
+		const recap = lines.join("\n");
 		if (recap) this.ctx.present(new RecapNotice(recap));
 	}
 

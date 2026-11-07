@@ -16,6 +16,8 @@ import {
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall";
@@ -28,6 +30,7 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		bankId: "personal",
 		bankIdPrefix: "",
 		scopeTags: [],
+		globalScope: false,
 		provenanceTags: [],
 		globalScope: false,
 		scoping: "per-project-tagged",
@@ -230,6 +233,28 @@ describe("provenance is write-only", () => {
 		expect(client.batchCalls).toHaveLength(1);
 		expect(client.batchCalls[0]?.tags).toEqual(["scope:coding", "role:builder"]);
 		expect(client.batchCalls[0]?.observationScopes).toEqual([["scope:coding"]]);
+	});
+
+	it("a global retain drops project tags and scopes but keeps its provenance stamp", async () => {
+		const client = new RecordingApi();
+		const state = makeState(client, {
+			retainTags: ["scope:coding"],
+			recallTags: ["scope:coding"],
+			recallTagsMatch: "all_strict",
+			observationScopes: [["scope:coding"]],
+			provenanceTags: ["role:builder"],
+			config: makeConfig({ globalScope: true }),
+		});
+
+		await state.enqueueRetain("call-shared", [{ content: "shared across projects", scope: "global" }]);
+		await state.flushRetainQueue();
+
+		// Tagging a global item with the project's tags would hide it from every other project's
+		// `any`-match recall, and a project observation scope would consolidate it there; the
+		// write-only provenance stamp still rides along.
+		expect(client.batchCalls).toHaveLength(1);
+		expect(client.batchCalls[0]?.tags).toEqual(["role:builder"]);
+		expect(client.batchCalls[0]?.observationScopes).toBeUndefined();
 	});
 
 	it("recall is unaffected: identical request filters and results with or without provenance", async () => {

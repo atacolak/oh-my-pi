@@ -15,6 +15,8 @@ import type {
 	DocumentResponse,
 	GetMentalModelOptions,
 	HindsightClientApi,
+	HindsightRequestOptions,
+	KnowledgeTreeResponse,
 	ListDocumentsOptions,
 	ListDocumentsResponse,
 	ListMemoriesOptions,
@@ -91,8 +93,8 @@ export type HindsightClientProtocol = {
 export type HindsightSessionStateProtocol = {
 	client: RpcMethod<[], HindsightClientApi>;
 	bankId: RpcMethod<[], string>;
-	retainTags: RpcMethod<[], string[] | undefined>;
 	resolvedTags: RpcMethod<[], string[] | undefined>;
+	retainTags: RpcMethod<[], string[] | undefined>;
 	observationScopes: RpcMethod<[], string[][] | undefined>;
 	recallTags: RpcMethod<[], string[] | undefined>;
 	recallTagsMatch: RpcMethod<[], "any" | "all" | "any_strict" | "all_strict" | undefined>;

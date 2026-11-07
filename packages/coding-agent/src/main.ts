@@ -144,6 +144,7 @@ import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { discoverAgents, getAgent } from "./task/discovery";
 import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
 import type { AgentDefinition } from "./task/types";
+import { applyAgentCompactionPolicy } from "./task/agent-compaction";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
@@ -1870,6 +1871,7 @@ export async function buildSessionOptions(
 			// `agents`-scoped bucketing a bare `main` session relies on; an empty list is a
 			// profile that deliberately applies none.
 			options.declaredRules = agent.rules;
+			applyAgentCompactionPolicy(activeSettings, agent.compaction);
 		}
 	}
 

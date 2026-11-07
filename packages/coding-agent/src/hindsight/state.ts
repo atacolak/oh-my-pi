@@ -99,6 +99,8 @@ export interface HindsightConversationTrackingSnapshot {
 export interface HindsightSessionStateApi {
 	readonly client: HindsightClientApi;
 	readonly bankId: string;
+	/** Fully resolved deterministic scope tags (no write-only provenance). */
+	readonly resolvedTags?: string[];
 	readonly retainTags?: string[];
 	/** Deterministic scope tags; seeds derive from these, never from write-only provenance. */
 	readonly resolvedTags?: string[];
@@ -106,6 +108,8 @@ export interface HindsightSessionStateApi {
 	readonly observationScopes?: string[][];
 	readonly recallTags?: string[];
 	readonly recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	/** Exact deterministic observation consolidation scopes. */
+	readonly observationScopes?: string[][];
 	readonly config: HindsightConfig;
 	readonly banksSet: HindsightBankSet;
 	readonly lastRecallSnippet?: string;
@@ -495,8 +499,8 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	/** Live local primary this alias delegates to, following rebuilt successors. */
 	#localPrimary(): HindsightSessionState | undefined {
 		let primary = this.#aliasOf;
-		const seen = new Set<HindsightSessionState>();
-		while (primary && primary.#successor) {
+		const seen = new Set<HindsightSessionStateApi>();
+		while (primary instanceof HindsightSessionState && primary.#successor) {
 			if (seen.has(primary)) break;
 			seen.add(primary);
 			primary = primary.#successor;

@@ -4936,6 +4936,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 									assertPerCallModelApproved(dispatchModel, perCallModelGrants, modelRegistry);
 									if (spawnEffortCeiling) assertModelSupportsEffortCeiling(dispatchModel, spawnEffortCeiling);
 								},
+							}
+						: {}),
+					...(perCallModelGrants || agent.modelFallback === false
+						? {
 								disableModelFallback: true,
 								disableServerSideFallback: true,
 							}
@@ -5184,6 +5188,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				readOnly: isReadOnlyAgent(agent),
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
+				modelFallback: agent.modelFallback,
 				advisor: advisorSelection ? (advisorRolePattern ?? "on") : undefined,
 				compactionThreshold: options.compactionThresholdOverride,
 				outputSchema,

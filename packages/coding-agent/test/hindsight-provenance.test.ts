@@ -430,7 +430,7 @@ describe("backend provenance wiring", () => {
 			session: fake.session,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDirTemp.path(),
 			taskDepth: 0,
 		});
 
@@ -453,7 +453,7 @@ describe("backend provenance wiring", () => {
 			session: parent.session,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDirTemp.path(),
 			taskDepth: 0,
 		});
 
@@ -462,7 +462,7 @@ describe("backend provenance wiring", () => {
 			session: child.session,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDirTemp.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parent.installed(),
 		});

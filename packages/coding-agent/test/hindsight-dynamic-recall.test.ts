@@ -337,7 +337,7 @@ describe("episode resolver wire-up", () => {
 			session: session as unknown as AgentSession,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDirTemp.path(),
 			taskDepth: 0,
 			episodeIdFor: () => "ep-from-runtime",
 		});

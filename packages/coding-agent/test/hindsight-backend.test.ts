@@ -167,7 +167,7 @@ describe("hindsightBackend.start", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -190,7 +190,7 @@ describe("hindsightBackend.start", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -222,7 +222,7 @@ describe("hindsightBackend.start", () => {
 			session: parentSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const parentState = parentSession.getHindsightSessionState();
@@ -233,7 +233,7 @@ describe("hindsightBackend.start", () => {
 			session: subSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parentState,
 		});
@@ -259,7 +259,7 @@ describe("hindsightBackend.start", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 1,
 		});
 
@@ -295,7 +295,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -328,7 +328,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -363,7 +363,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -416,7 +416,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -441,7 +441,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const state = session.getHindsightSessionState();
@@ -478,7 +478,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		// Wait for the kicked-off load to settle.
@@ -527,7 +527,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: parent as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const child = makeFakeSession({ sessionId: "alias-child" });
@@ -535,7 +535,7 @@ describe("hindsightBackend first-turn injection", () => {
 			session: child as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parent.getHindsightSessionState(),
 		});
@@ -563,7 +563,7 @@ describe("hindsightBackend.clear", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		expect(session.getHindsightSessionState()).toBeDefined();
@@ -591,7 +591,7 @@ describe("hindsightBackend.clear", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -632,7 +632,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -674,7 +674,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		entries.push(
@@ -713,7 +713,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		await session.getHindsightSessionState()!.drainOnClose();
@@ -746,7 +746,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 			hindsightCloseRetainBaselineTurns: session.loadedUserTurnCount,
 		});
@@ -782,7 +782,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 			hindsightCloseRetainBaselineTurns: 0,
 		});
@@ -815,7 +815,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -848,7 +848,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -890,7 +890,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -921,7 +921,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -960,7 +960,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: parentSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const parent = parentSession.getHindsightSessionState();
@@ -970,7 +970,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: aliasSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parent,
 		});
@@ -1003,7 +1003,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: parentSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const parent = parentSession.getHindsightSessionState();
@@ -1013,7 +1013,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: aliasSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parent,
 		});
@@ -1061,7 +1061,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: parentSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const parent = parentSession.getHindsightSessionState();
@@ -1072,7 +1072,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: aliasSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parent,
 		});
@@ -1131,7 +1131,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: parentSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const parent = parentSession.getHindsightSessionState();
@@ -1142,7 +1142,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: aliasSession as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parent,
 		});
@@ -1190,7 +1190,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -1214,7 +1214,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 
@@ -1247,7 +1247,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const initial = session.getHindsightSessionState();
@@ -1289,7 +1289,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		expect(session.getHindsightSessionState()?.bankId).toBe("Minigames-_NEW_XenGameKit");
@@ -1327,7 +1327,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		expect(session.listenerCount()).toBe(1);
@@ -1390,7 +1390,7 @@ describe("hindsightBackend live bank routing", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		await session.getHindsightSessionState()?.mentalModelsLoadPromise;
@@ -1435,7 +1435,7 @@ describe("hindsightBackend cwd rebind", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		expect(session.getHindsightSessionState()?.bankId).toBe("omp-source");
@@ -1472,7 +1472,7 @@ describe("hindsightBackend cwd rebind", () => {
 				session: session as never,
 				settings,
 				modelRegistry: {} as never,
-				agentDir: "/tmp",
+				agentDir: agentDir.path(),
 				taskDepth: 0,
 			});
 			const initial = session.getHindsightSessionState();
@@ -1516,7 +1516,7 @@ describe("hindsightBackend cwd rebind", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		let flushes = 0;
@@ -1576,7 +1576,7 @@ describe("hindsightBackend cwd rebind", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		let flushes = 0;
@@ -1634,7 +1634,7 @@ describe("hindsightBackend retain queue flush on session teardown", () => {
 			session: session as never,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDir.path(),
 			taskDepth: 0,
 		});
 		const state = session.getHindsightSessionState();

@@ -1,4 +1,4 @@
-import { type Component, Container, type HistoryBatch, ownDescription } from "../tui";
+import { type AppViewportScrollRegion, type Component, Container, type HistoryBatch, ownDescription } from "../tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { measureRender, renderForScrollback } from "../components/image";
@@ -340,7 +340,7 @@ class CompactRun implements Component {
 const NO_RUNS: ReadonlyMap<Component, CompactRun> = new Map();
 
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
-export class TranscriptContainer extends Container {
+export class TranscriptContainer extends Container implements AppViewportScrollRegion {
 	#entries: TranscriptEntry[] = [];
 	#frontier = 0;
 	#nextBatchId = 1;
@@ -521,6 +521,14 @@ export class TranscriptContainer extends Container {
 		if (!this.canRemoveBlock(component)) return false;
 		const next = this.children[this.children.indexOf(component) + 1];
 		return next === undefined || !isUsageRowBlock(next);
+	}
+
+	getAppViewportScrollRegionStart(): number | undefined {
+		return 0;
+	}
+
+	getAppViewportScrollRegionEnd(): number | undefined {
+		return undefined;
 	}
 
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */

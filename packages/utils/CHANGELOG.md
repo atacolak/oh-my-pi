@@ -25,6 +25,12 @@
 - Preserved project-dotenv ownership for the default profile when profile bootstrap normalizes and deletes profile environment variables.
 - Treated Bun unspaced `#` comments on unquoted dotenv values as comments when matching project-owned environment variables.
 - Did not treat `setProfile`'s mirrored `OMP_PROFILE` as an independent parent selector when the name came from `PI_PROFILE`.
+## [18.18.0] - 2026-11-07
+
+### Fixed
+
+- Fixed abort signals leaving command output reads blocked when a descendant keeps stdout or stderr open after the root process exits. ([#18309](https://github.com/can1357/oh-my-pi/pull/18309) by [@eggpeat](https://github.com/eggpeat))
+
 ## [18.17.0] - 2026-11-06
 
 ### Added

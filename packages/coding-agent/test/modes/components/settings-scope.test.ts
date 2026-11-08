@@ -1,11 +1,14 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { invalidate as invalidateCapabilityFsCache } from "@oh-my-pi/pi-coding-agent/capability/fs";
+import { cfgDisabledProviders } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createSettingsHost } from "@oh-my-pi/pi-coding-agent/config/settings-ui";
 import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/settings-host";
 import { cfgThemeDark } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { cfgAskEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgPersonality } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -110,6 +113,30 @@ describe("project-scoped /settings persist layer", () => {
 
 		expect(cfgThemeDark.get(settings)).toBe("anthracite");
 		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({ theme: { dark: "anthracite" } });
+	});
+
+	it("keeps a self-disabled provider out of inherited settings after a native project edit", async () => {
+		await Bun.write(
+			path.join(projectDir, ".codex", "config.toml"),
+			'personality = "friendly"\ndisabledProviders = ["codex"]\n',
+		);
+		invalidateCapabilityFsCache(path.join(projectDir, ".codex", "config.toml"));
+		await settings.reloadFromDisk();
+		expect(cfgDisabledProviders.get(settings)).toEqual(["codex"]);
+		expect(cfgPersonality.get(settings)).toBe("default");
+
+		cfgAskEnabled.setProject(settings, false);
+		await settings.flush();
+
+		expect(cfgDisabledProviders.get(settings)).toEqual(["codex"]);
+		expect(cfgPersonality.get(settings)).toBe("default");
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			ask: { enabled: false },
+			custom: { keep: true },
+		});
+		await settings.reloadFromDisk();
+		expect(cfgDisabledProviders.get(settings)).toEqual(["codex"]);
+		expect(cfgPersonality.get(settings)).toBe("default");
 	});
 
 	it("writes the global layer without live callbacks when the project value still wins", async () => {

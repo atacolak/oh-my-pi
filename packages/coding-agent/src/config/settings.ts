@@ -1286,6 +1286,7 @@ export class Settings {
 
 	#captureProjectMutation(key: string, baseValue: unknown): void {
 		if (!this.#persist) return;
+		if (this.#modifiedProjectPathMutations.has(key)) return;
 		const projectConfigPath = path.join(getProjectAgentDir(this.#cwd), "config.yml");
 		this.#modifiedProjectPathMutations.set(key, {
 			generation: this.#readYamlGeneration(projectConfigPath),

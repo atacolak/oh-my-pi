@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createSettingsHost } from "@oh-my-pi/pi-coding-agent/config/settings-ui";
 import { createPluginSettingsHost } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/settings-host";
+import { cfgThemeDark } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { cfgAskEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -73,6 +74,42 @@ describe("project-scoped /settings persist layer", () => {
 			custom: { keep: true },
 		});
 		expect(YAML.parse(await Bun.file(path.join(agentDir, "config.yml")).text())).toEqual({ ask: { enabled: false } });
+	});
+
+	it("keeps the latest project edit when a sibling disk edit lands during debounce", async () => {
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: true } }, null, 2),
+		);
+		await settings.reloadFromDisk();
+		cfgThemeDark.setProject(settings, "titanium");
+		cfgThemeDark.setProject(settings, "alabaster");
+		await Bun.write(
+			projectConfigPath,
+			YAML.stringify({ theme: { dark: "dark-one" }, ask: { enabled: false } }, null, 2),
+		);
+
+		await settings.flush();
+
+		expect(cfgThemeDark.get(settings)).toBe("alabaster");
+		expect(cfgAskEnabled.get(settings)).toBe(false);
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({
+			theme: { dark: "alabaster" },
+			ask: { enabled: false },
+		});
+	});
+
+	it("preserves a newer same-key disk edit after repeated project edits", async () => {
+		await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "dark-one" } }, null, 2));
+		await settings.reloadFromDisk();
+		cfgThemeDark.setProject(settings, "titanium");
+		cfgThemeDark.setProject(settings, "alabaster");
+		await Bun.write(projectConfigPath, YAML.stringify({ theme: { dark: "anthracite" } }, null, 2));
+
+		await settings.flush();
+
+		expect(cfgThemeDark.get(settings)).toBe("anthracite");
+		expect(YAML.parse(await Bun.file(projectConfigPath).text())).toEqual({ theme: { dark: "anthracite" } });
 	});
 
 	it("writes the global layer without live callbacks when the project value still wins", async () => {

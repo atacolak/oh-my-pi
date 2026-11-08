@@ -166,6 +166,8 @@ interface FakeLspOptions {
 	stdoutClosesBeforeExit?: boolean;
 }
 
+const fakeLspServers = new Set<FakeLspServer>();
+
 // In-memory LSP transport fake. Replaces the real subprocess (`ptree.spawn`)
 // with an in-process JSON-RPC peer so the initialize / shutdown / exit and
 // workspace-folder handshakes resolve deterministically -- no subprocess spawn,
@@ -305,6 +307,7 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 		spawnCount++;
 		return proc as unknown as piUtils.ptree.ChildProcess<"pipe">;
 	}) as typeof piUtils.ptree.spawn);
+	fakeLspServers.add(server);
 	return server;
 }
 
@@ -426,8 +429,17 @@ afterEach(() => {
 });
 
 describe("lsp regressions", () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
+	afterEach(async () => {
+		try {
+			// Tests may intentionally keep a server alive through shutdown and SIGTERM.
+			// End that fixture only after its assertions so later tests do not repeatedly
+			// pay its graceful-exit and hard-kill deadlines.
+			for (const server of fakeLspServers) server.exit(0);
+			fakeLspServers.clear();
+			await lspClient.shutdownAll();
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 
 	it("detects bracket-style glob patterns", () => {

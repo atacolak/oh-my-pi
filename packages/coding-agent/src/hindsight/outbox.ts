@@ -194,23 +194,10 @@ export class HindsightOutbox {
 		const scope = item.scope ?? "project";
 		const context = this.#clean(item.context ?? call.context);
 		const content = this.#clean(item.content);
-		// A global write drops the scope tags — that is what makes it visible from every
-		// project — but keeps the write-only provenance stamp, so the actor/role of a global
-		// retain is still recorded. Project writes carry both.
-		const tags = mergeRetainWriteTags(scope === "global" ? undefined : call.tags, call.provenanceTags)?.map(tag =>
-			this.#clean(tag),
-		);
-		// Project observation scopes would scope a global memory to one project, which is
-		// exactly what the global write exists to avoid.
-		const observationScopes =
-			scope === "global"
-				? undefined
-				: call.observationScopes?.map(scopeTags => scopeTags.map(tag => this.#clean(tag)));
-		const strategy = call.strategy ? this.#clean(call.strategy) : undefined;
 		// Tool call ids are not guaranteed unique, so the persisted fields are part of the
 		// identity: a reused id with new content is a new document, not a replacement.
 		const identity = JSON.stringify([call.sessionId, call.toolCallId, index, scope, context, content]);
-		const event: OutboxEvent = {
+		return {
 			version: 1,
 			id: `omp-retain-${new Bun.CryptoHasher("sha256").update(identity).digest("hex").slice(0, 32)}`,
 			scope,
@@ -228,9 +215,6 @@ export class HindsightOutbox {
 					? undefined
 					: call.observationScopes?.map(scopeTags => scopeTags.map(tag => this.#clean(tag))),
 		};
-		if (observationScopes && observationScopes.length > 0) event.observationScopes = observationScopes;
-		if (strategy) event.strategy = strategy;
-		return event;
 	}
 
 	/** Events are stored at rest: strip terminal controls, the bearer token, and recognizable secrets. */

@@ -31,6 +31,7 @@ const DEFAULT_BANK_NAME = "omp";
 const PROJECT_TAG_PREFIX = "project:";
 const UNKNOWN_PROJECT = "unknown";
 const MISSION_SET_CAP = 10_000;
+const WORKSPACE_MANIFEST = "workspace.toml";
 const PREFERRED_SCOPE_MANIFEST = path.join(".systemd-ops", "scope.toml");
 const LEGACY_SCOPE_MANIFEST = ".systemd-ops.toml";
 
@@ -68,13 +69,12 @@ function baseBankId(config: HindsightConfig): string {
 /**
  * Best-effort project label from a working-directory path.
  *
- * The canonical project identity is the `[scope].id` of the nearest
- * `.systemd-ops/scope.toml` (or legacy `.systemd-ops.toml`) walking up from
- * the working directory, which is why `cpa-farm` labels as `cpa`. When the
- * working directory carries no manifest — a linked worktree checked out away
- * from the primary — the primary checkout root is checked for one, so every
- * worktree of one repo shares the primary's label. A directory holding both
- * manifest flavours is ambiguous and contributes nothing.
+ * The canonical project identity is the `[workspace].id` of the nearest
+ * `workspace.toml`, falling back to `[scope].id` in `.systemd-ops/scope.toml`
+ * (or legacy `.systemd-ops.toml`) walking up from the working directory.
+ * Matching declarations may coexist; conflicting IDs or both scope manifest
+ * flavours are ambiguous and contribute nothing. When a linked worktree carries
+ * no declaration, the primary checkout root is checked with the same rules.
  *
  * Otherwise we fall back to the primary checkout root basename (or the cwd
  * basename), lowercased. The label becomes a tag, and Hindsight matches tags
@@ -103,14 +103,6 @@ export function declaredProjectLabel(directory: string): string | null {
 	return primary ? scopeIdAt(primary) : null;
 }
 
-function isFile(target: string): boolean {
-	try {
-		return fs.statSync(target).isFile();
-	} catch {
-		return false;
-	}
-}
-
 function normalizeScopeId(id: string): string {
 	return id
 		.trim()
@@ -122,8 +114,10 @@ function normalizeScopeId(id: string): string {
 function scopeIdFromManifest(manifest: string): string | null {
 	try {
 		const parsed = Bun.TOML.parse(fs.readFileSync(manifest, "utf8"));
-		if (!isRecord(parsed) || !isRecord(parsed.scope)) return null;
-		const id = parsed.scope.id;
+		if (!isRecord(parsed)) return null;
+		const workspaceId = isRecord(parsed.workspace) ? parsed.workspace.id : undefined;
+		const scopeId = isRecord(parsed.scope) ? parsed.scope.id : undefined;
+		const id = typeof workspaceId === "string" ? workspaceId : scopeId;
 		return typeof id === "string" ? normalizeScopeId(id) || null : null;
 	} catch {
 		return null;
@@ -132,12 +126,23 @@ function scopeIdFromManifest(manifest: string): string | null {
 
 /** Declared scope id for exactly this directory, or null when absent/ambiguous/unusable. */
 function scopeIdAt(root: string): string | null {
+	const workspace = path.join(root, WORKSPACE_MANIFEST);
 	const preferred = path.join(root, PREFERRED_SCOPE_MANIFEST);
 	const legacy = path.join(root, LEGACY_SCOPE_MANIFEST);
-	const preferredExists = isFile(preferred);
-	const legacyExists = isFile(legacy);
-	if (preferredExists === legacyExists) return null;
-	return scopeIdFromManifest(preferredExists ? preferred : legacy);
+	const preferredExists = fs.existsSync(preferred);
+	const legacyExists = fs.existsSync(legacy);
+	if (preferredExists && legacyExists) return null;
+	const fallbackId = preferredExists
+		? scopeIdFromManifest(preferred)
+		: legacyExists
+			? scopeIdFromManifest(legacy)
+			: null;
+	if (fs.existsSync(workspace)) {
+		const workspaceId = scopeIdFromManifest(workspace);
+		if (workspaceId && fallbackId && workspaceId !== fallbackId) return null;
+		return workspaceId ?? fallbackId;
+	}
+	return fallbackId;
 }
 
 function scopeIdFromAncestors(directory: string): string | null {

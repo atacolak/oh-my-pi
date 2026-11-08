@@ -341,6 +341,83 @@ describe("computeBankScope", () => {
 			).toEqual(["scope:coding", "project:drone-ops-fleet"]);
 		});
 
+		const workspaceFixtures = [
+			{
+				name: "prefers and normalizes workspace identity over a scope section in the same manifest",
+				workspace: '[workspace]\nid = "  Workspace / Identity  "\n[scope]\nid = "ignored"\n',
+				expected: "workspace-identity",
+			},
+			{
+				name: "accepts a scope section in workspace.toml when workspace identity is absent",
+				workspace: '[scope]\nid = "scope-fallback"\n',
+				expected: "scope-fallback",
+			},
+			{
+				name: "keeps workspace identity alongside a matching preferred scope",
+				workspace: '[workspace]\nid = "shared"\n',
+				preferred: '[scope]\nid = "shared"\n',
+				expected: "shared",
+			},
+			{
+				name: "keeps workspace identity alongside coordination-only metadata",
+				workspace: '[workspace]\nid = "workspace-only"\n',
+				preferred: '[coordination]\nlead = "hcom:lead"\n',
+				expected: "workspace-only",
+			},
+			{
+				name: "refuses conflicting workspace and preferred scope identities",
+				workspace: '[workspace]\nid = "workspace"\n',
+				preferred: '[scope]\nid = "different"\n',
+				expected: null,
+			},
+			{
+				name: "refuses conflicting workspace and legacy scope identities",
+				workspace: '[workspace]\nid = "workspace"\n',
+				legacy: '[scope]\nid = "different"\n',
+				expected: null,
+			},
+			{
+				name: "preserves dual-scope ambiguity even when workspace identity matches",
+				workspace: '[workspace]\nid = "shared"\n',
+				preferred: '[scope]\nid = "shared"\n',
+				legacy: '[scope]\nid = "shared"\n',
+				expected: null,
+			},
+			{
+				name: "falls back to preferred scope when workspace.toml is malformed",
+				workspace: "[workspace\nid =\n",
+				preferred: '[scope]\nid = "usable-scope"\n',
+				expected: "usable-scope",
+			},
+			{
+				name: "falls back to a scope section when workspace identity is not a string",
+				workspace: '[workspace]\nid = 42\n[scope]\nid = "typed-fallback"\n',
+				expected: "typed-fallback",
+			},
+		];
+		for (const [index, fixture] of workspaceFixtures.entries()) {
+			it(fixture.name, async () => {
+				const root = path.join(baseDir, `workspace-${index}`);
+				await Bun.write(path.join(root, "workspace.toml"), fixture.workspace);
+				if (fixture.preferred) await writeManifest(root, fixture.preferred);
+				if (fixture.legacy) await writeLegacyManifest(root, fixture.legacy);
+				expect(declaredProjectLabel(path.join(root, "packages", "app"))).toBe(fixture.expected);
+				expect(
+					computeBankScope(baseConfig({ scoping: "per-project-tagged", scopeTags: ["scope:coding"] }), root)
+						.retainTags,
+				).toEqual(fixture.expected ? ["scope:coding", `project:${fixture.expected}`] : ["scope:coding"]);
+			});
+		}
+
+		it("keeps dual-manifest ambiguity when scope paths are directories", async () => {
+			const root = path.join(baseDir, "workspace-with-directory-manifests");
+			await Bun.write(path.join(root, "workspace.toml"), '[workspace]\nid = "must-not-win"\n');
+			await fs.mkdir(path.join(root, ".systemd-ops", "scope.toml"), { recursive: true });
+			await fs.mkdir(path.join(root, ".systemd-ops.toml"));
+			expect(declaredProjectLabel(root)).toBeNull();
+			expect(scopedLabel(root)).toBeUndefined();
+		});
+
 		it("leaves an undeclared project unbound", async () => {
 			const root = path.join(baseDir, "unscoped");
 			await fs.mkdir(root, { recursive: true });
@@ -417,6 +494,25 @@ describe("computeBankScope", () => {
 			expect(computeBankScope(baseConfig({ scoping: "per-project" }), worktreeRoot)).toEqual({
 				bankId: "omp-shared-scope",
 			});
+		});
+
+		it("inherits workspace.toml identity from a linked worktree's primary checkout", async () => {
+			const primary = path.join(baseDir, "workspace-primary");
+			const linked = path.join(baseDir, "workspace-linked");
+			await fs.mkdir(primary, { recursive: true });
+			runGit(primary, ["-c", "init.defaultBranch=main", "init"]);
+			await Bun.write(path.join(primary, "README.md"), "workspace fixture\n");
+			runGit(primary, ["add", "README.md"]);
+			runGit(primary, ["-c", "core.hooksPath=/dev/null", "commit", "-m", "base"]);
+			runGit(primary, ["worktree", "add", linked, "-b", "workspace-feature"]);
+			await Bun.write(path.join(primary, "workspace.toml"), '[workspace]\nid = "  Shared Workspace  "\n');
+			expect(declaredProjectLabel(primary)).toBe("shared-workspace");
+			expect(declaredProjectLabel(linked)).toBe("shared-workspace");
+			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), linked).retainTags).toEqual([
+				"project:shared-workspace",
+			]);
+			await Bun.write(path.join(primary, ".systemd-ops", "scope.toml"), '[scope]\nid = "conflict"\n');
+			expect(declaredProjectLabel(linked)).toBeNull();
 		});
 	});
 });

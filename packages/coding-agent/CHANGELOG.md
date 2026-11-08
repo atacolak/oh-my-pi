@@ -24,6 +24,7 @@
 ### Changed
 
 - Hindsight now defaults to incremental last-turn retention every two new turns with one overlapping turn; explicit full-session settings remain supported.
+- Hindsight project identity now recognizes `workspace.toml`, including linked worktrees, and rejects conflicting scope declarations.
 - Recalled `<memories>` now ride a TUI-hidden context entry delivered with the turn instead of being appended to the system prompt, so recall no longer changes the provider prefix-cache key; the same delivery serves Mnemopi.
 - Hindsight recall is per context epoch instead of per session: a committed compaction or a genuine retitle refreshes it against the current transcript, and a resumed session recalls afresh instead of replaying its frozen first-turn block.
 - Hindsight refreshes never repeat memories the transcript already holds, and the persisted recall record seeds that dedupe across resume.

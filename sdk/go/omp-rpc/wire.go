@@ -1987,6 +1987,27 @@ func (v *CacheWarmingMode) UnmarshalJSON(data []byte) error {
 	return unknownValue("CacheWarmingMode", s)
 }
 
+type CompactMode string
+
+const (
+	CompactModeSoft        CompactMode = "soft"
+	CompactModeRemote      CompactMode = "remote"
+	CompactModeSnapcompact CompactMode = "snapcompact"
+)
+
+func (v *CompactMode) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "CompactMode")
+	if err != nil {
+		return err
+	}
+	switch value := CompactMode(s); value {
+	case CompactModeSoft, CompactModeRemote, CompactModeSnapcompact:
+		*v = value
+		return nil
+	}
+	return unknownValue("CompactMode", s)
+}
+
 // `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches.
 type MessageUpdates string
 
@@ -2556,6 +2577,87 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+// Runtime generation layout of the process serving the session.
+type RuntimeGenerationState struct {
+	// Generation directory the process was born in.
+	Running string `json:"running"`
+	// The running generation is no longer the one `current` selects.
+	Behind bool `json:"behind"`
+	// Generation `generations/current` points at, when readable.
+	Current *string `json:"current,omitempty"`
+}
+
+func (v *RuntimeGenerationState) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RuntimeGenerationState", v.decodeFrom)
+}
+
+func (v *RuntimeGenerationState) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RuntimeGenerationState
+	d := fieldDecoder{raw: raw, owner: "RuntimeGenerationState"}
+	d.required("running", &out.Running)
+	d.required("behind", &out.Behind)
+	d.optional("current", &out.Current)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Outcome of `upgrade_runtime`.
+type UpgradeRuntimeResult struct {
+	// The owner is restarting onto `current` now.
+	Upgraded bool `json:"upgraded"`
+	// An idle-triggered upgrade is armed.
+	Scheduled bool `json:"scheduled"`
+	// Generation the owner runs now.
+	Running *string `json:"running,omitempty"`
+	// Generation `generations/current` selects, when readable.
+	Current *string `json:"current,omitempty"`
+	// Why no upgrade is running now.
+	Reason *UpgradeRuntimeResultReason `json:"reason,omitempty"`
+}
+
+func (v *UpgradeRuntimeResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "UpgradeRuntimeResult", v.decodeFrom)
+}
+
+func (v *UpgradeRuntimeResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out UpgradeRuntimeResult
+	d := fieldDecoder{raw: raw, owner: "UpgradeRuntimeResult"}
+	d.required("upgraded", &out.Upgraded)
+	d.defaulted("scheduled", &out.Scheduled, `false`)
+	d.optional("running", &out.Running)
+	d.optional("current", &out.Current)
+	d.optional("reason", &out.Reason)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type UpgradeRuntimeResultReason string
+
+const (
+	UpgradeRuntimeResultReasonAlreadyCurrent       UpgradeRuntimeResultReason = "already_current"
+	UpgradeRuntimeResultReasonNotGenerationManaged UpgradeRuntimeResultReason = "not_generation_managed"
+	UpgradeRuntimeResultReasonScheduledOnIdle      UpgradeRuntimeResultReason = "scheduled_on_idle"
+)
+
+func (v *UpgradeRuntimeResultReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "UpgradeRuntimeResultReason")
+	if err != nil {
+		return err
+	}
+	switch value := UpgradeRuntimeResultReason(s); value {
+	case UpgradeRuntimeResultReasonAlreadyCurrent, UpgradeRuntimeResultReasonNotGenerationManaged, UpgradeRuntimeResultReasonScheduledOnIdle:
+		*v = value
+		return nil
+	}
+	return unknownValue("UpgradeRuntimeResultReason", s)
+}
+
 type SessionState struct {
 	SessionID             string         `json:"sessionId"`
 	Model                 *ModelInfo     `json:"model,omitempty"`
@@ -2591,6 +2693,8 @@ type SessionState struct {
 	SystemPrompt []string         `json:"systemPrompt"`
 	DumpTools    []ToolDescriptor `json:"dumpTools"`
 	ContextUsage *ContextUsage    `json:"contextUsage,omitempty"`
+	// Runtime generation of this process; absent when the entrypoint is not generation-managed.
+	Generation *RuntimeGenerationState `json:"generation,omitempty"`
 	// Current goal mode; null when the session has no goal.
 	Goal *GoalModeState `json:"goal"`
 }
@@ -2630,6 +2734,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.defaulted("systemPrompt", &out.SystemPrompt, `[]`)
 	d.defaulted("dumpTools", &out.DumpTools, `[]`)
 	d.optional("contextUsage", &out.ContextUsage)
+	d.optional("generation", &out.Generation)
 	d.defaulted("goal", &out.Goal, `null`)
 	if d.err != nil {
 		return d.err
@@ -3507,6 +3612,125 @@ func (v *LogoutAccountType) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	return unknownValue("LogoutAccountType", s)
+}
+
+type McpServerScope string
+
+const (
+	McpServerScopeProject McpServerScope = "project"
+	McpServerScopeUser    McpServerScope = "user"
+	McpServerScopePlugin  McpServerScope = "plugin"
+)
+
+func (v *McpServerScope) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpServerScope")
+	if err != nil {
+		return err
+	}
+	switch value := McpServerScope(s); value {
+	case McpServerScopeProject, McpServerScopeUser, McpServerScopePlugin:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpServerScope", s)
+}
+
+type McpServerTransport string
+
+const (
+	McpServerTransportStdio McpServerTransport = "stdio"
+	McpServerTransportHTTP  McpServerTransport = "http"
+	McpServerTransportSse   McpServerTransport = "sse"
+)
+
+func (v *McpServerTransport) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpServerTransport")
+	if err != nil {
+		return err
+	}
+	switch value := McpServerTransport(s); value {
+	case McpServerTransportStdio, McpServerTransportHTTP, McpServerTransportSse:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpServerTransport", s)
+}
+
+type McpServerStatusState string
+
+const (
+	McpServerStatusStateConnected    McpServerStatusState = "connected"
+	McpServerStatusStateConnecting   McpServerStatusState = "connecting"
+	McpServerStatusStateDisconnected McpServerStatusState = "disconnected"
+	McpServerStatusStateError        McpServerStatusState = "error"
+	McpServerStatusStateAuthRequired McpServerStatusState = "auth_required"
+)
+
+func (v *McpServerStatusState) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpServerStatusState")
+	if err != nil {
+		return err
+	}
+	switch value := McpServerStatusState(s); value {
+	case McpServerStatusStateConnected, McpServerStatusStateConnecting, McpServerStatusStateDisconnected, McpServerStatusStateError, McpServerStatusStateAuthRequired:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpServerStatusState", s)
+}
+
+type McpReauthStatus string
+
+const (
+	McpReauthStatusAuthorized   McpReauthStatus = "authorized"
+	McpReauthStatusNoAuthNeeded McpReauthStatus = "no_auth_needed"
+)
+
+func (v *McpReauthStatus) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpReauthStatus")
+	if err != nil {
+		return err
+	}
+	switch value := McpReauthStatus(s); value {
+	case McpReauthStatusAuthorized, McpReauthStatusNoAuthNeeded:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpReauthStatus", s)
+}
+
+// One MCP server: its definition's provenance plus the live connection state.
+type McpServerStatusEntry struct {
+	Name         string               `json:"name"`
+	Scope        McpServerScope       `json:"scope"`
+	Transport    McpServerTransport   `json:"transport"`
+	Enabled      bool                 `json:"enabled"`
+	Status       McpServerStatusState `json:"status"`
+	ToolCount    int64                `json:"toolCount"`
+	AuthRequired bool                 `json:"authRequired"`
+	LastError    *string              `json:"lastError,omitempty"`
+}
+
+func (v *McpServerStatusEntry) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "McpServerStatusEntry", v.decodeFrom)
+}
+
+func (v *McpServerStatusEntry) decodeFrom(raw map[string]json.RawMessage) error {
+	var out McpServerStatusEntry
+	d := fieldDecoder{raw: raw, owner: "McpServerStatusEntry"}
+	d.required("name", &out.Name)
+	d.required("scope", &out.Scope)
+	d.required("transport", &out.Transport)
+	d.required("enabled", &out.Enabled)
+	d.required("status", &out.Status)
+	d.required("toolCount", &out.ToolCount)
+	d.required("authRequired", &out.AuthRequired)
+	d.optional("lastError", &out.LastError)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
 }
 
 type HandoffResult struct {
@@ -7699,6 +7923,65 @@ func (v *LogoutResult) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type GetMcpStatusResult struct {
+	Servers []McpServerStatusEntry `json:"servers"`
+}
+
+func (v *GetMcpStatusResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "GetMcpStatusResult", v.decodeFrom)
+}
+
+func (v *GetMcpStatusResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out GetMcpStatusResult
+	d := fieldDecoder{raw: raw, owner: "GetMcpStatusResult"}
+	d.required("servers", &out.Servers)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SetMcpEnabledResult struct {
+	Server McpServerStatusEntry `json:"server"`
+}
+
+func (v *SetMcpEnabledResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SetMcpEnabledResult", v.decodeFrom)
+}
+
+func (v *SetMcpEnabledResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SetMcpEnabledResult
+	d := fieldDecoder{raw: raw, owner: "SetMcpEnabledResult"}
+	d.required("server", &out.Server)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type McpReauthResult struct {
+	Server McpServerStatusEntry `json:"server"`
+	Status McpReauthStatus      `json:"status"`
+}
+
+func (v *McpReauthResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "McpReauthResult", v.decodeFrom)
+}
+
+func (v *McpReauthResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out McpReauthResult
+	d := fieldDecoder{raw: raw, owner: "McpReauthResult"}
+	d.required("server", &out.Server)
+	d.required("status", &out.Status)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type PredictWordResult struct {
 	Suffix *string `json:"suffix"`
 }
@@ -7907,6 +8190,19 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	var out SessionState
 	err := c.call(ctx, "get_state", nil, 0, &out)
+	return out, err
+}
+
+// UpgradeRuntimeCommand holds the parameters of "upgrade_runtime".
+type UpgradeRuntimeCommand struct {
+	WhenIdle *bool `json:"whenIdle,omitempty"`
+	Force    *bool `json:"force,omitempty"`
+}
+
+// UpgradeRuntime sends "upgrade_runtime": Restart the session owner onto the current runtime generation, now or when idle.
+func (c Commands) UpgradeRuntime(ctx context.Context, p UpgradeRuntimeCommand) (UpgradeRuntimeResult, error) {
+	var out UpgradeRuntimeResult
+	err := c.call(ctx, "upgrade_runtime", p, 0, &out)
 	return out, err
 }
 
@@ -8234,7 +8530,8 @@ func (c Commands) SetInterruptMode(ctx context.Context, p SetInterruptModeComman
 
 // CompactCommand holds the parameters of "compact".
 type CompactCommand struct {
-	CustomInstructions *string `json:"customInstructions,omitempty"`
+	CustomInstructions *string      `json:"customInstructions,omitempty"`
+	Mode               *CompactMode `json:"mode,omitempty"`
 }
 
 // Compact sends "compact": Compact the conversation.
@@ -8497,6 +8794,38 @@ type LogoutCommand struct {
 func (c Commands) Logout(ctx context.Context, p LogoutCommand) (LogoutResult, error) {
 	var out LogoutResult
 	err := c.call(ctx, "logout", p, 0, &out)
+	return out, err
+}
+
+// GetMcpStatus sends "get_mcp_status": List configured, disabled and plugin MCP servers with their live connection state, sorted by name.
+func (c Commands) GetMcpStatus(ctx context.Context) ([]McpServerStatusEntry, error) {
+	var out GetMcpStatusResult
+	err := c.call(ctx, "get_mcp_status", nil, 0, &out)
+	return out.Servers, err
+}
+
+// SetMcpEnabledCommand holds the parameters of "set_mcp_enabled".
+type SetMcpEnabledCommand struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+// SetMcpEnabled sends "set_mcp_enabled": Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.
+func (c Commands) SetMcpEnabled(ctx context.Context, p SetMcpEnabledCommand) (McpServerStatusEntry, error) {
+	var out SetMcpEnabledResult
+	err := c.call(ctx, "set_mcp_enabled", p, 0, &out)
+	return out.Server, err
+}
+
+// McpReauthCommand holds the parameters of "mcp_reauth".
+type McpReauthCommand struct {
+	Name string `json:"name"`
+}
+
+// McpReauth sends "mcp_reauth": Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.
+func (c Commands) McpReauth(ctx context.Context, p McpReauthCommand) (McpReauthResult, error) {
+	var out McpReauthResult
+	err := c.call(ctx, "mcp_reauth", p, 900*time.Second, &out)
 	return out, err
 }
 

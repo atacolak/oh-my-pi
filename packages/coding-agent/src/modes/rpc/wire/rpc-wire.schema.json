@@ -142,6 +142,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "upgrade_runtime",
+				"doc": "Restart the session owner onto the current runtime generation, now or when idle.",
+				"params": "UpgradeRuntimeParams",
+				"result": "UpgradeRuntimeResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "set_fast_mode",
 				"doc": "Enable or disable fast mode for the session.",
 				"params": "SetFastModeParams",
@@ -767,6 +778,39 @@
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "get_mcp_status",
+				"doc": "List configured, disabled and plugin MCP servers with their live connection state, sorted by name.",
+				"params": null,
+				"result": "GetMcpStatusResult",
+				"nullable": false,
+				"unwrap": "servers",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "set_mcp_enabled",
+				"doc": "Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.",
+				"params": "SetMcpEnabledParams",
+				"result": "SetMcpEnabledResult",
+				"nullable": false,
+				"unwrap": "server",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "mcp_reauth",
+				"doc": "Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.",
+				"params": "McpReauthParams",
+				"result": "McpReauthResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": 900000,
 				"completion": null,
 				"clientOmit": []
 			},
@@ -2283,6 +2327,14 @@
 			],
 			"type": "string"
 		},
+		"CompactMode": {
+			"enum": [
+				"soft",
+				"remote",
+				"snapcompact"
+			],
+			"type": "string"
+		},
 		"MessageUpdates": {
 			"enum": [
 				"full",
@@ -2638,6 +2690,63 @@
 			],
 			"description": "Provider-neutral state of an account past its usage limit, discriminated by `stage`."
 		},
+		"RuntimeGenerationState": {
+			"type": "object",
+			"properties": {
+				"running": {
+					"type": "string",
+					"description": "Generation directory the process was born in."
+				},
+				"behind": {
+					"type": "boolean",
+					"description": "The running generation is no longer the one `current` selects."
+				},
+				"current": {
+					"type": "string",
+					"description": "Generation `generations/current` points at, when readable."
+				}
+			},
+			"required": [
+				"running",
+				"behind"
+			],
+			"description": "Runtime generation layout of the process serving the session."
+		},
+		"UpgradeRuntimeResult": {
+			"type": "object",
+			"properties": {
+				"upgraded": {
+					"type": "boolean",
+					"description": "The owner is restarting onto `current` now."
+				},
+				"scheduled": {
+					"type": "boolean",
+					"description": "An idle-triggered upgrade is armed.",
+					"default": false
+				},
+				"running": {
+					"type": "string",
+					"description": "Generation the owner runs now."
+				},
+				"current": {
+					"type": "string",
+					"description": "Generation `generations/current` selects, when readable."
+				},
+				"reason": {
+					"enum": [
+						"already_current",
+						"not_generation_managed",
+						"scheduled_on_idle"
+					],
+					"type": "string",
+					"description": "Why no upgrade is running now."
+				}
+			},
+			"required": [
+				"upgraded"
+			],
+			"description": "Outcome of `upgrade_runtime`."
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
@@ -2768,6 +2877,10 @@
 				},
 				"contextUsage": {
 					"$ref": "#/$defs/ContextUsage"
+				},
+				"generation": {
+					"$ref": "#/$defs/RuntimeGenerationState",
+					"description": "Runtime generation of this process; absent when the entrypoint is not generation-managed."
 				},
 				"goal": {
 					"anyOf": [
@@ -3649,6 +3762,78 @@
 				"active"
 			],
 			"description": "A stored credential `logout` can remove; `active` marks credentials the session may be using."
+		},
+		"McpServerScope": {
+			"enum": [
+				"project",
+				"user",
+				"plugin"
+			],
+			"type": "string"
+		},
+		"McpServerTransport": {
+			"enum": [
+				"stdio",
+				"http",
+				"sse"
+			],
+			"type": "string"
+		},
+		"McpServerStatusState": {
+			"enum": [
+				"connected",
+				"connecting",
+				"disconnected",
+				"error",
+				"auth_required"
+			],
+			"type": "string"
+		},
+		"McpReauthStatus": {
+			"enum": [
+				"authorized",
+				"no_auth_needed"
+			],
+			"type": "string"
+		},
+		"McpServerStatusEntry": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"scope": {
+					"$ref": "#/$defs/McpServerScope"
+				},
+				"transport": {
+					"$ref": "#/$defs/McpServerTransport"
+				},
+				"enabled": {
+					"type": "boolean"
+				},
+				"status": {
+					"$ref": "#/$defs/McpServerStatusState"
+				},
+				"toolCount": {
+					"type": "integer"
+				},
+				"authRequired": {
+					"type": "boolean"
+				},
+				"lastError": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"name",
+				"scope",
+				"transport",
+				"enabled",
+				"status",
+				"toolCount",
+				"authRequired"
+			],
+			"description": "One MCP server: its definition's provenance plus the live connection state."
 		},
 		"HandoffResult": {
 			"type": "object",
@@ -6278,6 +6463,17 @@
 				"sessionDir"
 			]
 		},
+		"UpgradeRuntimeParams": {
+			"type": "object",
+			"properties": {
+				"whenIdle": {
+					"type": "boolean"
+				},
+				"force": {
+					"type": "boolean"
+				}
+			}
+		},
 		"SetFastModeParams": {
 			"type": "object",
 			"properties": {
@@ -6778,6 +6974,9 @@
 			"properties": {
 				"customInstructions": {
 					"type": "string"
+				},
+				"mode": {
+					"$ref": "#/$defs/CompactMode"
 				}
 			}
 		},
@@ -7121,6 +7320,72 @@
 					"type": "string"
 				}
 			}
+		},
+		"GetMcpStatusResult": {
+			"type": "object",
+			"properties": {
+				"servers": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/McpServerStatusEntry"
+					}
+				}
+			},
+			"required": [
+				"servers"
+			]
+		},
+		"SetMcpEnabledParams": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"enabled": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"name",
+				"enabled"
+			]
+		},
+		"SetMcpEnabledResult": {
+			"type": "object",
+			"properties": {
+				"server": {
+					"$ref": "#/$defs/McpServerStatusEntry"
+				}
+			},
+			"required": [
+				"server"
+			]
+		},
+		"McpReauthParams": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"name"
+			]
+		},
+		"McpReauthResult": {
+			"type": "object",
+			"properties": {
+				"server": {
+					"$ref": "#/$defs/McpServerStatusEntry"
+				},
+				"status": {
+					"$ref": "#/$defs/McpReauthStatus"
+				}
+			},
+			"required": [
+				"server",
+				"status"
+			]
 		},
 		"PredictWordParams": {
 			"type": "object",

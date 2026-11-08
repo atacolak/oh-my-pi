@@ -45,6 +45,7 @@ import { extensionLinkClicksAvailable } from "@oh-my-pi/pi-tui/render/extension-
 import { HookSelectorComponent, type HookSelectorSlider } from "@oh-my-pi/pi-tui/overlays/hook-selector";
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
+import type { DialogFirstResponder } from "../rpc/dialog-first-responder";
 import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { disambiguateDisplayLabels, sanitizeCarriageReturns } from "@oh-my-pi/pi-tui/render/render-utils";
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
@@ -81,6 +82,65 @@ function withTerminalLauncher(uiContext: ExtensionUIContext, hasUI: boolean): Ex
 async function editDialogExternally(text: string): Promise<string | null> {
 	const command = getEditorCommand();
 	return command ? openInEditor(command, text) : null;
+}
+
+/**
+ * Race the terminal presentation of every dialog against attached socket
+ * clients. The non-dialog surface (status, widgets, theme, editor text) stays
+ * exactly the terminal's; only the five request/response dialogs are wrapped.
+ */
+function withFirstResponder(uiContext: ExtensionUIContext, responder: DialogFirstResponder): ExtensionUIContext {
+	const descriptors = Object.getOwnPropertyDescriptors(uiContext);
+	descriptors.select = {
+		configurable: true,
+		enumerable: true,
+		writable: true,
+		value: (title: string, options: ExtensionUISelectItem[], dialogOptions?: ExtensionUIDialogOptions) =>
+			responder.select(merged => uiContext.select(title, options, merged), title, options, dialogOptions),
+	};
+	descriptors.confirm = {
+		configurable: true,
+		enumerable: true,
+		writable: true,
+		value: (title: string, message: string, dialogOptions?: ExtensionUIDialogOptions) =>
+			responder.confirm(merged => uiContext.confirm(title, message, merged), title, message, dialogOptions),
+	};
+	descriptors.input = {
+		configurable: true,
+		enumerable: true,
+		writable: true,
+		value: (title: string, placeholder?: string, dialogOptions?: ExtensionUIDialogOptions) =>
+			responder.input(merged => uiContext.input(title, placeholder, merged), title, placeholder, dialogOptions),
+	};
+	descriptors.editor = {
+		configurable: true,
+		enumerable: true,
+		writable: true,
+		value: (
+			title: string,
+			prefill?: string,
+			dialogOptions?: ExtensionUIDialogOptions,
+			editorOptions?: { promptStyle?: boolean },
+		) =>
+			responder.editor(
+				merged => uiContext.editor(title, prefill, merged, editorOptions),
+				title,
+				prefill,
+				dialogOptions,
+				editorOptions,
+			),
+	};
+	const askDialog = uiContext.askDialog;
+	if (askDialog) {
+		descriptors.askDialog = {
+			configurable: true,
+			enumerable: true,
+			writable: true,
+			value: (questions: ExtensionAskDialogQuestion[], dialogOptions?: ExtensionUIDialogOptions) =>
+				responder.askDialog(merged => askDialog(questions, merged), questions, dialogOptions),
+		};
+	}
+	return Object.create(Object.getPrototypeOf(uiContext), descriptors) as ExtensionUIContext;
 }
 
 interface CollabDialogWinner {
@@ -219,7 +279,10 @@ export class ExtensionUiController {
 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
 		};
-		const enrichedUiContext = withTerminalLauncher(uiContext, true);
+		const enrichedUiContext = withFirstResponder(
+			withTerminalLauncher(uiContext, true),
+			this.ctx.dialogFirstResponder,
+		);
 		this.ctx.setToolUIContext(enrichedUiContext, true);
 		this.#toolUIContext = enrichedUiContext;
 		this.ctx.session.setUsageFallbackConfirmer?.((confirmation, signal) => {
@@ -609,7 +672,10 @@ export class ExtensionUiController {
 			},
 		};
 
-		const runnerUiContext = withTerminalLauncher(uiContext, _hasUI);
+		const runnerUiContext = withFirstResponder(
+			withTerminalLauncher(uiContext, _hasUI),
+			this.ctx.dialogFirstResponder,
+		);
 		extensionRunner.initialize(actions, contextActions, commandActions, runnerUiContext, "tui");
 		this.#syncExtensionComposerShapes();
 	}

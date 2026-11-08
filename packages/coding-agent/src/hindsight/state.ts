@@ -1064,7 +1064,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		if (!retainFullWindow) this.#recordCompletedLastTurnRetain(sessionId, messages);
 		if (generation === this.#retainGeneration) {
 			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;
-			// Last-turn mode keeps the branch identity too, but never a full transcript cache.
+			// Last-turn retains track branch identity without caching the full transcript.
 			this.#lastRetainedPrefixKey = extendRetentionPrefixKey(prefixKey, messages, hashedThrough, messages.length);
 			this.#lastRetainedMessageIndex = messages.length;
 			this.#forceNextRetainReplace = false;

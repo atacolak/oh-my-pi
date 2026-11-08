@@ -38,7 +38,7 @@ import {
 } from "./mental-models";
 import { loadRecallCandidates, packByTokens, type RecallCandidatePool } from "./sweep";
 import { describeRecallCoverage, type RecallCoverage, recallCoverageView } from "./recall-coverage";
-import { type DrainResult, HindsightOutbox, type RetainInput } from "./outbox";
+import { type DrainResult, HindsightOutbox, mergeRetainWriteTags, type RetainInput } from "./outbox";
 import { countRetainableUserTurns, extractMessages } from "./transcript";
 
 /** `notice` source of Hindsight recall/retain failures; print mode writes these to stderr. */
@@ -61,17 +61,6 @@ const TRIVIAL_ACK_MAX_WORDS = 3;
 function isCommittedCompaction(event: AgentSessionEvent): boolean {
 	if (event.type !== "auto_compaction_end" && event.type !== "manual_compaction_end") return false;
 	return event.result !== undefined && !event.aborted && !event.skipped;
-}
-
-/** Scope retain tags plus write-only provenance tags, deduped in order; undefined when both are empty. */
-function mergeRetainWriteTags(
-	retainTags: readonly string[] | undefined,
-	provenanceTags: readonly string[] | undefined,
-): string[] | undefined {
-	const merged = [
-		...new Set([...(retainTags ?? []), ...(provenanceTags ?? [])].map(tag => tag.trim()).filter(Boolean)),
-	];
-	return merged.length > 0 ? merged : undefined;
 }
 
 interface RecallOutcome {
@@ -228,9 +217,8 @@ export class HindsightRetainQueue {
 		if (clean.length === 0) return;
 		const state = this.#state;
 		if (clean.some(item => item.scope === "global")) state.assertGlobalRetainAvailable();
-		// Provenance is stamped per write, on this state's own retains, and never on
-		// global ones: Hindsight unions a request's item tags onto its document, so a
-		// role tag there would make the memory look project-scoped.
+		// Keep scope and provenance separate until the outbox decides each item's
+		// scope: globals drop project tags but retain this writer's provenance.
 		// The destination is fixed at enqueue time: a later bank rebuild must neither
 		// reroute this memory nor strand it behind the old routing.
 		this.#pending += await this.#outboxFor(state.config.hindsightApiUrl!, state.bankId).enqueue(
@@ -238,7 +226,8 @@ export class HindsightRetainQueue {
 				sessionId: state.sessionId,
 				toolCallId,
 				context: state.config.retainContext,
-				tags: mergeRetainWriteTags(state.retainTags, state.provenanceTags),
+				tags: state.retainTags,
+				provenanceTags: state.provenanceTags,
 				metadata: state.buildRetainMetadata(),
 				strategy: state.config.retainStrategy || undefined,
 				observationScopes: state.observationScopes,
@@ -461,9 +450,8 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 
 	constructor(options: HindsightSessionStateOptions) {
 		this.sessionId = options.sessionId;
-		// A local parent keeps the live routing delegation (scope rebuilds and
-		// successor chains). A worker's remote parent is already a proxy over
-		// main's live values, so the copied fields above are the whole view.
+		// Local parents follow rebuilt successors; remote parents expose main's
+		// live routing through their API rather than the initial copied fields.
 		const alias = options.aliasOf;
 		if (alias instanceof HindsightSessionState) this.#aliasOf = alias;
 		else if (alias) this.#remoteAliasOf = alias;
@@ -522,7 +510,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get client(): HindsightClientApi {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.client : this.#client;
 	}
 
@@ -533,7 +521,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get bankId(): string {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.bankId : this.#bankId;
 	}
 
@@ -544,7 +532,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get retainTags(): string[] | undefined {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.retainTags : this.#retainTags;
 	}
 
@@ -556,7 +544,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 
 	/** Deterministic scope tags shared by the whole alias tree; write-only provenance is never included. */
 	get resolvedTags(): string[] | undefined {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.resolvedTags : this.#resolvedTags;
 	}
 
@@ -566,7 +554,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get recallTags(): string[] | undefined {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.recallTags : this.#recallTags;
 	}
 
@@ -577,7 +565,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get recallTagsMatch(): "any" | "all" | "any_strict" | "all_strict" | undefined {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.recallTagsMatch : this.#recallTagsMatch;
 	}
 
@@ -588,7 +576,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get observationScopes(): string[][] | undefined {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.observationScopes : this.#observationScopes;
 	}
 
@@ -599,7 +587,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get banksSet(): HindsightBankSet {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.banksSet : this.#banksSet;
 	}
 
@@ -610,7 +598,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	}
 
 	get config(): HindsightConfig {
-		const primary = this.#localPrimary();
+		const primary = this.aliasOf;
 		return primary ? primary.config : this.#config;
 	}
 
@@ -876,7 +864,10 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	captureRecallScope(): () => boolean {
 		const primary = this.#localPrimary();
 		const primaryIsCurrent = primary?.captureRecallScope();
+		const remote = this.#remoteAliasOf;
 		const generation = this.#recallGeneration;
+		// Remote reads deserialize config and tags anew; compare their values,
+		// while local aliases retain the stricter generation/reference fence.
 		const config = this.config;
 		const client = this.client;
 		const bankId = this.bankId;
@@ -884,12 +875,13 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		const tagsMatch = this.recallTagsMatch;
 		return () =>
 			primary === this.#localPrimary() &&
+			remote === this.#remoteAliasOf &&
 			(!primaryIsCurrent || primaryIsCurrent()) &&
 			generation === this.#recallGeneration &&
-			config === this.config &&
+			(remote ? Bun.deepEquals(config, this.config) : config === this.config) &&
 			client === this.client &&
 			bankId === this.bankId &&
-			tags === this.recallTags &&
+			(remote ? Bun.deepEquals(tags, this.recallTags) : tags === this.recallTags) &&
 			tagsMatch === this.recallTagsMatch;
 	}
 

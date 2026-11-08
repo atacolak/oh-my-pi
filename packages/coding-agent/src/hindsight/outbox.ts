@@ -24,6 +24,17 @@ export interface RetainInput {
 	scope?: MemoryWriteScope;
 }
 
+/** Scope tags plus write-only provenance; globals keep provenance alone. */
+export function mergeRetainWriteTags(
+	retainTags: readonly string[] | undefined,
+	provenanceTags: readonly string[] | undefined,
+): string[] | undefined {
+	const merged = [
+		...new Set([...(retainTags ?? []), ...(provenanceTags ?? [])].map(tag => tag.trim()).filter(Boolean)),
+	];
+	return merged.length > 0 ? merged : undefined;
+}
+
 /** A published event file. Never rewritten, so its mtime is its enqueue time. */
 export interface OutboxEvent {
 	version: 1;
@@ -48,8 +59,10 @@ export interface RetainCall {
 	toolCallId: string;
 	/** Context for items without their own. */
 	context: string;
-	/** Tags of project-scoped items; global items are retained untagged. */
+	/** Scope tags for project writes; global writes keep only provenance. */
 	tags: string[] | undefined;
+	/** Write-only provenance stamped on project and global writes. */
+	provenanceTags?: string[];
 	/** Metadata stamped on every event of this call. */
 	metadata?: Record<string, string>;
 	/** Extraction strategy override applied to every item. */
@@ -187,14 +200,19 @@ export class HindsightOutbox {
 			version: 1,
 			id: `omp-retain-${new Bun.CryptoHasher("sha256").update(identity).digest("hex").slice(0, 32)}`,
 			scope,
-			tags: scope === "global" ? [] : (call.tags ?? []).map(tag => this.#clean(tag)),
+			tags: (mergeRetainWriteTags(scope === "global" ? undefined : call.tags, call.provenanceTags) ?? []).map(tag =>
+				this.#clean(tag),
+			),
 			timestamp: new Date().toISOString(),
 			content,
 			context,
 			sessionId: this.#clean(call.sessionId),
 			metadata: call.metadata,
-			strategy: call.strategy,
-			observationScopes: scope === "global" ? undefined : call.observationScopes,
+			strategy: call.strategy ? this.#clean(call.strategy) : undefined,
+			observationScopes:
+				scope === "global"
+					? undefined
+					: call.observationScopes?.map(scopeTags => scopeTags.map(tag => this.#clean(tag))),
 		};
 	}
 

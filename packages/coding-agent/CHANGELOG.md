@@ -34,6 +34,8 @@
 
 ### Fixed
 
+- global Hindsight retains keep their actor and role provenance without inheriting project tags or observation scopes.
+- worker aliases follow the parent's live memory routing without dropping valid recall results after a scope refresh.
 - Hindsight tagged scopes now use only declared project identities; unbound workspaces no longer invent project tags.
 - Cross-project coding recall and memory links now work without admitting personal memories.
 - observation-only recall settings now include pending and failed retains in direct sweeps without diluting observation-only ranked retrieval.

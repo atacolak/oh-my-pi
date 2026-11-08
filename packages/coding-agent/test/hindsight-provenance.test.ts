@@ -13,7 +13,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
-import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { HindsightSessionState, type HindsightSessionStateApi } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -133,7 +133,7 @@ interface StateOptions {
 	provenanceTags?: string[];
 	config?: HindsightConfig;
 	session?: object;
-	aliasOf?: HindsightSessionState;
+	aliasOf?: HindsightSessionStateApi;
 }
 
 function makeState(client: HindsightApi, options: StateOptions = {}): HindsightSessionState {
@@ -235,6 +235,95 @@ describe("provenance is write-only", () => {
 		expect(client.batchCalls).toHaveLength(1);
 		expect(client.batchCalls[0]?.tags).toEqual(["scope:coding", "role:builder"]);
 		expect(client.batchCalls[0]?.observationScopes).toEqual([["scope:coding"]]);
+	});
+
+	it("a global retain drops project tags and scopes but keeps its provenance stamp", async () => {
+		const client = new RecordingApi();
+		const state = makeState(client, {
+			retainTags: ["scope:coding", "project:omp"],
+			observationScopes: [["scope:coding", "project:omp"]],
+			provenanceTags: ["role:builder", "actor:memory-writer"],
+			config: makeConfig({ globalScope: true }),
+		});
+		await state.enqueueRetain("global-provenance", [
+			{ content: "project-specific constraint" },
+			{ content: "shared global preference", scope: "global" },
+		]);
+		await state.flushRetainQueue();
+		expect(client.batchCalls).toHaveLength(2);
+		expect(client.batchCalls).toEqual(
+			expect.arrayContaining([
+				{
+					bankId: "personal",
+					tags: ["scope:coding", "project:omp", "role:builder", "actor:memory-writer"],
+					observationScopes: [["scope:coding", "project:omp"]],
+				},
+				{
+					bankId: "personal",
+					tags: ["role:builder", "actor:memory-writer"],
+					observationScopes: undefined,
+				},
+			]),
+		);
+	});
+
+	it("a remote alias retains to the live parent destination without inheriting its provenance", async () => {
+		const oldClient = new RecordingApi();
+		const nextClient = new RecordingApi();
+		let parent = makeState(oldClient, {
+			retainTags: ["scope:coding", "project:old"],
+			provenanceTags: ["role:lead"],
+		});
+		const remote: HindsightSessionStateApi = {
+			get client() {
+				return parent.client;
+			},
+			get bankId() {
+				return parent.bankId;
+			},
+			get banksSet() {
+				return parent.banksSet;
+			},
+			get config() {
+				return parent.config;
+			},
+			get retainTags() {
+				return parent.retainTags;
+			},
+			get resolvedTags() {
+				return parent.resolvedTags;
+			},
+			get recallTags() {
+				return parent.recallTags;
+			},
+			get recallTagsMatch() {
+				return parent.recallTagsMatch;
+			},
+			get observationScopes() {
+				return parent.observationScopes;
+			},
+		};
+		const child = makeState(oldClient, {
+			aliasOf: remote,
+			retainTags: parent.retainTags,
+			provenanceTags: ["role:scout"],
+		});
+		parent = makeState(nextClient, {
+			retainTags: ["scope:coding", "project:next"],
+			observationScopes: [["scope:coding", "project:next"]],
+			provenanceTags: ["role:lead"],
+		});
+		parent.bankId = "next-bank";
+		await child.enqueueRetain("remote-rebound", [{ content: "new project constraint" }]);
+		await child.flushRetainQueue();
+		expect(oldClient.batchCalls).toHaveLength(0);
+		expect(nextClient.batchCalls).toEqual([
+			{
+				bankId: "next-bank",
+				tags: ["scope:coding", "project:next", "role:scout"],
+				observationScopes: [["scope:coding", "project:next"]],
+			},
+		]);
 	});
 
 	it("recall is unaffected: identical request filters and results with or without provenance", async () => {

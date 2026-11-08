@@ -18,10 +18,11 @@
 
 ### Fixed
 
+- Exact-owner `--attach` now shows the terminal only after identity validation and refresh complete, so input typed as soon as the screen appears is not lost
 - Child-process RPC tests now run with hermetic `OMP_RUN_DIR`, `HOME`, and `PI_CODING_AGENT_DIR`, and `--no-session` launches no longer publish an attach socket that could never be resumed, so running the suite leaves no dead `.json`/`.sock` sidecars in `~/.omp/run`
 - Session attach endpoints now honor `OMP_RUN_DIR` for publication and discovery, matching RPC clients, so sessions kept in a custom run directory can be resumed, attached, and refreshed from the directory they publish in
 - Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
-## [18.18.0] - 2026-11-07
+
 ## [18.18.1] - 2026-11-08
 
 ### Breaking Changes

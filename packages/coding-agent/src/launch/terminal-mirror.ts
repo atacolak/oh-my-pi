@@ -3,6 +3,7 @@ import type { DaemonBrokerClient } from "./client";
 import {
 	type DaemonTerminalExitNotification,
 	type DaemonTerminalNotification,
+	type DaemonTerminalOutputNotification,
 	sanitizeTerminalGeometry,
 } from "./protocol";
 
@@ -166,6 +167,9 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 	const finish = Promise.withResolvers<TerminalMirrorResult>();
 	let finished = false;
 	let acceptingInput = options.inputAfterRefresh !== true;
+	// Keep the visible screen and input admission atomic for an exact-owner attach.
+	// Unacknowledged output remains bounded by the broker's subscription byte limit.
+	const pendingOutput: DaemonTerminalOutputNotification[] = [];
 	let removeInput: (() => void) | undefined;
 	let removeResize: (() => void) | undefined;
 	let removeSignals: (() => void) | undefined;
@@ -198,6 +202,10 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 			finishExit(frame);
 			return;
 		}
+		if (!acceptingInput) {
+			pendingOutput.push(frame);
+			return;
+		}
 		void writeAccepted(output, frame.data).then(() => {
 			if (finished) return;
 			void options.client
@@ -216,6 +224,7 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 	const settle = (result: TerminalMirrorResult): void => {
 		if (finished) return;
 		finished = true;
+		pendingOutput.length = 0;
 		unsubscribe();
 		releaseLocalTerminal();
 		finish.resolve(result);
@@ -298,8 +307,9 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 				throw error;
 			}
 		}
-		acceptingInput = true;
 		if (finished) return finish.promise;
+		acceptingInput = true;
+		for (const frame of pendingOutput.splice(0)) handleFrame(frame);
 	} catch (error) {
 		if (!finished) {
 			finished = true;

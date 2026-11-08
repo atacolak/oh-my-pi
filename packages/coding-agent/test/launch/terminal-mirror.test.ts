@@ -354,6 +354,48 @@ describe("a terminal mirror", () => {
 		expect(await running).toEqual({ detached: true });
 	});
 
+	it("admits input before showing a strict attach repaint and only acknowledges visible output", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		const refreshing = Promise.withResolvers<void>();
+		const refresh = Promise.withResolvers<void>();
+		terminal.write = data => {
+			terminal.writes.push(data);
+			terminal.type("typed on paint");
+			return true;
+		};
+		const running = startMirror(terminal, broker.client, {
+			inputAfterRefresh: true,
+			refresh: () => {
+				refreshing.resolve();
+				return refresh.promise;
+			},
+		});
+		try {
+			await refreshing.promise;
+			broker.emit(outputFrame(1, "owner repaint"));
+			await nextImmediate();
+			expect(terminal.writes).toEqual([]);
+			expect(broker.operations.some(operation => operation.op === "terminal_ack")).toBe(false);
+			refresh.resolve();
+			await broker.waitForOperation(operation => operation.op === "send", "input on first paint was lost");
+			expect(broker.operations.find(operation => operation.op === "send")).toMatchObject({
+				name: NAME,
+				id: ID,
+				data: "typed on paint",
+			});
+			await broker.waitForOperation(
+				operation => operation.op === "terminal_ack" && operation.sequence === 1,
+				"visible repaint was never acknowledged",
+			);
+			expect(terminal.writes).toEqual(["owner repaint"]);
+		} finally {
+			refresh.resolve();
+			terminal.signal("SIGHUP");
+			await running;
+		}
+	});
+
 	it("forwards raw input unchanged, resizes the owner, and detaches on a local hangup", async () => {
 		const broker = fakeBroker();
 		const terminal = new FakeTerminal();

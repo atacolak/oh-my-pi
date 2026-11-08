@@ -321,6 +321,9 @@ export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): b
 export interface AgentMemoryPolicy {
 	autoRetain?: boolean;
 	autoRecall?: boolean;
+	recallBudget?: "default" | "deep" | "max";
+	recallMaxTokens?: number;
+	retainEveryNTurns?: number;
 }
 
 /** Agent definition (bundled or discovered) */

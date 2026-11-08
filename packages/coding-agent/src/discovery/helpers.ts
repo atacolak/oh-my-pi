@@ -456,10 +456,47 @@ function parseAgentMemoryPolicy(value: unknown): AgentMemoryPolicy | undefined {
 	const record = withCamelCaseAliases(value as Record<string, unknown>);
 	const autoRetain = parseBoolean(record.autoRetain);
 	const autoRecall = parseBoolean(record.autoRecall);
-	if (autoRetain === undefined && autoRecall === undefined) return undefined;
+	let recallBudget: AgentMemoryPolicy["recallBudget"];
+	switch (record.recallBudget) {
+		case "default":
+		case "low":
+		case "mid":
+		case "high":
+			recallBudget = "default";
+			break;
+		case "deep":
+		case "xhigh":
+			recallBudget = "deep";
+			break;
+		case "max":
+			recallBudget = "max";
+	}
+	const recallMaxTokens =
+		typeof record.recallMaxTokens === "number" &&
+		Number.isSafeInteger(record.recallMaxTokens) &&
+		record.recallMaxTokens > 0
+			? Math.min(16384, Math.max(512, record.recallMaxTokens))
+			: undefined;
+	const retainEveryNTurns =
+		typeof record.retainEveryNTurns === "number" &&
+		Number.isSafeInteger(record.retainEveryNTurns) &&
+		record.retainEveryNTurns >= 1
+			? record.retainEveryNTurns
+			: undefined;
+	if (
+		autoRetain === undefined &&
+		autoRecall === undefined &&
+		recallBudget === undefined &&
+		recallMaxTokens === undefined &&
+		retainEveryNTurns === undefined
+	)
+		return undefined;
 	return {
 		...(autoRetain !== undefined ? { autoRetain } : {}),
 		...(autoRecall !== undefined ? { autoRecall } : {}),
+		...(recallBudget !== undefined ? { recallBudget } : {}),
+		...(recallMaxTokens !== undefined ? { recallMaxTokens } : {}),
+		...(retainEveryNTurns !== undefined ? { retainEveryNTurns } : {}),
 	};
 }
 

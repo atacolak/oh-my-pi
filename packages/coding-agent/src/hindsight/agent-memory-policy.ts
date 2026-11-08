@@ -1,7 +1,13 @@
 /** Root agent `memory` frontmatter policy applied to the Hindsight auto settings. */
 import type { Settings } from "../config/settings";
 import type { AgentMemoryPolicy } from "../task/types";
-import { cfgHindsightAutoRecall, cfgHindsightAutoRetain } from "./settings";
+import {
+	cfgHindsightAutoRecall,
+	cfgHindsightAutoRetain,
+	cfgHindsightRecallBudget,
+	cfgHindsightRecallMaxTokens,
+	cfgHindsightRetainEveryNTurns,
+} from "./settings";
 
 /**
  * Apply a root agent's `memory` policy to live settings.
@@ -16,5 +22,14 @@ export function applyAgentMemoryPolicy(settings: Settings, policy: AgentMemoryPo
 	}
 	if (policy?.autoRecall !== undefined && cfgHindsightAutoRecall.envValue() === undefined) {
 		cfgHindsightAutoRecall.override(settings, policy.autoRecall);
+	}
+	if (policy?.recallBudget !== undefined && cfgHindsightRecallBudget.envValue() === undefined) {
+		cfgHindsightRecallBudget.override(settings, cfgHindsightRecallBudget.parse(policy.recallBudget));
+	}
+	if (policy?.recallMaxTokens !== undefined && cfgHindsightRecallMaxTokens.envValue() === undefined) {
+		cfgHindsightRecallMaxTokens.override(settings, policy.recallMaxTokens);
+	}
+	if (policy?.retainEveryNTurns !== undefined && cfgHindsightRetainEveryNTurns.envValue() === undefined) {
+		cfgHindsightRetainEveryNTurns.override(settings, policy.retainEveryNTurns);
 	}
 }

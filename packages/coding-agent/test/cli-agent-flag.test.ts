@@ -672,6 +672,6 @@ describe("createAgentSession — agentMemory", () => {
 		using tempDir = TempDir.createSync("@omp-agent-memory-view-");
 		setHindsightEnv({ HINDSIGHT_AUTO_RETAIN: "true" });
 		await createSession(tempDir, { autoRetain: false, autoRecall: false });
-		expect(session?.getAgentMemoryPolicy()).toEqual({ autoRetain: true, autoRecall: false });
+		expect(session?.getAgentMemoryPolicy()).toMatchObject({ autoRetain: true, autoRecall: false });
 	});
 });

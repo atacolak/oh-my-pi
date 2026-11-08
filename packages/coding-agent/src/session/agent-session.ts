@@ -566,7 +566,13 @@ import { cfgSteeringMode } from "../modes/settings";
 import { cfgDisabledProviders, cfgModelRoles } from "../config/model-settings";
 import { cfgEvalJs, cfgEvalPy, cfgEvalToolsEnabled, cfgEvalWorkpoolFreshAgents } from "../eval/settings";
 import { cfgExtensions, type SkillsSettings } from "../extensibility/settings";
-import { cfgHindsightAutoRecall, cfgHindsightAutoRetain } from "../hindsight/settings";
+import {
+	cfgHindsightAutoRecall,
+	cfgHindsightAutoRetain,
+	cfgHindsightRecallBudget,
+	cfgHindsightRecallMaxTokens,
+	cfgHindsightRetainEveryNTurns,
+} from "../hindsight/settings";
 import {
 	cfgImagesAutoResize,
 	cfgMagicKeyword,
@@ -3431,11 +3437,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return resolveWebsocketPreference(this.settings, this.model);
 	}
 
-	/** Effective Hindsight policy: `HINDSIGHT_AUTO_*` env > root agent `memory` > settings. */
-	getAgentMemoryPolicy(): { autoRetain: boolean; autoRecall: boolean } {
+	/** Effective memory policy: environment > root agent memory > persisted settings. */
+	getAgentMemoryPolicy() {
 		return {
 			autoRetain: cfgHindsightAutoRetain.get(this.settings),
 			autoRecall: cfgHindsightAutoRecall.get(this.settings),
+			recallBudget: cfgHindsightRecallBudget.get(this.settings),
+			recallMaxTokens: cfgHindsightRecallMaxTokens.get(this.settings),
+			retainEveryNTurns: cfgHindsightRetainEveryNTurns.get(this.settings),
 		};
 	}
 

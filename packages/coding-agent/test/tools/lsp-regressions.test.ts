@@ -166,8 +166,6 @@ interface FakeLspOptions {
 	stdoutClosesBeforeExit?: boolean;
 }
 
-const fakeLspServers = new Set<FakeLspServer>();
-
 // In-memory LSP transport fake. Replaces the real subprocess (`ptree.spawn`)
 // with an in-process JSON-RPC peer so the initialize / shutdown / exit and
 // workspace-folder handshakes resolve deterministically -- no subprocess spawn,
@@ -307,7 +305,6 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 		spawnCount++;
 		return proc as unknown as piUtils.ptree.ChildProcess<"pipe">;
 	}) as typeof piUtils.ptree.spawn);
-	fakeLspServers.add(server);
 	return server;
 }
 
@@ -429,17 +426,8 @@ afterEach(() => {
 });
 
 describe("lsp regressions", () => {
-	afterEach(async () => {
-		try {
-			// Tests may intentionally keep a server alive through shutdown and SIGTERM.
-			// End that fixture only after its assertions so later tests do not repeatedly
-			// pay its graceful-exit and hard-kill deadlines.
-			for (const server of fakeLspServers) server.exit(0);
-			fakeLspServers.clear();
-			await lspClient.shutdownAll();
-		} finally {
-			vi.restoreAllMocks();
-		}
+	afterEach(() => {
+		vi.restoreAllMocks();
 	});
 
 	it("detects bracket-style glob patterns", () => {
@@ -1518,10 +1506,11 @@ describe("lsp regressions", () => {
 			rootMarkers: [],
 			resolvedRoot: nestedRoot,
 		};
+		let server: FakeLspServer | undefined;
 		try {
 			configCache.set(tempDir.path(), { servers: { [config.command]: config }, idleTimeoutMs: 5_000 });
 			configCache.set(nestedRoot, { servers: { [config.command]: config } });
-			installFakeLsp(
+			server = installFakeLsp(
 				(message, srv) => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
@@ -1540,6 +1529,7 @@ describe("lsp regressions", () => {
 			expect(lspClient.getActiveClients(owner).map(entry => entry.name)).toContain("fake-lsp-idle-survivor-nested");
 			expect(lspClient.isIdleCheckerRunning()).toBe(true);
 		} finally {
+			server?.exit(0);
 			configCache.delete(tempDir.path());
 			configCache.delete(nestedRoot);
 			await lspClient.shutdownAll();
@@ -7855,12 +7845,13 @@ describe("lsp regressions", () => {
 			...oldConfig,
 			args: ["--mode", "new"],
 		};
+		let server: FakeLspServer | undefined;
 		try {
 			configCache.set(sessionA.path(), { servers: { extra: oldConfig } });
 			configCache.set(sessionB.path(), { servers: { extra: newConfig } });
 			configCache.set(extra.path(), { servers: { extra: oldConfig } });
 			configCache.set(nestedRoot, { servers: { extra: oldConfig } });
-			installFakeLsp(
+			server = installFakeLsp(
 				(message, srv) => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
@@ -7881,6 +7872,7 @@ describe("lsp regressions", () => {
 				),
 			).resolves.toBeUndefined();
 		} finally {
+			server?.exit(0);
 			configCache.delete(sessionA.path());
 			configCache.delete(sessionB.path());
 			configCache.delete(extra.path());
@@ -8234,10 +8226,11 @@ describe("lsp regressions", () => {
 		};
 		const configA: ServerConfig = { ...shared, fileTypes: [".ts"] };
 		const configB: ServerConfig = { ...shared, fileTypes: [".js"] };
+		let server: FakeLspServer | undefined;
 		try {
 			configCache.set(sessionA.path(), { servers: { extra: configA }, definitions: { extra: configA } });
 			configCache.set(sessionB.path(), { servers: { extra: configB }, definitions: { extra: configB } });
-			installFakeLsp(
+			server = installFakeLsp(
 				(message, srv) => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
@@ -8270,6 +8263,7 @@ describe("lsp regressions", () => {
 			expect(textResult(statusB)).toMatch(/Language servers: extra @ .* \(ready\)/);
 			expect(textResult(statusB)).not.toMatch(/extra \(configured, not started\)/);
 		} finally {
+			server?.exit(0);
 			configCache.delete(sessionA.path());
 			configCache.delete(sessionB.path());
 			await lspClient.shutdownAll();
@@ -8991,6 +8985,7 @@ describe("lsp regressions", () => {
 
 	it("shutdownAll restores owners when a client survives force-kill", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-shutdown-all-failed-owner-");
+		let server: FakeLspServer | undefined;
 		try {
 			const config: ServerConfig = {
 				command: "shutdown-all-survivor-lsp",
@@ -8998,7 +8993,7 @@ describe("lsp regressions", () => {
 				rootMarkers: [],
 				resolvedRoot: tempDir.path(),
 			};
-			const server = installFakeLsp(
+			server = installFakeLsp(
 				(message, srv) => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
@@ -9024,6 +9019,7 @@ describe("lsp regressions", () => {
 				"shutdown-all-survivor-lsp",
 			);
 		} finally {
+			server?.exit(0);
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
@@ -11399,6 +11395,7 @@ describe("lsp regressions", () => {
 
 	it("restores owners when deferred overwrite-destination shutdown survives force-kill", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-workspace-edit-overwrite-dest-survivor-");
+		let destServer: FakeLspServer | undefined;
 		try {
 			const sourceRoot = path.join(tempDir.path(), "source");
 			const destRoot = path.join(tempDir.path(), "dest");
@@ -11418,7 +11415,7 @@ describe("lsp regressions", () => {
 				rootMarkers: [],
 				resolvedRoot: destRoot,
 			};
-			const destServer = installFakeLsp(
+			destServer = installFakeLsp(
 				(message, srv) => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
@@ -11454,6 +11451,7 @@ describe("lsp regressions", () => {
 			expect(lspClient.getActiveClients(destOwner).map(entry => entry.name)).toContain("dest-root-lsp");
 			expect(sourceServer.received.map(message => message.method)).toContain("shutdown");
 		} finally {
+			destServer?.exit(0);
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
@@ -12333,6 +12331,7 @@ describe("lsp regressions", () => {
 
 	it("restores owners when idle shutdown republishes a client that survived force-kill", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-idle-failed-owner-");
+		let server: FakeLspServer | undefined;
 		try {
 			const config: ServerConfig = {
 				command: "idle-survivor-lsp",
@@ -12340,7 +12339,7 @@ describe("lsp regressions", () => {
 				rootMarkers: [],
 				resolvedRoot: tempDir.path(),
 			};
-			const server = installFakeLsp(
+			server = installFakeLsp(
 				(message, srv) => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
@@ -12368,6 +12367,7 @@ describe("lsp regressions", () => {
 				"idle-survivor-lsp",
 			);
 		} finally {
+			server?.exit(0);
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
@@ -12375,6 +12375,7 @@ describe("lsp regressions", () => {
 
 	it("does not restore a session disposed while shutdown cannot confirm exit", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-dispose-during-shutdown-");
+		let server: FakeLspServer | undefined;
 		try {
 			const config: ServerConfig = {
 				command: "dispose-during-shutdown-lsp",
@@ -12382,7 +12383,7 @@ describe("lsp regressions", () => {
 				rootMarkers: [],
 				resolvedRoot: tempDir.path(),
 			};
-			const server = installFakeLsp(
+			server = installFakeLsp(
 				(message, srv) => {
 					if (message.method === "initialize") {
 						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
@@ -12420,6 +12421,7 @@ describe("lsp regressions", () => {
 				"dispose-during-shutdown-lsp",
 			);
 		} finally {
+			server?.exit(0);
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}

@@ -3,3 +3,4 @@ Tasks identified by verbatim content, NEVER generated IDs (task-1). Unique, stab
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately (phased/numbered/bulleted/N); NEVER omit or remember leftovers.
 After successful mutation: no active means earliest pending starts (phase order); multiple active means only earliest stays. Blocked NEVER starts automatically; unblock returns pending. Done out of order may rewind pointer but NEVER reopen completed. Mark done immediately; follow phase order.
 External waits (user/agent/service): block with optional reason suppresses stop reminder, starts next pending. Unblock when actionable; append a clearing task for agent-actionable blocker.
+A phase may set `kind: "passive"`. Absent/`"continuing"` means today's behavior. Passive tasks remain stored and visible, but never auto-promote, drive next-action selection, or trigger stop/mid-run reminders. Explicit task ops still work.

@@ -381,6 +381,18 @@ export const cfgCompactionDropUseless = register({
 	},
 });
 
+export const cfgCompactionEpisodeIndex = register({
+	id: "compaction.episodeIndex",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "context",
+		group: "Compaction",
+		label: "Episode Index",
+		description: "Include the session's indexed runs (EPISODES) in snapcompact summaries",
+	},
+});
+
 /** Every `compaction.*` setting as one memoized snapshot (the configured compaction policy). */
 export const cfgCompaction = combine({
 	enabled: cfgCompactionEnabled,
@@ -402,6 +414,7 @@ export const cfgCompaction = combine({
 	idleTimeoutSeconds: cfgCompactionIdleTimeoutSeconds,
 	supersedeReads: cfgCompactionSupersedeReads,
 	dropUseless: cfgCompactionDropUseless,
+	episodeIndex: cfgCompactionEpisodeIndex,
 });
 
 /**

@@ -63,15 +63,15 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 
 	it("applies RPC queue-mode commands to the live agent only, without touching Settings", async () => {
 		applyRpcQueueModeCommand(session, { type: "set_steering_mode", mode: "all" });
-		applyRpcQueueModeCommand(session, { type: "set_follow_up_mode", mode: "all" });
+		applyRpcQueueModeCommand(session, { type: "set_follow_up_mode", mode: "one-at-a-time" });
 		applyRpcQueueModeCommand(session, { type: "set_interrupt_mode", mode: "wait" });
 		await settings.flush();
 
 		expect(session.steeringMode).toBe("all");
-		expect(session.followUpMode).toBe("all");
+		expect(session.followUpMode).toBe("one-at-a-time");
 		expect(session.interruptMode).toBe("wait");
 		expect(cfgSteeringMode.get(settings)).toBe("one-at-a-time");
-		expect(cfgFollowUpMode.get(settings)).toBe("one-at-a-time");
+		expect(cfgFollowUpMode.get(settings)).toBe("all");
 		expect(cfgInterruptMode.get(settings)).toBe("immediate");
 		expect(settings.getGlobalSettings()).toEqual({});
 		expect(await Bun.file(configPath).exists()).toBe(false);
@@ -79,7 +79,7 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 
 	it("does not leak session-scoped queue modes into later sessions sharing the same Settings", () => {
 		session.setSteeringMode("all", false);
-		session.setFollowUpMode("all", false);
+		session.setFollowUpMode("one-at-a-time", false);
 		session.setInterruptMode("wait", false);
 
 		// Later SDK sessions initialize their agent from Settings (sdk.ts),
@@ -88,7 +88,7 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 			agent: new Agent({
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 				steeringMode: cfgSteeringMode.get(settings) ?? "one-at-a-time",
-				followUpMode: cfgFollowUpMode.get(settings) ?? "one-at-a-time",
+				followUpMode: cfgFollowUpMode.get(settings) ?? "all",
 				interruptMode: cfgInterruptMode.get(settings) ?? "immediate",
 			}),
 			sessionManager: SessionManager.create(agentDir, agentDir),
@@ -98,10 +98,10 @@ describe("AgentSession queue-mode controls are session-scoped by default", () =>
 		});
 
 		expect(laterSession.steeringMode).toBe("one-at-a-time");
-		expect(laterSession.followUpMode).toBe("one-at-a-time");
+		expect(laterSession.followUpMode).toBe("all");
 		expect(laterSession.interruptMode).toBe("immediate");
 		expect(session.steeringMode).toBe("all");
-		expect(session.followUpMode).toBe("all");
+		expect(session.followUpMode).toBe("one-at-a-time");
 		expect(session.interruptMode).toBe("wait");
 	});
 

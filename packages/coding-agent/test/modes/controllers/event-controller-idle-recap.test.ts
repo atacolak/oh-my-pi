@@ -20,16 +20,40 @@ afterEach(() => {
 });
 
 describe("EventController idle recap presentation", () => {
-	it("renders one recap notice with the existing single-line whitespace normalization", () => {
+	it("sanitizes control characters and keeps the recap's own line structure", () => {
 		const present = vi.fn<(content: Component | readonly Component[]) => void>();
 		const controller = new EventController(createInteractiveModeContext({ present }));
 		try {
-			controller.presentIdleRecap("Where\tthings\nstand;  next step");
+			controller.presentIdleRecap("\n\x1b[31mWhere\tthings\nstand\x07;  next step\n\n");
 			const notices = present.mock.calls
 				.flatMap(([content]) => (Array.isArray(content) ? content : [content]))
 				.filter((content): content is RecapNotice => content instanceof RecapNotice);
 			expect(notices).toHaveLength(1);
-			expect(Bun.stripANSI(notices[0].render(200).join("\n"))).toContain("Where things stand; next step");
+			const rendered = Bun.stripANSI(notices[0].render(200).join("\n"));
+			expect(rendered).toContain("Where");
+			expect(rendered).toContain("stand;  next step");
+			expect(rendered).not.toContain("\x07");
+			expect(rendered).not.toContain("\x1b");
+		} finally {
+			controller.dispose();
+		}
+	});
+
+	it("keeps a long recap intact instead of truncating it", () => {
+		// The recap is a retrieval anchor: a cut mid-word loses the path/SHA the
+		// reader needs. RecapNotice wraps to terminal width, so no chop is needed.
+		const reply = `${"a word ".repeat(70)}next: ratify chapter-grouped episodes FINAL-ANCHOR`;
+		const present = vi.fn<(content: Component | readonly Component[]) => void>();
+		const controller = new EventController(createInteractiveModeContext({ present }));
+		try {
+			controller.presentIdleRecap(reply);
+			const notices = present.mock.calls
+				.flatMap(([content]) => (Array.isArray(content) ? content : [content]))
+				.filter((content): content is RecapNotice => content instanceof RecapNotice);
+			expect(notices).toHaveLength(1);
+			const rendered = Bun.stripANSI(notices[0].render(200).join("\n"));
+			expect(rendered).toContain("FINAL-ANCHOR");
+			expect(rendered).not.toContain("…");
 		} finally {
 			controller.dispose();
 		}

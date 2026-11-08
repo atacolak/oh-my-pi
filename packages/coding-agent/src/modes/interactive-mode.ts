@@ -20,6 +20,7 @@ import type {
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
 import {
+	AppViewportScrollEnd,
 	Container,
 	clearRenderCache,
 	getComposerStyle,
@@ -214,6 +215,7 @@ import { type CfgApproval, type CfgChangeRequest, setCfgApprovalHost } from "../
 import {
 	createTodoHudStateData,
 	getTodoHudVisibility,
+	isContinuingPhase,
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
@@ -2542,9 +2544,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.composer.setRuntimeChildren(
 			[
+				// Scrollable tail: the transcript through the editor-anchored HUDs scroll
+				// with the transcript, so a todo or subagent block cannot shrink it.
 				this.chatContainer,
 				this.pendingShellContainer,
-				this.pendingMessagesContainer,
 				this.todoContainer,
 				this.subagentContainer,
 				this.btwContainer,
@@ -2557,10 +2560,15 @@ export class InteractiveMode implements InteractiveModeContext {
 				// Judge batches and automatic downloads stay editor-anchored and update
 				// independently of transcript output, directly above the working/throughput/title row.
 				this.progressHudContainer,
-				// Working loader / transient status sits below the sticky todo + subagent
-				// HUDs, just above the editor's hook-widget top margin — so it reads next to
-				// the prompt while keeping the one-line gap above the editor (the band
-				// composer collapses that gap so its status band sits flush).
+				// The app viewport scrolls everything above and pins everything below.
+				new AppViewportScrollEnd(),
+				// Sticky band: only the compact reply/composer band stays pinned. Queued
+				// messages sit between the working row and the composer, as they do natively.
+				this.pendingMessagesContainer,
+				// Working loader / transient status sits just above the editor's hook-widget
+				// top margin, so it reads next to the prompt while keeping the one-line gap
+				// above the editor (the band composer collapses that gap so its status band
+				// sits flush).
 				this.statusContainer,
 				this.attachmentChipsContainer,
 				this.hookWidgetContainerAbove,
@@ -5144,6 +5152,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		let mutated = false;
 		const next: TodoPhase[] = this.todoPhases.map(phase => ({
 			name: phase.name,
+			...(phase.kind !== undefined ? { kind: phase.kind } : {}),
 			tasks: phase.tasks.map(task => {
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") {
 					return task;
@@ -5260,8 +5269,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#getActivePhase(phases: TodoPhase[]): TodoPhase | undefined {
 		const nonEmpty = phases.filter(phase => phase.tasks.length > 0);
-		const active = nonEmpty.find(phase =>
-			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
+		const active = nonEmpty.find(
+			phase =>
+				isContinuingPhase(phase) &&
+				phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
 		);
 		return active ?? nonEmpty[nonEmpty.length - 1];
 	}
@@ -5362,7 +5373,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// progress; other stages render their whole row (name + progress) in the
 		// brighter muted gray. Overall progress lives in the tree spine (below).
 		const renderPhase = (phase: TodoPhase, oneBased: number, isActive: boolean): string | string[] => {
-			const label = multiPhase ? formatPhaseDisplayName(phase.name, oneBased) : phase.name;
+			// A lone stage drops the roman numeral, so it labels its own kind.
+			const label = multiPhase
+				? formatPhaseDisplayName(phase.name, oneBased, phase.kind)
+				: phase.kind === "passive"
+					? `${phase.name} (passive)`
+					: phase.name;
 			// Closed, not just completed: the collapsed task window hides abandoned
 			// tasks too, so counting only completions leaves the phase reading stuck.
 			const done = phase.tasks.filter(isClosedTodo).length;
@@ -5458,7 +5474,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const phaseNodes: TspTreeNode[] = phaseSlice.map((phase, offset) => {
 			const phaseIndex = baseIdx + offset;
 			const isActive = phaseIndex === activeIdx;
-			const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
+			const name = multiPhase
+				? formatPhaseDisplayName(phase.name, phaseIndex + 1, phase.kind)
+				: phase.kind === "passive"
+					? `${phase.name} (passive)`
+					: phase.name;
 			const done = phase.tasks.filter(isClosedTodo).length;
 			const open = isActive || expanded;
 			return {
@@ -5489,7 +5509,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// A `checklist` HUD is a pill with the whole plan as its popover.
 		const checklistPhases: TspChecklistPhase[] = phases.map((phase, phaseIndex) => ({
 			id: `${phaseIndex}`,
-			title: multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name,
+			title: multiPhase
+				? formatPhaseDisplayName(phase.name, phaseIndex + 1, phase.kind)
+				: phase.kind === "passive"
+					? `${phase.name} (passive)`
+					: phase.name,
 			collapsed: phase.tasks.every(isClosedTodo) || undefined,
 			items: phase.tasks.map((todo, taskIndex): TspChecklistItem => {
 				const note = todo.blocker ?? todo.notes?.at(-1);

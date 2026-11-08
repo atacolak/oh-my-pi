@@ -137,6 +137,7 @@ type ProjectSettingsReadResult = {
 	fileSettings: RawSettings;
 	withoutNative: RawSettings;
 	configExists: boolean;
+	layers: RawSettings[];
 	shellPathSource: string | undefined;
 	/** Discovered project files to invalidate and watch, including filtered or temporarily missing sources. */
 	sourcePaths: string[];
@@ -2882,6 +2883,7 @@ export class Settings {
 			fileSettings: read.fileSettings,
 			withoutNative: this.#migrateRawSettings(withoutNative, read.quarantineInvalid),
 			configExists: read.configExists,
+			layers: project.layers,
 			shellPathSource: project.shellPathSource,
 			sourcePaths: [
 				...new Set([
@@ -2897,21 +2899,26 @@ export class Settings {
 	#mergeProjectItems(
 		items: readonly SettingsCapabilityItem[],
 		nativeConfig?: { path: string; settings: RawSettings },
-	): { settings: RawSettings; sourcePaths: string[]; shellPathSource: string | undefined } {
+	): { settings: RawSettings; layers: RawSettings[]; sourcePaths: string[]; shellPathSource: string | undefined } {
 		let settings: RawSettings = {};
 		const sourcePaths: string[] = [];
+		const layers: RawSettings[] = [];
 		let shellPathSource: string | undefined;
 		for (const item of items) {
 			if (nativeConfig && path.resolve(item.path) === nativeConfig.path) continue;
-			settings = this.#deepMerge(settings, dropSettingsGroupShadows(item.data as RawSettings, item.path));
+			const layer = dropSettingsGroupShadows(item.data as RawSettings, item.path);
+			layers.push(structuredClone(layer));
+			settings = this.#deepMerge(settings, layer);
 			sourcePaths.push(item.path);
 			if (Object.hasOwn(item.data, "shellPath")) shellPathSource = item.path;
 		}
 		if (nativeConfig) {
-			settings = this.#deepMerge(settings, structuredClone(nativeConfig.settings));
+			const layer = structuredClone(nativeConfig.settings);
+			layers.push(layer);
+			settings = this.#deepMerge(settings, layer);
 			if (Object.hasOwn(nativeConfig.settings, "shellPath")) shellPathSource = nativeConfig.path;
 		}
-		return { settings, sourcePaths, shellPathSource };
+		return { settings, layers, sourcePaths, shellPathSource };
 	}
 
 	/** Provider ids `disabledProviders` resolves to for `cwd` when `layers` are merged (over the overlay parent). */

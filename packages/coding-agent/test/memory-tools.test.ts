@@ -1921,7 +1921,7 @@ describe("recall.execute", () => {
 		registeredState = undefined;
 	});
 
-	it("returns the no-results sentinel when recall yields empty", async () => {
+	it("marks empty ranked recall useless without claiming whole-bank coverage", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
@@ -1929,10 +1929,18 @@ describe("recall.execute", () => {
 
 		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
 		const result = await tool.execute("call-3", { query: "anything" });
-		expect(result.content[0]).toEqual({ type: "text", text: "No relevant memories found." });
+		const text = result.content.find(item => item.type === "text");
+		expect(text?.text).toContain("No relevant memories found.");
+		expect(result.useless).toBe(true);
+		expect(result.details).toMatchObject({
+			mode: "shortlisted",
+			evaluatedCount: 0,
+			totalAvailable: null,
+			scoredCandidates: [],
+		});
 	});
 
-	it("formats non-empty results with count + UTC timestamp header", async () => {
+	it("preserves readable memory links without claiming unscored ranked results were evaluated", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
@@ -1945,8 +1953,16 @@ describe("recall.execute", () => {
 
 		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
 		const result = await tool.execute("call-4", { query: "anything" });
-		const block = (result.content[0] as { text: string }).text;
-		expect(block).toMatch(/^Found 2 relevant memories \(as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/);
+		const block = result.content.find(item => item.type === "text")?.text;
+		expect(result.details).toMatchObject({
+			mode: "shortlisted",
+			evaluatedCount: 0,
+			totalAvailable: null,
+			scoredCandidates: [
+				{ id: "1", score: null, kept: true },
+				{ id: "2", score: null, kept: true },
+			],
+		});
 		expect(block).toContain("- fact one [memory://1] [world]");
 		expect(block).toContain("- fact two [memory://2]");
 	});

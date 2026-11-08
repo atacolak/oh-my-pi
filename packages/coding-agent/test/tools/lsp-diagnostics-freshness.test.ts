@@ -52,6 +52,8 @@ function createClient(cwd: string, config: ServerConfig): LspClient {
 		proc: {} as ptree.ChildProcess<"pipe">,
 		requestId: 0,
 		diagnostics: new EquivalentUriMap(cwd),
+		publishedDiagnostics: new Map(),
+		pulledDiagnostics: new Map(),
 		diagnosticsVersion: 0,
 		openFiles: new Map(),
 		pendingRequests: new Map(),

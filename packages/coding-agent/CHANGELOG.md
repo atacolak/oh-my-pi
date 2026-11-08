@@ -308,6 +308,80 @@
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
 ## [18.18.0] - 2026-11-07
+## [18.18.2] - 2026-11-08
+
+### Breaking Changes
+
+- `logoutCredential()` now accepts an `AgentSession` instead of a model registry and session ID. Hosts must install a scoped-model refresher with `AgentSession.setScopedModelsRefresher()`; `InteractiveMode` and `InteractiveModeContext` no longer accept `refreshScopedModelsAfterLogin`.
+- `SessionStorage.hasAssistantTurn()` is replaced by the optional `scanLines(path, visit)`, which session listings use to recover both a missed assistant record and a first prompt past the 4 KB head; custom storages that implemented `hasAssistantTurn()` must implement `scanLines()` instead.
+
+### Added
+
+- The shell's `ls` builtin supports macOS/BSD `-O`: a long listing gains the file-flags column (`hidden`, `compressed`, `uchg`, `restricted`, …) instead of rejecting the option, so `ls -lO` works and flags are visible again.
+- The shell ships `sd` as a builtin, so `sd FIND REPLACE [FILES]…` find-and-replace (regex or `-F` literal, in place or `-p` preview) works without the binary installed.
+- Added `omp gc --strip` (or `gc.strip`), which removes provider replay data (thinking signatures, encrypted reasoning, cached native responses, request controls) from sessions idle for `gc.stripAfterDays` (default 30, `--strip-after-days`), including subagent and archived transcripts; stripped sessions still resume on any model.
+
+### Changed
+
+- The `sloppy` edit tool (`*** Find`/`*** Replace`) now rejects only the operations that fail to match and applies the rest, including across files; the result lists each rejected operation against the file as written, and the call fails only when no file changes. Payloads that do not parse still apply nothing.
+- A `bash` call that overlaps another one (parallel calls, or a call while one runs in the background) now runs in a copy of the session shell, so it sees the session's variables, functions, options, and working directory from before the other command; what it sets still does not persist.
+- The `.`/`c` continue shortcut now interrupts a running turn and continues it, in the main session and in focused subagent views, instead of failing with "Agent is already processing" or doing nothing.
+- Updated system prompts with the ⁂ section marker and improved task completion guidance, including proportional verification, efficient file reading, batching independent operations, and stopping after changes are verified.
+- Added faster isolated-subagent startup for ovnfs-backed checkouts, while preserving the existing baseline behavior for repositories with nested repositories or submodules.
+- Improved extension and plugin management: `/extensions` now lists and toggles extensions from configured extension packages and installed plugins, and marketplace sources resolve relative and bare-name paths consistently with Claude Code.
+- Scoped model lists now refresh after logout, model-catalog refreshes, and RPC login or logout, so available models stay synchronized with authentication and provider changes.
+- Added source actions to LSP `code_actions`, including actions such as Organize Imports, with application by title or index.
+- Browser automation now supports downloads from relay tabs and broader `role/` selectors for implicit landmarks and structural roles.
+- Improved skill and session workflows: skills created or installed during a session become immediately discoverable, and user-attributed custom messages that start a turn receive the appropriate prompt setup.
+- Validated security findings now display validation status, timestamp, and summary information.
+- Dual-mode language servers retain pushed diagnostics alongside pull diagnostics, preserving build and lint errors across edits.
+- Improved session navigation and reliability when switches, forks, branches, context resets, or new sessions overlap; requests are processed in order without freezing or misrouting messages.
+- Improved eval and interactive execution behavior, including preservation of JavaScript state and output across asynchronous failures, clearer startup and runtime errors, and better reporting when kernels or runtimes terminate.
+- Parent-to-subagent messages now appear as IRC cards in live and Agent Hub transcripts.
+- Paused agent turns can allow the machine to sleep at safe boundaries and restore sleep prevention when resumed.
+- Improved JSON-mode shutdown handling so final tool events and buffered output are preserved.
+- Improved task efficiency and responsiveness for isolated subagents, file search, browser guidance on Linux/X11, and long-running or cancellable operations.
+- Updated the `tui.mouse` setting documentation to accurately describe wheel-scrolling behavior.
+- `mnemopi.dbPath` values beginning with `~` now resolve relative to the home directory.
+- Disabling the Codex provider now prevents its configuration from overriding omp settings, and providers can be disabled without applying their other settings.
+- `omp gc` now shows a progress bar for each slow step (listing and scanning sessions, scanning transcripts for blob refs, archiving) on interactive terminals.
+- `omp gc --strip` and `--compress` start work immediately instead of first reading every session's metadata, and `--strip` processes several sessions at once with a running tally of transcripts stripped.
+- `omp gc` without `--apply` now says up front that it is a dry run.
+
+### Fixed
+
+- Fixed `omp --resume` showing `(no messages)` for sessions whose first prompt follows a large memory recall, image-only message, or `/skill:` reply ([#16495](https://github.com/can1357/oh-my-pi/issues/16495))
+- In the shell visualization, a running command's inline script, heredoc, or `sh -c`/`ssh` script stays undimmed with the command instead of fading as inactive.
+- The shell visualization highlights heredocs and inline scripts behind launchers (`uv run python -`, `timeout 60 python3 -c`, `env … bun -e`, `ssh host 'bash -s' <<EOF`, `ssh host <<EOF`, `docker run … bash -euc`), names a heredoc by its `#!` line or the file it writes (`cat > "$dir/lib.rs"`), and highlights Rust, Go, C-family and Swift heredocs.
+- On Windows, commands run by the bash tool, including `nohup` background commands, get a console of their own, so programs that draw directly on the console (xperf and PowerShell progress bars, password prompts) no longer corrupt the TUI ([#18517](https://github.com/can1357/oh-my-pi/pull/18517) by [@H4vC](https://github.com/H4vC)).
+- Reading Reddit URLs now works when Reddit blocks its API: posts, comment threads, subreddits, and user pages fall back to a Redlib mirror and then the Arctic Shift archive, and render full nested comment trees.
+- Limited xAI `web_search` to two hosted-search turns per request to help prevent unexpected X search costs.
+- Fixed extension event delivery so each extension receives events in emission order, even when another extension is slow to process an earlier event.
+- `pi.sendUserMessage()` now rejects when a message is dropped before a turn begins, including the cost-cap reason when available.
+- Prevented OpenTelemetry settings from omp-managed `.env` files from leaking into child processes or in-process extensions.
+- Supervised-service waits now complete only after logs, metadata, and session-owner state have been published.
+- Fixed Windows daemon metadata loss when another process temporarily reads `meta.json`.
+- Improved image-generation errors to report why each model in a failed fallback chain was unsuccessful.
+- Fixed model switching after remote compaction so the destination provider can recover the necessary conversation history instead of receiving only a placeholder summary.
+- Remote MCP HTTP and SSE connections now honor `NODE_EXTRA_CA_CERTS` from the agent environment, including certificates loaded after startup.
+- Preserved provider prompt-cache reuse across auto-learn captures, skill updates, and other session changes that do not require rebuilding the full system prompt.
+- Closing `/btw` history during tool approval now correctly returns focus to the approval prompt.
+- URL reads now handle bot-protection challenges more reliably, try alternate user agents, and report blocked or failed results instead of returning a protection page as content.
+- Timed-out or cancelled JSON reads now stop their `jq` processing promptly.
+- Fixed standalone binaries loading extensions that import top-level `@oh-my-pi/pi-utils` subpaths.
+- HUD job status updates now continue to reflect elapsed time instead of freezing until matching output arrives.
+- Generic remote compaction now supports `before_provider_request` payload hooks.
+- Background completions no longer start hidden turns after an ACP prompt ends or incorrectly leave the session busy.
+- Fixed shell behavior for exit status and `EXIT` traps in subshells to match Bash semantics.
+- Preserved provider prompt-cache hits when resuming sessions after pruning, rewinding, branching, tree navigation, or other history changes.
+- Cursor native edit operations now display accurate edit cards and diffs, including failed edits, instead of misleading separate read/write cards.
+- `grep` and `glob` now respect timeout and cancellation when ovnfs status or daemon handshakes stall.
+- Fixed `--mode json` shutdowns so tool completion events and the final JSON record are not lost or truncated.
+- Commands beginning with `cd /` now execute from the filesystem root as intended.
+- Edit auto-repair now accounts for retry costs and stops before exceeding the session cost cap.
+- MCP prompt commands now correctly assign positional arguments that follow `key=value` arguments.
+- `/shake thinking` now reports and preserves reasoning blocks that the provider continues to replay, avoiding inaccurate context-reduction claims.
+
 ## [18.18.1] - 2026-11-08
 
 ### Breaking Changes
@@ -3345,3 +3419,4 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@6693ddbfd58c](
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@6b354a56a890](https://github.com/can1357/oh-my-pi/blob/6b354a56a890b69b6bc9503c16c510be33675b5a/packages/coding-agent/CHANGELOG.md).
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@7a1fd37e8229](https://github.com/can1357/oh-my-pi/blob/7a1fd37e82293c8761c19385ffdccd63992b04c8/packages/coding-agent/CHANGELOG.md).
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@72d5cf31d861](https://github.com/can1357/oh-my-pi/blob/72d5cf31d86101eb0e17beaeda98582938c2eb78/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@241e6b4d725c](https://github.com/can1357/oh-my-pi/blob/241e6b4d725c8801dd2dcd48c98cdb6886f7ed9e/packages/coding-agent/CHANGELOG.md).

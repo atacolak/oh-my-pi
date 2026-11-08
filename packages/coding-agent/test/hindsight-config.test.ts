@@ -103,15 +103,25 @@ describe("loadHindsightConfig provenanceTags", () => {
 
 describe("resolveProvenanceTags", () => {
 	it("merges configured tags with a lowercased role tag for the mounted profile", () => {
-		expect(resolveProvenanceTags({ provenanceTags: ["team:infra", "role:other"] }, " Builder ")).toEqual([
-			"team:infra",
-			"role:other",
-			"role:builder",
-		]);
+		expect(
+			withEnv({ HCOM_INSTANCE_NAME: undefined }, () =>
+				resolveProvenanceTags({ provenanceTags: ["team:infra", "role:other"] }, " Builder "),
+			),
+		).toEqual(["team:infra", "role:other", "role:builder"]);
 	});
 
 	it("returns deduped configured tags when no profile is mounted", () => {
-		expect(resolveProvenanceTags({ provenanceTags: [" team:infra ", "team:infra"] })).toEqual(["team:infra"]);
-		expect(resolveProvenanceTags({ provenanceTags: [] })).toEqual([]);
+		withEnv({ HCOM_INSTANCE_NAME: " " }, () => {
+			expect(resolveProvenanceTags({ provenanceTags: [" team:infra ", "team:infra"] })).toEqual(["team:infra"]);
+			expect(resolveProvenanceTags({ provenanceTags: [] })).toEqual([]);
+		});
+	});
+
+	it("normalizes and deduplicates the named actor alongside the mounted role", () => {
+		expect(
+			withEnv({ HCOM_INSTANCE_NAME: " Helper_One " }, () =>
+				resolveProvenanceTags({ provenanceTags: ["actor:helper_one"] }, " Builder "),
+			),
+		).toEqual(["actor:helper_one", "role:builder"]);
 	});
 });

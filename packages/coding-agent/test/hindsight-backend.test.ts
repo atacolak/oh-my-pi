@@ -221,6 +221,41 @@ describe("hindsightBackend.start", () => {
 		expect(retainSpy.mock.calls[0]?.[2]?.timestamp).toBeInstanceOf(Date);
 	});
 
+	it("waits for new turns after resume and retains only the bounded overlapping tail by default", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const entries: Array<{ role: "user" | "assistant"; text: string }> = Array.from({ length: 8 }, (_, i) => ({
+			role: "user",
+			text: `loaded history turn ${i + 1} has enough substantive text`,
+		}));
+		const session = makeFakeSession({ sessionId: "resumed-cadence", entries, loadedUserTurnCount: 8 });
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: agentDir.path(),
+			taskDepth: 0,
+		});
+		const state = session.getHindsightSessionState()!;
+		await state.maybeRetainOnAgentEnd();
+		expect(retain).toHaveBeenCalledTimes(0);
+		entries.push({ role: "user", text: "first new turn after resume has substantive text" });
+		await state.maybeRetainOnAgentEnd();
+		expect(retain).toHaveBeenCalledTimes(0);
+		entries.push({ role: "user", text: "second new turn after resume has substantive text" });
+		await state.maybeRetainOnAgentEnd();
+		expect(retain).toHaveBeenCalledTimes(1);
+		const content = retain.mock.calls[0]![1];
+		expect(content).toContain("loaded history turn 8");
+		expect(content).not.toContain("loaded history turn 7");
+		expect(content).toContain("first new turn after resume");
+		expect(content).toContain("second new turn after resume");
+	});
+
 	it("aliases parent state on subagent runs (taskDepth > 0) so tools share the parent bank", async () => {
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
@@ -845,6 +880,7 @@ describe("hindsightBackend live bank routing", () => {
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.retainMode": "full-session",
 		});
 		setPath(settings, "hindsight.scoping", "global");
 		const session = makeFakeSession({ sessionId: "s-update-mode", settings });
@@ -1311,7 +1347,11 @@ describe("hindsightBackend live bank routing", () => {
 	});
 
 	it("coalesces synchronous routing edits so rebuilt states do not leak agent listeners", async () => {
-		const retainSpy = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		const retained = Promise.withResolvers<void>();
+		const retainSpy = vi.spyOn(HindsightApi.prototype, "retain").mockImplementation(async () => {
+			retained.resolve();
+			return {} as never;
+		});
 		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
@@ -1350,9 +1390,11 @@ describe("hindsightBackend live bank routing", () => {
 		const next = session.getHindsightSessionState();
 		expect(next?.bankId).toBe("live-Minigames-proj");
 		expect(session.listenerCount()).toBe(1);
+		expect(retainSpy).toHaveBeenCalledTimes(0);
+		entries.push({ role: "user", text: "new turn after routing rebuild has substantive text" });
 
 		session.emit({ type: "agent_end", messages: [] });
-		await Bun.sleep(0);
+		await retained.promise;
 
 		expect(retainSpy).toHaveBeenCalledTimes(1);
 		expect(retainSpy.mock.calls[0][0]).toBe("live-Minigames-proj");

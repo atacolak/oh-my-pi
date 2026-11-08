@@ -181,12 +181,17 @@ function makeToolSession(state: HindsightSessionState): ToolSession {
 // Retained tool items land in a durable outbox under the agent dir; keep it in a temp dir.
 let agentDirTemp: TempDir;
 let previousAgentDir: string;
+let previousInstanceName: string | undefined;
 beforeEach(() => {
+	previousInstanceName = process.env.HCOM_INSTANCE_NAME;
+	delete process.env.HCOM_INSTANCE_NAME;
 	previousAgentDir = getAgentDir();
 	agentDirTemp = TempDir.createSync("@hindsight-provenance-");
 	setAgentDir(agentDirTemp.path());
 });
 afterEach(async () => {
+	if (previousInstanceName === undefined) delete process.env.HCOM_INSTANCE_NAME;
+	else process.env.HCOM_INSTANCE_NAME = previousInstanceName;
 	setAgentDir(previousAgentDir);
 	await agentDirTemp.remove();
 });
@@ -422,6 +427,7 @@ describe("backend provenance wiring", () => {
 	});
 
 	it("stamps configured provenance plus the mounted agent profile role on the primary state", async () => {
+		process.env.HCOM_INSTANCE_NAME = " Helper_One ";
 		const bodies = captureFetchBodies();
 		const settings = provenanceSettings();
 		const fake = fakeAgentSession({ sessionId: "parent-session", profile: "builder", settings });
@@ -435,14 +441,14 @@ describe("backend provenance wiring", () => {
 		});
 
 		const state = fake.installed();
-		expect(state?.resolvedTags).toEqual(["scope:coding", "project:omp"]);
-		expect(state?.provenanceTags).toEqual(["team:infra", "role:builder"]);
+		expect(state?.resolvedTags).toEqual(["scope:coding"]);
+		expect(state?.provenanceTags).toEqual(["team:infra", "role:builder", "actor:helper_one"]);
 		await state!.enqueueRetain("call-425", [{ content: "the tag split is write-only" }]);
 		await state!.flushRetainQueue();
 
 		const item = retainItem(bodies);
-		expect(item.tags).toEqual(["scope:coding", "project:omp", "team:infra", "role:builder"]);
-		expect(item.observation_scopes).toEqual([["scope:coding", "project:omp"]]);
+		expect(item.tags).toEqual(["scope:coding", "team:infra", "role:builder", "actor:helper_one"]);
+		expect(item.observation_scopes).toEqual([["scope:coding"]]);
 	});
 
 	it("a subagent aliases the parent scope but stamps its own role and runs no auto-retain", async () => {
@@ -476,7 +482,7 @@ describe("backend provenance wiring", () => {
 		await childState!.flushRetainQueue();
 
 		const item = retainItem(bodies);
-		expect(item.tags).toEqual(["scope:coding", "project:omp", "team:infra", "role:scout"]);
+		expect(item.tags).toEqual(["scope:coding", "team:infra", "role:scout"]);
 		expect(item.tags).not.toContain("role:builder");
 	});
 });

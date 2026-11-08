@@ -7,6 +7,7 @@ import {
 	type HindsightMessage,
 	hasSubstantiveContent,
 	isHindsightMemoryInScope,
+	mergeRecallTags,
 	prepareEmbeddableRetentionTranscript,
 	prepareRetentionTranscript,
 	prepareUserRetentionTranscript,
@@ -401,20 +402,48 @@ describe("formatMemories memory ids", () => {
 	});
 });
 
+describe("mergeRecallTags", () => {
+	it("replaces the default project while preserving the coding boundary and additive provenance filters", () => {
+		expect(
+			mergeRecallTags(
+				["scope:coding", "project:omp"],
+				[" project:exocortex ", "project:memory", "role:builder", "actor:helper", "scope:personal"],
+			),
+		).toEqual(["scope:coding", "project:exocortex", "project:memory", "role:builder", "actor:helper"]);
+	});
+
+	it("removes the default project for wildcard lookup without querying a literal wildcard tag", () => {
+		expect(mergeRecallTags(["scope:coding", "project:omp"], ["project:*", "area:tools"])).toEqual([
+			"scope:coding",
+			"area:tools",
+		]);
+	});
+
+	it("cannot add a different hard scope, including when no scope was granted", () => {
+		expect(mergeRecallTags(["scope:personal"], ["scope:coding", "project:omp"])).toEqual([
+			"scope:personal",
+			"project:omp",
+		]);
+		expect(mergeRecallTags(undefined, ["scope:personal"])).toBeUndefined();
+	});
+});
+
 describe("isHindsightMemoryInScope", () => {
 	const scope = { scoping: "per-project-tagged", recallTags: ["project:omp", "scope:coding"] };
 
-	it("requires every scope tag in all-strict mode", () => {
+	it("requires the coding boundary even when the project matches", () => {
 		expect(isHindsightMemoryInScope(["project:omp", "scope:coding"], scope)).toBe(true);
 		expect(isHindsightMemoryInScope(["project:omp"], scope)).toBe(false);
 		expect(isHindsightMemoryInScope([], scope)).toBe(false);
+		expect(isHindsightMemoryInScope(["scope:coding", "project:exocortex"], scope)).toBe(true);
+		expect(isHindsightMemoryInScope(["scope:coding", "project:exocortex", "scope:personal"], scope)).toBe(false);
 	});
 
 	it("accepts one matching tag in any mode", () => {
 		expect(
 			isHindsightMemoryInScope(["project:omp"], {
 				scoping: "per-project-tagged",
-				recallTags: ["project:omp", "scope:coding"],
+				recallTags: ["project:omp", "area:tools"],
 				recallTagsMatch: "any",
 			}),
 		).toBe(true);

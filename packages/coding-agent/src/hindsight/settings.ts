@@ -180,7 +180,7 @@ export const cfgHindsightRetainMode = register({
 	env: "HINDSIGHT_RETAIN_MODE",
 	type: "enum",
 	values: ["full-session", "last-turn"] as const,
-	default: "full-session",
+	default: "last-turn",
 	ui: {
 		tab: "memory",
 		group: "Hindsight",
@@ -190,9 +190,13 @@ export const cfgHindsightRetainMode = register({
 			{
 				value: "full-session",
 				label: "Full session",
-				description: "Upsert one document per session (recommended)",
+				description: "Upsert one document per session",
 			},
-			{ value: "last-turn", label: "Last turn", description: "Chunked retention sliced by turn boundaries" },
+			{
+				value: "last-turn",
+				label: "Last turn",
+				description: "Chunked retention sliced by turn boundaries (recommended)",
+			},
 		],
 		condition: "hindsightActive",
 	},
@@ -202,13 +206,13 @@ export const cfgHindsightRetainEveryNTurns = register({
 	id: "hindsight.retainEveryNTurns",
 	env: { name: "HINDSIGHT_RETAIN_EVERY_N_TURNS", parse: parseEnvInteger },
 	type: "number",
-	default: 3,
+	default: 2,
 });
 
 export const cfgHindsightRetainOverlapTurns = register({
 	id: "hindsight.retainOverlapTurns",
 	type: "number",
-	default: 2,
+	default: 1,
 });
 
 export const cfgHindsightRetainContext = register({ id: "hindsight.retainContext", type: "string", default: "omp" });

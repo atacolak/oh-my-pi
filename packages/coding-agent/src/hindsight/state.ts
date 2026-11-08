@@ -792,11 +792,10 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		if (messages.length === 0) return;
 		const userTurns = messages.filter(m => m.role === "user").length;
 		const retainedThrough = Math.max(this.lastRetainedTurn, this.#closeRetainBaselineTurns);
-		// Resume starts lastRetainedTurn at 0 even when the transcript already
-		// contains history. Treat loaded history as already retained on the close
-		// path so idle open/close does not reconsolidate the full document; only
-		// a below-cadence tail of new turns is flushed. Last-turn retains still
-		// record the retained branch identity so `/tree` rewinds can diverge.
+		// Treat loaded history as already retained on close so idle open/close
+		// does not reconsolidate the full document; flush only new activity.
+		// Last-turn retains still record branch identity for `/tree` divergence,
+		// but a diverged prefix must not turn a chunk into a full-history upload.
 		const prefixDiverged = this.#sessionHistoryDiverged(messages);
 		const retainedMessageCount =
 			this.#lastRetainedMessageIndex > 0 ? this.#lastRetainedMessageIndex : this.#loadedMessageCount;
@@ -806,7 +805,11 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 			const generation = this.#retainGeneration;
 			const lastTurnWindow =
 				this.config.retainMode === "last-turn"
-					? Math.max(prefixDiverged ? userTurns : userTurns - retainedThrough, 1) + this.config.retainOverlapTurns
+					? Math.min(
+							Math.max(prefixDiverged ? userTurns : userTurns - retainedThrough, 1) +
+								this.config.retainOverlapTurns,
+							this.config.retainEveryNTurns + this.config.retainOverlapTurns,
+						)
 					: undefined;
 			await this.retainSession(messages, lastTurnWindow === undefined ? undefined : { lastTurnWindow });
 			if (generation === this.#retainGeneration) this.lastRetainedTurn = userTurns;

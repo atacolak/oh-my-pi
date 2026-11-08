@@ -71,19 +71,25 @@ export function hasSubstantiveContent(content: string): boolean {
 }
 
 /**
- * Union a session's recall tag filter with caller-supplied `tags`.
- *
- * Omitted (or empty) extra tags leave the session filter exactly as it was —
- * same array, same effective query. Provided tags are additive: they can
- * narrow the caller's own lookup but never replace the session scope, so a
- * tool call cannot drop the project tag and silently become a personal silo.
+ * Merge recall filters without allowing callers to change the hard scope axis.
+ * Explicit project tags replace the default project; `project:*` removes that
+ * default without sending a literal wildcard tag to the server. Other tags
+ * remain additive. Omitted extra tags leave the session filter unchanged.
  */
 export function mergeRecallTags(
 	scopeTags: string[] | undefined,
 	extraTags: readonly string[] | undefined,
 ): string[] | undefined {
 	if (!extraTags || extraTags.length === 0) return scopeTags;
-	const merged = [...new Set([...(scopeTags ?? []), ...extraTags].map(tag => tag.trim()).filter(Boolean))];
+	const required = (scopeTags ?? []).map(tag => tag.trim()).filter(Boolean);
+	const extra = extraTags.map(tag => tag.trim()).filter(Boolean);
+	const overrideProject = extra.some(tag => tag.startsWith("project:"));
+	const merged = [
+		...new Set([
+			...required.filter(tag => !overrideProject || !tag.startsWith("project:")),
+			...extra.filter(tag => tag !== "project:*" && (!tag.startsWith("scope:") || required.includes(tag))),
+		]),
+	];
 	return merged.length > 0 ? merged : undefined;
 }
 
@@ -144,9 +150,9 @@ export function formatMemories(results: RecallResultLike[]): string {
 /**
  * True when a memory's tags belong to the caller's memory scope.
  *
- * Mirrors `worlds/base/lib/knowledge-protocol.ts`: tags outside the session scope, and every
- * `scope:personal` unit read from a non-personal scope, are invisible so an id cannot probe a
- * sibling or personal bank.
+ * Coding callers may dereference coding memories across project tags, while
+ * personal memories remain invisible to non-personal callers. Other scopes
+ * retain their configured tag-match semantics.
  */
 export function isHindsightMemoryInScope(
 	memoryTags: readonly string[] | null | undefined,
@@ -160,6 +166,7 @@ export function isHindsightMemoryInScope(
 	if (!required.includes("scope:personal") && tags.has("scope:personal")) {
 		return false;
 	}
+	if (required.includes("scope:coding")) return tags.has("scope:coding");
 	const mode = scope.recallTagsMatch ?? "all_strict";
 	if (mode === "any" || mode === "any_strict") {
 		return required.length === 0 || required.some(tag => tags.has(tag));

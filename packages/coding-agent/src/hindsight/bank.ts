@@ -88,10 +88,19 @@ function baseBankId(config: HindsightConfig): string {
  */
 function projectLabel(directory: string): string {
 	if (!directory) return UNKNOWN_PROJECT;
-	const primary = vcs.repo(directory)?.primaryRoot() ?? null;
-	const declared = scopeIdFromAncestors(directory) ?? (primary ? scopeIdAt(primary) : null);
+	const declared = declaredProjectLabel(directory);
 	if (declared) return declared;
+	const primary = vcs.repo(directory)?.primaryRoot() ?? null;
 	return path.basename(primary ?? directory).toLowerCase() || UNKNOWN_PROJECT;
+}
+
+/** Explicit managed-project identity, without a directory-name fallback. */
+export function declaredProjectLabel(directory: string): string | null {
+	if (!directory) return null;
+	const declared = scopeIdFromAncestors(directory);
+	if (declared) return declared;
+	const primary = vcs.repo(directory)?.primaryRoot() ?? null;
+	return primary ? scopeIdAt(primary) : null;
 }
 
 function isFile(target: string): boolean {
@@ -167,8 +176,10 @@ export function computeBankScope(config: HindsightConfig, directory: string): Ba
 			return scopedBank(base, config.scopeTags);
 		case "per-project":
 			return { bankId: `${base}-${projectLabel(directory)}` };
-		case "per-project-tagged":
-			return scopedBank(base, [...config.scopeTags, `${PROJECT_TAG_PREFIX}${projectLabel(directory)}`]);
+		case "per-project-tagged": {
+			const id = declaredProjectLabel(directory);
+			return scopedBank(base, id ? [...config.scopeTags, `${PROJECT_TAG_PREFIX}${id}`] : config.scopeTags);
+		}
 	}
 }
 

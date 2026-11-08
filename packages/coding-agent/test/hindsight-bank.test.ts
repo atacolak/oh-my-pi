@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, type 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { computeBankScope, ensureBankExists } from "@oh-my-pi/pi-coding-agent/hindsight/bank";
+import { computeBankScope, declaredProjectLabel, ensureBankExists } from "@oh-my-pi/pi-coding-agent/hindsight/bank";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -11,12 +11,6 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
 // `~/.gitconfig` commit signing or template hooks would otherwise turn the
 // worktree fixture's `git init`/`git commit`/`git worktree add` into a flaky
 // dance. Mirrors the isolation in `test/tools/gh.test.ts`.
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
-process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-process.env.GIT_CONFIG_NOSYSTEM = "1";
-process.env.GIT_TERMINAL_PROMPT = "0";
-process.env.GIT_ASKPASS = "true";
-delete process.env.XDG_CONFIG_HOME;
 
 function runGit(cwd: string, args: string[]): string {
 	const result = Bun.spawnSync(["git", ...args], {
@@ -25,6 +19,12 @@ function runGit(cwd: string, args: string[]): string {
 		stderr: "pipe",
 		env: {
 			...process.env,
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_CONFIG_SYSTEM: "/dev/null",
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_TERMINAL_PROMPT: "0",
+			GIT_ASKPASS: "true",
+			XDG_CONFIG_HOME: undefined,
 			GIT_AUTHOR_NAME: "Test User",
 			GIT_AUTHOR_EMAIL: "test@example.com",
 			GIT_COMMITTER_NAME: "Test User",
@@ -150,42 +150,23 @@ describe("computeBankScope", () => {
 	});
 
 	describe("scoping=per-project-tagged", () => {
-		it("keeps the base bank id and emits project tags with all_strict match", () => {
-			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/work/proj")).toEqual({
+		it("keeps unbound coding actors project-neutral for retain, recall and observation scopes", () => {
+			expect(
+				computeBankScope(baseConfig({ scoping: "per-project-tagged", scopeTags: ["scope:coding"] }), "/work/proj"),
+			).toEqual({
 				bankId: "omp",
-				resolvedTags: ["project:proj"],
-				retainTags: ["project:proj"],
-				recallTags: ["project:proj"],
+				resolvedTags: ["scope:coding"],
+				retainTags: ["scope:coding"],
+				recallTags: ["scope:coding"],
 				recallTagsMatch: "all_strict",
-				observationScopes: [["project:proj"]],
+				observationScopes: [["scope:coding"]],
 			});
 		});
 
-		it("falls back to project:unknown when cwd is empty", () => {
-			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "");
-			expect(scope.retainTags).toEqual(["project:unknown"]);
-			expect(scope.recallTags).toEqual(["project:unknown"]);
-		});
-
-		it("prefixes configured coding scope tags before the project tag", () => {
-			const scope = computeBankScope(
-				baseConfig({ scoping: "per-project-tagged", bankId: "personal", scopeTags: ["scope:coding"] }),
-				"/work/speech-core",
-			);
-			expect(scope).toEqual({
-				bankId: "personal",
-				resolvedTags: ["scope:coding", "project:speech-core"],
-				retainTags: ["scope:coding", "project:speech-core"],
-				recallTags: ["scope:coding", "project:speech-core"],
-				recallTagsMatch: "all_strict",
-				observationScopes: [["scope:coding", "project:speech-core"]],
-			});
-		});
-
-		it("lowercases the project tag so casing cannot split one project in two", () => {
-			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/work/General");
-			expect(scope.retainTags).toEqual(["project:general"]);
-			expect(scope.recallTags).toEqual(["project:general"]);
+		it("does not invent a project for an empty cwd or an unbound directory", () => {
+			expect(declaredProjectLabel("")).toBeNull();
+			expect(declaredProjectLabel("/work/proj")).toBeNull();
+			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "")).toEqual({ bankId: "omp" });
 		});
 	});
 
@@ -221,6 +202,8 @@ describe("computeBankScope", () => {
 			runGit(primaryRoot, ["push", "bare", "main"]);
 			runGit(baseDir, ["--git-dir", bareRepoRoot, "worktree", "add", bareWorktreeA, "-b", "bare-a", "main"]);
 			runGit(baseDir, ["--git-dir", bareRepoRoot, "worktree", "add", bareWorktreeB, "-b", "bare-b", "main"]);
+			await Bun.write(path.join(primaryRoot, ".systemd-ops", "scope.toml"), '[scope]\nid = "myrepo"\n');
+			await Bun.write(path.join(bareRepoRoot, ".systemd-ops", "scope.toml"), '[scope]\nid = "bare-project"\n');
 		});
 
 		afterAll(async () => {
@@ -244,19 +227,16 @@ describe("computeBankScope", () => {
 		it("emits one shared project label across worktrees attached to a bare repository", () => {
 			const fromA = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), bareWorktreeA);
 			const fromB = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), bareWorktreeB);
-			expect(fromA.retainTags).toEqual(["project:bare-repo.git"]);
+			expect(fromA.retainTags).toEqual(["project:bare-project"]);
 			expect(fromB).toEqual(fromA);
 			expect(computeBankScope(baseConfig({ scoping: "per-project" }), bareWorktreeB)).toEqual({
-				bankId: "omp-bare-repo.git",
+				bankId: "omp-bare-project",
 			});
 		});
 
-		it("falls back to the cwd basename outside any repository", () => {
-			// The temp parent dir is not itself a repo — it just contains one.
-			// `mkdtemp` mixes case into the suffix, so fold it like the label does.
-			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), baseDir).retainTags).toEqual([
-				`project:${path.basename(baseDir).toLowerCase()}`,
-			]);
+		it("does not tag an unbound parent merely because it contains managed repositories", () => {
+			expect(declaredProjectLabel(baseDir)).toBeNull();
+			expect(computeBankScope(baseConfig({ scoping: "per-project-tagged" }), baseDir).retainTags).toBeUndefined();
 		});
 	});
 
@@ -281,6 +261,7 @@ describe("computeBankScope", () => {
 			runGit(primaryRoot, ["add", "-A"]);
 			runGit(primaryRoot, ["commit", "-m", "base"]);
 			runGit(primaryRoot, ["worktree", "add", worktreeRoot, "-b", "Feature"]);
+			await Bun.write(path.join(primaryRoot, ".systemd-ops", "scope.toml"), '[scope]\nid = "CasedRepo"\n');
 		});
 
 		afterAll(async () => {
@@ -354,19 +335,23 @@ describe("computeBankScope", () => {
 			const root = path.join(baseDir, "normalized");
 			await writeManifest(root, '[scope]\nid = "  Drone Ops / Fleet  "\n');
 			expect(scopedLabel(root)).toBe("project:drone-ops-fleet");
+			expect(
+				computeBankScope(baseConfig({ scoping: "per-project-tagged", scopeTags: ["scope:coding"] }), root)
+					.retainTags,
+			).toEqual(["scope:coding", "project:drone-ops-fleet"]);
 		});
 
-		it("keeps the basename when no scope manifest exists", async () => {
+		it("leaves an undeclared project unbound", async () => {
 			const root = path.join(baseDir, "unscoped");
 			await fs.mkdir(root, { recursive: true });
-			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+			expect(scopedLabel(root)).toBeUndefined();
 		});
 
 		it("ignores a directory holding both manifest flavours", async () => {
 			const root = path.join(baseDir, "ambiguous");
 			await writeManifest(root, '[scope]\nid = "guessed"\n');
 			await writeLegacyManifest(root, '[scope]\nid = "guessed-legacy"\n');
-			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+			expect(scopedLabel(root)).toBeUndefined();
 		});
 
 		it("keeps walking past an ambiguous directory", async () => {
@@ -381,19 +366,19 @@ describe("computeBankScope", () => {
 		it("ignores an empty scope id", async () => {
 			const root = path.join(baseDir, "empty-id");
 			await writeManifest(root, '[scope]\nid = ""\n');
-			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+			expect(scopedLabel(root)).toBeUndefined();
 		});
 
 		it("ignores a manifest without a [scope] section", async () => {
 			const root = path.join(baseDir, "no-scope-section");
 			await writeManifest(root, '[coordination]\nlead = "hcom:lead"\n');
-			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+			expect(scopedLabel(root)).toBeUndefined();
 		});
 
 		it("ignores a malformed manifest", async () => {
 			const root = path.join(baseDir, "malformed");
 			await writeManifest(root, "[scope\nid =\n");
-			expect(scopedLabel(root)).toBe(`project:${path.basename(root).toLowerCase()}`);
+			expect(scopedLabel(root)).toBeUndefined();
 		});
 	});
 

@@ -199,7 +199,7 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 
 /**
  * Write-only provenance tags for one session's retains: operator-configured
- * tags plus `role:<profile>` for the mounted agent profile.
+ * tags plus `role:<profile>` and the named HCOM actor, when present.
  *
  * The profile is lowercased like rule scoping, so two spellings of one agent
  * cannot split provenance into two literal tag values. Provenance is merged
@@ -211,6 +211,8 @@ export function resolveProvenanceTags(
 ): string[] {
 	const profile = agentProfile?.trim().toLowerCase();
 	const tags = profile ? [...config.provenanceTags, `role:${profile}`] : [...config.provenanceTags];
+	const instanceName = process.env.HCOM_INSTANCE_NAME?.trim().toLowerCase();
+	if (instanceName) tags.push(`actor:${instanceName}`);
 	return [...new Set(tags.map(tag => tag.trim()).filter(Boolean))];
 }
 

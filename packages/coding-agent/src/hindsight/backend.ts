@@ -313,6 +313,9 @@ async function installPrimaryState(
 		await previous.drainOnClose();
 	}
 
+	const retainedBaselineTurns =
+		closeRetainBaselineTurns ?? (session.sessionManager ? countRetainableUserTurns(session.sessionManager) : 0);
+
 	const state = new HindsightSessionState({
 		agentDir: settings.getAgentDir(),
 		sessionId,
@@ -327,10 +330,9 @@ async function installPrimaryState(
 		config,
 		session,
 		banksSet,
-		closeRetainBaselineTurns:
-			closeRetainBaselineTurns ?? (session.sessionManager ? countRetainableUserTurns(session.sessionManager) : 0),
+		closeRetainBaselineTurns: retainedBaselineTurns,
 		loadedMessageCount,
-		lastRetainedTurn: 0,
+		lastRetainedTurn: retainedBaselineTurns,
 		recallDelivered: false,
 		episodeIdFor,
 	});

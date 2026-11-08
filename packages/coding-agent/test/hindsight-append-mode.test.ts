@@ -530,6 +530,54 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[0]).content)).not.toContain("abandoned five has enough text");
 	});
 
+	it("caps a diverged resumed history on close at cadence plus overlap instead of uploading the entire branch", async () => {
+		const bodies = captureBodies();
+		const original = Array.from({ length: 12 }, (_, i) =>
+			userEntry(
+				`u${i + 1}`,
+				i === 0 ? null : `u${i}`,
+				`original history ${i + 1} has substantive text`,
+				SESSION_START,
+			),
+		);
+		let branch = original;
+		const state = new HindsightSessionState({
+			sessionId: "bounded-diverged-close",
+			client: new HindsightApi({ baseUrl: "http://hindsight.local" }),
+			bankId: "personal",
+			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 2, retainOverlapTurns: 1 }),
+			closeRetainBaselineTurns: 12,
+			session: {
+				sessionId: "bounded-diverged-close",
+				sessionManager: {
+					getHeader: () => ({
+						type: "session",
+						id: "bounded-diverged-close",
+						timestamp: SESSION_START,
+						cwd: "/tmp",
+					}),
+					getEntries: () => branch,
+					getBranch: () => branch,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+		branch = [
+			...original.slice(0, 11),
+			userEntry("replacement", "u11", "replacement branch tail has substantive text", SESSION_START),
+		];
+		await state.drainOnClose();
+		expect(bodies).toHaveLength(1);
+		const content = String(firstItem(bodies[0]).content);
+		expect(content).toContain("original history 10");
+		expect(content).toContain("original history 11");
+		expect(content).toContain("replacement branch tail");
+		expect(content).not.toContain("original history 9");
+		expect(content).not.toContain("original history 12");
+		state.dispose();
+	});
+
 	it("does not duplicate last-turn documents when close races an in-flight forced retain", async () => {
 		const gate = Promise.withResolvers<void>();
 		const started = Promise.withResolvers<void>();

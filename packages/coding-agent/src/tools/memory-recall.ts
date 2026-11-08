@@ -32,7 +32,7 @@ const memoryRecallSchema = type({
 		"restrict results to these memory types (omitted = session setting)",
 	),
 	"tags?": type("string[]").describe(
-		"project:<id> replaces the default project filter; project:* widens coding recall; area and memory_shape add filters; the hard scope boundary remains",
+		"stay in the default project scope; use project:<id> only for a question explicitly about that repository; area and memory_shape add filters; the hard scope boundary remains",
 	),
 });
 

@@ -2475,7 +2475,13 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.session.beginDispose();
 				this.statusLine.dispose();
 			},
-			saveDraft: text => this.sessionManager.saveDraft(text),
+			saveDraft: async text => {
+				// A debounced write can still be pending when shutdown beats the
+				// debounce (typing stopped moments before Ctrl+D). Land it first so
+				// the empty-cleared path archives the real typed text, not nothing.
+				await this.#inputController.flushDraftPersistence();
+				await this.sessionManager.saveDraft(text);
+			},
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
 				await this.session.dispose({
@@ -2865,16 +2871,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		// default through handleNewCommand instead.
 		await this.#applyPlanModeDefault();
 
-		// Restore unsent editor draft from previous session shutdown (Ctrl+D).
-		// One-shot: consumeDraft removes the sidecar after read so the next
-		// resume does not re-restore the same text. Text typed while startup
-		// ran stays after it, where the caret lands.
+		// Restore the unsent editor draft from the previous session shutdown
+		// (Ctrl+D). The read is non-destructive: a resume the person abandons,
+		// or a second restart, still finds the same text. Text typed while
+		// startup ran stays after it, where the caret lands.
 		try {
-			const draft = await logger.time("InteractiveMode.init:draft", () => this.sessionManager.consumeDraft());
-			if (draft) {
-				this.editor.setText(draft + this.editor.getText());
+			const recoveredDraft = await logger.time("InteractiveMode.init:draft", () =>
+				this.sessionManager.consumeDraftEntry(),
+			);
+			if (recoveredDraft?.text) {
+				this.editor.setText(recoveredDraft.text + this.editor.getText());
 				this.updateEditorBorderColor();
 				this.ui.requestRender();
+				// Land the merged body on disk now instead of waiting for the
+				// typing debounce, so a crash right after resume keeps the merge.
+				await this.#inputController.flushDraftPersistence();
 			}
 		} catch (err) {
 			logger.warn("Failed to restore session draft", { error: String(err) });

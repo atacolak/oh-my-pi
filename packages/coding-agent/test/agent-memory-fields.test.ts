@@ -103,10 +103,10 @@ it("migrates legacy frontmatter gears and clamps the small return window", () =>
 	expect(parse("xhigh")).toMatchObject({ recallBudget: "deep" });
 });
 
-it("applies recall gears on a legacy release without crashing root agent startup", () => {
+it("applies recall gears supported by the active release or composed registry", () => {
 	vi.spyOn(cfgHindsightRecallBudget, "envValue").mockReturnValue(undefined);
 	const settings = Settings.isolated();
-	const apply = (recallBudget: string) => {
+	const apply = (recallBudget: string): string => {
 		const policy = parseAgentFields({
 			name: "memory-probe",
 			description: "legacy release compatibility",
@@ -115,14 +115,18 @@ it("applies recall gears on a legacy release without crashing root agent startup
 		applyAgentMemoryPolicy(settings, policy);
 		return cfgHindsightRecallBudget.get(settings);
 	};
-	expect(apply("default")).toBe("mid");
-	expect(apply("deep")).toBe("high");
-	expect(apply("max")).toBe("high");
+	const nativeGears = cfgHindsightRecallBudget.accepts("default");
+	expect(apply("default")).toBe(nativeGears ? "default" : "mid");
+	expect(apply("deep")).toBe(nativeGears ? "deep" : "high");
+	expect(apply("max")).toBe(nativeGears ? "max" : "high");
 });
 
 it("keeps the operator's recall budget above an agent's incompatible gear", () => {
-	vi.spyOn(cfgHindsightRecallBudget, "envValue").mockReturnValue("low");
+	const operatorBudget = cfgHindsightRecallBudget.parse(
+		cfgHindsightRecallBudget.accepts("default") ? "default" : "low",
+	);
+	vi.spyOn(cfgHindsightRecallBudget, "envValue").mockReturnValue(operatorBudget);
 	const settings = Settings.isolated();
 	applyAgentMemoryPolicy(settings, { recallBudget: "max" });
-	expect(cfgHindsightRecallBudget.get(settings)).toBe("low");
+	expect(cfgHindsightRecallBudget.get(settings)).toBe(operatorBudget);
 });

@@ -125,6 +125,7 @@ describe("memory thread service", () => {
 			session: parentSession,
 			banksSet,
 		});
+		parent.mentalModelsSnippet = "<mental_models>parent models</mental_models>";
 		parent.lastRecallSnippet = "<memories>parent recall</memories>";
 
 		const report = await probe.hindsightChild(parent, "worker fact", "deploy host");
@@ -158,8 +159,11 @@ describe("memory thread service", () => {
 		expect(recall.mock.calls[0]?.[1]).toBe("deploy host");
 		expect(recall.mock.calls[0]?.[2]).toMatchObject({ tags: ["project:alpha"], tagsMatch: "any" });
 		expect(report.recalled).toContain("the deploy host is alpha-7");
-		// The child's prompt reads the parent's live recall snippet.
-		expect(report.instructions).toContain("<memories>parent recall</memories>");
+		// The child's prompt carries the parent's live mental-model block, while recall
+		// stays out of the system prompt: it rides the delivered turn entry a clone
+		// inherits, so repeating it here would duplicate bytes and cost the prefix cache.
+		expect(report.instructions).toContain("<mental_models>parent models</mental_models>");
+		expect(report.instructions).not.toContain("<memories>parent recall</memories>");
 		// Aliases never auto-recall or auto-retain on the parent's behalf.
 		expect(parent.lastRetainedTurn).toBe(0);
 		parent.dispose();

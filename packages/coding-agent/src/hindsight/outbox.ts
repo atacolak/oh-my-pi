@@ -24,10 +24,7 @@ export interface RetainInput {
 	scope?: MemoryWriteScope;
 }
 
-/**
- * Scope retain tags plus write-only provenance tags, deduped in order; undefined when both are empty.
- * Provenance survives a global write even though global writes drop the scope tags.
- */
+/** Scope tags plus write-only provenance; globals keep provenance alone. */
 export function mergeRetainWriteTags(
 	retainTags: readonly string[] | undefined,
 	provenanceTags: readonly string[] | undefined,
@@ -54,6 +51,8 @@ export interface OutboxEvent {
 	content: string;
 	context: string;
 	sessionId: string;
+	/** Server metadata for the event; ids only, never user text. */
+	metadata?: Record<string, string>;
 }
 
 export interface RetainCall {
@@ -61,14 +60,16 @@ export interface RetainCall {
 	toolCallId: string;
 	/** Context for items without their own. */
 	context: string;
-	/** Tags shared by project-scoped items; global items keep only the provenance tags. */
+	/** Scope tags for project writes; global writes keep only provenance. */
 	tags: string[] | undefined;
-	/** Write-only provenance tags merged into every event, including global ones. */
+	/** Write-only provenance stamped on project and global writes. */
 	provenanceTags?: string[];
-	/** Exact deterministic observation consolidation scopes; global events drop them. */
-	observationScopes?: string[][];
-	/** Per-retain extraction strategy override. */
+	/** Metadata stamped on every event of this call. */
+	metadata?: Record<string, string>;
+	/** Extraction strategy override applied to every item. */
 	strategy?: string;
+	/** Consolidation scopes applied to every project-scoped item. */
+	observationScopes?: string[][];
 }
 
 export interface DrainResult {
@@ -213,11 +214,19 @@ export class HindsightOutbox {
 			version: 1,
 			id: `omp-retain-${new Bun.CryptoHasher("sha256").update(identity).digest("hex").slice(0, 32)}`,
 			scope,
-			tags: tags ?? [],
+			tags: (mergeRetainWriteTags(scope === "global" ? undefined : call.tags, call.provenanceTags) ?? []).map(tag =>
+				this.#clean(tag),
+			),
 			timestamp: new Date().toISOString(),
 			content,
 			context,
 			sessionId: this.#clean(call.sessionId),
+			metadata: call.metadata,
+			strategy: call.strategy ? this.#clean(call.strategy) : undefined,
+			observationScopes:
+				scope === "global"
+					? undefined
+					: call.observationScopes?.map(scopeTags => scopeTags.map(tag => this.#clean(tag))),
 		};
 		if (observationScopes && observationScopes.length > 0) event.observationScopes = observationScopes;
 		if (strategy) event.strategy = strategy;
@@ -307,7 +316,7 @@ export class HindsightOutbox {
 					content: event.content,
 					context: event.context,
 					timestamp: new Date(event.timestamp),
-					metadata: { session_id: event.sessionId },
+					metadata: event.metadata ?? { session_id: event.sessionId },
 					tags: event.tags.length > 0 ? event.tags : undefined,
 					observationScopes: event.observationScopes,
 					strategy: event.strategy,
@@ -386,12 +395,16 @@ async function readEvent(file: string, now: number): Promise<Pending | undefined
 			typeof event.content === "string" &&
 			typeof event.context === "string" &&
 			typeof event.sessionId === "string" &&
+			(event.metadata === undefined ||
+				(typeof event.metadata === "object" &&
+					event.metadata !== null &&
+					Object.values(event.metadata).every(value => typeof value === "string"))) &&
+			(event.strategy === undefined || typeof event.strategy === "string") &&
 			(event.observationScopes === undefined ||
 				(Array.isArray(event.observationScopes) &&
 					event.observationScopes.every(
-						scope => Array.isArray(scope) && scope.every(tag => typeof tag === "string"),
-					))) &&
-			(event.strategy === undefined || typeof event.strategy === "string");
+						group => Array.isArray(group) && group.every(tag => typeof tag === "string"),
+					)));
 		return valid ? { file, event, published } : undefined;
 	} catch {
 		return undefined;

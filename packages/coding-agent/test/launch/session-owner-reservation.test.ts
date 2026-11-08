@@ -270,11 +270,16 @@ describe("strict session reservation", () => {
 			expect(losers[0].code).toBe("owner-busy");
 			expect(isSessionLeaseHeld(sessionId)).toBe(true);
 
-			await Promise.all(racers.map(racer => racer.write()));
+			// Keep the winner reserved until the loser's write has reached the fence.
+			// Otherwise a valid write after the winner closes depends on scheduling.
+			const loserIndex = outcomes.findIndex(outcome => outcome.kind === "refuse");
+			await racers[loserIndex].write();
+			const loser = await racers[loserIndex].report();
+			expect(isSessionLeaseHeld(sessionId)).toBe(true);
 
-			const written = [await racers[0].report(), await racers[1].report()];
-			const winner = written.find(outcome => outcome.pid === winners[0].pid);
-			const loser = written.find(outcome => outcome.pid === losers[0].pid);
+			const winnerIndex = outcomes.findIndex(outcome => outcome.kind === "reserved");
+			await racers[winnerIndex].write();
+			const winner = await racers[winnerIndex].report();
 			expect(winner?.writeError).toBeUndefined();
 			expect(winner?.savedTo).toBe(sessionPath);
 			expect(loser?.writeError).toBe("SessionOwnershipConflictError");

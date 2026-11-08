@@ -4,14 +4,18 @@ Use proactively before questions about past conversations, user preferences, pro
 
 `{{toolRefs.recall}}` returns matching entries; `{{toolRefs.reflect}}` synthesizes an answer across many of them.
 
-Recall depth follows how much of your own past experience the question needs in view:
-- `low`: one specific fact or name you know exists.
-- `mid`: everyday context around the current work.
-- `high`: connected history across sessions and decisions.
-- `xhigh`: a broad deep sweep when phrasing may have shifted.
-- `max`: the largest bounded sweep; scopes above its 4800-candidate ceiling use a ranked shortlist.
+recall depth:
+- `default`: evaluate up to 1200 available records.
+- `deep`: evaluate up to 2400 available records.
+- `max`: evaluate the whole named project; bank-wide recall evaluates up to 4800 records.
 
-Start at `mid`; go wider when the answer spans history or several linked decisions, narrower for one lookup.
+smaller scopes are evaluated in full. start at `default`; use `deep` or `max` when exhaustive project coverage matters.
+
+{{#if coverage}}
+last recall: {{coverage.evaluatedCount}}/{{coverage.total}} ({{coverage.percentage}}) available records in [{{coverage.scope}}], {{coverage.mode}} at gear={{coverage.gear}}, as of {{coverage.evaluatedAt}} utc. this is a timestamped measurement, not a live inventory.
+{{else}}
+scope coverage is unknown until a recall completes; do not assume exhaustive evaluation.
+{{/if}}
 
 `types` narrows by memory shape: `observation` carries distilled living beliefs; reach for `world` or `experience` when the answer needs verbatim detail — an exact SHA, an error string, or a dated event.
 

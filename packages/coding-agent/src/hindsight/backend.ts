@@ -22,8 +22,15 @@ import {
 	loadHindsightConfig,
 	resolveProvenanceTags,
 } from "./config";
-import { cfgHindsightAutoRecall, cfgHindsightAutoRetain } from "./settings";
+import {
+	cfgHindsightAutoRecall,
+	cfgHindsightAutoRetain,
+	cfgHindsightRecallBudget,
+	cfgHindsightRecallMaxTokens,
+	cfgHindsightRetainEveryNTurns,
+} from "./settings";
 import { HindsightSessionState } from "./state";
+import { clampRecallMaxTokens } from "./recall-budget";
 import { countRetainableUserTurns } from "./transcript";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
@@ -38,9 +45,13 @@ function applyAgentMemoryPolicy(
 ): HindsightConfig {
 	const autoRetain = cfgHindsightAutoRetain.envValue() ?? agentMemory?.autoRetain ?? config.autoRetain;
 	const autoRecall = cfgHindsightAutoRecall.envValue() ?? agentMemory?.autoRecall ?? config.autoRecall;
-	return autoRetain === config.autoRetain && autoRecall === config.autoRecall
-		? config
-		: { ...config, autoRetain, autoRecall };
+	const recallBudget = cfgHindsightRecallBudget.envValue() ?? agentMemory?.recallBudget ?? config.recallBudget;
+	const recallMaxTokens = clampRecallMaxTokens(
+		cfgHindsightRecallMaxTokens.envValue() ?? agentMemory?.recallMaxTokens ?? config.recallMaxTokens,
+	)!;
+	const retainEveryNTurns =
+		cfgHindsightRetainEveryNTurns.envValue() ?? agentMemory?.retainEveryNTurns ?? config.retainEveryNTurns;
+	return { ...config, autoRetain, autoRecall, recallBudget, recallMaxTokens, retainEveryNTurns };
 }
 
 /** Root agent memory policy, when the composed runtime's agent definitions provide one. */

@@ -27,6 +27,8 @@ import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { extractMessages } from "@oh-my-pi/pi-coding-agent/hindsight/transcript";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
@@ -49,7 +51,7 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		retainContext: "omp",
 		retainUpdateMode: "replace",
 		retainStrategy: null,
-		recallBudget: "mid",
+		recallBudget: "default",
 		recallMaxTokens: 1024,
 		recallTypes: [],
 		recallContextTurns: 2,
@@ -598,7 +600,7 @@ describe("decision-model abstention", () => {
 		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("beta-9");
 	});
 
-	it("does not consult the decision model when two results survive", async () => {
+	it("judges all shortlisted results, including a pair the old lone-survivor path skipped", async () => {
 		const requests = stubDecisionModel(0);
 		const client = new RecordingApi();
 		client.recallResponse = {
@@ -611,9 +613,8 @@ describe("decision-model abstention", () => {
 		const harness = makeHarness(client, { config: decisionConfig() });
 
 		const block = await deliverRecall(harness, "where is the deploy host?");
-		expect(block).toContain("beta-9");
-		expect(block).toContain("gamma-2");
-		expect(requests).toHaveLength(0);
+		expect(block).toBeUndefined();
+		expect(requests).toHaveLength(1);
 	});
 });
 
@@ -688,13 +689,117 @@ describe("swept recall", () => {
 		expect(outcome.details).toMatchObject({
 			mode: "swept",
 			evaluatedCount: 2,
-			totalAvailable: 6,
-			gear: "mid",
+			totalAvailable: 2,
+			gear: "default",
 			scoredCandidates: [
 				{ id: "accepted", text: "relevant deploy fact", score: 0.9, kept: true },
 				{ id: "rejected", text: "unrelated trivia", score: 0.1, kept: false },
 			],
 		});
+	});
+
+	it("reports deduplicated coverage for overlapping collections in hidden memories and the same tool description", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([
+			{ id: "one", text: "first fact" },
+			{ id: "two", text: "second fact" },
+		]);
+		stubDecisionModel(0.9);
+		const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+		const tool = new MemoryRecallTool({
+			...harness.session,
+			cwd: "/tmp",
+			hasUI: false,
+			settings: SettingsClass.isolated({ "memory.backend": "hindsight" }),
+		} as unknown as ToolSession);
+		expect(tool.description).toContain("coverage is unknown");
+		const outcome = await harness.state.recallForContext("q");
+		expect(outcome.context).toContain("2/2 (100%)");
+		expect(tool.description).toContain("2/2 (100%)");
+		const measuredAt = harness.state.lastRecallCoverage!.evaluatedAt;
+		expect(tool.description).toContain(measuredAt);
+		harness.state.resetConversationTracking();
+		expect(tool.description).toContain("coverage is unknown");
+		expect(tool.description).not.toContain("2/2 (100%)");
+	});
+
+	it("refreshes default-scope coverage even on abstention without caching cross-project or custom-type totals", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([
+			{ id: "one", text: "first fact" },
+			{ id: "two", text: "second fact" },
+		]);
+		stubDecisionModel(0.1);
+		const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+		const tool = new MemoryRecallTool({
+			...harness.session,
+			cwd: "/tmp",
+			hasUI: false,
+			settings: SettingsClass.isolated({ "memory.backend": "hindsight" }),
+		} as unknown as ToolSession);
+		expect((await harness.state.recallForContext("q")).context).toBeNull();
+		expect(harness.state.lastScopeTotalAvailable).toBe(2);
+		client.sweepBank([{ id: "one", text: "first fact" }]);
+		await tool.execute("default", { query: "q" });
+		expect(harness.state.lastScopeTotalAvailable).toBe(1);
+		expect(tool.description).toContain("1/1 (100%)");
+		client.sweepBank([
+			{ id: "one", text: "first fact" },
+			{ id: "two", text: "second fact" },
+		]);
+		const crossProject = await tool.execute("other", { query: "q", tags: ["project:other"] });
+		expect(crossProject.details).toMatchObject({ totalAvailable: 2 });
+		expect(harness.state.lastScopeTotalAvailable).toBe(1);
+		const customTypes = await tool.execute("types", { query: "q", types: ["world"] });
+		expect(customTypes.details).toMatchObject({ totalAvailable: 2 });
+		expect(harness.state.lastScopeTotalAvailable).toBe(1);
+		harness.state.resetConversationTracking();
+		expect(harness.state.lastScopeTotalAvailable).toBeNull();
+	});
+
+	it("does not repopulate the default-scope description from a manual recall completed after reset", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([{ id: "one", text: "first fact" }]);
+		const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+		const started = Promise.withResolvers<void>();
+		const vote = Promise.withResolvers<(number | null)[]>();
+		vi.spyOn(harness.state.recallScorer!, "scoreBatch").mockImplementation(() => {
+			started.resolve();
+			return vote.promise;
+		});
+		const tool = new MemoryRecallTool({
+			...harness.session,
+			cwd: "/tmp",
+			hasUI: false,
+			settings: SettingsClass.isolated({ "memory.backend": "hindsight" }),
+		} as unknown as ToolSession);
+		const pending = tool.execute("reset", { query: "q" });
+		await started.promise;
+		harness.state.resetConversationTracking();
+		vote.resolve([0.9]);
+		await pending;
+		expect(harness.state.lastRecallCoverage).toBeUndefined();
+		expect(harness.state.lastScopeTotalAvailable).toBeNull();
+	});
+
+	it("discards a recall whose settings changed while its decision scores were in flight", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([{ id: "one", text: "first fact" }]);
+		const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+		const started = Promise.withResolvers<void>();
+		const vote = Promise.withResolvers<(number | null)[]>();
+		vi.spyOn(harness.state.recallScorer!, "scoreBatch").mockImplementation(() => {
+			started.resolve();
+			return vote.promise;
+		});
+		const pending = harness.state.recallForContext("q");
+		await started.promise;
+		harness.state.config = makeConfig({ recallBudget: "deep", decisionModelUrl: "http://decision.local" });
+		vote.resolve([0.9]);
+		const outcome = await pending;
+		expect(outcome).toMatchObject({ ok: false, context: null, delivered: [] });
+		expect(harness.state.lastRecallCoverage).toBeUndefined();
+		expect(harness.state.lastRecallSnippet).toBeUndefined();
 	});
 
 	it("delivers nothing when the best swept score misses the decision threshold", async () => {
@@ -726,24 +831,35 @@ describe("swept recall", () => {
 		client.sweepBank([], 5000);
 		stubDecisionModel(() => 0.9);
 		const harness = makeHarness(client, {
-			config: makeConfig({ decisionModelUrl: "http://decision.local", recallBudget: "low" }),
+			config: makeConfig({ decisionModelUrl: "http://decision.local", recallBudget: "default" }),
 		});
 
 		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("deploy host is beta-9");
 		expect(client.listCalls).toEqual([
-			{ type: "observation", consolidationState: undefined, limit: 300, offset: 0 },
+			{ type: "observation", consolidationState: undefined, limit: 1000, offset: 0 },
 			{ type: undefined, consolidationState: "pending", limit: 1, offset: 0 },
 			{ type: undefined, consolidationState: "failed", limit: 1, offset: 0 },
 		]);
 		expect(client.recallCalls).toHaveLength(1);
-		expect(client.recallCalls[0]!.options?.budget).toBe("low");
+		expect(client.recallCalls[0]!.options?.budget).toBe("high");
 		const outcome = await harness.state.recallForContext("where is the deploy host?");
 		expect(outcome.details).toMatchObject({
 			mode: "shortlisted",
 			evaluatedCount: 1,
-			totalAvailable: 15000,
-			gear: "low",
+			totalAvailable: null,
+			gear: "default",
 			scoredCandidates: [{ id: "m1", score: 0.9, kept: true }],
 		});
 	});
+});
+
+it("keeps a 700-record overlapping scope on the direct baseline path instead of adding its collection counts", async () => {
+	const client = new RecordingApi();
+	client.sweepBank(Array.from({ length: 700 }, (_, index) => ({ id: `shared-${index}`, text: `fact ${index}` })));
+	stubDecisionModel(0.9);
+	const harness = makeHarness(client, { config: makeConfig({ decisionModelUrl: "http://decision.local" }) });
+	const outcome = await harness.state.recallForContext("q");
+	expect(outcome.details).toMatchObject({ mode: "swept", evaluatedCount: 700, totalAvailable: 700 });
+	expect(client.recallCalls).toHaveLength(0);
+	expect(outcome.context).toContain("700/700 (100%)");
 });

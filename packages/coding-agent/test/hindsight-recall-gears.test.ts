@@ -40,7 +40,7 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		retainContext: "omp",
 		retainUpdateMode: "replace",
 		retainStrategy: null,
-		recallBudget: "mid",
+		recallBudget: "default",
 		recallMaxTokens: 1024,
 		recallTypes: ["world", "experience"],
 		recallContextTurns: 1,
@@ -236,42 +236,120 @@ describe("recall.execute gears", () => {
 		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
 		registerState(client);
 
-		await recallTool().execute("call-budget", { query: "anything", budget: "high" });
+		await recallTool().execute("call-budget", { query: "anything", budget: "deep" });
 
 		expect(recallSpy).toHaveBeenCalledWith("test-bank", "anything", expect.objectContaining({ budget: "high" }));
 	});
 
-	it("forwards a per-call maxTokens instead of the configured size", async () => {
+	it("packs a wider requested return window locally and clamps both token boundaries", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: Array.from({ length: 40 }, (_, index) => ({
+				id: `packed-${index}`,
+				text: `entry-${index} ${"word ".repeat(600)}`,
+			})),
+		});
 		registerState(client);
-
-		await recallTool().execute("call-max-tokens", { query: "anything", maxTokens: 4096 });
-
-		expect(recallSpy).toHaveBeenCalledWith("test-bank", "anything", expect.objectContaining({ maxTokens: 4096 }));
+		const tool = recallTool();
+		const normal = textOf(await tool.execute("default-window", { query: "q" }));
+		const wide = textOf(await tool.execute("wide-window", { query: "q", maxTokens: 4096 }));
+		const low = textOf(await tool.execute("low-window", { query: "q", maxTokens: 100 }));
+		const high = textOf(await tool.execute("high-window", { query: "q", maxTokens: 1_000_000 }));
+		const minimum = textOf(await tool.execute("minimum", { query: "q", maxTokens: 512 }));
+		const maximum = textOf(await tool.execute("maximum", { query: "q", maxTokens: 16384 }));
+		expect(normal).not.toContain("[memory://packed-1]");
+		expect(wide).toContain("[memory://packed-5]");
+		expect(wide).not.toContain("[memory://packed-7]");
+		expect(low).toBe(minimum);
+		expect(high).toBe(maximum);
+		expect(high).not.toContain("[memory://packed-39]");
 	});
 
-	it("clamps a per-call maxTokens into the documented 512..16384 range", async () => {
+	it("shortlists 1200 judged records when the default scope has 1201, without sending a public gear on the wire", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
-		registerState(client);
+		const recall = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [],
+			trace: {
+				rrf_merged: Array.from({ length: 1201 }, (_, index) => ({
+					node_id: `ranked-${index}`,
+					text: `ranked ${index}`,
+				})),
+			},
+		});
+		stubSweep({ observation: 1201, pending: 0, failed: 0 });
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+		const result = await recallTool().execute("crossover", { query: "q", budget: "default" });
+		expect(result.details).toMatchObject({ mode: "shortlisted", evaluatedCount: 1200, totalAvailable: 1201 });
+		expect(recall.mock.calls[0]![2]).toMatchObject({ budget: "high", trace: true });
+	});
 
-		const tool = recallTool();
-		await tool.execute("call-max-tokens-low", { query: "anything", maxTokens: 100 });
-		await tool.execute("call-max-tokens-high", { query: "anything", maxTokens: 1_000_000 });
+	it("sweeps all 1668 project records at deep without a ranked request", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recall = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] });
+		stubSweep({ observation: 1668, pending: 0, failed: 0 });
+		stubDecisionModel(0.9);
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+		const result = await recallTool().execute("deep-project", { query: "q", budget: "deep" });
+		expect(result.details).toMatchObject({ mode: "swept", evaluatedCount: 1668, totalAvailable: 1668 });
+		expect(recall).not.toHaveBeenCalled();
+	});
 
-		expect(recallSpy).toHaveBeenNthCalledWith(
-			1,
-			"test-bank",
-			"anything",
-			expect.objectContaining({ maxTokens: 512 }),
-		);
-		expect(recallSpy).toHaveBeenNthCalledWith(
-			2,
-			"test-bank",
-			"anything",
-			expect.objectContaining({ maxTokens: 16384 }),
-		);
+	it("max reaches beyond 4800 in an explicitly named project while retaining the hard coding scope", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recall = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] });
+		stubSweep({ observation: 5001, pending: 2, failed: 3 });
+		stubDecisionModel(memory => (memory === "observation 5000 body" ? 0.99 : 0.1));
+		registerState(client, {
+			recallTags: ["scope:coding", "project:oh-my-pi"],
+			config: { decisionModelUrl: "http://decision.local" },
+		});
+		const result = await recallTool().execute("project-max", {
+			query: "q",
+			budget: "max",
+			tags: ["project:memory", "scope:personal"],
+		});
+		expect(result.details).toMatchObject({
+			mode: "swept",
+			evaluatedCount: 5006,
+			totalAvailable: 5006,
+			tags: ["scope:coding", "project:memory"],
+			truncated: false,
+		});
+		expect(textOf(result)).toContain("observation 5000 body");
+		expect(recall).not.toHaveBeenCalled();
+	});
+
+	it("keeps wildcard and disjunctive project filters bounded instead of authorizing an exhaustive bank scan", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const recall = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] });
+		stubSweep({ observation: 5001, pending: 0, failed: 0 });
+		stubDecisionModel(0.9);
+		registerState(client, {
+			recallTags: ["scope:coding", "project:*"],
+			config: { decisionModelUrl: "http://decision.local" },
+		});
+		expect((await recallTool().execute("wildcard", { query: "q", budget: "max" })).details).toMatchObject({
+			mode: "shortlisted",
+		});
+		registerState(client, {
+			recallTags: ["scope:coding", "project:valid"],
+			recallTagsMatch: "any",
+			config: { decisionModelUrl: "http://decision.local" },
+		});
+		expect((await recallTool().execute("disjunctive", { query: "q", budget: "max" })).details).toMatchObject({
+			mode: "shortlisted",
+		});
+		expect(recall).toHaveBeenCalledTimes(2);
+	});
+
+	it("reports an exact empty scope as zero of zero without inventing an unknown denominator", async () => {
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		stubSweep({ observation: 0, pending: 0, failed: 0 });
+		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
+		const result = await recallTool().execute("empty", { query: "q" });
+		expect(textOf(result)).toContain("0/0 (100%)");
+		expect(registeredState!.lastScopeTotalAvailable).toBe(0);
 	});
 
 	it("forwards a per-call type filter instead of the configured types", async () => {
@@ -298,7 +376,7 @@ describe("recall.execute gears", () => {
 		expect(recallSpy).toHaveBeenCalledWith(
 			"test-bank",
 			"anything",
-			expect.objectContaining({ budget: "mid", maxTokens: 1024, types: ["world", "experience"] }),
+			expect.objectContaining({ budget: "high", maxTokens: 16384, types: ["world", "experience"] }),
 		);
 	});
 
@@ -322,7 +400,7 @@ describe("recall.execute gears", () => {
 		expect(requests.count).toBe(1);
 	});
 
-	it("returns two results without consulting the decision model", async () => {
+	it("judges every shortlisted result, rather than skipping scoring when two survive", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
 			results: [
@@ -336,9 +414,9 @@ describe("recall.execute gears", () => {
 
 		const block = textOf(await recallTool().execute("call-two-results", { query: "where is the deploy host?" }));
 
-		expect(block).toContain("fact one");
-		expect(block).toContain("fact two");
-		expect(requests.count).toBe(0);
+		expect(block).not.toContain("fact one");
+		expect(block).not.toContain("fact two");
+		expect(requests.count).toBe(1);
 	});
 
 	it("keeps a lone survivor the decision model accepts", async () => {
@@ -374,7 +452,7 @@ describe("recall.execute deep gears", () => {
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(
-			await recallTool().execute("call-xhigh-sweep", { query: "where is the deploy host?", budget: "xhigh" }),
+			await recallTool().execute("call-xhigh-sweep", { query: "where is the deploy host?", budget: "deep" }),
 		);
 
 		expect(recallSpy).not.toHaveBeenCalled();
@@ -414,7 +492,7 @@ describe("recall.execute deep gears", () => {
 		const block = textOf(
 			await recallTool().execute("call-xhigh-types", {
 				query: "where is the deploy host?",
-				budget: "xhigh",
+				budget: "deep",
 				types: ["world"],
 			}),
 		);
@@ -423,7 +501,7 @@ describe("recall.execute deep gears", () => {
 		expect(calls).toEqual([{ type: "world", consolidationState: undefined }]);
 		expect(requests.sizes).toEqual([2]);
 		expect(block).toContain("world fact 0");
-		expect(block).toContain("swept 2/2 available records");
+		expect(block).toContain("swept 2/2 (100%) available records");
 	});
 
 	it("hands xhigh back to a traced high recall when page one busts the ceiling", async () => {
@@ -442,7 +520,7 @@ describe("recall.execute deep gears", () => {
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(
-			await recallTool().execute("call-xhigh-bust", { query: "where is the deploy host?", budget: "xhigh" }),
+			await recallTool().execute("call-xhigh-bust", { query: "where is the deploy host?", budget: "deep" }),
 		);
 
 		expect(bank.calls).toEqual([
@@ -460,7 +538,7 @@ describe("recall.execute deep gears", () => {
 		expect(block).toContain("beta observation");
 	});
 
-	it("hands xhigh back to recall when the collection totals sum past the ceiling", async () => {
+	it("falls back when the distinct union exceeds deep's ceiling without inventing a union count", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
 			results: [],
@@ -488,19 +566,15 @@ describe("recall.execute deep gears", () => {
 		stubDecisionModel(0.9);
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-xhigh-sum", { query: "q", budget: "xhigh" }));
-
-		expect(calls).toEqual([
-			{ collection: "observation", limit: 1000, offset: 0 },
-			{ collection: "observation", limit: 1000, offset: 1000 },
-			{ collection: "pending", limit: 400, offset: 0 },
-			{ collection: "failed", limit: 1, offset: 0 },
-		]);
+		const result = await recallTool().execute("call-xhigh-sum", { query: "q", budget: "deep" });
+		const block = textOf(result);
+		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null });
+		expect(calls.length).toBeLessThan(20);
 		expect(recallSpy.mock.calls.map(call => call[2]?.budget)).toEqual(["high"]);
 		expect(block).toContain("alpha observation");
 	});
 
-	it("hands xhigh back to recall when a total-less bank fills the ceiling", async () => {
+	it("bounds a total-less duplicate probe and falls back with unknown scope coverage", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
 			results: [],
@@ -525,9 +599,10 @@ describe("recall.execute deep gears", () => {
 		stubDecisionModel(0.9);
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-xhigh-no-total", { query: "q", budget: "xhigh" }));
-
-		expect(offsets).toEqual([0, 1000, 1000, 2000, 2000, 2400, 0, 0]);
+		const result = await recallTool().execute("call-xhigh-no-total", { query: "q", budget: "deep" });
+		const block = textOf(result);
+		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null });
+		expect(offsets.length).toBeLessThan(32);
 		expect(recallSpy.mock.calls.map(call => call[2]?.budget)).toEqual(["high"]);
 		expect(block).toContain("alpha observation");
 	});
@@ -551,7 +626,7 @@ describe("recall.execute deep gears", () => {
 		} as never);
 		registerState(client);
 
-		const block = textOf(await recallTool().execute("call-xhigh-unscored", { query: "q", budget: "xhigh" }));
+		const block = textOf(await recallTool().execute("call-xhigh-unscored", { query: "q", budget: "deep" }));
 
 		expect(listSpy).not.toHaveBeenCalled();
 		expect(recallSpy).toHaveBeenCalledWith(
@@ -605,13 +680,13 @@ describe("recall.execute deep gears", () => {
 		const bank = stubSweep({ observation: 5001, pending: 2, failed: 3 });
 		stubDecisionModel(memory => (memory.includes("near the end") ? 0.99 : 0.1));
 		registerState(client, {
-			recallTags: ["scope:coding", "project:oh-my-pi"],
+			recallTags: ["scope:coding"],
 			config: { decisionModelUrl: "http://decision.local", recallTypes: ["observation"] },
 		});
 		const result = await recallTool().execute("call-max-overflow", {
 			query: "ranked evidence",
 			budget: "max",
-			tags: ["project:memory", "area:recall", "scope:personal"],
+			tags: ["area:recall", "scope:personal"],
 		});
 		expect(recallSpy).toHaveBeenCalledWith(
 			"test-bank",
@@ -619,7 +694,7 @@ describe("recall.execute deep gears", () => {
 			expect.objectContaining({
 				trace: true,
 				types: ["observation"],
-				tags: ["scope:coding", "project:memory", "area:recall"],
+				tags: ["scope:coding", "area:recall"],
 			}),
 		);
 		expect(bank.calls).toEqual([
@@ -630,15 +705,15 @@ describe("recall.execute deep gears", () => {
 		expect(result.details).toMatchObject({
 			mode: "shortlisted",
 			evaluatedCount: 4800,
-			totalAvailable: 5006,
+			totalAvailable: null,
 			gear: "max",
-			tags: ["scope:coding", "project:memory", "area:recall"],
+			tags: ["scope:coding", "area:recall"],
 			truncated: true,
 		});
 		const details = result.details as { scoredCandidates: { id: string; score: number; kept: boolean }[] };
 		expect(details.scoredCandidates[4799]).toMatchObject({ id: "ranked-4799", score: 0.99, kept: true });
 		expect(details.scoredCandidates.some(candidate => candidate.id === "ranked-4800")).toBe(false);
-		expect(textOf(result)).toContain("evaluated 4800 shortlisted of 5006 available records");
+		expect(textOf(result)).toContain("evaluated 4800/unknown (unknown) shortlisted of unknown available records");
 		expect(textOf(result)).toContain("relevant near the end");
 		expect(textOf(result)).not.toContain("observation 0 body");
 	});
@@ -688,8 +763,8 @@ describe("recall.execute deep gears", () => {
 
 		const result = await recallTool().execute("call-probe", { query: "anything", budget: "max" });
 
-		expect(textOf(result)).toContain("shortlisted of 4801");
-		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: 4801, truncated: true });
+		expect(textOf(result)).toContain("shortlisted of unknown");
+		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 		expect(sweep.calls).toHaveLength(7);
 	});
 
@@ -709,7 +784,7 @@ describe("recall.execute deep gears", () => {
 		const requests = stubDecisionModel(memory => (memory === "alpha" ? 0.9 : memory === "beta" ? 0.35 : 0.1));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-prune", { query: "q", budget: "xhigh" }));
+		const block = textOf(await recallTool().execute("call-prune", { query: "q", budget: "deep" }));
 
 		expect(requests.count).toBe(1);
 		expect(block).toContain("alpha");
@@ -733,7 +808,7 @@ describe("recall.execute deep gears", () => {
 		stubDecisionModel(memory => (memory === "alpha" ? 0.3 : memory === "beta" ? 0.25 : 0.15));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-floor", { query: "q", budget: "xhigh" }));
+		const block = textOf(await recallTool().execute("call-floor", { query: "q", budget: "deep" }));
 
 		expect(block).toContain("alpha");
 		expect(block).toContain("beta");
@@ -755,7 +830,7 @@ describe("recall.execute deep gears", () => {
 		stubDecisionModel(memory => (memory === "alpha" ? 0.55 : 0.9));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-order", { query: "q", budget: "xhigh" }));
+		const block = textOf(await recallTool().execute("call-order", { query: "q", budget: "deep" }));
 
 		expect(block.indexOf("beta")).toBeLessThan(block.indexOf("alpha"));
 	});
@@ -787,10 +862,10 @@ describe("recall.execute deep gears", () => {
 		expect(result.details).toMatchObject({
 			mode: "swept",
 			evaluatedCount: 4800,
-			totalAvailable: null,
+			totalAvailable: 4800,
 			truncated: false,
 		});
-		expect(textOf(result)).toContain("swept 4800/unknown");
+		expect(textOf(result)).toContain("swept 4800/4800");
 	});
 
 	it("does not report truncation when an unvisited collection only repeats scored ids", async () => {
@@ -838,7 +913,7 @@ describe("recall.execute deep gears", () => {
 		expect(result.details).toMatchObject({
 			mode: "swept",
 			evaluatedCount: 4800,
-			totalAvailable: 4803,
+			totalAvailable: 4800,
 			truncated: false,
 		});
 		expect(probes).toEqual([
@@ -861,14 +936,14 @@ describe("recall.execute deep gears", () => {
 		const result = await recallTool().execute("call-duplicate-walk", { query: "anything", budget: "max" });
 		const block = textOf(result);
 
-		expect(block).toContain("shortlisted of 5002");
-		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: 5002, truncated: true });
+		expect(block).toContain("shortlisted of unknown");
+		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 	});
 
 	it("reports truncation when the probe budget is spent proving a collection is all duplicates", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const duplicates = Array.from({ length: 2000 }, (_, index) => ({
-			id: `observation-${index}`,
+		const duplicates = Array.from({ length: 5001 }, (_, index) => ({
+			id: `observation-${index % 4800}`,
 			text: `duplicate ${index}`,
 		}));
 		stubFailedRows(duplicates);
@@ -878,8 +953,8 @@ describe("recall.execute deep gears", () => {
 		const result = await recallTool().execute("call-duplicate-bound", { query: "anything", budget: "max" });
 		const block = textOf(result);
 
-		expect(block).toContain("shortlisted of 6800");
-		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: 6800, truncated: true });
+		expect(block).toContain("shortlisted of unknown");
+		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 	});
 
 	it("reports truncation when a small unread collection holds a fresh id on its first page", async () => {
@@ -894,8 +969,8 @@ describe("recall.execute deep gears", () => {
 		const result = await recallTool().execute("call-small-collection", { query: "anything", budget: "max" });
 		const block = textOf(result);
 
-		expect(block).toContain("shortlisted of 4802");
-		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: 4802, truncated: true });
+		expect(block).toContain("shortlisted of unknown");
+		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 	});
 
 	it("says how many candidates went unscored when the best score misses the threshold", async () => {
@@ -915,7 +990,7 @@ describe("recall.execute deep gears", () => {
 		stubDecisionModel(memory => (memory === "alpha" ? 0.1 : null));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const result = await recallTool().execute("call-abstain-nulls", { query: "q", budget: "xhigh" });
+		const result = await recallTool().execute("call-abstain-nulls", { query: "q", budget: "deep" });
 
 		expect(textOf(result)).toContain("No relevant memories found. 3 candidates could not be scored.");
 		expect(result.details).toMatchObject({
@@ -945,7 +1020,7 @@ describe("recall.execute deep gears", () => {
 		stubDecisionModel(memory => (memory === "alpha" ? 0.22 : 0.21));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const result = await recallTool().execute("call-abstain", { query: "q", budget: "xhigh" });
+		const result = await recallTool().execute("call-abstain", { query: "q", budget: "deep" });
 
 		expect(textOf(result)).toContain("No relevant memories found.");
 		expect(result.details).toMatchObject({
@@ -973,7 +1048,7 @@ describe("recall.execute deep gears", () => {
 		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("decision service down"));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-degrade", { query: "q", budget: "xhigh" }));
+		const block = textOf(await recallTool().execute("call-degrade", { query: "q", budget: "deep" }));
 
 		expect(block).toContain("Scoring unavailable");
 		expect(block).toContain("in recall order");
@@ -1015,7 +1090,7 @@ describe("recall.execute deep gears", () => {
 		stubDecisionModel(memory => (memory === "alpha" ? 0.9 : null));
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-partial", { query: "q", budget: "xhigh" }));
+		const block = textOf(await recallTool().execute("call-partial", { query: "q", budget: "deep" }));
 
 		expect(block).toContain("3 candidates could not be scored");
 		expect(block).toContain("alpha");
@@ -1040,7 +1115,7 @@ describe("recall.execute deep gears", () => {
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(
-			await recallTool().execute("call-big-query", { query: "term ".repeat(20_000), budget: "xhigh" }),
+			await recallTool().execute("call-big-query", { query: "term ".repeat(20_000), budget: "deep" }),
 		);
 
 		expect(requests.count).toBe(0);
@@ -1059,33 +1134,33 @@ describe("recall.execute uniform sweep gears", () => {
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
 		const block = textOf(
-			await recallTool().execute("call-low-sweep", { query: "where is the deploy host?", budget: "low" }),
+			await recallTool().execute("call-low-sweep", { query: "where is the deploy host?", budget: "default" }),
 		);
 
 		expect(recallSpy).not.toHaveBeenCalled();
 		expect(sweep.calls.map(call => call.collection)).toEqual(["observation", "pending", "failed"]);
-		expect(sweep.calls[0]).toEqual({ collection: "observation", limit: 300, offset: 0 });
+		expect(sweep.calls[0]).toEqual({ collection: "observation", limit: 1000, offset: 0 });
 		expect(requests.sizes).toEqual([3]);
 		expect(block).toContain("observation 0 body");
 	});
 
-	it("keeps a sweep that exactly fills the mid cap instead of ranking it", async () => {
+	it("keeps a sweep that exactly fills the 1200-record baseline instead of ranking it", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
-		const sweep = stubSweep({ observation: 600, pending: 0, failed: 0 });
+		const sweep = stubSweep({ observation: 1200, pending: 0, failed: 0 });
 		stubDecisionModel(0.9);
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const result = await recallTool().execute("call-mid-full", { query: "q", budget: "mid" });
+		const result = await recallTool().execute("call-mid-full", { query: "q", budget: "default" });
 
 		expect(recallSpy).not.toHaveBeenCalled();
 		expect(result.details).toMatchObject({
 			mode: "swept",
-			evaluatedCount: 600,
-			totalAvailable: 600,
+			evaluatedCount: 1200,
+			totalAvailable: 1200,
 			truncated: false,
 		});
-		expect(sweep.calls[0]).toEqual({ collection: "observation", limit: 600, offset: 0 });
+		expect(sweep.calls[0]).toEqual({ collection: "observation", limit: 1000, offset: 0 });
 	});
 
 	it("hands a scope past the gear cap to the server-ranked recall", async () => {
@@ -1097,16 +1172,19 @@ describe("recall.execute uniform sweep gears", () => {
 		stubDecisionModel(0.9);
 		registerState(client, { config: { decisionModelUrl: "http://decision.local" } });
 
-		const block = textOf(await recallTool().execute("call-mid-bust", { query: "q", budget: "mid" }));
+		const block = textOf(await recallTool().execute("call-mid-bust", { query: "q", budget: "default" }));
 
 		expect(bank.calls).toEqual([
-			{ collection: "observation", limit: 600, offset: 0 },
+			{ collection: "observation", limit: 1000, offset: 0 },
 			{ collection: "pending", limit: 1, offset: 0 },
 			{ collection: "failed", limit: 1, offset: 0 },
 		]);
 		expect(recallSpy).toHaveBeenCalledTimes(1);
-		expect(recallSpy).toHaveBeenCalledWith("test-bank", "q", expect.objectContaining({ budget: "mid" }));
-		expect(recallSpy.mock.calls[0]![2]?.trace).toBeUndefined();
+		expect(recallSpy).toHaveBeenCalledWith(
+			"test-bank",
+			"q",
+			expect.objectContaining({ budget: "high", trace: true }),
+		);
 		expect(block).toContain("ranked memory body");
 	});
 });
@@ -1121,14 +1199,14 @@ describe("recall coverage", () => {
 			recallTags: ["scope:coding", "project:memory"],
 			config: { decisionModelUrl: "http://decision.local", recallTypes: ["observation"] },
 		});
-		const result = await recallTool().execute("call-coverage", { query: "evidence", budget: "mid" });
+		const result = await recallTool().execute("call-coverage", { query: "evidence", budget: "default" });
 		expect(bank.calls.map(call => call.collection)).toEqual(["observation", "pending", "failed"]);
 		expect(recallSpy).not.toHaveBeenCalled();
 		expect(result.details).toMatchObject({
 			mode: "swept",
 			evaluatedCount: 3,
 			totalAvailable: 4,
-			gear: "mid",
+			gear: "default",
 			tags: ["scope:coding", "project:memory"],
 			scoredCandidates: [
 				{ id: "observation-0", score: 0.9, kept: true },
@@ -1137,7 +1215,9 @@ describe("recall coverage", () => {
 				{ id: "failed-0", score: null, kept: false },
 			],
 		});
-		expect(textOf(result)).toContain("swept 3/4 available records in [scope:coding, project:memory] at gear=mid");
+		expect(textOf(result)).toContain(
+			"swept 3/4 (75%) available records in [scope:coding, project:memory] at gear=default",
+		);
 		expect(textOf(result)).not.toContain("pending 0 body");
 		expect(textOf(result)).not.toContain("failed 0 body");
 	});

@@ -1,3 +1,5 @@
+import { prompt } from "@oh-my-pi/pi-utils";
+import coverageHeader from "../prompts/tools/recall-coverage-header.md" with { type: "text" };
 import type { RecallResult } from "./client";
 import { formatCurrentTime } from "./content";
 import type { RecallGear } from "./sweep";
@@ -5,9 +7,10 @@ import type { RecallGear } from "./sweep";
 export interface RecallCoverage {
 	mode: "swept" | "shortlisted";
 	evaluatedCount: number;
-	/** Collection-total sum, or null when no bank sweep established it. */
+	/** Distinct in-scope records; null when overlapping unread collections prevent an exact count. */
 	totalAvailable: number | null;
 	gear: RecallGear;
+	evaluatedAt: string;
 	tags: string[];
 	scoredCandidates: { id: string | null; text: string; score: number | null; kept: boolean }[];
 }
@@ -35,16 +38,34 @@ export function describeRecallCoverage(
 	return {
 		...scope,
 		tags: [...(scope.tags ?? [])],
+		evaluatedAt: formatCurrentTime(),
 		evaluatedCount: scoredCandidates.filter(candidate => candidate.score !== null).length,
 		scoredCandidates,
 	};
 }
 
+/** Display facts retain the time and scope actually measured, not the next description render time. */
+export function recallCoverageView(coverage: RecallCoverage) {
+	return {
+		...coverage,
+		total: coverage.totalAvailable ?? "unknown",
+		percentage:
+			coverage.totalAvailable !== null && coverage.totalAvailable > 0
+				? `${Math.round((100 * coverage.evaluatedCount) / coverage.totalAvailable)}%`
+				: coverage.totalAvailable === 0
+					? "100%"
+					: "unknown",
+		scope: coverage.tags.join(", "),
+	};
+}
+
 export function recallCoverageHeader(count: number, coverage: RecallCoverage): string {
-	const total = coverage.totalAvailable ?? "unknown";
-	const path =
-		coverage.mode === "swept"
-			? `swept ${coverage.evaluatedCount}/${total}`
-			: `evaluated ${coverage.evaluatedCount} shortlisted of ${total}`;
-	return `Found ${count} relevant ${count === 1 ? "memory" : "memories"} (decision model ${path} available records in [${coverage.tags.join(", ")}] at gear=${coverage.gear}, as of ${formatCurrentTime()} UTC):`;
+	return prompt
+		.render(coverageHeader, {
+			count,
+			noun: count === 1 ? "memory" : "memories",
+			swept: coverage.mode === "swept",
+			coverage: recallCoverageView(coverage),
+		})
+		.trim();
 }

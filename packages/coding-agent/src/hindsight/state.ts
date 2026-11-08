@@ -1,4 +1,4 @@
-import { logger, sanitizeText, truncate } from "@oh-my-pi/pi-utils";
+import { logger, prompt, sanitizeText, truncate } from "@oh-my-pi/pi-utils";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
@@ -8,6 +8,7 @@ import {
 	type RecalledMemory,
 } from "../memory-backend/recall-entry";
 import type { MemoryPromptPreparation } from "../memory-backend/types";
+import memoriesTemplate from "../prompts/system/hindsight-memories.md" with { type: "text" };
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { type BankScope, ensureBankExists, type HindsightBankSet } from "./bank";
 import {
@@ -35,14 +36,8 @@ import {
 	resolveSeedsForScope,
 	tryLoadMentalModelsBlock,
 } from "./mental-models";
-import {
-	type BankSweepResult,
-	GEAR_SWEEP_CAPS,
-	packByTokens,
-	resolveSweepCollections,
-	sweepBankMemories,
-} from "./sweep";
-import { describeRecallCoverage, type RecallCoverage } from "./recall-coverage";
+import { loadRecallCandidates, packByTokens, type RecallCandidatePool } from "./sweep";
+import { describeRecallCoverage, type RecallCoverage, recallCoverageView } from "./recall-coverage";
 import { type DrainResult, HindsightOutbox, type RetainInput } from "./outbox";
 import { countRetainableUserTurns, extractMessages } from "./transcript";
 
@@ -117,6 +112,7 @@ export interface HindsightSessionStateApi {
 	readonly config: HindsightConfig;
 	readonly banksSet: HindsightBankSet;
 	readonly lastRecallSnippet?: string;
+	readonly lastRecallCoverage?: RecallCoverage;
 	readonly mentalModelsSnippet?: string;
 	/** Live primary this state aliases; absent on a primary. */
 	readonly aliasOf?: HindsightSessionStateApi;
@@ -433,6 +429,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	mentalModelsSnippet?: string;
 	/** Most recent recall block this state produced; a worker's remote parent reads it. */
 	lastRecallSnippet?: string;
+	#lastRecallCoverage?: RecallCoverage;
 	/** When the current bootstrap/boundary load settled; gates the first-turn race. */
 	mentalModelsLoadedAt?: number;
 	/**
@@ -645,6 +642,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	setSessionId(sessionId: string): void {
 		if (this.sessionId === sessionId) return;
 		this.#recallGeneration++;
+		this.#lastRecallCoverage = undefined;
 		this.sessionId = sessionId;
 		this.#invalidateRetainCache();
 	}
@@ -685,6 +683,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 
 	resetConversationTracking(closeRetainBaselineTurns?: number): void {
 		this.#recallGeneration++;
+		this.#lastRecallCoverage = undefined;
 		this.lastRetainedTurn = 0;
 		this.recallDelivered = false;
 		this.#recallRefreshRequested = false;
@@ -853,69 +852,81 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		return primary ? primary.recallScorer : this.#recallDecision;
 	}
 
-	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
+	/** A timestamped measurement of this state only; rebuilding the scope creates a fresh state. */
+	get lastRecallCoverage(): RecallCoverage | undefined {
+		const primary = this.aliasOf;
+		return primary ? primary.lastRecallCoverage : this.#lastRecallCoverage;
+	}
+
+	/** Manual calls can refresh only the session's own default-scope measurement. */
+	recordRecallCoverage(coverage: RecallCoverage): void {
+		const primary = this.#localPrimary();
+		if (primary) return primary.recordRecallCoverage(coverage);
+		const tags = new Set(this.recallTags ?? []);
+		const measured = new Set(coverage.tags);
+		if (tags.size !== measured.size || [...tags].some(tag => !measured.has(tag))) return;
+		this.#lastRecallCoverage = coverage;
+	}
+
+	get lastScopeTotalAvailable(): number | null {
+		return this.lastRecallCoverage?.totalAvailable ?? null;
+	}
+
+	/** Fence asynchronous recall against reset, scope and effective-policy changes. */
+	captureRecallScope(): () => boolean {
+		const primary = this.#localPrimary();
+		const primaryIsCurrent = primary?.captureRecallScope();
 		const generation = this.#recallGeneration;
+		const config = this.config;
+		const client = this.client;
+		const bankId = this.bankId;
+		const tags = this.recallTags;
+		const tagsMatch = this.recallTagsMatch;
+		return () =>
+			primary === this.#localPrimary() &&
+			(!primaryIsCurrent || primaryIsCurrent()) &&
+			generation === this.#recallGeneration &&
+			config === this.config &&
+			client === this.client &&
+			bankId === this.bankId &&
+			tags === this.recallTags &&
+			tagsMatch === this.recallTagsMatch;
+	}
+
+	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
+		const isCurrent = this.captureRecallScope();
+		const config = this.config;
+		const client = this.client;
+		const bankId = this.bankId;
+		const tags = this.recallTags;
+		const tagsMatch = this.recallTagsMatch;
 		try {
-			let totalAvailable: number | null = null;
-			if (this.recallScorer) {
-				const sweep = await sweepBankMemories(
-					this.client,
-					this.bankId,
-					resolveSweepCollections(undefined, this.config),
-					this.recallTags,
-					this.recallTagsMatch,
-					{ ceiling: GEAR_SWEEP_CAPS[this.config.recallBudget], bailOnOverflow: true },
-					signal,
-				);
-				totalAvailable = sweep.totalAvailableExact ? sweep.totalAvailable : null;
-				const swept = await this.#recallSweptContext(query, sweep, signal);
-				if (swept) return swept;
-				if (signal?.aborted) return { context: null, ok: false, delivered: [] };
-			}
-			const response = await this.client.recall(this.bankId, query, {
-				budget: this.config.recallBudget,
-				maxTokens: this.config.recallMaxTokens,
-				types: this.config.recallTypes.length > 0 ? this.config.recallTypes : undefined,
-				tags: this.recallTags,
-				tagsMatch: this.recallTagsMatch,
-				preferObservations: this.config.recallPreferObservations,
-				rerank: { prune: this.config.recallPrune, dedup: this.config.recallDedup },
+			const pool = await loadRecallCandidates(
+				client,
+				bankId,
+				query,
+				config,
+				{
+					gear: config.recallBudget,
+					tags,
+					tagsMatch,
+					canScore: !!this.recallScorer,
+				},
 				signal,
-			});
-			if (signal?.aborted) return { context: null, ok: false, delivered: [] };
-			const results = response.results ?? [];
-			let scores: (number | null)[] | undefined;
-			let kept = results;
-			if (results.length === 1 && this.recallScorer) {
-				const score = await this.recallScorer.score(query, results[0]!.text, signal);
-				scores = [score];
-				if (score !== null && score < this.config.decisionModelThreshold) kept = [];
-				if (signal?.aborted) return { context: null, ok: false, delivered: [] };
-			}
-			const details = describeRecallCoverage(
-				{ mode: "shortlisted", gear: this.config.recallBudget, tags: this.recallTags, totalAvailable },
-				results,
-				scores,
-				kept,
 			);
-			const fresh = kept.filter(result => !this.recalledMemoryIds.has(recallMemoryKey(result)));
-			if (fresh.length === 0) return { context: null, ok: true, delivered: [], details };
-			const formatted = formatMemories(fresh);
-			const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
-			this.lastRecallSnippet = block;
-			return {
-				context: block,
-				ok: true,
-				delivered: fresh.map(result => ({ id: result.id ?? recallMemoryKey(result), text: result.text })),
-				details,
-			};
+			if (signal?.aborted || !isCurrent()) return { context: null, ok: false, delivered: [] };
+			const outcome = await this.#recallScoredContext(query, pool, isCurrent, signal);
+			if (!isCurrent()) return { context: null, ok: false, delivered: [] };
+			if (outcome.context) this.lastRecallSnippet = outcome.context;
+			if (outcome.details) this.#lastRecallCoverage = outcome.details;
+			return outcome;
 		} catch (err) {
 			// A cancelled turn (Esc) is not a failure.
 			if (signal?.aborted) return { context: null, ok: false, delivered: [] };
 			const errorText = err instanceof Error ? err.message : String(err);
 			logger.warn("Hindsight: recall failed", { bankId: this.bankId, error: errorText });
 			// A conversation reset or session switch since the request makes its failure stale.
-			if (this.#recallGeneration === generation) {
+			if (isCurrent()) {
 				this.session.emitNotice(
 					"warning",
 					`Memory recall failed: ${noticeErrorText(errorText)}`,
@@ -926,71 +937,85 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		}
 	}
 
-	/**
-	 * Gears whose scope fits under their cap are ranked here instead of asking the server for a
-	 * shortlist: every matching memory is scored, so a small bank is not trimmed by one ranking.
-	 * Undefined means the scope outgrew the cap or scoring produced no evidence, leaving the
-	 * server-ranked recall as the fallback.
-	 */
-	async #recallSweptContext(
+	/** Score the actual retrieved pool; missing scores never become evidence of coverage. */
+	async #recallScoredContext(
 		query: string,
-		sweep: BankSweepResult,
+		pool: RecallCandidatePool,
+		isCurrent: () => boolean,
 		signal?: AbortSignal,
-	): Promise<RecallOutcome | undefined> {
-		const scorer = this.recallScorer;
-		if (!scorer) return undefined;
-		if (signal?.aborted) return { context: null, ok: false, delivered: [] };
-		const scope = {
-			mode: "swept" as const,
-			gear: this.config.recallBudget,
-			tags: this.recallTags,
-			totalAvailable: sweep.totalAvailableExact ? sweep.totalAvailable : null,
-		};
-		if (sweep.truncated) return undefined;
-		if (sweep.candidates.length === 0) {
-			return { context: null, ok: true, delivered: [], details: describeRecallCoverage(scope, [], [], []) };
+	): Promise<RecallOutcome> {
+		if (signal?.aborted || !isCurrent()) return { context: null, ok: false, delivered: [] };
+		let scores: (number | null)[] | undefined;
+		if (this.recallScorer && pool.candidates.length > 0) {
+			try {
+				scores = await this.recallScorer.scoreBatch(
+					query,
+					pool.candidates.map(candidate => candidate.text),
+					signal,
+				);
+			} catch (err) {
+				logger.warn("Hindsight: recall scoring unavailable", { bankId: this.bankId, error: String(err) });
+			}
 		}
-		let scores: (number | null)[];
-		try {
-			scores = await scorer.scoreBatch(
+		if (signal?.aborted || !isCurrent()) return { context: null, ok: false, delivered: [] };
+		const scored = pool.candidates.flatMap((candidate, index) => {
+			const score = scores?.[index];
+			return typeof score === "number" && Number.isFinite(score) ? [{ candidate, score }] : [];
+		});
+		if (pool.mode === "swept" && pool.candidates.length > 0 && scored.length === 0) {
+			const fallback = await loadRecallCandidates(
+				this.client,
+				this.bankId,
 				query,
-				sweep.candidates.map(candidate => candidate.text),
+				this.config,
+				{
+					gear: this.config.recallBudget,
+					tags: this.recallTags,
+					tagsMatch: this.recallTagsMatch,
+					canScore: false,
+					rankedOnly: true,
+				},
 				signal,
 			);
-		} catch (err) {
-			logger.warn("Hindsight: swept recall scoring failed", {
-				bankId: this.bankId,
-				error: err instanceof Error ? err.message : String(err),
-			});
-			return undefined;
+			return this.#recallScoredContext(
+				query,
+				{ ...fallback, totalAvailable: pool.totalAvailable },
+				isCurrent,
+				signal,
+			);
 		}
-		if (signal?.aborted) return { context: null, ok: false, delivered: [] };
-		const scored = sweep.candidates.flatMap((candidate, index) => {
-			const score = scores[index];
-			return score === null || score === undefined ? [] : [{ candidate, score }];
-		});
-		if (scored.length === 0) return undefined;
-		const best = Math.max(...scored.map(entry => entry.score));
-		if (best < this.config.decisionModelThreshold) {
-			return {
-				context: null,
-				ok: true,
-				delivered: [],
-				details: describeRecallCoverage(scope, sweep.candidates, scores, []),
-			};
+		let kept = pool.candidates;
+		if (scored.length > 0) {
+			const best = Math.max(...scored.map(entry => entry.score));
+			const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
+			kept =
+				best < this.config.decisionModelThreshold
+					? []
+					: scored
+							.filter(entry => entry.score >= floor)
+							.sort((left, right) => right.score - left.score)
+							.map(entry => entry.candidate);
 		}
-		const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
-		const kept = scored.filter(entry => entry.score >= floor).map(entry => entry.candidate);
-		const details = describeRecallCoverage(scope, sweep.candidates, scores, kept);
-		const fresh = scored
-			.filter(entry => entry.score >= floor && !this.recalledMemoryIds.has(recallMemoryKey(entry.candidate)))
-			.sort((left, right) => right.score - left.score)
-			.map(entry => entry.candidate);
+		const details = describeRecallCoverage(
+			{
+				mode: pool.mode,
+				gear: this.config.recallBudget,
+				tags: this.recallTags,
+				totalAvailable: pool.totalAvailable,
+			},
+			pool.candidates,
+			scores,
+			kept,
+		);
+		const fresh = kept.filter(candidate => !this.recalledMemoryIds.has(recallMemoryKey(candidate)));
 		const packed = packByTokens(fresh, this.config.recallMaxTokens);
 		if (packed.length === 0) return { context: null, ok: true, delivered: [], details };
 		const formatted = formatMemories(packed);
-		const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
-		this.lastRecallSnippet = block;
+		const block = prompt.render(memoriesTemplate, {
+			preamble: this.config.recallPromptPreamble,
+			memories: formatted,
+			coverage: recallCoverageView(details),
+		});
 		return {
 			context: block,
 			ok: true,

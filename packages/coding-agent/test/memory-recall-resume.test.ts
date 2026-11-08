@@ -455,7 +455,7 @@ describe("Hindsight recall across a resume", () => {
 		provenanceTags: [],
 		retainUpdateMode: "replace",
 		retainStrategy: null,
-		recallBudget: "mid",
+		recallBudget: "default",
 		recallMaxTokens: 1024,
 		recallTypes: [],
 		recallContextTurns: 1,

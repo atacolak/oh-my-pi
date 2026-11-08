@@ -3,6 +3,7 @@
  * settings-panel order; `config/all-settings.ts` registers every domain.
  */
 import { register } from "../config/registry";
+import { migrateRecallBudget, parseRecallBudget, RECALL_GEARS } from "./recall-budget";
 
 /** Server default recall types; `world` + `experience` pair with `preferObservations` on the recall endpoint. */
 export const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
@@ -261,10 +262,11 @@ export const cfgHindsightRetainStrategy = register({
 
 export const cfgHindsightRecallBudget = register({
 	id: "hindsight.recallBudget",
-	env: "HINDSIGHT_RECALL_BUDGET",
+	env: { name: "HINDSIGHT_RECALL_BUDGET", parse: parseRecallBudget },
 	type: "enum",
-	values: ["low", "mid", "high"] as const,
-	default: "mid",
+	values: RECALL_GEARS,
+	default: "default",
+	normalize: migrateRecallBudget,
 });
 
 export const cfgHindsightRecallMaxTokens = register({

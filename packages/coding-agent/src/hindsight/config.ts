@@ -6,6 +6,7 @@
  * override per-shell (CI, prod) without touching the persisted settings file.
  */
 import type { Settings } from "../config/settings";
+import type { RecallGear } from "./recall-budget";
 import {
 	cfgHindsightApiToken,
 	cfgHindsightApiUrl,
@@ -56,6 +57,9 @@ export type HindsightScoping = "global" | "per-project" | "per-project-tagged";
 export interface HindsightAgentMemoryPolicy {
 	autoRetain?: boolean;
 	autoRecall?: boolean;
+	recallBudget?: RecallGear;
+	recallMaxTokens?: number;
+	retainEveryNTurns?: number;
 }
 
 export interface HindsightConfig {
@@ -89,7 +93,7 @@ export interface HindsightConfig {
 	/** Per-item Hindsight extraction strategy. Null/empty omits the request field. */
 	retainStrategy: string | null;
 
-	recallBudget: "low" | "mid" | "high";
+	recallBudget: RecallGear;
 	recallMaxTokens: number;
 	recallTypes: string[];
 	recallContextTurns: number;

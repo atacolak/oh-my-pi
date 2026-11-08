@@ -1247,7 +1247,7 @@ describe("hindsightBackend live bank routing", () => {
 			"hindsight.apiUrl": "http://localhost:8888",
 			"hindsight.mentalModelsEnabled": false,
 		});
-		cfgHindsightRecallBudget.set(settings, "low");
+		cfgHindsightRecallBudget.set(settings, "default");
 		const session = makeFakeSession({ sessionId: "s-budget", settings });
 		await hindsightBackend.start({
 			session: session as never,
@@ -1257,7 +1257,7 @@ describe("hindsightBackend live bank routing", () => {
 			taskDepth: 0,
 		});
 
-		cfgHindsightRecallBudget.set(settings, "high");
+		cfgHindsightRecallBudget.set(settings, "deep");
 		await hindsightBackend.applySettings!(session as never, ["hindsight.recallBudget"]);
 		await session.getHindsightSessionState()!.recallForCompaction([{ role: "user", content: "deploy policy?" }]);
 

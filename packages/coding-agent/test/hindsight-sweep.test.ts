@@ -20,12 +20,6 @@ function scope(overrides: Partial<ScopeConfig> = {}): ScopeConfig {
 	return { recallTypes: ["world", "experience"], recallPreferObservations: true, ...overrides };
 }
 
-describe("GEAR_SWEEP_CAPS", () => {
-	it("caps every gear at its documented ceiling", () => {
-		expect(GEAR_SWEEP_CAPS).toEqual({ low: 300, mid: 600, high: 1200, xhigh: 2400, max: 4800 });
-	});
-});
-
 describe("resolveSweepCollections", () => {
 	it("sweeps the collections the caller named explicitly", () => {
 		expect(resolveSweepCollections(["world"], scope())).toEqual([{ type: "world" }]);

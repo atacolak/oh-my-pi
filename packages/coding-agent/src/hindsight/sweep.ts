@@ -12,21 +12,66 @@ import { countTokens } from "@oh-my-pi/pi-natives";
 import type { HindsightClientApi, ListMemoriesOptions, RecallResult, TagsMatch } from "./client";
 import type { HindsightConfig } from "./config";
 import { HINDSIGHT_RECALL_TYPES_DEFAULT } from "./settings";
+import { GEAR_SWEEP_CAPS, type RecallGear, recallSweepCeiling } from "./recall-budget";
 
-/** Recall depth ladder; the deep gears score a whole pool instead of trusting one server ranking. */
-export type RecallGear = "low" | "mid" | "high" | "xhigh" | "max";
+export { GEAR_SWEEP_CAPS, type RecallGear, SWEEP_CROSSOVER } from "./recall-budget";
 
-/**
- * Memories each gear reads before it stops sweeping. A scope that does not fit hands off to the
- * server's ranked recall instead of reading past the cap.
- */
-export const GEAR_SWEEP_CAPS: Readonly<Record<RecallGear, number>> = {
-	low: 300,
-	mid: 600,
-	high: 1200,
-	xhigh: 2400,
-	max: 4800,
-};
+export interface RecallCandidatePool {
+	candidates: RecallResult[];
+	mode: "swept" | "shortlisted";
+	totalAvailable: number | null;
+}
+
+/** Both recall surfaces use the same crossover, project-max boundary and ranked shortlist. */
+export async function loadRecallCandidates(
+	client: HindsightClientApi,
+	bankId: string,
+	query: string,
+	config: HindsightConfig,
+	options: {
+		gear: RecallGear;
+		tags: string[] | undefined;
+		tagsMatch: TagsMatch | undefined;
+		types?: string[];
+		canScore: boolean;
+		rankedOnly?: boolean;
+	},
+	signal?: AbortSignal,
+): Promise<RecallCandidatePool> {
+	let totalAvailable: number | null = null;
+	if (!options.rankedOnly && (options.canScore || options.gear === "max")) {
+		const sweep = await sweepBankMemories(
+			client,
+			bankId,
+			resolveSweepCollections(options.types, config),
+			options.tags,
+			options.tagsMatch,
+			{
+				ceiling: recallSweepCeiling(options.gear, config.scoping, options.tags, options.tagsMatch),
+				bailOnOverflow: true,
+			},
+			signal,
+		);
+		totalAvailable = sweep.distinctTotalAvailable;
+		if (!sweep.truncated) return { candidates: sweep.candidates, mode: "swept", totalAvailable };
+	}
+	const response = await client.recall(bankId, query, {
+		budget: "high",
+		maxTokens: 16384,
+		trace: true,
+		types: options.types ?? (config.recallTypes.length > 0 ? config.recallTypes : undefined),
+		tags: options.tags,
+		tagsMatch: options.tagsMatch,
+		preferObservations: config.recallPreferObservations,
+		rerank: { prune: config.recallPrune, dedup: config.recallDedup },
+		signal,
+	});
+	const candidates =
+		response.trace?.rrf_merged?.map(candidate => ({ id: candidate.node_id, text: candidate.text })) ??
+		response.results ??
+		[];
+	return { candidates: candidates.slice(0, GEAR_SWEEP_CAPS[options.gear]), mode: "shortlisted", totalAvailable };
+}
 
 /** Page size for the bank sweep; one page per round trip keeps the pass a handful of requests. */
 const BANK_SWEEP_PAGE_SIZE = 1000;
@@ -61,6 +106,8 @@ export interface BankSweepResult {
 	totalAvailable: number;
 	/** False when a full first page omitted its total, so the sum is only a lower bound. */
 	totalAvailableExact: boolean;
+	/** Exact distinct union when exhausted, or a known single-collection total; otherwise unknown. */
+	distinctTotalAvailable: number | null;
 	/** The ceiling stopped the sweep while a collection still had unread rows. */
 	truncated: boolean;
 }
@@ -75,6 +122,7 @@ interface BankSweep {
 	candidates: RecallResult[];
 	totalAvailable: number;
 	totalAvailableExact: boolean;
+	nonEmptyCollections: number;
 	countedCollections: Set<ListMemoriesOptions>;
 }
 
@@ -101,15 +149,14 @@ export function resolveSweepCollections(
 
 /**
  * Page one `memories/list` collection, deduping into the shared union; true when more rows remain.
- * With `bailOnOverflow`, a page whose reported total would push the union past the ceiling stops
- * the sweep before its items are read, so the caller can hand the whole scope to a ranked recall.
+ * With `bailOnOverflow`, a collection individually larger than the ceiling stops immediately.
+ * Collection totals cannot be added to prove overflow because their ids may overlap.
  */
 async function sweepCollection(
 	client: HindsightClientApi,
 	bankId: string,
 	filter: ListMemoriesOptions,
 	sweep: BankSweep,
-	alreadyCollected: number,
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	let offset = 0;
@@ -127,10 +174,11 @@ async function sweepCollection(
 		const items = page.items ?? [];
 		if (offset === 0 && !sweep.countedCollections.has(filter)) {
 			sweep.totalAvailable += page.total ?? items.length;
+			if ((page.total ?? items.length) > 0) sweep.nonEmptyCollections++;
 			if (page.total === undefined && items.length >= limit) sweep.totalAvailableExact = false;
 			sweep.countedCollections.add(filter);
 		}
-		if (sweep.bailOnOverflow && page.total !== undefined && alreadyCollected + page.total > sweep.ceiling) {
+		if (sweep.bailOnOverflow && page.total !== undefined && page.total > sweep.ceiling) {
 			return true;
 		}
 		for (const item of items) {
@@ -181,11 +229,13 @@ async function hasUnreadRows(
 	sweep: BankSweep,
 	signal?: AbortSignal,
 ): Promise<boolean> {
+	const budget = Math.max(UNREAD_PROBE_ROW_BUDGET, Number.isFinite(sweep.ceiling) ? sweep.ceiling : 0);
 	for (const filter of filters) {
 		let offset = 0;
 		let read = 0;
-		while (read < UNREAD_PROBE_ROW_BUDGET) {
-			const limit = Math.min(UNREAD_PROBE_PAGE_SIZE, UNREAD_PROBE_ROW_BUDGET - read);
+		let exhausted = false;
+		while (read < budget) {
+			const limit = Math.min(UNREAD_PROBE_PAGE_SIZE, budget - read);
 			const page = await client.listMemories(bankId, {
 				...filter,
 				tags: sweep.tags,
@@ -197,15 +247,19 @@ async function hasUnreadRows(
 			const items = page.items ?? [];
 			if (offset === 0 && !sweep.countedCollections.has(filter)) {
 				sweep.totalAvailable += page.total ?? items.length;
+				if ((page.total ?? items.length) > 0) sweep.nonEmptyCollections++;
 				if (page.total === undefined && items.length >= limit) sweep.totalAvailableExact = false;
 				sweep.countedCollections.add(filter);
 			}
 			if (items.some(item => !sweep.seen.has(item.id))) return true;
 			read += items.length;
 			offset += items.length;
-			if (items.length < limit) break;
+			if (items.length < limit || (page.total !== undefined && offset >= page.total)) {
+				exhausted = true;
+				break;
+			}
 		}
-		if (read >= UNREAD_PROBE_ROW_BUDGET) return true;
+		if (!exhausted && read >= budget) return true;
 	}
 	return false;
 }
@@ -235,6 +289,7 @@ export async function sweepBankMemories(
 		candidates: [],
 		totalAvailable: 0,
 		totalAvailableExact: true,
+		nonEmptyCollections: 0,
 		countedCollections: new Set(),
 	};
 	let truncated = false;
@@ -243,10 +298,12 @@ export async function sweepBankMemories(
 			truncated = await hasUnreadRows(client, bankId, filters.slice(index), sweep, signal);
 			break;
 		}
-		const alreadyCollected = sweep.candidates.length;
-		const hasMore = await sweepCollection(client, bankId, filters[index]!, sweep, alreadyCollected, signal);
+		const hasMore = await sweepCollection(client, bankId, filters[index]!, sweep, signal);
 		if (hasMore) {
-			truncated = true;
+			truncated =
+				sweep.candidates.length >= sweep.ceiling
+					? await hasUnreadRows(client, bankId, filters.slice(index), sweep, signal)
+					: true;
 			break;
 		}
 	}
@@ -263,6 +320,7 @@ export async function sweepBankMemories(
 			signal,
 		});
 		sweep.totalAvailable += page.total ?? page.items?.length ?? 0;
+		if ((page.total ?? page.items?.length ?? 0) > 0) sweep.nonEmptyCollections++;
 		if (page.total === undefined && (page.items?.length ?? 0) >= 1) sweep.totalAvailableExact = false;
 		sweep.countedCollections.add(filter);
 	}
@@ -271,6 +329,11 @@ export async function sweepBankMemories(
 		truncated,
 		totalAvailable: sweep.totalAvailable,
 		totalAvailableExact: sweep.totalAvailableExact,
+		distinctTotalAvailable: !truncated
+			? sweep.candidates.length
+			: sweep.totalAvailableExact && sweep.nonEmptyCollections <= 1
+				? sweep.totalAvailable
+				: null,
 	};
 }
 

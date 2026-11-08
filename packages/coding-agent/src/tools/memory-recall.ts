@@ -6,14 +6,14 @@ import { RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO } from "../hindsight/clien
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { formatCurrentTime, formatMemories, mergeRecallTags } from "../hindsight/content";
 import type { HindsightSessionState } from "../hindsight/state";
-import { describeRecallCoverage, recallCoverageHeader } from "../hindsight/recall-coverage";
+import { clampRecallMaxTokens } from "../hindsight/recall-budget";
 import {
-	GEAR_SWEEP_CAPS,
-	packByTokens,
-	type RecallGear,
-	resolveSweepCollections,
-	sweepBankMemories,
-} from "../hindsight/sweep";
+	describeRecallCoverage,
+	type RecallCoverage,
+	recallCoverageHeader,
+	recallCoverageView,
+} from "../hindsight/recall-coverage";
+import { loadRecallCandidates, packByTokens, type RecallGear } from "../hindsight/sweep";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import type { ToolSession } from ".";
@@ -22,8 +22,8 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
-	"budget?": type("'low' | 'mid' | 'high' | 'xhigh' | 'max'").describe(
-		"recall depth: low = one known fact, mid = everyday context, high = connected history, xhigh = broad sweep, max = largest bounded sweep; oversized scopes use ranked shortlists (omitted = session setting)",
+	"budget?": type("'default' | 'deep' | 'max'").describe(
+		"default = evaluate up to 1200 records, deep = up to 2400, max = all named-project records or up to 4800 bank-wide; smaller scopes are swept in full (omitted = session setting)",
 	),
 	"maxTokens?": type("number").describe(
 		"tokens of surviving memories to return, clamped to 512..16384 (omitted = session setting)",
@@ -36,15 +36,6 @@ const memoryRecallSchema = type({
 	),
 });
 
-const RECALL_MAX_TOKENS_MIN = 512;
-const RECALL_MAX_TOKENS_MAX = 16384;
-
-/** Per-call return size, clamped into the documented window instead of rejected. */
-function clampRecallMaxTokens(value: number | undefined): number | undefined {
-	if (value === undefined) return undefined;
-	return Math.min(RECALL_MAX_TOKENS_MAX, Math.max(RECALL_MAX_TOKENS_MIN, Math.round(value)));
-}
-
 export type MemoryRecallParams = typeof memoryRecallSchema.infer;
 
 export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
@@ -52,8 +43,10 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	readonly approval = "read" as const;
 	readonly label = "Recall";
 	get description(): string {
+		const coverage = this.session.getHindsightSessionState?.()?.lastRecallCoverage;
 		return prompt.render(recallDescription, {
 			toolRefs: sessionMemoryToolRefs(this.session),
+			coverage: coverage ? recallCoverageView(coverage) : undefined,
 		});
 	}
 	readonly parameters = memoryRecallSchema;
@@ -108,118 +101,41 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				throw new Error("Hindsight backend is not initialised for this session.");
 			}
 
+			const isCurrent = state.captureRecallScope();
 			try {
 				const gear = params.budget ?? state.config.recallBudget;
 				const maxTokens = clampRecallMaxTokens(params.maxTokens) ?? state.config.recallMaxTokens;
 				const tags = mergeRecallTags(state.recallTags, params.tags);
-				const collections = resolveSweepCollections(params.types, state.config);
-				let totalAvailable: number | null = null;
-				if (state.recallScorer || gear === "max") {
-					const sweep = await sweepBankMemories(
-						state.client,
-						state.bankId,
-						collections,
+				const pool = await loadRecallCandidates(
+					state.client,
+					state.bankId,
+					params.query,
+					state.config,
+					{
+						gear,
 						tags,
-						state.recallTagsMatch,
-						{ ceiling: GEAR_SWEEP_CAPS[gear], bailOnOverflow: true },
-						signal,
-					);
-					totalAvailable = sweep.totalAvailableExact ? sweep.totalAvailable : null;
-					if (!sweep.truncated) {
-						return this.#packCandidates(
-							state,
-							params.query,
-							sweep.candidates,
-							{ maxTokens, swept: true, gear, tags, totalAvailable },
-							signal,
-						);
-					}
+						tagsMatch: state.recallTagsMatch,
+						types: params.types,
+						canScore: !!state.recallScorer,
+					},
+					signal,
+				);
+				const result = await this.#packCandidates(
+					state,
+					params.query,
+					pool.candidates,
+					{ maxTokens, swept: pool.mode === "swept", gear, tags, totalAvailable: pool.totalAvailable },
+					signal,
+				);
+				if (result.details && params.types === undefined && isCurrent() && !signal?.aborted) {
+					state.recordRecallCoverage(result.details);
 				}
-				if (gear === "xhigh" || gear === "max") {
-					const candidates = await this.#tracedCandidates(state, params, gear, tags, signal);
-					return this.#packCandidates(
-						state,
-						params.query,
-						candidates,
-						{ maxTokens, swept: false, gear, tags, totalAvailable },
-						signal,
-					);
-				}
-				return await this.#rankedRecall(state, params, gear, maxTokens, tags, totalAvailable, signal);
+				return result;
 			} catch (err) {
 				logger.warn("recall failed", { bankId: state.bankId, error: String(err) });
 				throw toError(err);
 			}
 		});
-	}
-
-	/** Server-ranked recall for a gear whose scope the sweep could not fit under its cap. */
-	async #rankedRecall(
-		state: HindsightSessionState,
-		params: MemoryRecallParams,
-		gear: "low" | "mid" | "high",
-		maxTokens: number,
-		tags: string[] | undefined,
-		totalAvailable: number | null,
-		signal?: AbortSignal,
-	): Promise<AgentToolResult> {
-		const config = state.config;
-		const response = await state.client.recall(state.bankId, params.query, {
-			budget: gear,
-			maxTokens,
-			types: params.types ?? (config.recallTypes.length > 0 ? config.recallTypes : undefined),
-			tags,
-			tagsMatch: state.recallTagsMatch,
-			signal,
-		});
-		const candidates = response.results ?? [];
-		let results = candidates;
-		let scores: (number | null)[] | undefined;
-		if (results.length === 1 && state.recallScorer) {
-			const score = await state.recallScorer.score(params.query, results[0]!.text, signal);
-			scores = [score];
-			if (score !== null && score < state.config.decisionModelThreshold) results = [];
-		}
-		const details = describeRecallCoverage(
-			{ mode: "shortlisted", gear, tags, totalAvailable },
-			candidates,
-			scores,
-			results,
-		);
-		return {
-			content: [
-				{
-					type: "text",
-					text: `${recallCoverageHeader(results.length, details)}\n\n${results.length > 0 ? formatMemories(results) : "No relevant memories found."}`,
-				},
-			],
-			details,
-			...(results.length === 0 ? { useless: true } : {}),
-		};
-	}
-
-	/** Server-ranked candidates for a scope `xhigh` cannot score directly. */
-	async #tracedCandidates(
-		state: HindsightSessionState,
-		params: MemoryRecallParams,
-		gear: "xhigh" | "max",
-		tags: string[] | undefined,
-		signal?: AbortSignal,
-	): Promise<RecallResult[]> {
-		const config = state.config;
-		const response = await state.client.recall(state.bankId, params.query, {
-			budget: "high",
-			trace: true,
-			maxTokens: RECALL_MAX_TOKENS_MAX,
-			types: params.types ?? (config.recallTypes.length > 0 ? config.recallTypes : undefined),
-			tags,
-			tagsMatch: state.recallTagsMatch,
-			signal,
-		});
-		return (response.trace?.rrf_merged ?? []).slice(0, GEAR_SWEEP_CAPS[gear]).map(candidate => ({
-			id: candidate.node_id,
-			text: candidate.text,
-		}));
 	}
 
 	/** Score the candidates, drop what falls under the deep floor, then pack into the token budget. */
@@ -235,7 +151,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 			totalAvailable: number | null;
 		},
 		signal?: AbortSignal,
-	): Promise<AgentToolResult> {
+	): Promise<AgentToolResult<RecallCoverage & { truncated?: boolean }>> {
 		const notes: string[] = [];
 		const scorer = state.recallScorer;
 		let scores: (number | null)[] | undefined;

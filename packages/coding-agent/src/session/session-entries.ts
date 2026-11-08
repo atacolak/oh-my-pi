@@ -65,6 +65,8 @@ export interface SessionHeader {
 	previousSessionFiles?: string[];
 	/** Local-only provider prompt-cache identity inherited by exact-route full forks; omitted from shares and HTML. */
 	providerPromptCacheKey?: string;
+	/** Resolved root `--agent` name for this session, if launched from a definition. */
+	rootAgent?: string;
 	/** Local-only Task candidate, gated by the actual request model's cache policy; omitted from shares and HTML. */
 	taskPromptCacheKey?: string;
 	/**
@@ -86,6 +88,8 @@ export interface NewSessionOptions {
 	drop?: boolean;
 	/** Additional workspace directories to seed on the new session. */
 	additionalDirectories?: string[];
+	/** Resolved root `--agent` name to seed on the new session header. */
+	rootAgent?: string;
 	/** Directory for the new session file (and later `/new` sessions); defaults to the current session directory. */
 	sessionDir?: string;
 }
@@ -310,6 +314,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	spawns?: string;
 	/** The agent's `readSummarize` setting (`false` = read summarization disabled); absent uses the session default. */
 	readSummarize?: boolean;
+	/** The agent's `modelFallback` setting (`false` = the spawn never fell back to another model); absent inherits `retry.modelFallback`. */
+	modelFallback?: boolean;
 	/** Effective advisor for this subagent: `"on"` = advisor-role model, else an explicit model pattern; absent = unadvised. */
 	advisor?: string;
 	/** Effective thresholds for a child with an explicit compaction override. */

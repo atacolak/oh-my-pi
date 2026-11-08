@@ -315,7 +315,8 @@ export class HindsightRetainQueue {
 		}
 		if (result.error === undefined) {
 			this.#failures = 0;
-			// Another holder is draining this destination; events it did not list wait for us.
+			// Another holder owns this destination (draining it, or enqueueing a batch
+			// that may still roll back); events it did not list wait for us.
 			if (result.busy) this.#schedule(RETAIN_FLUSH_INTERVAL_MS);
 			return;
 		}
@@ -1062,11 +1063,10 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		});
 		if (!retainFullWindow) this.#recordCompletedLastTurnRetain(sessionId, messages);
 		if (generation === this.#retainGeneration) {
-			if (nextCachedTranscript !== undefined) {
-				this.#cachedTranscript = nextCachedTranscript;
-				this.#lastRetainedPrefixKey = extendRetentionPrefixKey(prefixKey, messages, hashedThrough, messages.length);
-				this.#lastRetainedMessageIndex = messages.length;
-			}
+			if (nextCachedTranscript !== undefined) this.#cachedTranscript = nextCachedTranscript;
+			// Last-turn retains track branch identity without caching the full transcript.
+			this.#lastRetainedPrefixKey = extendRetentionPrefixKey(prefixKey, messages, hashedThrough, messages.length);
+			this.#lastRetainedMessageIndex = messages.length;
 			this.#forceNextRetainReplace = false;
 		}
 	}

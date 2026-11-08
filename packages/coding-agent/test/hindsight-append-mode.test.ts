@@ -1020,6 +1020,8 @@ describe("Hindsight append-mode session retention", () => {
 		];
 		const state = new HindsightSessionState({
 			sessionId: "sess-lastturn-done",
+			loadedMessageCount: 0,
+			closeRetainBaselineTurns: 0,
 			client,
 			bankId: "personal",
 			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 5, retainOverlapTurns: 0 }),
@@ -1042,6 +1044,9 @@ describe("Hindsight append-mode session retention", () => {
 		await state.maybeRetainOnAgentEnd();
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).document_id)).toMatch(/^sess-lastturn-done-\d+$/);
+
+		await state.flushPendingSessionRetain();
+		expect(bodies).toHaveLength(1);
 
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(1);
@@ -1104,6 +1109,9 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[1]).content)).not.toContain("turn one has enough text");
 		expect(String(firstItem(bodies[1]).content)).not.toContain("turn five has enough text");
 		expect(firstItem(bodies[1])).not.toHaveProperty("update_mode");
+
+		await state.drainOnClose();
+		expect(bodies).toHaveLength(2);
 	});
 
 	it("force-rebuilds even when a cadence retain is still in flight", async () => {

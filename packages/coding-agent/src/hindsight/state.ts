@@ -102,13 +102,13 @@ export interface HindsightConversationTrackingSnapshot {
 export interface HindsightSessionStateApi {
 	readonly client: HindsightClientApi;
 	readonly bankId: string;
-	readonly retainTags?: string[];
-	/** Deterministic scope tags; seeds derive from these, never from write-only provenance. */
+	/** Fully resolved deterministic scope tags (no write-only provenance). */
 	readonly resolvedTags?: string[];
-	/** Exact deterministic observation consolidation scopes applied to every retain. */
-	readonly observationScopes?: string[][];
+	readonly retainTags?: string[];
 	readonly recallTags?: string[];
 	readonly recallTagsMatch?: "any" | "all" | "any_strict" | "all_strict";
+	/** Exact deterministic observation consolidation scopes. */
+	readonly observationScopes?: string[][];
 	readonly config: HindsightConfig;
 	readonly banksSet: HindsightBankSet;
 	readonly lastRecallSnippet?: string;

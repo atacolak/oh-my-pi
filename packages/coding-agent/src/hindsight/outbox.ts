@@ -31,16 +31,16 @@ export interface OutboxEvent {
 	id: string;
 	scope: MemoryWriteScope;
 	tags: string[];
+	/** Deterministic observation consolidation scopes; omitted for global events. */
+	observationScopes?: string[][];
+	/** Per-retain extraction strategy override; omitted from the request when unset. */
+	strategy?: string;
 	timestamp: string;
 	content: string;
 	context: string;
 	sessionId: string;
 	/** Server metadata for the event; ids only, never user text. */
 	metadata?: Record<string, string>;
-	/** Per-item extraction strategy override captured at enqueue time. */
-	strategy?: string;
-	/** Exact deterministic observation consolidation scopes for this memory. */
-	observationScopes?: string[][];
 }
 
 export interface RetainCall {
@@ -282,9 +282,9 @@ export class HindsightOutbox {
 					context: event.context,
 					timestamp: new Date(event.timestamp),
 					metadata: event.metadata ?? { session_id: event.sessionId },
-					strategy: event.strategy,
-					observationScopes: event.observationScopes,
 					tags: event.tags.length > 0 ? event.tags : undefined,
+					observationScopes: event.observationScopes,
+					strategy: event.strategy,
 					documentId: event.id,
 					updateMode: "replace",
 				})),

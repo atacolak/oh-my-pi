@@ -1001,7 +1001,8 @@ export class HindsightRecallDecision {
 		});
 	}
 
-	async keep(query: string, memory: string, signal?: AbortSignal): Promise<boolean> {
+	/** A missing answer or failed request is unknown, not evidence of irrelevance. */
+	async score(query: string, memory: string, signal?: AbortSignal): Promise<number | null> {
 		try {
 			const response = await this.#post(
 				`Question: ${query}`,
@@ -1009,13 +1010,17 @@ export class HindsightRecallDecision {
 				this.#timeoutMs,
 				signal,
 			);
-			if (!response.ok) return true;
+			if (!response.ok) return null;
 			const parsed = tryParseJson(await response.text()) as SystemOneResponse | undefined;
-			const score = readNoul(parsed?.answers?.m0);
-			return score === null || score >= this.#threshold;
+			return readNoul(parsed?.answers?.m0);
 		} catch {
-			return true;
+			return null;
 		}
+	}
+
+	async keep(query: string, memory: string, signal?: AbortSignal): Promise<boolean> {
+		const score = await this.score(query, memory, signal);
+		return score === null || score >= this.#threshold;
 	}
 }
 

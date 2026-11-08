@@ -8,6 +8,7 @@
 - Added `memory_document_id` to Hindsight retain metadata so a stored memory names the document it landed in.
 - Added `hindsight.provenanceTags` (`HINDSIGHT_PROVENANCE_TAGS`) plus automatic `role:<agent-profile>` and `actor:<hcom-name>` tags so retained memories carry write-only provenance without narrowing recall or observation scopes.
 - Added optional `tags` to the `recall` and `reflect` tools; project filters can override the default project while the configured `scope:*` boundary remains enforced.
+- recall now reports evaluated coverage, effective project tags and per-candidate decision scores, including rejected memories.
 - Added a compact `[role:… actor:…]` provenance badge to recalled memory footers.
 - Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
@@ -16,10 +17,10 @@
 - Added `hindsight.recallCadence` (`boundary` default, `per-turn` opt-in) so a session can re-ask the bank every turn while never repeating a memory the transcript already holds.
 - Added opt-in single-survivor abstention via `hindsight.decisionModelUrl` / `hindsight.decisionModelThreshold`: a lone low-confidence recall result is dropped, and an unreachable decision service keeps the memory.
 - Added per-call `budget`, `maxTokens`, and `types` controls to the `recall` tool, and made tool recall apply the configured single-survivor abstention gate.
-- Added `xhigh` and `max` deep recall gears: `xhigh` sweeps the scoped collections in one pass and scores them client-side, falling back to a traced `high` recall only when that scope is too large or no scorer is configured; `max` sweeps the bank through `memories/list`. Both prune below the server's own `max(0.20, 0.40 * best)` floor, abstain under the decision threshold, and degrade to unscored candidates when the scorer is unavailable.
+- Added `xhigh` and `max` deep recall gears with bounded scoped sweeps and ranked-shortlist fallback; both filter by decision score and keep unavailable scores explicit.
 - Hindsight `read memory://<id>` now resolves a bank memory natively, and recalled bullets link the id as `[memory://<id>]`; the read renders the full text with provenance, source memories, and consolidation history, and fails closed with one opaque error for missing and out-of-scope ids alike.
 - Added a root agent `memory:` policy (`autoRetain` / `autoRecall`) that narrows the session's Hindsight flags, with `HINDSIGHT_AUTO_*` environment overrides still winning.
-- Hindsight recall now sweeps each gear's own `<=` cap directly (`low` 300, `mid` 600, `high` 1200, `xhigh` 2400, `max` 4800) in both the hidden `<memories>` refresh and the `recall` tool when a decision scorer is configured, skipping the server-ranked `/memories/recall` call whenever the whole scope fits under the cap; an oversized scope still falls back to the server ranking (or the traced `high` recall for `xhigh`).
+- Hindsight recall sweeps each gear's own cap directly (`low` 300, `mid` 600, `high` 1200, `xhigh` 2400, `max` 4800) when a decision scorer is configured; oversized scopes fall back to ranked recall, with traced candidate pools for `xhigh` and `max`.
 
 ### Changed
 
@@ -36,6 +37,7 @@
 
 - Hindsight tagged scopes now use only declared project identities; unbound workspaces no longer invent project tags.
 - Cross-project coding recall and memory links now work without admitting personal memories.
+- observation-only recall settings now include pending and failed retains in direct sweeps without diluting observation-only ranked retrieval.
 - Hindsight close, move and compaction retention stays bounded after history divergence, and resumed sessions wait for new turns before cadence retention.
 - last-turn retention no longer uploads an already retained tail again on close or when leaving the conversation.
 - Fixed Hindsight tool-initiated retains storing a recalled `<memories>` block verbatim, which let a memory feed on itself.

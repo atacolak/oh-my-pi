@@ -57,6 +57,10 @@ export interface SweepOptions {
 
 export interface BankSweepResult {
 	candidates: RecallResult[];
+	/** Sum of first-page collection totals; collections may overlap. */
+	totalAvailable: number;
+	/** False when a full first page omitted its total, so the sum is only a lower bound. */
+	totalAvailableExact: boolean;
 	/** The ceiling stopped the sweep while a collection still had unread rows. */
 	truncated: boolean;
 }
@@ -69,6 +73,9 @@ interface BankSweep {
 	bailOnOverflow: boolean;
 	seen: Set<string>;
 	candidates: RecallResult[];
+	totalAvailable: number;
+	totalAvailableExact: boolean;
+	countedCollections: Set<ListMemoriesOptions>;
 }
 
 /**
@@ -87,7 +94,8 @@ export function resolveSweepCollections(
 	const defaultTypes =
 		types.length === HINDSIGHT_RECALL_TYPES_DEFAULT.length &&
 		HINDSIGHT_RECALL_TYPES_DEFAULT.every(type => types.includes(type));
-	if (prefersObservations && (types.length === 0 || defaultTypes)) return MAX_SWEEP_COLLECTIONS;
+	const observationsOnly = types.length === 1 && types[0] === "observation";
+	if (prefersObservations && (types.length === 0 || defaultTypes || observationsOnly)) return MAX_SWEEP_COLLECTIONS;
 	return types.length > 0 ? types.map(type => ({ type })) : MAX_SWEEP_COLLECTIONS;
 }
 
@@ -116,10 +124,15 @@ async function sweepCollection(
 			offset,
 			signal,
 		});
+		const items = page.items ?? [];
+		if (offset === 0 && !sweep.countedCollections.has(filter)) {
+			sweep.totalAvailable += page.total ?? items.length;
+			if (page.total === undefined && items.length >= limit) sweep.totalAvailableExact = false;
+			sweep.countedCollections.add(filter);
+		}
 		if (sweep.bailOnOverflow && page.total !== undefined && alreadyCollected + page.total > sweep.ceiling) {
 			return true;
 		}
-		const items = page.items ?? [];
 		for (const item of items) {
 			if (sweep.seen.has(item.id)) continue;
 			sweep.seen.add(item.id);
@@ -182,6 +195,11 @@ async function hasUnreadRows(
 				signal,
 			});
 			const items = page.items ?? [];
+			if (offset === 0 && !sweep.countedCollections.has(filter)) {
+				sweep.totalAvailable += page.total ?? items.length;
+				if (page.total === undefined && items.length >= limit) sweep.totalAvailableExact = false;
+				sweep.countedCollections.add(filter);
+			}
 			if (items.some(item => !sweep.seen.has(item.id))) return true;
 			read += items.length;
 			offset += items.length;
@@ -215,6 +233,9 @@ export async function sweepBankMemories(
 		bailOnOverflow: options.bailOnOverflow === true,
 		seen: new Set<string>(),
 		candidates: [],
+		totalAvailable: 0,
+		totalAvailableExact: true,
+		countedCollections: new Set(),
 	};
 	let truncated = false;
 	for (let index = 0; index < filters.length; index++) {
@@ -229,7 +250,28 @@ export async function sweepBankMemories(
 			break;
 		}
 	}
-	return { candidates: sweep.candidates, truncated };
+	// An overflow may stop before later collections are visited. Read only their
+	// first row and reported total so the denominator still covers the scope.
+	for (const filter of filters) {
+		if (sweep.countedCollections.has(filter)) continue;
+		const page = await client.listMemories(bankId, {
+			...filter,
+			tags,
+			tagsMatch,
+			limit: 1,
+			offset: 0,
+			signal,
+		});
+		sweep.totalAvailable += page.total ?? page.items?.length ?? 0;
+		if (page.total === undefined && (page.items?.length ?? 0) >= 1) sweep.totalAvailableExact = false;
+		sweep.countedCollections.add(filter);
+	}
+	return {
+		candidates: sweep.candidates,
+		truncated,
+		totalAvailable: sweep.totalAvailable,
+		totalAvailableExact: sweep.totalAvailableExact,
+	};
 }
 
 /** Take memories in the given order until the token budget is spent; one oversized memory still fits. */

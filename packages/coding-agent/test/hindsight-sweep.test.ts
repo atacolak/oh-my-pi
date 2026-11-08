@@ -50,10 +50,14 @@ describe("resolveSweepCollections", () => {
 		).toEqual([{ type: "world" }]);
 	});
 
-	it("sweeps the types a customized observation-preferring scope names", () => {
-		expect(resolveSweepCollections(undefined, scope({ recallTypes: ["observation"] }))).toEqual([
-			{ type: "observation" },
-		]);
+	it("includes unconsolidated retains for observation-only configuration but preserves an explicit caller type restriction", () => {
+		expect(resolveSweepCollections(undefined, scope({ recallTypes: ["observation"] }))).toEqual(
+			MAX_SWEEP_COLLECTIONS,
+		);
+		expect(resolveSweepCollections(["observation"], scope())).toEqual([{ type: "observation" }]);
+		expect(
+			resolveSweepCollections(undefined, scope({ recallTypes: ["observation"], recallPreferObservations: false })),
+		).toEqual([{ type: "observation" }]);
 	});
 
 	it("falls back to the consolidated set when a non-preferring scope names no types", () => {

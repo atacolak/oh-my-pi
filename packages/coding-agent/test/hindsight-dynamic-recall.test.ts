@@ -673,6 +673,30 @@ describe("swept recall", () => {
 		expect(block!.indexOf("alpha fact")).toBeLessThan(block!.indexOf("beta fact"));
 	});
 
+	it("exposes rejected as well as kept decision scores on automatic recall outcomes", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([
+			{ id: "accepted", text: "relevant deploy fact" },
+			{ id: "rejected", text: "unrelated trivia" },
+		]);
+		stubDecisionModel(memory => (memory === "relevant deploy fact" ? 0.9 : 0.1));
+		const harness = makeHarness(client, {
+			config: makeConfig({ decisionModelUrl: "http://decision.local", recallTypes: ["observation"] }),
+		});
+		const outcome = await harness.state.recallForContext("deploy host");
+		expect(outcome.delivered.map(memory => memory.id)).toEqual(["accepted"]);
+		expect(outcome.details).toMatchObject({
+			mode: "swept",
+			evaluatedCount: 2,
+			totalAvailable: 6,
+			gear: "mid",
+			scoredCandidates: [
+				{ id: "accepted", text: "relevant deploy fact", score: 0.9, kept: true },
+				{ id: "rejected", text: "unrelated trivia", score: 0.1, kept: false },
+			],
+		});
+	});
+
 	it("delivers nothing when the best swept score misses the decision threshold", async () => {
 		const client = new RecordingApi();
 		client.sweepBank([
@@ -706,8 +730,20 @@ describe("swept recall", () => {
 		});
 
 		expect(await deliverRecall(harness, "where is the deploy host?")).toContain("deploy host is beta-9");
-		expect(client.listCalls).toEqual([{ type: "observation", consolidationState: undefined, limit: 300, offset: 0 }]);
+		expect(client.listCalls).toEqual([
+			{ type: "observation", consolidationState: undefined, limit: 300, offset: 0 },
+			{ type: undefined, consolidationState: "pending", limit: 1, offset: 0 },
+			{ type: undefined, consolidationState: "failed", limit: 1, offset: 0 },
+		]);
 		expect(client.recallCalls).toHaveLength(1);
 		expect(client.recallCalls[0]!.options?.budget).toBe("low");
+		const outcome = await harness.state.recallForContext("where is the deploy host?");
+		expect(outcome.details).toMatchObject({
+			mode: "shortlisted",
+			evaluatedCount: 1,
+			totalAvailable: 15000,
+			gear: "low",
+			scoredCandidates: [{ id: "m1", score: 0.9, kept: true }],
+		});
 	});
 });

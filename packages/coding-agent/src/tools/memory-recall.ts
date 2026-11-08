@@ -6,7 +6,14 @@ import { RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO } from "../hindsight/clien
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { formatCurrentTime, formatMemories, mergeRecallTags } from "../hindsight/content";
 import type { HindsightSessionState } from "../hindsight/state";
-import { GEAR_SWEEP_CAPS, packByTokens, resolveSweepCollections, sweepBankMemories } from "../hindsight/sweep";
+import { describeRecallCoverage, recallCoverageHeader } from "../hindsight/recall-coverage";
+import {
+	GEAR_SWEEP_CAPS,
+	packByTokens,
+	type RecallGear,
+	resolveSweepCollections,
+	sweepBankMemories,
+} from "../hindsight/sweep";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import type { ToolSession } from ".";
@@ -16,7 +23,7 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
 	"budget?": type("'low' | 'mid' | 'high' | 'xhigh' | 'max'").describe(
-		"how much of your own past experience to bring into view: low = one specific fact or name you know exists, mid = everyday context around current work, high = connected history across sessions and decisions, xhigh = broad deep sweep when phrasing may have shifted, max = every consolidated belief and unmerged fact in scope so nothing hides (omitted = session setting)",
+		"recall depth: low = one known fact, mid = everyday context, high = connected history, xhigh = broad sweep, max = largest bounded sweep; oversized scopes use ranked shortlists (omitted = session setting)",
 	),
 	"maxTokens?": type("number").describe(
 		"tokens of surviving memories to return, clamped to 512..16384 (omitted = session setting)",
@@ -24,7 +31,9 @@ const memoryRecallSchema = type({
 	"types?": type("('observation' | 'world' | 'experience')[]").describe(
 		"restrict results to these memory types (omitted = session setting)",
 	),
-	"tags?": type("string[]").describe("additional tag filters merged with the session's recall scope"),
+	"tags?": type("string[]").describe(
+		"project:<id> replaces the default project filter; project:* widens coding recall; area and memory_shape add filters; the hard scope boundary remains",
+	),
 });
 
 const RECALL_MAX_TOKENS_MIN = 512;
@@ -104,66 +113,39 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				const maxTokens = clampRecallMaxTokens(params.maxTokens) ?? state.config.recallMaxTokens;
 				const tags = mergeRecallTags(state.recallTags, params.tags);
 				const collections = resolveSweepCollections(params.types, state.config);
-				if (state.recallScorer) {
+				let totalAvailable: number | null = null;
+				if (state.recallScorer || gear === "max") {
 					const sweep = await sweepBankMemories(
 						state.client,
 						state.bankId,
 						collections,
 						tags,
 						state.recallTagsMatch,
-						{ ceiling: GEAR_SWEEP_CAPS[gear], bailOnOverflow: gear !== "max" },
+						{ ceiling: GEAR_SWEEP_CAPS[gear], bailOnOverflow: true },
 						signal,
 					);
-					if (!sweep.truncated || gear === "max") {
+					totalAvailable = sweep.totalAvailableExact ? sweep.totalAvailable : null;
+					if (!sweep.truncated) {
 						return this.#packCandidates(
 							state,
 							params.query,
 							sweep.candidates,
-							{ maxTokens, truncated: sweep.truncated, swept: true, cap: GEAR_SWEEP_CAPS[gear] },
+							{ maxTokens, swept: true, gear, tags, totalAvailable },
 							signal,
 						);
 					}
-					if (gear === "xhigh") {
-						const candidates = await this.#tracedCandidates(state, params, tags, signal);
-						return this.#packCandidates(
-							state,
-							params.query,
-							candidates,
-							{ maxTokens, truncated: false, swept: false, cap: GEAR_SWEEP_CAPS.xhigh },
-							signal,
-						);
-					}
-					return await this.#rankedRecall(state, params, gear, maxTokens, tags, signal);
 				}
-				if (gear === "xhigh") {
-					const candidates = await this.#tracedCandidates(state, params, tags, signal);
+				if (gear === "xhigh" || gear === "max") {
+					const candidates = await this.#tracedCandidates(state, params, gear, tags, signal);
 					return this.#packCandidates(
 						state,
 						params.query,
 						candidates,
-						{ maxTokens, truncated: false, swept: false, cap: GEAR_SWEEP_CAPS.xhigh },
+						{ maxTokens, swept: false, gear, tags, totalAvailable },
 						signal,
 					);
 				}
-				if (gear === "max") {
-					const sweep = await sweepBankMemories(
-						state.client,
-						state.bankId,
-						collections,
-						tags,
-						state.recallTagsMatch,
-						{ ceiling: GEAR_SWEEP_CAPS.max },
-						signal,
-					);
-					return this.#packCandidates(
-						state,
-						params.query,
-						sweep.candidates,
-						{ maxTokens, truncated: sweep.truncated, swept: true, cap: GEAR_SWEEP_CAPS.max },
-						signal,
-					);
-				}
-				return await this.#rankedRecall(state, params, gear, maxTokens, tags, signal);
+				return await this.#rankedRecall(state, params, gear, maxTokens, tags, totalAvailable, signal);
 			} catch (err) {
 				logger.warn("recall failed", { bankId: state.bankId, error: String(err) });
 				throw toError(err);
@@ -178,6 +160,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 		gear: "low" | "mid" | "high",
 		maxTokens: number,
 		tags: string[] | undefined,
+		totalAvailable: number | null,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult> {
 		const config = state.config;
@@ -189,26 +172,29 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 			tagsMatch: state.recallTagsMatch,
 			signal,
 		});
-		let results = response.results ?? [];
-		if (results.length === 1 && !(await state.keepLoneRecallSurvivor(params.query, results[0]!.text, signal))) {
-			results = [];
+		const candidates = response.results ?? [];
+		let results = candidates;
+		let scores: (number | null)[] | undefined;
+		if (results.length === 1 && state.recallScorer) {
+			const score = await state.recallScorer.score(params.query, results[0]!.text, signal);
+			scores = [score];
+			if (score !== null && score < state.config.decisionModelThreshold) results = [];
 		}
-		if (results.length === 0) {
-			return {
-				content: [{ type: "text", text: "No relevant memories found." }],
-				details: {},
-				useless: true,
-			};
-		}
-		const formatted = formatMemories(results);
+		const details = describeRecallCoverage(
+			{ mode: "shortlisted", gear, tags, totalAvailable },
+			candidates,
+			scores,
+			results,
+		);
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Found ${results.length} relevant ${results.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
+					text: `${recallCoverageHeader(results.length, details)}\n\n${results.length > 0 ? formatMemories(results) : "No relevant memories found."}`,
 				},
 			],
-			details: {},
+			details,
+			...(results.length === 0 ? { useless: true } : {}),
 		};
 	}
 
@@ -216,6 +202,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	async #tracedCandidates(
 		state: HindsightSessionState,
 		params: MemoryRecallParams,
+		gear: "xhigh" | "max",
 		tags: string[] | undefined,
 		signal?: AbortSignal,
 	): Promise<RecallResult[]> {
@@ -229,7 +216,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 			tagsMatch: state.recallTagsMatch,
 			signal,
 		});
-		return (response.trace?.rrf_merged ?? []).slice(0, GEAR_SWEEP_CAPS.xhigh).map(candidate => ({
+		return (response.trace?.rrf_merged ?? []).slice(0, GEAR_SWEEP_CAPS[gear]).map(candidate => ({
 			id: candidate.node_id,
 			text: candidate.text,
 		}));
@@ -240,13 +227,16 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 		state: HindsightSessionState,
 		query: string,
 		candidates: RecallResult[],
-		options: { maxTokens: number; truncated: boolean; swept: boolean; cap: number },
+		options: {
+			maxTokens: number;
+			swept: boolean;
+			gear: RecallGear;
+			tags: string[] | undefined;
+			totalAvailable: number | null;
+		},
 		signal?: AbortSignal,
 	): Promise<AgentToolResult> {
 		const notes: string[] = [];
-		if (options.truncated) {
-			notes.push(`Deep recall truncated: swept the first ${options.cap} memories; some rows were left unread.`);
-		}
 		const scorer = state.recallScorer;
 		let scores: (number | null)[] | undefined;
 		if (scorer && candidates.length > 0) {
@@ -271,11 +261,25 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 			const unscored = scores.filter(score => score === null).length;
 			const best = Math.max(...answered);
 			if (best < state.config.decisionModelThreshold) {
-				const text =
-					unscored > 0
-						? `No relevant memories found. ${unscored} candidates could not be scored.`
-						: "No relevant memories found.";
-				return { content: [{ type: "text", text }], details: {}, useless: true };
+				const details = describeRecallCoverage(
+					{
+						mode: options.swept ? "swept" : "shortlisted",
+						gear: options.gear,
+						tags: options.tags,
+						totalAvailable: options.totalAvailable,
+					},
+					candidates,
+					scores,
+					[],
+				);
+				const note = unscored > 0 ? ` ${unscored} candidates could not be scored.` : "";
+				return {
+					content: [
+						{ type: "text", text: `${recallCoverageHeader(0, details)}\n\nNo relevant memories found.${note}` },
+					],
+					details,
+					useless: true,
+				};
 			}
 			if (unscored > 0) notes.push(`${unscored} candidates could not be scored.`);
 			const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
@@ -288,14 +292,31 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 				.sort((left, right) => right.score - left.score)
 				.map(({ candidate }) => candidate);
 		}
+		const details = describeRecallCoverage(
+			{
+				mode: options.swept ? "swept" : "shortlisted",
+				gear: options.gear,
+				tags: options.tags,
+				totalAvailable: options.totalAvailable,
+			},
+			candidates,
+			scores,
+			ordered,
+		);
 		const packed = packByTokens(ordered, options.maxTokens);
-		if (packed.length === 0) {
-			return { content: [{ type: "text", text: "No relevant memories found." }], details: {}, useless: true };
-		}
-		const header = `Found ${packed.length} relevant ${packed.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):`;
 		return {
-			content: [{ type: "text", text: [header, ...notes, formatMemories(packed)].join("\n\n") }],
-			details: { truncated: options.truncated },
+			content: [
+				{
+					type: "text",
+					text: [
+						recallCoverageHeader(packed.length, details),
+						...notes,
+						packed.length > 0 ? formatMemories(packed) : "No relevant memories found.",
+					].join("\n\n"),
+				},
+			],
+			details: { ...details, truncated: !options.swept },
+			...(packed.length === 0 ? { useless: true } : {}),
 		};
 	}
 }

@@ -13,6 +13,6 @@ Bank topology:
 - `experience`: dated events; `world` and `experience` preserve verbatim detail that observations distil away.
 - `knowledge://` pages: curated architecture and decision documents.
 
-Narrow recall with tags: `area:<subsystem>` restricts to one area, `memory_shape:<shape>` to one memory shape; provided tags merge with the session's scope tags instead of replacing them.
+target recall with `tags: ["project:<id>"]`, for example `project:exocortex`, `project:oh-my-pi`, `project:vms-lab`, `project:browser-ops`, `project:hcom`, `project:herdr`, or `project:memory`. an explicit project replaces the default project filter; a narrower scope is more likely to fit an exhaustive decision-model sweep. use `tags: ["project:*"]` to widen a project-bound coding recall across coding projects. `area:<subsystem>` and `memory_shape:<shape>` add narrower filters. project targeting never removes the session's hard scope boundary or grants access to personal memory.
 
-Choose recall depth by how much of your own past experience you need in view: from a single known fact (`low`) or everyday working context (`mid`), up to connected cross-session history (`high`), a broad deep sweep when phrasing may differ (`xhigh`), or reading every consolidated belief in scope so nothing hides (`max`).
+choose recall depth by how much of your past experience you need: one known fact (`low`), everyday working context (`mid`), connected cross-session history (`high`), a broad sweep (`xhigh`), or the largest bounded sweep (`max`). oversized scopes use a ranked shortlist even at `max`; inspect the coverage header and target a project when exhaustive coverage matters.

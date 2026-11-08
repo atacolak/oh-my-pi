@@ -35,7 +35,14 @@ import {
 	resolveSeedsForScope,
 	tryLoadMentalModelsBlock,
 } from "./mental-models";
-import { GEAR_SWEEP_CAPS, packByTokens, resolveSweepCollections, sweepBankMemories } from "./sweep";
+import {
+	type BankSweepResult,
+	GEAR_SWEEP_CAPS,
+	packByTokens,
+	resolveSweepCollections,
+	sweepBankMemories,
+} from "./sweep";
+import { describeRecallCoverage, type RecallCoverage } from "./recall-coverage";
 import { type DrainResult, HindsightOutbox, type RetainInput } from "./outbox";
 import { countRetainableUserTurns, extractMessages } from "./transcript";
 
@@ -77,6 +84,7 @@ interface RecallOutcome {
 	ok: boolean;
 	/** Memories this block carries, in the order the model will read them. */
 	delivered: RecalledMemory[];
+	details?: RecallCoverage;
 }
 
 export interface HindsightConversationTrackingSnapshot {
@@ -848,8 +856,19 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
 		const generation = this.#recallGeneration;
 		try {
+			let totalAvailable: number | null = null;
 			if (this.recallScorer) {
-				const swept = await this.#recallSweptContext(query, signal);
+				const sweep = await sweepBankMemories(
+					this.client,
+					this.bankId,
+					resolveSweepCollections(undefined, this.config),
+					this.recallTags,
+					this.recallTagsMatch,
+					{ ceiling: GEAR_SWEEP_CAPS[this.config.recallBudget], bailOnOverflow: true },
+					signal,
+				);
+				totalAvailable = sweep.totalAvailableExact ? sweep.totalAvailable : null;
+				const swept = await this.#recallSweptContext(query, sweep, signal);
 				if (swept) return swept;
 				if (signal?.aborted) return { context: null, ok: false, delivered: [] };
 			}
@@ -865,19 +884,22 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 			});
 			if (signal?.aborted) return { context: null, ok: false, delivered: [] };
 			const results = response.results ?? [];
-			// Hindsight keeps every candidate above its relevance floor, so a bank with no
-			// matching memory still returns one survivor; only a lone result can be a floor
-			// artefact. Two results already show a real match cleared the floor.
-			if (results.length === 1) {
-				if (!(await this.keepLoneRecallSurvivor(query, results[0]!.text, signal))) {
-					return { context: null, ok: true, delivered: [] };
-				}
+			let scores: (number | null)[] | undefined;
+			let kept = results;
+			if (results.length === 1 && this.recallScorer) {
+				const score = await this.recallScorer.score(query, results[0]!.text, signal);
+				scores = [score];
+				if (score !== null && score < this.config.decisionModelThreshold) kept = [];
 				if (signal?.aborted) return { context: null, ok: false, delivered: [] };
 			}
-			// A refresh exists to surface what the model does not already have. Memories
-			// already delivered in this transcript are context it has read.
-			const fresh = results.filter(result => !this.recalledMemoryIds.has(recallMemoryKey(result)));
-			if (fresh.length === 0) return { context: null, ok: true, delivered: [] };
+			const details = describeRecallCoverage(
+				{ mode: "shortlisted", gear: this.config.recallBudget, tags: this.recallTags, totalAvailable },
+				results,
+				scores,
+				kept,
+			);
+			const fresh = kept.filter(result => !this.recalledMemoryIds.has(recallMemoryKey(result)));
+			if (fresh.length === 0) return { context: null, ok: true, delivered: [], details };
 			const formatted = formatMemories(fresh);
 			const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
 			this.lastRecallSnippet = block;
@@ -885,6 +907,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 				context: block,
 				ok: true,
 				delivered: fresh.map(result => ({ id: result.id ?? recallMemoryKey(result), text: result.text })),
+				details,
 			};
 		} catch (err) {
 			// A cancelled turn (Esc) is not a failure.
@@ -909,21 +932,23 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	 * Undefined means the scope outgrew the cap or scoring produced no evidence, leaving the
 	 * server-ranked recall as the fallback.
 	 */
-	async #recallSweptContext(query: string, signal?: AbortSignal): Promise<RecallOutcome | undefined> {
+	async #recallSweptContext(
+		query: string,
+		sweep: BankSweepResult,
+		signal?: AbortSignal,
+	): Promise<RecallOutcome | undefined> {
 		const scorer = this.recallScorer;
 		if (!scorer) return undefined;
-		const sweep = await sweepBankMemories(
-			this.client,
-			this.bankId,
-			resolveSweepCollections(undefined, this.config),
-			this.recallTags,
-			this.recallTagsMatch,
-			{ ceiling: GEAR_SWEEP_CAPS[this.config.recallBudget], bailOnOverflow: true },
-			signal,
-		);
 		if (signal?.aborted) return { context: null, ok: false, delivered: [] };
-		if (sweep.truncated || sweep.candidates.length === 0) {
-			return sweep.truncated ? undefined : { context: null, ok: true, delivered: [] };
+		const scope = {
+			mode: "swept" as const,
+			gear: this.config.recallBudget,
+			tags: this.recallTags,
+			totalAvailable: sweep.totalAvailableExact ? sweep.totalAvailable : null,
+		};
+		if (sweep.truncated) return undefined;
+		if (sweep.candidates.length === 0) {
+			return { context: null, ok: true, delivered: [], details: describeRecallCoverage(scope, [], [], []) };
 		}
 		let scores: (number | null)[];
 		try {
@@ -946,14 +971,23 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		});
 		if (scored.length === 0) return undefined;
 		const best = Math.max(...scored.map(entry => entry.score));
-		if (best < this.config.decisionModelThreshold) return { context: null, ok: true, delivered: [] };
+		if (best < this.config.decisionModelThreshold) {
+			return {
+				context: null,
+				ok: true,
+				delivered: [],
+				details: describeRecallCoverage(scope, sweep.candidates, scores, []),
+			};
+		}
 		const floor = Math.max(RECALL_SCORE_FLOOR, RECALL_SCORE_FLOOR_RATIO * best);
+		const kept = scored.filter(entry => entry.score >= floor).map(entry => entry.candidate);
+		const details = describeRecallCoverage(scope, sweep.candidates, scores, kept);
 		const fresh = scored
 			.filter(entry => entry.score >= floor && !this.recalledMemoryIds.has(recallMemoryKey(entry.candidate)))
 			.sort((left, right) => right.score - left.score)
 			.map(entry => entry.candidate);
 		const packed = packByTokens(fresh, this.config.recallMaxTokens);
-		if (packed.length === 0) return { context: null, ok: true, delivered: [] };
+		if (packed.length === 0) return { context: null, ok: true, delivered: [], details };
 		const formatted = formatMemories(packed);
 		const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
 		this.lastRecallSnippet = block;
@@ -961,6 +995,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 			context: block,
 			ok: true,
 			delivered: packed.map(result => ({ id: result.id ?? recallMemoryKey(result), text: result.text })),
+			details,
 		};
 	}
 

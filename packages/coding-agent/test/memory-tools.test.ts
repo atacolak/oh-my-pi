@@ -2249,7 +2249,7 @@ describe("reflect.execute", () => {
 		registeredState = undefined;
 	});
 
-	it("returns the reflect text and forwards context", async () => {
+	it("uses the server-high budget for default reflection while forwarding context", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		const reflectSpy = vi
@@ -2262,7 +2262,7 @@ describe("reflect.execute", () => {
 		expect(reflectSpy).toHaveBeenCalledWith(
 			"test-bank",
 			"what does the user prefer?",
-			expect.objectContaining({ context: "background", budget: "mid" }),
+			expect.objectContaining({ context: "background", budget: "high" }),
 		);
 		expect((result.content[0] as { text: string }).text).toBe("Synthesised answer");
 	});

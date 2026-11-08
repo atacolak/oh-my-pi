@@ -89,7 +89,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 				await ensureBankExists(client, bankId, config, banksSet);
 				const response = await client.reflect(bankId, params.query, {
 					context: params.context,
-					budget: config.recallBudget === "default" ? "mid" : "high",
+					budget: "high",
 					tags: recallTags,
 					tagsMatch: recallTagsMatch,
 				});

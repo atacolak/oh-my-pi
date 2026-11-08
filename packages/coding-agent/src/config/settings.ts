@@ -2879,18 +2879,17 @@ export class Settings {
 	 * over `layers` with the merged project; the read itself runs without waiting for them.
 	 */
 	#resolveProjectRead(read: ProjectSettingsDiscovery, layers: Omit<OwnLayers, "project">): ProjectSettingsReadResult {
-		const nativePath = path.resolve(getProjectAgentDir(read.cwd), "config.yml");
-		// Native project YAML is the final project layer, independent of provider discovery order.
-		const orderedItems = [
-			...read.items.filter(item => path.resolve(item.path) !== nativePath),
-			...read.items.filter(item => path.resolve(item.path) === nativePath),
-		];
-		let project = this.#mergeProjectItems(orderedItems, read.nativeModelRoles);
-		let projectItems = orderedItems;
+		const nativeConfig = {
+			path: path.resolve(getProjectAgentDir(read.cwd), "config.yml"),
+			settings: read.fileSettings,
+		};
+		let project = this.#mergeProjectItems(read.items, nativeConfig);
 		const disabled = this.#disabledProviderIds({ ...layers, project: project.settings }, read.cwd);
-		if (orderedItems.some(item => disabled.has(item._source.provider))) {
-			projectItems = orderedItems.filter(item => !disabled.has(item._source.provider));
-			const filtered = this.#mergeProjectItems(projectItems, read.nativeModelRoles);
+		if (read.items.some(item => disabled.has(item._source.provider))) {
+			const filtered = this.#mergeProjectItems(
+				read.items.filter(item => !disabled.has(item._source.provider)),
+				nativeConfig,
+			);
 			const projectSwitch = getByPath(project.settings, cfgDisabledProviders.segments);
 			if (projectSwitch !== undefined) {
 				const remaining = this.#disabledProviderIds({ ...layers, project: filtered.settings }, read.cwd);
@@ -2909,19 +2908,22 @@ export class Settings {
 			}
 			project = filtered;
 		}
-		let withoutNative: RawSettings = {};
-		const projectLayers: RawSettings[] = [];
-		for (const item of projectItems) {
-			const data = dropSettingsGroupShadows(item.data as RawSettings, item.path);
-			projectLayers.push(structuredClone(data));
-			if (path.resolve(item.path) !== nativePath) withoutNative = this.#deepMerge(withoutNative, data);
+		const withoutNative = this.#mergeProjectItems(
+			read.items.filter(
+				item => !disabled.has(item._source.provider) && path.resolve(item.path) !== nativeConfig.path,
+			),
+		).settings;
+		const projectSwitch = getByPath(project.settings, cfgDisabledProviders.segments);
+		if (getByPath(read.fileSettings, cfgDisabledProviders.segments) === undefined && projectSwitch !== undefined) {
+			// A filtered provider's self-disable switch remains inherited, never copied into native YAML.
+			setByPath(withoutNative, cfgDisabledProviders.segments, projectSwitch);
 		}
 		return {
 			settings: this.#migrateRawSettings(project.settings, read.quarantineInvalid),
-			fileSettings: this.#migrateRawSettings(structuredClone(read.fileSettings), read.quarantineInvalid),
+			fileSettings: read.fileSettings,
 			withoutNative: this.#migrateRawSettings(withoutNative, read.quarantineInvalid),
 			configExists: read.configExists,
-			layers: projectLayers,
+			layers: project.layers,
 			shellPathSource: project.shellPathSource,
 			sourcePaths: [
 				...new Set([
@@ -2933,21 +2935,30 @@ export class Settings {
 		};
 	}
 
-	/** Project-level settings `items` merged in discovery order, then the native project config's model roles. */
+	/** Project sources merged in discovery order, with the writable native file taking precedence. */
 	#mergeProjectItems(
 		items: readonly SettingsCapabilityItem[],
-		nativeModelRoles: unknown,
-	): { settings: RawSettings; sourcePaths: string[]; shellPathSource: string | undefined } {
+		nativeConfig?: { path: string; settings: RawSettings },
+	): { settings: RawSettings; layers: RawSettings[]; sourcePaths: string[]; shellPathSource: string | undefined } {
 		let settings: RawSettings = {};
 		const sourcePaths: string[] = [];
+		const layers: RawSettings[] = [];
 		let shellPathSource: string | undefined;
 		for (const item of items) {
-			settings = this.#deepMerge(settings, dropSettingsGroupShadows(item.data as RawSettings, item.path));
+			if (nativeConfig && path.resolve(item.path) === nativeConfig.path) continue;
+			const layer = dropSettingsGroupShadows(item.data as RawSettings, item.path);
+			layers.push(structuredClone(layer));
+			settings = this.#deepMerge(settings, layer);
 			sourcePaths.push(item.path);
 			if (Object.hasOwn(item.data, "shellPath")) shellPathSource = item.path;
 		}
-		if (nativeModelRoles !== undefined) settings = this.#deepMerge(settings, { modelRoles: nativeModelRoles });
-		return { settings, sourcePaths, shellPathSource };
+		if (nativeConfig) {
+			const layer = structuredClone(nativeConfig.settings);
+			layers.push(layer);
+			settings = this.#deepMerge(settings, layer);
+			if (Object.hasOwn(nativeConfig.settings, "shellPath")) shellPathSource = nativeConfig.path;
+		}
+		return { settings, layers, sourcePaths, shellPathSource };
 	}
 
 	/** Provider ids `disabledProviders` resolves to for `cwd` when `layers` are merged (over the overlay parent). */

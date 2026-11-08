@@ -2093,7 +2093,13 @@ export class RpcCommandSurface {
 			// =================================================================
 
 			case "bash": {
-				const result = await session.executeBash(command.command);
+				// Reject rather than coerce: a falsy non-boolean such as `null` would silently share the output.
+				if (command.excludeFromContext !== undefined && typeof command.excludeFromContext !== "boolean") {
+					return rpcError(id, "bash", "excludeFromContext must be a boolean");
+				}
+				const result = await session.executeBash(command.command, undefined, {
+					excludeFromContext: command.excludeFromContext,
+				});
 				return rpcSuccess(id, "bash", result);
 			}
 

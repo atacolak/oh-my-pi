@@ -923,7 +923,9 @@ class DaemonBroker {
 		for (const subscriptions of this.#terminalSubscriptions.values()) {
 			for (const subscription of subscriptions.values()) {
 				if (subscription.name === spec.name) {
-					throw new Error(`Terminal ${spec.name} is already attached by subscription ${subscription.subscriptionId}`);
+					throw new Error(
+						`Terminal ${spec.name} is already attached by subscription ${subscription.subscriptionId}`,
+					);
 				}
 			}
 		}

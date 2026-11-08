@@ -497,6 +497,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			supportedProtocolVersions: [1, 2],
 			maxFrameBytes: MAX_RPC_FRAME_BYTES,
 			maxReassembledFrameBytes: MAX_RPC_REASSEMBLED_BYTES,
+			supportsBashExcludeFromContext: true,
 		}),
 	);
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {

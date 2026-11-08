@@ -219,7 +219,9 @@ export async function probeSessionAttach(
 	if (observation === "live") {
 		if (options.sessionPath !== undefined) {
 			const current = await readPublication(sidecarPath, sessionId);
-			const beforeTerminal = terminalFromMetadata(publication.kind === "published" ? publication.metadata : undefined);
+			const beforeTerminal = terminalFromMetadata(
+				publication.kind === "published" ? publication.metadata : undefined,
+			);
 			const afterTerminal = terminalFromMetadata(current.kind === "published" ? current.metadata : undefined);
 			if (
 				current.kind !== "published" ||

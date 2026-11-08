@@ -552,7 +552,7 @@
 			},
 			{
 				"name": "bash",
-				"doc": "Run a shell command.",
+				"doc": "Run a shell command. Before excluding output, require ready.supportsBashExcludeFromContext to be true.",
 				"params": "BashParams",
 				"result": "BashResult",
 				"nullable": false,
@@ -4713,6 +4713,10 @@
 				},
 				"maxReassembledFrameBytes": {
 					"type": "integer"
+				},
+				"supportsBashExcludeFromContext": {
+					"type": "boolean",
+					"description": "`bash` accepts `excludeFromContext`; require exactly true before sending excluded commands."
 				}
 			},
 			"required": [
@@ -6993,6 +6997,9 @@
 			"properties": {
 				"command": {
 					"type": "string"
+				},
+				"excludeFromContext": {
+					"type": "boolean"
 				}
 			},
 			"required": [

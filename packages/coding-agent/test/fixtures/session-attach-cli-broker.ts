@@ -33,7 +33,7 @@ const client = await createDaemonBrokerClient(projectDir, { existingOnly: true }
 const name = `mind-${crypto.randomUUID()}`;
 const subscriptionId = `bootstrap-${crypto.randomUUID()}`;
 const script = [
-	'process.stdin.setRawMode?.(true);',
+	"process.stdin.setRawMode?.(true);",
 	'process.stdin.on("data", data => process.stdout.write(`OWNER-INPUT:${data.toString()}`));',
 	'process.on("SIGUSR1", () => process.stdout.write("OWNER-REFRESH\\r\\n"));',
 	'process.on("SIGWINCH", () => process.stdout.write("OWNER-RESIZE\\r\\n"));',
@@ -56,8 +56,15 @@ try {
 		op: "terminal_start",
 		subscriptionId,
 		spec: {
-			name, application: process.execPath, args: ["-e", script], env: {}, cwd: projectDir,
-			pty: true, persist: true, detached: false, restart: "no",
+			name,
+			application: process.execPath,
+			args: ["-e", script],
+			env: {},
+			cwd: projectDir,
+			pty: true,
+			persist: true,
+			detached: false,
+			restart: "no",
 		},
 		columns: 100,
 		rows: 30,
@@ -65,10 +72,17 @@ try {
 	if (started.op !== "terminal_start") throw new Error("terminal_start did not start the owner");
 	await withTimeout(ready.promise, 10_000, "fixture owner did not become ready");
 	await client.request({ op: "terminal_detach", subscriptionId, name, id: started.daemon.id });
-	fs.writeFileSync(reportFile, JSON.stringify({
-		name, id: started.daemon.id, pid: started.daemon.pid, runtimeDir,
-		brokerCli, brokerTerminalProtocol: capability.terminalProtocolVersion,
-	}));
+	fs.writeFileSync(
+		reportFile,
+		JSON.stringify({
+			name,
+			id: started.daemon.id,
+			pid: started.daemon.pid,
+			runtimeDir,
+			brokerCli,
+			brokerTerminalProtocol: capability.terminalProtocolVersion,
+		}),
+	);
 	while (!fs.existsSync(stopFile)) await Bun.sleep(20);
 } finally {
 	try {

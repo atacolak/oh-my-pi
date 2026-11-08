@@ -263,6 +263,48 @@ describe("an interactive session's published endpoint", () => {
 		}
 	}, 30_000);
 
+	it("keeps socket bash output out of model context and refuses malformed exclusion before execution", async () => {
+		fixture = await createInteractiveFixture([]);
+		const peer = await SocketPeer.connect(fixture.endpoint);
+		try {
+			const ready = await peer.next(frame => frame.type === "ready");
+			expect(ready.supportsBashExcludeFromContext).toBe(true);
+			peer.send({ id: "shared", type: "bash", command: "printf shared-marker" });
+			expect(await frameOf(peer, "shared")).toMatchObject({
+				success: true,
+				data: { output: "shared-marker" },
+			});
+			peer.send({ id: "private", type: "bash", command: "printf private-marker", excludeFromContext: true });
+			expect(await frameOf(peer, "private")).toMatchObject({
+				success: true,
+				data: { output: "private-marker" },
+			});
+			peer.send({ id: "messages", type: "get_messages" });
+			const messages = (await frameOf(peer, "messages")).data as { messages: typeof fixture.session.messages };
+			expect(
+				messages.messages.filter(message => message.role === "bashExecution").map(message => message.output),
+			).toEqual(["shared-marker", "private-marker"]);
+			const modelContext = JSON.stringify(convertToLlm(messages.messages));
+			expect(modelContext).toContain("shared-marker");
+			expect(modelContext).not.toContain("private-marker");
+
+			peer.send({
+				id: "invalid",
+				type: "bash",
+				command: "printf leaked > refused.txt",
+				excludeFromContext: null,
+			});
+			expect(await frameOf(peer, "invalid")).toMatchObject({
+				success: false,
+				error: "excludeFromContext must be a boolean",
+			});
+			expect(await Bun.file(path.join(fixture.dir, "refused.txt")).exists()).toBe(false);
+			expect(fixture.session.messages.filter(message => message.role === "bashExecution")).toHaveLength(2);
+		} finally {
+			peer.close();
+		}
+	}, 30_000);
+
 	it("serves a second client after the first disconnects", async () => {
 		fixture = await createInteractiveFixture([]);
 		const first = await SocketPeer.connect(fixture.endpoint);

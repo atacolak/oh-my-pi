@@ -193,7 +193,7 @@ describe("RPC session socket", () => {
 
 		const peer = await SocketPeer.connect(endpoint);
 		await peer.next(frame => frame.type === "surface_frame");
-		expect(peer.seen[0]).toEqual({
+		expect(peer.seen[0]).toMatchObject({
 			type: "ready",
 			protocolVersion: 1,
 			supportedProtocolVersions: [1, 2],

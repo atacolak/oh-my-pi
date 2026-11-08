@@ -325,7 +325,7 @@ describe("broker terminal streams", () => {
 					'process.stdout.write("READY\\n");' +
 					'process.stdin.on("data", chunk => {' +
 					'if (chunk.includes("go")) {' +
-					'void (async () => {' +
+					"void (async () => {" +
 					'const block = "x".repeat(65536);' +
 					"for (let i = 0; i < 48; i++) { process.stdout.write(block); await Bun.sleep(5); }" +
 					'process.stdout.write("BURST_DONE\\n");' +
@@ -468,7 +468,11 @@ describe("broker terminal streams", () => {
 			);
 			try {
 				const started = await client.request({
-					op: "terminal_start", subscriptionId, spec, columns: 80, rows: 24,
+					op: "terminal_start",
+					subscriptionId,
+					spec,
+					columns: 80,
+					rows: 24,
 				});
 				if (started.op !== "terminal_start") throw new Error("unexpected terminal_start result");
 				const other = await connect();
@@ -476,33 +480,72 @@ describe("broker terminal streams", () => {
 				const otherCapture = captureTerminal(other, otherSubscription, { ack: true });
 				try {
 					const attached = await other.request({
-						op: "terminal_attach", subscriptionId: otherSubscription,
-						name: spec.name, id: started.daemon.id, columns: 100, rows: 30,
+						op: "terminal_attach",
+						subscriptionId: otherSubscription,
+						name: spec.name,
+						id: started.daemon.id,
+						columns: 100,
+						rows: 30,
 					});
 					if (attached.op !== "terminal_attach") throw new Error("unexpected terminal_attach result");
 					expect(attached.daemon.pid).toBe(started.daemon.pid);
-					await expect(other.request({
-						op: "terminal_attach", subscriptionId,
-						name: spec.name, id: started.daemon.id, columns: 100, rows: 30,
-					})).rejects.toThrow("already attached");
-					await expect(other.request({
-						op: "terminal_ack", subscriptionId, name: spec.name, id: started.daemon.id, sequence: 0,
-					})).rejects.toThrow("another connection");
-					await expect(other.request({
-						op: "terminal_resize", subscriptionId,
-						name: spec.name, id: started.daemon.id, columns: 1, rows: 1,
-					})).rejects.toThrow("another connection");
-					await expect(other.request({
-						op: "terminal_detach", subscriptionId, name: spec.name, id: started.daemon.id,
-					})).rejects.toThrow("another connection");
-					await expect(other.request({
-						op: "terminal_resize", subscriptionId: "forged",
-						name: spec.name, id: started.daemon.id, columns: 1, rows: 1,
-					})).rejects.toThrow("does not own");
-					await expect(other.request({
-						op: "terminal_resize", subscriptionId: otherSubscription,
-						name: spec.name, id: "stale-generation", columns: 1, rows: 1,
-					})).rejects.toThrow("does not own");
+					await expect(
+						other.request({
+							op: "terminal_attach",
+							subscriptionId,
+							name: spec.name,
+							id: started.daemon.id,
+							columns: 100,
+							rows: 30,
+						}),
+					).rejects.toThrow("already attached");
+					await expect(
+						other.request({
+							op: "terminal_ack",
+							subscriptionId,
+							name: spec.name,
+							id: started.daemon.id,
+							sequence: 0,
+						}),
+					).rejects.toThrow("another connection");
+					await expect(
+						other.request({
+							op: "terminal_resize",
+							subscriptionId,
+							name: spec.name,
+							id: started.daemon.id,
+							columns: 1,
+							rows: 1,
+						}),
+					).rejects.toThrow("another connection");
+					await expect(
+						other.request({
+							op: "terminal_detach",
+							subscriptionId,
+							name: spec.name,
+							id: started.daemon.id,
+						}),
+					).rejects.toThrow("another connection");
+					await expect(
+						other.request({
+							op: "terminal_resize",
+							subscriptionId: "forged",
+							name: spec.name,
+							id: started.daemon.id,
+							columns: 1,
+							rows: 1,
+						}),
+					).rejects.toThrow("does not own");
+					await expect(
+						other.request({
+							op: "terminal_resize",
+							subscriptionId: otherSubscription,
+							name: spec.name,
+							id: "stale-generation",
+							columns: 1,
+							rows: 1,
+						}),
+					).rejects.toThrow("does not own");
 					await other.request({ op: "send", name: spec.name, id: started.daemon.id, data: "shared" });
 					await Promise.all([capture.waitForText("INPUT:shared"), otherCapture.waitForText("INPUT:shared")]);
 					other.close();
@@ -516,19 +559,30 @@ describe("broker terminal streams", () => {
 				const thirdCapture = captureTerminal(third, thirdSubscription, { ack: true });
 				try {
 					await third.request({
-						op: "terminal_attach", subscriptionId: thirdSubscription,
-						name: spec.name, id: started.daemon.id, columns: 90, rows: 25,
+						op: "terminal_attach",
+						subscriptionId: thirdSubscription,
+						name: spec.name,
+						id: started.daemon.id,
+						columns: 90,
+						rows: 25,
 					});
 					await client.request({
-						op: "terminal_detach", subscriptionId, name: spec.name, id: started.daemon.id,
+						op: "terminal_detach",
+						subscriptionId,
+						name: spec.name,
+						id: started.daemon.id,
 					});
 					const detachedText = capture.text;
 					await third.request({ op: "send", name: spec.name, id: started.daemon.id, data: "after-detach" });
 					await thirdCapture.waitForText("INPUT:after-detach");
 					expect(capture.text).toBe(detachedText);
 					await client.request({
-						op: "terminal_attach", subscriptionId,
-						name: spec.name, id: started.daemon.id, columns: 80, rows: 24,
+						op: "terminal_attach",
+						subscriptionId,
+						name: spec.name,
+						id: started.daemon.id,
+						columns: 80,
+						rows: 24,
 					});
 					await third.request({ op: "stop", name: spec.name, id: started.daemon.id, timeoutMs: 2_000 });
 					const exits = await Promise.all([capture.waitForExit(), thirdCapture.waitForExit()]);

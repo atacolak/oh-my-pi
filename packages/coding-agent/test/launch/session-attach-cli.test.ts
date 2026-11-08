@@ -414,7 +414,10 @@ describe("CLI --attach exact live owner", () => {
 						stateCalls++;
 						if (rebindBeforeState && stateCalls === 2) {
 							rebindBeforeState = false;
-							fs.writeFileSync(publication, JSON.stringify({ ...metadata, terminal: { ...metadata.terminal, id: "replaced" } }));
+							fs.writeFileSync(
+								publication,
+								JSON.stringify({ ...metadata, terminal: { ...metadata.terminal, id: "replaced" } }),
+							);
 						}
 						if (disappearBeforeState && stateCalls === 2) {
 							disappearBeforeState = false;
@@ -426,7 +429,10 @@ describe("CLI --attach exact live owner", () => {
 			);
 			fs.writeFileSync(publication, JSON.stringify(metadata), { mode: 0o600 });
 			web = await IpcConnection.connect(ipcEndpoint(runDir, sessionId), { framing: "lines" });
-			web.start(() => {}, () => {});
+			web.start(
+				() => {},
+				() => {},
+			);
 			const first = new CliViewer(homeDir, agentDir, project, sessionPath);
 			viewers.push(first);
 			await first.waitForText("OWNER-REFRESH");
@@ -469,7 +475,9 @@ describe("CLI --attach exact live owner", () => {
 			fs.writeFileSync(publication, JSON.stringify(metadata));
 			const listed = await client.request({ op: "list" });
 			if (listed.op !== "list") throw new Error("expected broker list");
-			expect(listed.daemons.map(daemon => [daemon.name, daemon.id, daemon.pid])).toEqual([[owner.name, owner.id, owner.pid]]);
+			expect(listed.daemons.map(daemon => [daemon.name, daemon.id, daemon.pid])).toEqual([
+				[owner.name, owner.id, owner.pid],
+			]);
 			const runtimeFiles = fs.readdirSync(owner.runtimeDir, { recursive: true, encoding: "utf8" }).sort();
 			const finalViewer = new CliViewer(homeDir, agentDir, project, sessionPath);
 			viewers.push(finalViewer);
@@ -478,15 +486,21 @@ describe("CLI --attach exact live owner", () => {
 			stateCalls = 0;
 			const vanished = await runCli(homeDir, agentDir, project, ["--attach", sessionPath]);
 			expect(vanished.exitCode, vanished.output).toBe(2);
-			expect(await withTimeout(finalViewer.child.exited, 20_000, "attached viewer did not observe owner exit")).toBe(42);
+			expect(await withTimeout(finalViewer.child.exited, 20_000, "attached viewer did not observe owner exit")).toBe(
+				42,
+			);
 			expect(
-				fs.readdirSync(owner.runtimeDir, { recursive: true, encoding: "utf8" }).filter(file => !runtimeFiles.includes(file)),
+				fs
+					.readdirSync(owner.runtimeDir, { recursive: true, encoding: "utf8" })
+					.filter(file => !runtimeFiles.includes(file)),
 			).toEqual([]);
 			client.close();
 			expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
 			expect(fs.readFileSync(copy, "utf8")).toBe(before);
 			expect(sessionDirNames(sessionsDir)).toEqual([path.basename(sessionPath), path.basename(copy)].sort());
-			expect(endpoint.frames.every(frame => frame.type === "get_state" || frame.type === "terminal_refresh")).toBe(true);
+			expect(endpoint.frames.every(frame => frame.type === "get_state" || frame.type === "terminal_refresh")).toBe(
+				true,
+			);
 			expect(fs.readdirSync(agentDir)).toEqual(["config.yml"]);
 		} finally {
 			inspectionClient?.close();
@@ -494,74 +508,99 @@ describe("CLI --attach exact live owner", () => {
 			web?.destroy();
 			await endpoint?.close();
 			fs.writeFileSync(stopFile, "");
-			await withTimeout(launcher.exited, 20_000, "broker launcher did not stop").catch(() => launcher.kill("SIGKILL"));
+			await withTimeout(launcher.exited, 20_000, "broker launcher did not stop").catch(() =>
+				launcher.kill("SIGKILL"),
+			);
 		}
 	}, 180_000);
 });
 
 describe("CLI --attach legacy singleton broker", () => {
-	it.skipIf(!SINGLETON_BROKER_CLI)("attaches a free slot and refuses an occupied slot without takeover", async () => {
-		if (!SINGLETON_BROKER_CLI) throw new Error("OMP_TEST_SINGLETON_BROKER_CLI is required");
-		using tempDir = TempDir.createSync("@omp-cli-singleton-viewer-");
-		const homeDir = path.join(tempDir.path(), "home");
-		const agentDir = path.join(homeDir, "agent");
-		const projectDir = path.join(tempDir.path(), "project");
-		const sessionsDir = path.join(tempDir.path(), "sessions");
-		const runDir = path.join(homeDir, ".omp", "run");
-		for (const dir of [agentDir, projectDir, sessionsDir, runDir]) fs.mkdirSync(dir, { recursive: true });
-		const config = "modelRoles:\n  default: unavailable-provider/no-model\n";
-		fs.writeFileSync(path.join(agentDir, "config.yml"), config);
-		const project = fs.realpathSync(projectDir);
-		const { sessionId, sessionPath } = await createSession(sessionsDir, project);
-		const before = fs.readFileSync(sessionPath, "utf8");
-		const reportFile = path.join(tempDir.path(), "owner.json");
-		const stopFile = path.join(tempDir.path(), "stop");
-		const launcher = Bun.spawn([process.execPath, LAUNCHER, project, reportFile, stopFile, SINGLETON_BROKER_CLI], {
-			cwd: project, env: cliEnvironment(homeDir, agentDir), stdin: "ignore", stdout: "pipe", stderr: "pipe",
-		});
-		let endpoint: RefreshEndpoint | undefined;
-		let viewer: CliViewer | undefined;
-		let web: IpcConnection | undefined;
-		let client: DaemonBrokerClient | undefined;
-		try {
-			const owner = await waitForJson<OwnerReport>(reportFile, 60_000);
-			expect(owner.brokerCli).toBe(SINGLETON_BROKER_CLI);
-			expect(owner.brokerTerminalProtocol).toBe(1);
-			client = await createDaemonBrokerClient(project, { runtimeDir: owner.runtimeDir, existingOnly: true });
-			endpoint = await serveSessionEndpoint(
-				ipcEndpoint(runDir, sessionId), sessionId, owner.id,
-				() => process.kill(owner.pid, "SIGUSR1"), { sessionPath },
-			);
-			fs.writeFileSync(path.join(runDir, `${sessionId}.json`), JSON.stringify({
-				pid: owner.pid, sessionId, sessionFile: sessionPath,
-				terminal: { protocolVersion: 1, projectDir: project, name: owner.name, id: owner.id },
-			}));
-			web = await IpcConnection.connect(ipcEndpoint(runDir, sessionId), { framing: "lines" });
-			web.start(() => {}, () => {});
-			viewer = new CliViewer(homeDir, agentDir, project, sessionPath);
-			await viewer.waitForText("OWNER-REFRESH");
-			const refusal = await runCli(homeDir, agentDir, project, ["--attach", sessionPath]);
-			expect(refusal.exitCode, refusal.output).toBe(2);
-			expect(refusal.output).toContain("already attached");
-			viewer.terminal.write("after-refusal");
-			await viewer.waitForText("OWNER-INPUT:after-refusal");
-			expect(await viewer.close()).toBe(143);
-			viewer = undefined;
-			expect(web.closed).toBe(false);
-			const listed = await client.request({ op: "list" });
-			if (listed.op !== "list") throw new Error("expected broker list");
-			expect(listed.daemons.map(daemon => [daemon.name, daemon.id, daemon.pid])).toEqual([[owner.name, owner.id, owner.pid]]);
-			expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
-			expect(sessionDirNames(sessionsDir)).toEqual([path.basename(sessionPath)]);
-			expect(fs.readFileSync(path.join(agentDir, "config.yml"), "utf8")).toBe(config);
-			expect(fs.readdirSync(agentDir)).toEqual(["config.yml"]);
-		} finally {
-			client?.close();
-			await viewer?.close();
-			web?.destroy();
-			await endpoint?.close();
-			fs.writeFileSync(stopFile, "");
-			await withTimeout(launcher.exited, 20_000, "legacy broker fixture did not stop").catch(() => launcher.kill("SIGKILL"));
-		}
-	}, 180_000);
+	it.skipIf(!SINGLETON_BROKER_CLI)(
+		"attaches a free slot and refuses an occupied slot without takeover",
+		async () => {
+			if (!SINGLETON_BROKER_CLI) throw new Error("OMP_TEST_SINGLETON_BROKER_CLI is required");
+			using tempDir = TempDir.createSync("@omp-cli-singleton-viewer-");
+			const homeDir = path.join(tempDir.path(), "home");
+			const agentDir = path.join(homeDir, "agent");
+			const projectDir = path.join(tempDir.path(), "project");
+			const sessionsDir = path.join(tempDir.path(), "sessions");
+			const runDir = path.join(homeDir, ".omp", "run");
+			for (const dir of [agentDir, projectDir, sessionsDir, runDir]) fs.mkdirSync(dir, { recursive: true });
+			const config = "modelRoles:\n  default: unavailable-provider/no-model\n";
+			fs.writeFileSync(path.join(agentDir, "config.yml"), config);
+			const project = fs.realpathSync(projectDir);
+			const { sessionId, sessionPath } = await createSession(sessionsDir, project);
+			const before = fs.readFileSync(sessionPath, "utf8");
+			const reportFile = path.join(tempDir.path(), "owner.json");
+			const stopFile = path.join(tempDir.path(), "stop");
+			const launcher = Bun.spawn([process.execPath, LAUNCHER, project, reportFile, stopFile, SINGLETON_BROKER_CLI], {
+				cwd: project,
+				env: cliEnvironment(homeDir, agentDir),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			let endpoint: RefreshEndpoint | undefined;
+			let viewer: CliViewer | undefined;
+			let web: IpcConnection | undefined;
+			let client: DaemonBrokerClient | undefined;
+			try {
+				const owner = await waitForJson<OwnerReport>(reportFile, 60_000);
+				expect(owner.brokerCli).toBe(SINGLETON_BROKER_CLI);
+				expect(owner.brokerTerminalProtocol).toBe(1);
+				client = await createDaemonBrokerClient(project, { runtimeDir: owner.runtimeDir, existingOnly: true });
+				endpoint = await serveSessionEndpoint(
+					ipcEndpoint(runDir, sessionId),
+					sessionId,
+					owner.id,
+					() => process.kill(owner.pid, "SIGUSR1"),
+					{ sessionPath },
+				);
+				fs.writeFileSync(
+					path.join(runDir, `${sessionId}.json`),
+					JSON.stringify({
+						pid: owner.pid,
+						sessionId,
+						sessionFile: sessionPath,
+						terminal: { protocolVersion: 1, projectDir: project, name: owner.name, id: owner.id },
+					}),
+				);
+				web = await IpcConnection.connect(ipcEndpoint(runDir, sessionId), { framing: "lines" });
+				web.start(
+					() => {},
+					() => {},
+				);
+				viewer = new CliViewer(homeDir, agentDir, project, sessionPath);
+				await viewer.waitForText("OWNER-REFRESH");
+				const refusal = await runCli(homeDir, agentDir, project, ["--attach", sessionPath]);
+				expect(refusal.exitCode, refusal.output).toBe(2);
+				expect(refusal.output).toContain("already attached");
+				viewer.terminal.write("after-refusal");
+				await viewer.waitForText("OWNER-INPUT:after-refusal");
+				expect(await viewer.close()).toBe(143);
+				viewer = undefined;
+				expect(web.closed).toBe(false);
+				const listed = await client.request({ op: "list" });
+				if (listed.op !== "list") throw new Error("expected broker list");
+				expect(listed.daemons.map(daemon => [daemon.name, daemon.id, daemon.pid])).toEqual([
+					[owner.name, owner.id, owner.pid],
+				]);
+				expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
+				expect(sessionDirNames(sessionsDir)).toEqual([path.basename(sessionPath)]);
+				expect(fs.readFileSync(path.join(agentDir, "config.yml"), "utf8")).toBe(config);
+				expect(fs.readdirSync(agentDir)).toEqual(["config.yml"]);
+			} finally {
+				client?.close();
+				await viewer?.close();
+				web?.destroy();
+				await endpoint?.close();
+				fs.writeFileSync(stopFile, "");
+				await withTimeout(launcher.exited, 20_000, "legacy broker fixture did not stop").catch(() =>
+					launcher.kill("SIGKILL"),
+				);
+			}
+		},
+		180_000,
+	);
 });

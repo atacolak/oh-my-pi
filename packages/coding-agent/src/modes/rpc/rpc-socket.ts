@@ -33,6 +33,7 @@ const READY_FRAME = {
 	type: "ready",
 	protocolVersion: 1,
 	supportedProtocolVersions: [1, 2],
+	supportsBashExcludeFromContext: true,
 } as const;
 
 /** Session identity published for discovery. Read again on every rebind. */

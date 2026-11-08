@@ -640,7 +640,10 @@ describe("brokered rpc launch", () => {
 								id: `native-control-${requests.length}`,
 								choices: [{ index: 0, delta: { role: "assistant", content: reply }, finish_reason: null }],
 							},
-							{ id: `native-control-${requests.length}`, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+							{
+								id: `native-control-${requests.length}`,
+								choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+							},
 						];
 						return new Response(
 							`${chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`,
@@ -671,23 +674,33 @@ describe("brokered rpc launch", () => {
 									baseUrl: `${provider.url.origin}/v1`,
 									api: "openai-completions",
 									auth: "none",
-									models: [{
-										id: "local",
-										name: "Local native control fixture",
-										reasoning: false,
-										input: ["text"],
-										cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-										contextWindow: 131072,
-										maxTokens: 1024,
-									}],
+									models: [
+										{
+											id: "local",
+											name: "Local native control fixture",
+											reasoning: false,
+											input: ["text"],
+											cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+											contextWindow: 131072,
+											maxTokens: 1024,
+										},
+									],
 								},
 							},
 						}),
 					);
 					const args = [
-						"--mode", "rpc", ...(noUi ? ["--no-ui"] : []),
-						"--model", "native-control/local",
-						"--no-extensions", "--no-skills", "--no-rules", "--no-lsp", "--no-prewalk", "--no-tools",
+						"--mode",
+						"rpc",
+						...(noUi ? ["--no-ui"] : []),
+						"--model",
+						"native-control/local",
+						"--no-extensions",
+						"--no-skills",
+						"--no-rules",
+						"--no-lsp",
+						"--no-prewalk",
+						"--no-tools",
 					];
 					bridge = new LaunchedBridge(args, harness.project, harness.env);
 					await bridge.saw(frame => frame.type === "ready");
@@ -726,10 +739,12 @@ describe("brokered rpc launch", () => {
 								success: true,
 								data: { sessionId: originalOwner.sessionId, sessionFile: sessionPath },
 							});
-							process.stdout.write(`${JSON.stringify({
-								contract: "hcom_bmf_headless_control_gap_v1",
-								nativeAttachExitCode,
-							})}\n`);
+							process.stdout.write(
+								`${JSON.stringify({
+									contract: "hcom_bmf_headless_control_gap_v1",
+									nativeAttachExitCode,
+								})}\n`,
+							);
 							return;
 						}
 						await first.waitForText("NATIVE_CONTROL_REPLY_1");
@@ -788,16 +803,20 @@ describe("brokered rpc launch", () => {
 					} finally {
 						expect(await processAlive(originalOwner.pid)).toBe(true);
 						expect(await readPublication(harness)).toEqual(originalOwner);
-						expect((await fs.readdir(sessionDir)).filter(file => file.endsWith(".jsonl")).sort()).toEqual(filesBefore);
-						process.stdout.write(`${JSON.stringify({
-							contract: "hcom_bmf_headless_control_gap_v1",
-							mode: args.slice(0, noUi ? 3 : 2),
-							ownerPid: originalOwner.pid,
-							bridgePid: bridge.pid,
-							sessionId: originalOwner.sessionId,
-							terminal: originalOwner.terminal ?? null,
-							providerTurns: requests.length,
-						})}\n`);
+						expect((await fs.readdir(sessionDir)).filter(file => file.endsWith(".jsonl")).sort()).toEqual(
+							filesBefore,
+						);
+						process.stdout.write(
+							`${JSON.stringify({
+								contract: "hcom_bmf_headless_control_gap_v1",
+								mode: args.slice(0, noUi ? 3 : 2),
+								ownerPid: originalOwner.pid,
+								bridgePid: bridge.pid,
+								sessionId: originalOwner.sessionId,
+								terminal: originalOwner.terminal ?? null,
+								providerTurns: requests.length,
+							})}\n`,
+						);
 					}
 				} finally {
 					await Promise.all(viewers.map(viewer => viewer.close()));

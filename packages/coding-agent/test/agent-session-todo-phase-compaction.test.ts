@@ -80,6 +80,7 @@ describe("passive todo phase durability across mid-run compaction", () => {
 			settings: session.settings,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
+			commitTodoPhases: persistCommitted,
 		};
 	}
 

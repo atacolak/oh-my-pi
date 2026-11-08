@@ -7,7 +7,7 @@
  * never the expanded skill body. An agent/autoload injection is not a user turn:
  * the leaf lands ON it so the skill stays on the active branch.
  */
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
@@ -16,7 +16,16 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { SessionMemory } from "@oh-my-pi/pi-coding-agent/session/session-memory";
+import { isolateHindsightEnv, type RestoreHindsightEnv } from "./helpers/hindsight-env";
 import { assistantMsg, createTestSession, userMsg } from "./utilities";
+
+let restoreHindsightEnv: RestoreHindsightEnv = () => {};
+beforeEach(() => {
+	restoreHindsightEnv = isolateHindsightEnv();
+});
+afterEach(() => {
+	restoreHindsightEnv();
+});
 
 const BODY = "<skill>huge expanded skill body</skill>";
 
@@ -475,6 +484,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 1,
 				"hindsight.retainOverlapTurns": 0,
 			},
@@ -572,6 +582,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 5,
 				"hindsight.retainOverlapTurns": 0,
 			},
@@ -689,6 +700,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 1,
 				"hindsight.retainOverlapTurns": 0,
 			},
@@ -748,6 +760,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 5,
 				"hindsight.retainOverlapTurns": 0,
 			},

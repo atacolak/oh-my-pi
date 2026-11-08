@@ -133,7 +133,7 @@ describe("restartArgv — --agent flags", () => {
 				["--agent", "runtime-maintainer", "--agent-cwd", "/roles", "--cwd", "/work", "open ubereats"],
 				"sid",
 			),
-		).toEqual(["--agent", "runtime-maintainer", "--agent-cwd", "/roles", "--cwd", "/work", "--resume", "sid"]);
+		).toEqual(["--agent", "runtime-maintainer", "--agent-cwd", "/roles", "--cwd", "/work", "--restore", "sid"]);
 	});
 });
 
@@ -410,34 +410,37 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
-	it("restores agentName from the session header without a CLI --agent", async () => {
-		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
-		try {
-			authStorage = await AuthStorage.create(":memory:");
-			const registry = new ModelRegistry(authStorage);
-			const settings = Settings.isolated({
-				"async.enabled": false,
-				"marketplace.autoUpdate": "off",
-			});
-			const parsed = parseArgs(["--continue"]);
-			parsed.cwd = cwd;
-			const sessionManager = {
-				getHeader: () => ({ rootAgent: "flag-probe" }),
-				setRootAgent: async () => {},
-			};
-			const options = await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
-			expect(options.agentName).toBe("flag-probe");
-			expect(options.rootAgentName).toBe("flag-probe");
-			// The header names the agent this session belonged to, so resuming without a
-			// CLI `--agent` still has to mount that agent's persona rather than the default.
-			expect(options.agentDisplayName).toBe("flag-probe");
-			expect(options.toolNames).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
-			expect(options.customSystemPrompt).toContain("you are flag-probe");
-			expect(options.thinkingLevel).toBeUndefined();
-		} finally {
-			await fs.rm(cwd, { recursive: true, force: true });
-		}
-	});
+	it.each([{ argv: ["--continue"] }, { argv: ["--restore", "sid"] }])(
+		"restores agentName from the session header without a CLI --agent ($argv)",
+		async ({ argv }) => {
+			const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+			try {
+				authStorage = await AuthStorage.create(":memory:");
+				const registry = new ModelRegistry(authStorage);
+				const settings = Settings.isolated({
+					"async.enabled": false,
+					"marketplace.autoUpdate": "off",
+				});
+				const parsed = parseArgs([...argv]);
+				parsed.cwd = cwd;
+				const sessionManager = {
+					getHeader: () => ({ rootAgent: "flag-probe" }),
+					setRootAgent: async () => {},
+				};
+				const options = await buildSessionOptions(parsed, [], sessionManager as never, registry, settings);
+				expect(options.agentName).toBe("flag-probe");
+				expect(options.rootAgentName).toBe("flag-probe");
+				// The header names the agent this session belonged to, so resuming without a
+				// CLI `--agent` still has to mount that agent's persona rather than the default.
+				expect(options.agentDisplayName).toBe("flag-probe");
+				expect(options.toolNames).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
+				expect(options.customSystemPrompt).toContain("you are flag-probe");
+				expect(options.thinkingLevel).toBeUndefined();
+			} finally {
+				await fs.rm(cwd, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it("switches the profile when a restore names a different --agent", async () => {
 		// An explicit `--agent` on a resume is how an actor's `<agent>.md` is changed across

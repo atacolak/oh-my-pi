@@ -2237,10 +2237,9 @@ export class RpcCommandSurface {
 					return rpcError(id, "logout", "providerId must be a string and credentialId an integer");
 				}
 				const { removed, remainingSource } = await logoutCredential(
-					session.modelRegistry,
+					session,
 					command.providerId,
 					command.credentialId,
-					session.sessionId,
 				);
 				if (!removed) {
 					return rpcError(

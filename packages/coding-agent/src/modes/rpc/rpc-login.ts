@@ -13,7 +13,7 @@ import { requestRpcInput } from "./rpc-dialog-requests";
 import type { RpcCommand, RpcExtensionUIRequest, RpcResponse } from "./rpc-types";
 
 export async function loginOverRpc(options: {
-	session: Pick<AgentSession, "modelRegistry">;
+	session: Pick<AgentSession, "modelRegistry" | "refreshScopedModels">;
 	command: RpcCommand & { type: "login" };
 	pendingExtensionRequests: Map<string, PendingExtensionRequest>;
 	output: RpcOutput;
@@ -83,6 +83,7 @@ export async function loginOverRpc(options: {
 		// re-runs discovery instead of reusing a fresh authoritative cache
 		// row (#5780).
 		await session.modelRegistry.refreshProvider(knownProvider.storeCredentialsAs ?? knownProvider.id, "online");
+		await session.refreshScopedModels();
 		return {
 			id: command.id,
 			type: "response",

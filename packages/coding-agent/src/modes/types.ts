@@ -110,6 +110,8 @@ export interface InteractiveModeInitOptions {
 	clearInitialTerminalHistory?: boolean;
 	/** Opt into hosting when the caller owns outer startup readiness and shutdown. */
 	autoStartCollab?: boolean;
+	/** A command-line prompt runs once startup ends: report `working` from the first frame. */
+	startupRun?: boolean;
 }
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions &
@@ -198,8 +200,6 @@ export interface InteractiveModeContext {
 	// Session access
 	session: AgentSession;
 	sessionManager: SessionManager;
-	/** Re-resolve the CLI/settings model scope after a successful OAuth login. */
-	refreshScopedModelsAfterLogin?: () => Promise<void>;
 	/** The current session display name / title. */
 	readonly sessionName: string | undefined;
 	/** Session the transcript/editor/status are attached to: the focused agent's, else `session`. */
@@ -590,6 +590,7 @@ export interface InteractiveModeContext {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		options?: Pick<CompactOptions, "internalGuidance" | "readerModel">,
 	): Promise<CompactionOutcome>;
 	handleHandoffCommand(customInstructions?: string): Promise<void>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;

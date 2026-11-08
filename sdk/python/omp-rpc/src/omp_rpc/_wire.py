@@ -282,10 +282,15 @@ class Usage(TypedDict):
     credits: NotRequired[JsonObject]
 
 
+ParentIrc = TypedDict("ParentIrc", {"from": "str", "body": "str"})
+"""Parent-agent IRC message carried by a steer; render it instead of the model-facing `content` envelope."""
+
+
 class UserMessage(TypedDict):
     role: Literal["user"]
     content: MessageContent
     timestamp: float
+    parentIrc: NotRequired[ParentIrc]
     synthetic: NotRequired[bool]
     steering: NotRequired[bool]
     liveSteered: NotRequired[bool]
@@ -1758,6 +1763,10 @@ parse_usage_cost = cast("Decoder[UsageCost]", open_record(None, None))
 
 parse_usage = cast("Decoder[Usage]", open_record(None, None))
 """Decodes a `Usage` open record: checks the discriminator and keeps every key."""
+
+
+parse_parent_irc = cast("Decoder[ParentIrc]", open_record(None, None))
+"""Decodes a `ParentIrc` open record: checks the discriminator and keeps every key."""
 
 
 parse_user_message = cast("Decoder[UserMessage]", open_record("role", frozenset({"user"})))
@@ -4119,6 +4128,7 @@ __all__ = [
     "NotifyUiRequest",
     "OpenSessionResult",
     "OpenUrlUiRequest",
+    "ParentIrc",
     "PromoteQueuedMessageResult",
     "PromptAck",
     "PromptError",
@@ -4303,6 +4313,7 @@ __all__ = [
     "parse_notify_ui_request",
     "parse_open_session_result",
     "parse_open_url_ui_request",
+    "parse_parent_irc",
     "parse_promote_queued_message_result",
     "parse_prompt_ack",
     "parse_prompt_error",

@@ -217,11 +217,12 @@ describe("collab auto-start", () => {
 		const ctx = context();
 		const close = spyOn(CollabSocket.prototype, "close");
 		const originalConnect = CollabSocket.prototype.connect;
+		let stopped: Promise<void> | undefined;
 		const connect = spyOn(CollabSocket.prototype, "connect").mockImplementation(function (this: CollabSocket) {
 			const previous = this.onOpen;
 			this.onOpen = () => {
 				previous?.();
-				void ctx.collabController.stop("host stopped");
+				stopped = ctx.collabController.stop("host stopped");
 			};
 			originalConnect.call(this);
 		});
@@ -229,9 +230,11 @@ describe("collab auto-start", () => {
 			await expect(
 				ctx.collabController.start({ access: "control", relay: "ws://localhost:8787" }),
 			).rejects.toBeInstanceOf(CollabHostStoppedError);
+			await stopped;
 			expect(close).toHaveBeenCalled();
 			expect(ctx.collabHost).toBeUndefined();
 		} finally {
+			await ctx.collabController.shutdown("test done");
 			connect.mockRestore();
 			close.mockRestore();
 		}
@@ -750,6 +753,31 @@ describe("collab auto-start", () => {
 			expect(ctx.collabHost).toBeUndefined();
 		} finally {
 			start.mockRestore();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("drops a disabled provider's project opt-out when settings reload", async () => {
+		installInMemoryRelay();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-collab-auto-"));
+		const agentDir = path.join(dir, "agent");
+		const projectDir = path.join(dir, "project");
+		const globalConfig = path.join(agentDir, "config.yml");
+		const globalCollab = "collab:\n  autoStart: true\n  relayUrl: ws://localhost:8787\n";
+		await Bun.write(globalConfig, globalCollab);
+		await Bun.write(path.join(projectDir, ".codex", "config.toml"), "[collab]\nautoStart = false\n");
+		const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
+		const ctx = context({}, settings);
+		try {
+			await expect(autoStart(ctx)).resolves.toBe(false);
+			expect(ctx.collabHost).toBeUndefined();
+
+			await Bun.write(globalConfig, `disabledProviders:\n  - codex\n${globalCollab}`);
+			await settings.reloadFromDisk();
+			await expect(autoStart(ctx)).resolves.toBe(true);
+			expect(ctx.collabHost).toBeInstanceOf(CollabHost);
+		} finally {
+			await ctx.collabController.shutdown("test done");
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});

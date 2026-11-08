@@ -348,6 +348,7 @@
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
 ## [18.18.0] - 2026-11-07
 
+## [18.18.0] - 2026-11-07
 ## [18.18.2] - 2026-11-08
 
 ### Breaking Changes

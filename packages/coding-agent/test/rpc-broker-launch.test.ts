@@ -633,8 +633,27 @@ describe("brokered rpc launch", () => {
 					port: 0,
 					async fetch(request) {
 						const body = await request.text();
-						requests.push(body);
-						const reply = `NATIVE_CONTROL_REPLY_${requests.length}`;
+						const payload: unknown = JSON.parse(body);
+						const lastMessage =
+							isRecord(payload) && Array.isArray(payload.messages) ? payload.messages.at(-1) : undefined;
+						const content =
+							isRecord(lastMessage) && lastMessage.role === "user" ? lastMessage.content : undefined;
+						const text =
+							typeof content === "string"
+								? content
+								: Array.isArray(content)
+									? content
+											.map(part => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
+											.join("\n")
+									: "";
+						// Episode recaps share this provider but are not owner conversation turns.
+						const conversationTurn = ["NATIVE_WEB_WARMUP", "NATIVE_TERMINAL_ONE", "NATIVE_TERMINAL_TWO"].some(
+							marker => text.trimEnd().endsWith(marker),
+						);
+						if (conversationTurn) requests.push(body);
+						const reply = conversationTurn
+							? `NATIVE_CONTROL_REPLY_${requests.length}`
+							: "NATIVE_SIDE_CHANNEL_REPLY";
 						const chunks = [
 							{
 								id: `native-control-${requests.length}`,

@@ -11,6 +11,10 @@
 - Agent definitions accept `model-fallback: false` to pin that agent's sessions to their resolved model: root `--agent` launches, resume restores, spawned subagents (including cold-revived ones), and their advisors skip client-side retry fallback, context promotion, usage-aware startup fallback, and server-side fallback for that agent, while omitting the key keeps `retry.modelFallback` in charge. Agent frontmatter also reads every multi-word key under either spelling (`model-fallback`, `read-summarize`, `thinking-level`, `autoload-skills`, `automation-author`/`allowed-agents`), so raw-key parsers stop dropping them; camelCase wins when a record supplies both.
 - agent definitions accept `memory: { autoRecall, recallBudget, recallMaxTokens, autoRetain, retainEveryNTurns }` with camelCase or kebab-case keys; root sessions and SDK `agentMemory` apply these settings beneath operator environment overrides, while subagents inherit the parent policy.
 
+### Fixed
+
+- root agents with memory recall gears no longer fail to launch on legacy releases; `default` uses `mid`, while `deep` and `max` use the legacy `high` ceiling.
+
 ## [18.18.1] - 2026-11-08
 
 ### Breaking Changes

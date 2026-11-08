@@ -24,7 +24,14 @@ export function applyAgentMemoryPolicy(settings: Settings, policy: AgentMemoryPo
 		cfgHindsightAutoRecall.override(settings, policy.autoRecall);
 	}
 	if (policy?.recallBudget !== undefined && cfgHindsightRecallBudget.envValue() === undefined) {
-		cfgHindsightRecallBudget.override(settings, cfgHindsightRecallBudget.parse(policy.recallBudget));
+		// Release pins still use low/mid/high until composed with the recall-gear capability.
+		// Preserve native gear values when supported; otherwise use mid or the legacy high ceiling.
+		const budget = cfgHindsightRecallBudget.enumValues?.includes(policy.recallBudget)
+			? policy.recallBudget
+			: policy.recallBudget === "default"
+				? "mid"
+				: "high";
+		cfgHindsightRecallBudget.override(settings, cfgHindsightRecallBudget.parse(budget));
 	}
 	if (policy?.recallMaxTokens !== undefined && cfgHindsightRecallMaxTokens.envValue() === undefined) {
 		cfgHindsightRecallMaxTokens.override(settings, policy.recallMaxTokens);

@@ -5,6 +5,7 @@ import { applyAgentMemoryPolicy } from "@oh-my-pi/pi-coding-agent/hindsight/agen
 import {
 	cfgHindsightAutoRecall,
 	cfgHindsightAutoRetain,
+	cfgHindsightRecallBudget,
 	cfgHindsightRecallMaxTokens,
 	cfgHindsightRetainEveryNTurns,
 } from "@oh-my-pi/pi-coding-agent/hindsight/settings";
@@ -100,4 +101,28 @@ it("migrates legacy frontmatter gears and clamps the small return window", () =>
 		})?.memory;
 	expect(parse("mid")).toMatchObject({ recallBudget: "default", recallMaxTokens: 512 });
 	expect(parse("xhigh")).toMatchObject({ recallBudget: "deep" });
+});
+
+it("applies recall gears on a legacy release without crashing root agent startup", () => {
+	vi.spyOn(cfgHindsightRecallBudget, "envValue").mockReturnValue(undefined);
+	const settings = Settings.isolated();
+	const apply = (recallBudget: string) => {
+		const policy = parseAgentFields({
+			name: "memory-probe",
+			description: "legacy release compatibility",
+			memory: { recallBudget },
+		})?.memory;
+		applyAgentMemoryPolicy(settings, policy);
+		return cfgHindsightRecallBudget.get(settings);
+	};
+	expect(apply("default")).toBe("mid");
+	expect(apply("deep")).toBe("high");
+	expect(apply("max")).toBe("high");
+});
+
+it("keeps the operator's recall budget above an agent's incompatible gear", () => {
+	vi.spyOn(cfgHindsightRecallBudget, "envValue").mockReturnValue("low");
+	const settings = Settings.isolated();
+	applyAgentMemoryPolicy(settings, { recallBudget: "max" });
+	expect(cfgHindsightRecallBudget.get(settings)).toBe("low");
 });

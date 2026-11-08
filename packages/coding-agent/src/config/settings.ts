@@ -135,6 +135,7 @@ type MainYamlReadResult = {
 type ProjectSettingsReadResult = {
 	settings: RawSettings;
 	fileSettings: RawSettings;
+	layers: RawSettings[];
 	shellPathSource: string | undefined;
 	/** Discovered project files to invalidate and watch, including filtered or temporarily missing sources. */
 	sourcePaths: string[];
@@ -164,6 +165,7 @@ const CONFIG_WATCH_DEBOUNCE_MS = 200;
 
 type ConfigOverlayReadResult = {
 	settings: RawSettings;
+	layers: RawSettings[];
 	shellPathSource: string | undefined;
 };
 
@@ -655,6 +657,10 @@ export class Settings {
 	#quarantinedYamlTargets = new Map<string, string>();
 	/** Extra config.yml-style overlays passed by CLI */
 	#configOverlay: RawSettings = {};
+	/** Individual project settings files before they are merged. */
+	#projectSettingsLayers: RawSettings[] = [];
+	/** Individual `--config`/`PI_CONFIG_FILES` overlays before they are merged. */
+	#configOverlayLayers: RawSettings[] = [];
 	/** Project settings file that most recently supplied shellPath. */
 	#projectShellPathSource: string | undefined;
 	/** Project files to invalidate and watch, including filtered or temporarily missing sources. */
@@ -1547,7 +1553,11 @@ export class Settings {
 			cloned.#overlayShellPathSource = this.#overlayShellPathSource;
 		}
 		cloned.#global = structuredClone(this.#global);
+		if (!this.#persist) {
+			cloned.#projectSettingsLayers = this.#projectSettingsLayers.map(layer => structuredClone(layer));
+		}
 		cloned.#configOverlay = structuredClone(this.#configOverlay);
+		cloned.#configOverlayLayers = this.#configOverlayLayers.map(layer => structuredClone(layer));
 		// A soft-pinned default yields to a value the clone's own scope configures.
 		cloned.#softPins = new Set(this.#softPins);
 		const layers = { ...cloned.#ownLayers(), overrides: this.#buildOriginalOverrides() };
@@ -1864,6 +1874,25 @@ export class Settings {
 	getProjectSettings(): RawSettings {
 		const own = structuredClone(this.#project);
 		return this.#parent ? this.#deepMerge(this.#parent.getProjectSettings(), own) : own;
+	}
+
+	/**
+	 * Individual project settings files, deep-cloned and ordered from lowest to
+	 * highest precedence. Companion to {@link getProjectSettings} so callers can
+	 * inspect a value that a later project file collapsed out of the merged view.
+	 */
+	getProjectSettingsLayers(): RawSettings[] {
+		return this.#projectSettingsLayers.map(layer => structuredClone(layer));
+	}
+
+	/**
+	 * Individual `--config`/`PI_CONFIG_FILES` overlay layers, deep-cloned and
+	 * ordered from lowest to highest precedence. Companion to
+	 * {@link getProjectSettings} so callers can inspect a value that later
+	 * overlays collapsed out of the merged overlay view.
+	 */
+	getConfigOverlayLayers(): RawSettings[] {
+		return this.#configOverlayLayers.map(layer => structuredClone(layer));
 	}
 
 	getPlansDirectory(): string {
@@ -2785,6 +2814,7 @@ export class Settings {
 		return {
 			settings: this.#migrateRawSettings(project.settings, read.quarantineInvalid),
 			fileSettings: read.fileSettings,
+			layers: project.layers,
 			shellPathSource: project.shellPathSource,
 			sourcePaths: [
 				...new Set([
@@ -2800,17 +2830,20 @@ export class Settings {
 	#mergeProjectItems(
 		items: readonly SettingsCapabilityItem[],
 		nativeModelRoles: unknown,
-	): { settings: RawSettings; sourcePaths: string[]; shellPathSource: string | undefined } {
+	): { settings: RawSettings; layers: RawSettings[]; sourcePaths: string[]; shellPathSource: string | undefined } {
 		let settings: RawSettings = {};
 		const sourcePaths: string[] = [];
+		const layers: RawSettings[] = [];
 		let shellPathSource: string | undefined;
 		for (const item of items) {
-			settings = this.#deepMerge(settings, dropSettingsGroupShadows(item.data as RawSettings, item.path));
+			const layer = dropSettingsGroupShadows(item.data as RawSettings, item.path);
+			layers.push(structuredClone(layer));
+			settings = this.#deepMerge(settings, layer);
 			sourcePaths.push(item.path);
 			if (Object.hasOwn(item.data, "shellPath")) shellPathSource = item.path;
 		}
 		if (nativeModelRoles !== undefined) settings = this.#deepMerge(settings, { modelRoles: nativeModelRoles });
-		return { settings, sourcePaths, shellPathSource };
+		return { settings, layers, sourcePaths, shellPathSource };
 	}
 
 	/** Provider ids `disabledProviders` resolves to for `cwd` when `layers` are merged (over the overlay parent). */
@@ -2832,6 +2865,7 @@ export class Settings {
 	/** Adopts the read-side state of a project read whose layer is being committed. */
 	#commitProjectRead(result: ProjectSettingsReadResult): void {
 		this.#projectFileSettings = result.fileSettings;
+		this.#projectSettingsLayers = result.layers;
 		this.#projectShellPathSource = result.shellPathSource;
 		this.#projectSourcePaths = result.sourcePaths;
 		this.#projectSettingsWarningsSeen = result.warningsSeen;
@@ -2840,17 +2874,20 @@ export class Settings {
 	async #readConfigOverlays(captureLegacyChangelogVersion = true): Promise<ConfigOverlayReadResult> {
 		let shellPathSource: string | undefined;
 		let settings: RawSettings = {};
+		const layers: RawSettings[] = [];
 		for (const filePath of this.#configFiles) {
 			const overlay = await this.#loadOverlayYaml(filePath, captureLegacyChangelogVersion);
+			layers.push(overlay);
 			settings = this.#deepMerge(settings, overlay);
 			if (Object.hasOwn(overlay, "shellPath")) shellPathSource = filePath;
 		}
-		return { settings, shellPathSource };
+		return { settings, layers, shellPathSource };
 	}
 
 	async #loadConfigOverlays(): Promise<RawSettings> {
 		const result = await this.#readConfigOverlays();
 		this.#overlayShellPathSource = result.shellPathSource;
+		this.#configOverlayLayers = result.layers;
 		return result.settings;
 	}
 
@@ -3049,6 +3086,17 @@ export class Settings {
 		const todoObj = raw.todo as Record<string, unknown> | undefined;
 		if (todoObj && typeof todoObj.eager === "boolean") {
 			todoObj.eager = todoObj.eager ? "always" : "default";
+		}
+
+		// collab.autoStart: boolean -> enum (off | view | control).
+		// `true` reproduced the previous unattended-hosting enablement, which is now
+		// `control`; `false` maps to `off` so project/overlay opt-outs still suppress.
+		const collabObj = isRecord(raw.collab) ? (raw.collab as Record<string, unknown>) : undefined;
+		if (collabObj && typeof collabObj.autoStart === "boolean") {
+			collabObj.autoStart = collabObj.autoStart ? "control" : "off";
+		}
+		if (typeof raw["collab.autoStart"] === "boolean") {
+			raw["collab.autoStart"] = raw["collab.autoStart"] ? "control" : "off";
 		}
 
 		// features.unexpectedStopDetection (boolean) -> enum none|mechanical|smart.

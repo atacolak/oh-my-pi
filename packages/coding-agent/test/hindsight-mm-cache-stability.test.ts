@@ -37,12 +37,19 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		retainContext: "omp",
 		retainUpdateMode: "replace",
 		retainStrategy: null,
-		recallBudget: "mid",
+		recallBudget: "default",
 		recallMaxTokens: 1024,
 		recallTypes: [],
 		recallContextTurns: 1,
 		recallMaxQueryChars: 800,
 		recallPromptPreamble: "preamble",
+		recallPreferObservations: true,
+		recallPrune: true,
+		recallDedup: true,
+		recallCadence: "boundary",
+		decisionModelUrl: null,
+		decisionModelApiKey: null,
+		decisionModelThreshold: 0.25,
 		debug: false,
 		requestTimeoutMs: 30_000,
 		reflectTimeoutMs: 120_000,
@@ -86,7 +93,7 @@ describe("HindsightSessionState mental-model freeze", () => {
 			} as never,
 			banksSet: new Set(),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 		return { state, listeners, listMentalModels };
 	}
@@ -130,7 +137,7 @@ describe("SessionMemory mental-model boundary reload", () => {
 			session: stateSession as never,
 			banksSet: new Set(),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 		const publishBoundary = async (commitIf?: () => boolean) => {
 			await publicationGate;
@@ -152,7 +159,6 @@ describe("SessionMemory mental-model boundary reload", () => {
 			setHindsightSessionState: () => {},
 			getMnemopiSessionState: () => undefined,
 			takeMnemopiSessionState: () => undefined,
-			setBaseSystemPrompt: () => {},
 			refreshBaseSystemPrompt: publishReset,
 			replaceMemoryTools: async () => {},
 			rebaseHindsightCloseRetainBaseline: () => {},
@@ -271,7 +277,7 @@ describe("SessionMemory mental-model boundary reload", () => {
 			session: stateSession as never,
 			banksSet: new Set(["b"]),
 			lastRetainedTurn: 0,
-			hasRecalledForFirstTurn: false,
+			recallDelivered: false,
 		});
 
 		const bootstrap = state.runMentalModelLoad({ bankId: "b" });

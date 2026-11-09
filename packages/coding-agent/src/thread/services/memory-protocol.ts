@@ -26,6 +26,7 @@ import type {
 	MentalModelHistoryEntry,
 	MentalModelListResponse,
 	MentalModelSummary,
+	HindsightMemoryUnit,
 	RecallOptions,
 	RecallResponse,
 	ReflectOptions,
@@ -83,6 +84,7 @@ export type HindsightClientProtocol = {
 	refreshMentalModel: RpcMethod<[bankId: string, mentalModelId: string], RefreshMentalModelResponse>;
 	deleteMentalModel: RpcMethod<[bankId: string, mentalModelId: string], boolean>;
 	getMentalModelHistory: RpcMethod<[bankId: string, mentalModelId: string], MentalModelHistoryEntry[]>;
+	getMemory: RpcMethod<[bankId: string, memoryId: string], HindsightMemoryUnit | null>;
 	getKnowledgeBaseTree: RpcMethod<[bankId: string, options?: HindsightRequestOptions], KnowledgeTreeResponse>;
 };
 

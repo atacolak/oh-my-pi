@@ -3,8 +3,10 @@
  * settings-panel order; `config/all-settings.ts` registers every domain.
  */
 import { register } from "../config/registry";
+import { migrateRecallBudget, parseRecallBudget, RECALL_GEARS } from "./recall-budget";
 
-const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
+/** Server default recall types; `world` + `experience` pair with `preferObservations` on the recall endpoint. */
+export const HINDSIGHT_RECALL_TYPES_DEFAULT: string[] = ["world", "experience"];
 
 /** Integer `HINDSIGHT_*` variables: base-10 `parseInt` prefix (`5000ms` → 5000, `2.5` → 2); other text is unset. */
 function parseEnvInteger(raw: string): number | undefined {
@@ -179,7 +181,7 @@ export const cfgHindsightRetainMode = register({
 	env: "HINDSIGHT_RETAIN_MODE",
 	type: "enum",
 	values: ["full-session", "last-turn"] as const,
-	default: "full-session",
+	default: "last-turn",
 	ui: {
 		tab: "memory",
 		group: "Hindsight",
@@ -189,9 +191,13 @@ export const cfgHindsightRetainMode = register({
 			{
 				value: "full-session",
 				label: "Full session",
-				description: "Upsert one document per session (recommended)",
+				description: "Upsert one document per session",
 			},
-			{ value: "last-turn", label: "Last turn", description: "Chunked retention sliced by turn boundaries" },
+			{
+				value: "last-turn",
+				label: "Last turn",
+				description: "Chunked retention sliced by turn boundaries (recommended)",
+			},
 		],
 		condition: "hindsightActive",
 	},
@@ -201,13 +207,13 @@ export const cfgHindsightRetainEveryNTurns = register({
 	id: "hindsight.retainEveryNTurns",
 	env: { name: "HINDSIGHT_RETAIN_EVERY_N_TURNS", parse: parseEnvInteger },
 	type: "number",
-	default: 3,
+	default: 2,
 });
 
 export const cfgHindsightRetainOverlapTurns = register({
 	id: "hindsight.retainOverlapTurns",
 	type: "number",
-	default: 2,
+	default: 1,
 });
 
 export const cfgHindsightRetainContext = register({ id: "hindsight.retainContext", type: "string", default: "omp" });
@@ -256,10 +262,11 @@ export const cfgHindsightRetainStrategy = register({
 
 export const cfgHindsightRecallBudget = register({
 	id: "hindsight.recallBudget",
-	env: "HINDSIGHT_RECALL_BUDGET",
+	env: { name: "HINDSIGHT_RECALL_BUDGET", parse: parseRecallBudget },
 	type: "enum",
-	values: ["low", "mid", "high"] as const,
-	default: "mid",
+	values: RECALL_GEARS,
+	default: "default",
+	normalize: migrateRecallBudget,
 });
 
 export const cfgHindsightRecallMaxTokens = register({
@@ -287,6 +294,57 @@ export const cfgHindsightRecallTypes = register({
 	id: "hindsight.recallTypes",
 	type: "array",
 	default: HINDSIGHT_RECALL_TYPES_DEFAULT,
+});
+
+export const cfgHindsightRecallPreferObservations = register({
+	id: "hindsight.recallPreferObservations",
+	env: "HINDSIGHT_RECALL_PREFER_OBSERVATIONS",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallPrune = register({
+	id: "hindsight.recallPrune",
+	env: "HINDSIGHT_RECALL_PRUNE",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallDedup = register({
+	id: "hindsight.recallDedup",
+	env: "HINDSIGHT_RECALL_DEDUP",
+	type: "boolean",
+	default: true,
+});
+
+export const cfgHindsightRecallCadence = register({
+	id: "hindsight.recallCadence",
+	env: "HINDSIGHT_RECALL_CADENCE",
+	type: "enum",
+	values: ["per-turn", "boundary"] as const,
+	default: "boundary",
+});
+
+export const cfgHindsightDecisionModelUrl = register({
+	id: "hindsight.decisionModelUrl",
+	env: "HINDSIGHT_DECISION_MODEL_URL",
+	type: "string",
+	default: undefined,
+});
+
+export const cfgHindsightDecisionModelApiKey = register({
+	id: "hindsight.decisionModelApiKey",
+	env: "HINDSIGHT_DECISION_MODEL_API_KEY",
+	type: "string",
+	credential: true,
+	default: undefined,
+});
+
+export const cfgHindsightDecisionModelThreshold = register({
+	id: "hindsight.decisionModelThreshold",
+	env: "HINDSIGHT_DECISION_MODEL_THRESHOLD",
+	type: "number",
+	default: 0.25,
 });
 
 export const cfgHindsightDebug = register({

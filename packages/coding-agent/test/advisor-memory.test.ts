@@ -52,6 +52,8 @@ describe("advisor memory context", () => {
 			"advisor.enabled": true,
 			"compaction.enabled": false,
 			"memory.backend": backend,
+			// A dead endpoint keeps the Hindsight read path off any live local server.
+			...(backend === "hindsight" ? { "hindsight.apiUrl": "http://127.0.0.1:9" } : {}),
 			"mnemopi.noEmbeddings": true,
 			"mnemopi.llmMode": "none",
 			"mnemopi.autoRecall": false,
@@ -168,8 +170,9 @@ describe("advisor memory context", () => {
 				});
 				expect(JSON.stringify(match.content)).toContain("Advisor scoped memory marker.");
 			} else {
+				// The read reaches the session's own Hindsight bank; an unreachable bank fails there.
 				await expect(read.execute("advisor-memory-read", { path: "memory://some-id" })).rejects.toThrow(
-					"Hindsight memories are not addressable via memory://",
+					/getMemory request failed/,
 				);
 			}
 		} finally {

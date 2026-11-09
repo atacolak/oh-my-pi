@@ -404,6 +404,12 @@ export class TurnRecovery {
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
 	#activeRetryFallback: ActiveRetryFallbackState | undefined;
+	/**
+	 * Whether a committed compaction has landed since the newest fallback hop.
+	 * Under the `compaction` revert policy it is the latch that lets the next
+	 * message boundary restore the primary.
+	 */
+	#compactedSinceFallback = false;
 	#activeFallbackCreditRedemption?: {
 		targetSelector: string;
 		handle: AnthropicFallbackCreditHandle;
@@ -1886,6 +1892,16 @@ export class TurnRecovery {
 		this.#fallbackRoutedFor = undefined;
 	}
 
+	/**
+	 * Records a committed compaction (`auto_compaction_end` or
+	 * `manual_compaction_end` carrying a result, neither aborted nor skipped).
+	 * Under the `compaction` revert policy this arms primary restoration for
+	 * later message boundaries; aborted and skipped passes never reach here.
+	 */
+	noteCommittedCompaction(): void {
+		this.#compactedSinceFallback = true;
+	}
+
 	/** Checks whether a fallback selector remains in cooldown. */
 	isRetryFallbackSelectorSuppressed(selector: RetryFallbackSelector): boolean {
 		return this.#host.modelRegistry.isSelectorSuppressed(selector.raw);
@@ -2275,6 +2291,7 @@ export class TurnRecovery {
 			this.#activeRetryFallback.lastAppliedFallbackThinkingLevel = nextThinkingLevel;
 			this.#activeRetryFallback.pinned = this.#activeRetryFallback.pinned || options?.pinFallback === true;
 		}
+		this.#compactedSinceFallback = false;
 		await this.#host.syncAfterModelChange(previousEditMode, { retryFallback: true });
 		await this.#host.emitSessionEvent({
 			type: "retry_fallback_applied",
@@ -2565,7 +2582,9 @@ export class TurnRecovery {
 	async #maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
 		if (!this.#activeRetryFallback) return false;
 		if (this.#activeRetryFallback.pinned) return false;
-		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
+		const revertPolicy = this.#getRetryFallbackRevertPolicy();
+		if (revertPolicy === "never") return false;
+		if (revertPolicy === "compaction" && !this.#compactedSinceFallback) return false;
 
 		const {
 			originalSelector: originalSelectorRaw,

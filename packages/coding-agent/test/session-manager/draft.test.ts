@@ -22,9 +22,12 @@ describe("SessionManager draft", () => {
 
 		await session.saveDraft("unsent text");
 
-		// consumeDraft is single-shot: returns the text and removes the sidecar.
+		// Restoring is a read: repeated resumes return the same body and keep it.
 		expect(await session.consumeDraft()).toBe("unsent text");
-		expect(await session.consumeDraft()).toBeNull();
+		expect(await session.consumeDraft()).toBe("unsent text");
+		const artifactsDir = session.getArtifactsDir();
+		if (!artifactsDir) throw new Error("Expected persistent artifacts directory");
+		expect(await fileExists(path.join(artifactsDir, "draft.txt"))).toBe(true);
 	});
 
 	it("places the draft inside the artifacts directory so dropSession cleans it", async () => {
@@ -47,7 +50,10 @@ describe("SessionManager draft", () => {
 		expect(await fileExists(draftPath)).toBe(false);
 	});
 
-	it("removes any stale draft when saving an empty string", async () => {
+	// P0: an empty overwrite used to unlink the only copy of a typed draft.
+	// It now keeps `draft.txt` as the live source (only a submission clears it)
+	// and copies the body into the ring for audit.
+	it("keeps the live draft when saving an empty string and records it in the ring", async () => {
 		using tempDir = TempDir.createSync("@pi-session-draft-empty-");
 		const session = SessionManager.create(tempDir.path(), tempDir.path());
 		session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
@@ -56,7 +62,13 @@ describe("SessionManager draft", () => {
 		await session.saveDraft("first attempt");
 		await session.saveDraft("");
 
-		expect(await session.consumeDraft()).toBeNull();
+		const artifactsDir = session.getArtifactsDir();
+		expect(artifactsDir).not.toBeNull();
+		expect(await Bun.file(path.join(artifactsDir!, "draft.txt")).text()).toBe("first attempt");
+		expect(await session.consumeDraft()).toBe("first attempt");
+		const history = await Bun.file(path.join(artifactsDir!, "draft-history.jsonl")).text();
+		expect(history.trim().split("\n")).toHaveLength(1);
+		expect(JSON.parse(history.trim())).toMatchObject({ source: "tui", text: "first attempt" });
 	});
 
 	it("forces the session header onto disk so resume can find the draft owner", async () => {
@@ -71,6 +83,23 @@ describe("SessionManager draft", () => {
 		const sessionFile = session.getSessionFile();
 		if (!sessionFile) throw new Error("Expected session file");
 		expect(await fileExists(sessionFile)).toBe(true);
+	});
+
+	it("starts the revision guard over for a new session file", async () => {
+		using tempDir = TempDir.createSync("@pi-session-draft-new-session-");
+		const session = SessionManager.create(tempDir.path(), tempDir.path());
+		session.appendMessage({ role: "user", content: "old", timestamp: 1 });
+		await session.flush();
+		await session.saveDraft("old session draft");
+
+		await session.newSession();
+		session.appendMessage({ role: "user", content: "new", timestamp: 2 });
+		await session.flush();
+		await session.saveDraft("fresh draft");
+
+		const artifactsDir = session.getArtifactsDir();
+		if (!artifactsDir) throw new Error("Expected persistent artifacts directory");
+		expect(await Bun.file(path.join(artifactsDir, "draft.txt")).text()).toBe("fresh draft");
 	});
 
 	it("is a no-op for in-memory sessions", async () => {

@@ -16,6 +16,19 @@
 
 - root agents with memory recall gears no longer fail to launch on legacy releases; `default` uses `mid`, while `deep` and `max` use the legacy `high` ceiling.
 
+- Agent `tools:` and `mcps:` frontmatter accept `{ eager, discoverable }` maps. Eager names stay top-level; discoverable names mount under `xd://`. An explicit `mcps:` list filters MCP tools by server (`mcps: []` disables them).
+- mcp.json `hubs` entries share one OAuth login per hub origin and auto-register `<hub>/mcp/<name>` HTTP servers.
+- Extension contexts expose `isCompacting()` so a plugin can tell a running compaction pass apart from an idle session.
+
+### Fixed
+
+- Resuming a draft no longer destroys it: restoring the composer is now a pure read of `draft.txt`, so an abandoned resume or a second restart still finds the text. `draft.txt` plus `draft.meta.json` (`{rev, updatedAt, source}`) form one compare-and-swap host shared with Exocortex `omp-rpc`: a write only lands when the on-disk revision is the one this process last wrote or observed, so a stale empty teardown flush cannot overwrite a newer draft written by the Web UI. Clearing without submitting (Escape/Ctrl+C, teardown, or a deliberate select-all-and-delete) copies the body into an append-only, newest-last 10-entry `draft-history.jsonl` ring (`{rev, updatedAt, source, text}`, legacy rows tolerated) but keeps `draft.txt` as the live source: an empty overwrite never destroys the last non-empty draft. Only a real submission calls `discardDraft(text)`, which archives the submitted body and then clears the sidecar.
+- A declared `tools:` list is now closed for extension tools registered after the session starts: an unnamed tool no longer becomes active (or an `xd://` device).
+- A declared `tools:` list now closes the pre-construction path too: an extension tool registered before the session is built (`become_actor`, `initiative_*`, host tools) no longer bypasses the declaration and lands top-level. MCP-origin tools keep the separate `mcps:` exemption, and caller-injected SDK custom tools stay active.
+- A named agent profile is closed-world for MCP: omitting `mcps:` now allows zero servers instead of inheriting every user server, and the allowlist is applied before discovery, so a profile that names no server spawns none (previously all servers were dialed and only their tools were filtered). Only a bare unnamed `omp` session still defaults to the user's servers.
+- Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
+- `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.
+- Forking a session into a pinned session file no longer creates an empty cwd-derived session directory; `seance` and subagent forks stay out of the operator's sessions root.
 ## [18.18.3] - 2026-11-09
 
 ### Breaking Changes

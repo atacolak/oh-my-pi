@@ -269,6 +269,76 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
+	it("named root profile skill policy reaches the real prompt, autoloads and read tool", async () => {
+		const cwd = await writeProjectAgent(
+			[
+				"---",
+				"name: skill-probe",
+				"description: root skill boundary",
+				"tools: read",
+				"autoload-skills: [legacy-proof]",
+				"skills:",
+				"  eager: [eager-proof]",
+				"  discoverable: [demand-proof]",
+				"---",
+				"root skill boundary fixture",
+			].join("\n"),
+		);
+		let session: AgentSession | undefined;
+		try {
+			for (const name of ["legacy-proof", "eager-proof", "demand-proof", "off-proof"]) {
+				await Bun.write(
+					path.join(cwd, ".omp", "skills", name, "SKILL.md"),
+					`---\nname: ${name}\ndescription: ${name} procedures\n---\n${name} complete body\n`,
+				);
+			}
+			const { options } = await optionsFor(["--agent", "skill-probe"], cwd);
+			if (!authStorage) throw new Error("missing fixture auth store");
+			({ session } = await createAgentSession({
+				...options,
+				cwd,
+				agentDir: cwd,
+				authStorage,
+				modelRegistry: new ModelRegistry(authStorage, path.join(cwd, "models.yml")),
+				settings: Settings.isolated({
+					"skills.enableCodexUser": false,
+					"skills.enableClaudeUser": false,
+					"skills.enableClaudeProject": false,
+					"skills.enablePiUser": false,
+					"skills.enablePiProject": true,
+					"memory.backend": "local",
+				}),
+				enableMCP: false,
+				enableLsp: false,
+				disableExtensionDiscovery: true,
+				contextFiles: [],
+				rules: [],
+				promptTemplates: [],
+				slashCommands: [],
+			}));
+			expect(session.skills.map(skill => skill.name).sort()).toEqual([
+				"demand-proof",
+				"eager-proof",
+				"legacy-proof",
+			]);
+			expect(session.systemPrompt.join("\n")).toContain("demand-proof");
+			expect(session.systemPrompt.join("\n")).not.toContain("off-proof");
+			const messages = JSON.stringify(session.messages);
+			expect(messages).toContain("legacy-proof complete body");
+			expect(messages).toContain("eager-proof complete body");
+			expect(messages).not.toContain("demand-proof complete body");
+			const read = session.getToolByName("read");
+			if (!read) throw new Error("root profile did not mount read");
+			expect(JSON.stringify((await read.execute("demand", { path: "skill://demand-proof" })).content)).toContain(
+				"demand-proof complete body",
+			);
+			await expect(read.execute("off", { path: "skill://off-proof" })).rejects.toThrow(/Unknown skill/);
+		} finally {
+			await session?.dispose();
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("resolves role metadata from --agent-cwd while keeping execution cwd", async () => {
 		const roleRoot = await writeProjectAgent(HIDDEN_PROBE_MD);
 		const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-work-"));

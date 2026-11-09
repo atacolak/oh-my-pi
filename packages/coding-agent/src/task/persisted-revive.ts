@@ -481,6 +481,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			outputSchema: init.outputSchema,
 			outputSchemaMode: init.outputSchemaMode,
 			restrictToolNames: restrictToolNames || undefined,
+			skillLoadPolicy: init.skillLoadPolicy,
 			requireYieldTool: structured,
 			systemPrompt: () => [...init.systemPrompt],
 			// Inherit current owner policy, never extension authority from a transcript.

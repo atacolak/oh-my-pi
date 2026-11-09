@@ -11,6 +11,7 @@ import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { CompactionMethod } from "./compaction-methods";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
 import type { RuntimeIdentity } from "./runtime-identity";
 
@@ -316,6 +317,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	readSummarize?: boolean;
 	/** The agent's `modelFallback` setting (`false` = the spawn never fell back to another model); absent inherits `retry.modelFallback`. */
 	modelFallback?: boolean;
+	/** Skill visibility at spawn; cold revival must not rediscover a wider catalog. */
+	skillLoadPolicy?: SkillLoadPolicy;
 	/** Effective advisor for this subagent: `"on"` = advisor-role model, else an explicit model pattern; absent = unadvised. */
 	advisor?: string;
 	/** Effective thresholds for a child with an explicit compaction override. */

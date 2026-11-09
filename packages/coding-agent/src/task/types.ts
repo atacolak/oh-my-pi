@@ -11,6 +11,7 @@ import { type BaseType, type FluentType, type } from "@oh-my-pi/omptype";
 import { $env, isRecord } from "@oh-my-pi/pi-utils";
 
 import type { AgentSessionEvent } from "../session/agent-session";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 /** Durable automation-authoring grant carried by a root AgentDefinition. Independent from `spawns`. */
@@ -349,6 +350,7 @@ export interface AgentDefinition {
 	/** `true` = task spawns keep the `yield` tool and this agent's `output` schema even when `task.structured` is off. */
 	structured?: boolean;
 	autoloadSkills?: string[];
+	skills?: SkillLoadPolicy;
 	/** When `false`, the agent's `read` tool returns verbatim file content instead of structural summaries. */
 	readSummarize?: boolean;
 	/** Prewalk hand-off for the spawned session: `true` = switch to the default prewalk target at the first edit/write, string = custom target model pattern. */

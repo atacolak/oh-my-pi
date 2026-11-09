@@ -93,6 +93,7 @@ import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { LoopLimitConfig } from "../../modes/loop-limit";
 import type { MemoryRuntimeContext } from "../../memory-backend";
+import type { SkillLoadPolicy } from "../skill-load-policy";
 import type { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
@@ -859,6 +860,8 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+	/** Resolved startup skill policy, independent of later profile edits; absent on older hosts. */
+	getSkillLoadPolicy?(): SkillLoadPolicy | undefined;
 
 	/** Run a /btw-style side turn without appending to history or executing tool calls.
 	 * Pass tools: false to omit tool definitions; existing context/provider hooks still run.

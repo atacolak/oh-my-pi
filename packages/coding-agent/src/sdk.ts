@@ -145,6 +145,7 @@ import {
 	type SkillWarning,
 	setActiveSkills,
 } from "./extensibility/skills";
+import { type SkillLoadPolicy, selectSkills } from "./extensibility/skill-load-policy";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import { applyAgentMemoryPolicy } from "./hindsight/agent-memory-policy";
 import type { HindsightSessionStateApi } from "./hindsight/state";
@@ -592,6 +593,8 @@ export interface CreateAgentSessionOptions {
 	spawns?: string;
 	/** Skill names to inject as hidden autoload prompts before the first turn. */
 	autoloadSkills?: string[];
+	/** Profile visibility retained across catalog refresh and skill URI rediscovery. */
+	skillLoadPolicy?: SkillLoadPolicy;
 	/** User-authorized model agents inherited from the parent session for nested delegation. */
 	inheritedSessionAgents?: readonly AgentDefinition[];
 
@@ -2412,6 +2415,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		skills = discovered.skills;
 		skillWarnings = discovered.warnings;
 	}
+	const eagerSkills = [...new Set([...(options.autoloadSkills ?? []), ...(options.skillLoadPolicy?.eager ?? [])])];
+	const skillLoadPolicy: SkillLoadPolicy | undefined = options.skillLoadPolicy
+		? {
+				eager: eagerSkills,
+				...(options.skillLoadPolicy.discoverable !== undefined
+					? { discoverable: [...options.skillLoadPolicy.discoverable] }
+					: {}),
+			}
+		: undefined;
+	skills = selectSkills(skills, skillLoadPolicy);
 
 	// Agent identity must resolve before rule discovery: `agents` frontmatter decides
 	// which rules are bucketed into this session at all.
@@ -3781,6 +3794,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			createAnnotationsAPI,
 			options.rootAgentName,
 			options.automationAuthor,
+			() => ({
+				eager: [...eagerSkills],
+				...(skillLoadPolicy?.discoverable !== undefined ? { discoverable: [...skillLoadPolicy.discoverable] } : {}),
+			}),
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());
@@ -5152,6 +5169,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			evalToolSession: toolSession,
 			customCommands: customCommandsResult.commands,
 			skills,
+			skillLoadPolicy,
 			skillDescriptions,
 			skillWarnings,
 			skillsReloadable: options.skills === undefined,
@@ -5910,8 +5928,21 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		}
 
-		if (options.autoloadSkills?.length && skills.length > 0) {
-			for (const name of options.autoloadSkills) {
+		if (eagerSkills.length && skills.length > 0) {
+			for (const name of eagerSkills) {
+				if (
+					hasExistingSession &&
+					session.messages.some(
+						entry =>
+							entry.role === "custom" &&
+							entry.customType === SKILL_PROMPT_MESSAGE_TYPE &&
+							entry.details !== null &&
+							typeof entry.details === "object" &&
+							"name" in entry.details &&
+							entry.details.name === name,
+					)
+				)
+					continue;
 				const skill = skills.find(entry => entry.name === name);
 				if (!skill) {
 					logger.warn("Autoload skill not found", { name });

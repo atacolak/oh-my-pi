@@ -2687,6 +2687,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			setActiveToolNames: config.setActiveToolNames,
 			baseSystemPrompt: this.agent.state.systemPrompt,
 			skills: config.skills,
+			skillLoadPolicy: config.skillLoadPolicy,
 			skillWarnings: config.skillWarnings,
 			skillsSettings: config.skillsSettings,
 			skillsReloadable: config.skillsReloadable,
@@ -7590,6 +7591,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const reloadable = this.#tools.skillsReloadable;
 		return {
 			skills: this.skills,
+			restrictSkillCatalog: this.#tools.restrictSkillCatalog,
 			refreshSkills: reloadable
 				? async () => {
 						await this.refreshSkills();

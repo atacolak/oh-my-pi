@@ -16,6 +16,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgCompaction } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { PreparedExtension } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
+import type { SkillLoadPolicy } from "@oh-my-pi/pi-coding-agent/extensibility/skill-load-policy";
 import { RpcSubagentRegistry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -175,6 +176,7 @@ async function createPersistedSession(
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 		perCallModel?: boolean;
 		modelFallback?: boolean;
+		skillLoadPolicy?: SkillLoadPolicy;
 		resolvedModel?: string;
 		perCallModelIdentity?: string;
 		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
@@ -199,6 +201,7 @@ async function createPersistedSession(
 		perCallModelIdentity: contract?.perCallModelIdentity,
 		perCallThinkingLevel: contract?.perCallThinkingLevel,
 		modelFallback: contract?.modelFallback,
+		skillLoadPolicy: contract?.skillLoadPolicy,
 		...(contract?.compactionThreshold !== undefined
 			? { compactionThreshold: contract.compactionThreshold }
 			: undefined),
@@ -274,6 +277,52 @@ afterEach(async () => {
 });
 
 describe("persisted subagent revival", () => {
+	it("cold revival keeps the persisted closed skill catalog through the real SDK and read tool", async () => {
+		const cwd = makeTempDir("@pi-revive-skill-policy-");
+		for (const name of ["eager-proof", "off-proof"]) {
+			await Bun.write(
+				path.join(cwd, ".omp", "skills", name, "SKILL.md"),
+				`---\nname: ${name}\ndescription: ${name} procedures\n---\n${name} full body\n`,
+			);
+		}
+		const file = await createPersistedSession(cwd, undefined, undefined, undefined, {
+			tools: ["read"],
+			skillLoadPolicy: { eager: ["eager-proof"], discoverable: [] },
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorage.keys.setRuntime("anthropic", "fixture-not-a-real-credential");
+		const registry = new ModelRegistry(authStorage, path.join(cwd, "models.yml"));
+		const ref = AgentRegistry.global().register(createRef(file));
+		let session: AgentSession | undefined;
+		try {
+			const revive = await createFactory(cwd, undefined, {
+				authStorage,
+				modelRegistry: registry,
+				settings: Settings.isolated({
+					"skills.enableCodexUser": false,
+					"skills.enableClaudeUser": false,
+					"skills.enableClaudeProject": false,
+					"skills.enablePiUser": false,
+					"skills.enablePiProject": true,
+					"memory.backend": "local",
+				}),
+			})(ref);
+			if (!revive) throw new Error("no persisted reviver");
+			session = localSession(await revive(ref));
+			expect(session.skills.map(skill => skill.name)).toEqual(["eager-proof"]);
+			const read = session.getToolByName("read");
+			if (!read) throw new Error("read is unavailable after revival");
+			expect(JSON.stringify((await read.execute("eager", { path: "skill://eager-proof" })).content)).toContain(
+				"eager-proof full body",
+			);
+			await expect(read.execute("off", { path: "skill://off-proof" })).rejects.toThrow(/Unknown skill/);
+		} finally {
+			await session?.dispose();
+			AgentRegistry.global().unregister(ref.id);
+			authStorage.close();
+		}
+	});
+
 	it("initializes the extension runtime on cold revival so tool_call handlers are not fail-closed blocked", async () => {
 		const cwd = makeTempDir("@pi-revive-ext-init-");
 		const sessionFile = await createPersistedSession(cwd);

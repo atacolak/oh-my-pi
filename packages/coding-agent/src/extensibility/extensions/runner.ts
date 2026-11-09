@@ -821,6 +821,7 @@ export class ExtensionRunner {
 		createAnnotations?: ExtensionAnnotationsFactory,
 		private readonly rootAgentName?: string,
 		private readonly automationAuthor?: AutomationAuthorPolicy,
+		private readonly getSkillLoadPolicy?: ExtensionContext["getSkillLoadPolicy"],
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -1792,6 +1793,7 @@ export class ExtensionRunner {
 				return getSessionModes();
 			},
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			getSkillLoadPolicy: () => this.getSkillLoadPolicy?.(),
 			runEphemeralTurn: runEphemeralTurn
 				? async options => {
 						if (this.#ephemeralTurnBlocker.getStore()) {

@@ -30,6 +30,7 @@ import {
 import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { MCPRequestIdFormat } from "../mcp/types";
 import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
@@ -325,6 +326,7 @@ export interface ParsedAgentFields {
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
+	skills?: SkillLoadPolicy;
 	readSummarize?: boolean;
 	blocking?: boolean;
 	hide?: boolean;
@@ -423,9 +425,22 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		const trimmed = frontmatter.advisor.trim();
 		if (trimmed) advisor = trimmed;
 	}
-	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
-		?.map(s => s.trim())
-		.filter(Boolean);
+	const rawSkills = frontmatter.skills;
+	const skillFields =
+		rawSkills !== null && typeof rawSkills === "object" && !Array.isArray(rawSkills)
+			? (rawSkills as Record<string, unknown>)
+			: undefined;
+	const names = (value: unknown): string[] => [
+		...new Set((parseArrayOrCSV(value) ?? []).map(name => name.trim()).filter(Boolean)),
+	];
+	const eager = [...new Set([...names(frontmatter.autoloadSkills), ...names(skillFields?.eager)])];
+	const skills: SkillLoadPolicy | undefined = skillFields
+		? {
+				eager,
+				...(Object.hasOwn(skillFields, "discoverable") ? { discoverable: names(skillFields.discoverable) } : {}),
+			}
+		: undefined;
+	const autoloadSkills = eager.length > 0 ? eager : undefined;
 	const automationAuthor = parseAutomationAuthor(frontmatter.automationAuthor);
 
 	return {
@@ -442,6 +457,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		hide,
 		structured,
 		autoloadSkills,
+		skills,
 		readSummarize,
 		prewalk,
 		advisor,

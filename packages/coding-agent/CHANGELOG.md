@@ -4,6 +4,7 @@
 
 ### Added
 
+- agent profiles can autoload `skills.eager` and limit on-demand skills with `skills.discoverable`; an empty list closes the catalog while omitting it keeps legacy discovery.
 - Added `--agent <name>` to start a root session from a discovered agent definition (user `~/.omp/agent/agents`, project `.omp/agents`, extension, or bundled). The agent's tools, thinking level, model, body, and autoload skills apply unless `--tools` / `--thinking` / `--model` / `--system-prompt` override them. Unknown names fail with a usage error listing available agents.
 - Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
 - Resume and fork now restore a session's original `--agent` identity from the session header. An explicit `--agent` on resume switches the profile and records it, so the following resume keeps it (the session's model and thinking level still come from the transcript unless `--model` / `--thinking` are passed); a persisted privileged role that is missing from discovery fails closed.
@@ -14,6 +15,7 @@
 ### Fixed
 
 - root agents with memory recall gears no longer fail to launch on legacy releases; `default` uses `mid`, while `deep` and `max` use the legacy `high` ceiling.
+
 ## [18.18.3] - 2026-11-09
 
 ### Breaking Changes

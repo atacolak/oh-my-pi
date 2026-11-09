@@ -1830,6 +1830,7 @@ export async function buildSessionOptions(
 		}
 
 		options.autoloadSkills = launchAgent.autoloadSkills;
+		options.skillLoadPolicy = launchAgent.skills;
 		if (launchAgent.spawns !== undefined) {
 			options.spawns = launchAgent.spawns === "*" ? "*" : launchAgent.spawns.join(",");
 		}

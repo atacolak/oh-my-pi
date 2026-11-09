@@ -29,6 +29,7 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { moveFileAcrossDevices } from "../utils/atomic-file";
 import { hasAnnotationDraftsSync } from "../extensibility/custom-commands/bundled/annotate/draft-store";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import { ArtifactManager, type ArtifactManagerApi } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore, lazyImageDataSync } from "./blob-store";
 import type { CompactionMethod } from "./compaction-methods";
@@ -3719,6 +3720,7 @@ export class SessionManager {
 		spawns?: string;
 		readSummarize?: boolean;
 		modelFallback?: boolean;
+		skillLoadPolicy?: SkillLoadPolicy;
 		advisor?: string;
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 		isolated?: boolean;
@@ -4801,6 +4803,7 @@ export interface PersistedSessionInit {
 	spawns?: string;
 	readSummarize?: boolean;
 	modelFallback?: boolean;
+	skillLoadPolicy?: SkillLoadPolicy;
 	advisor?: string;
 	compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 	isolated?: boolean;
@@ -4833,6 +4836,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			restrictToolNames: entry.restrictToolNames,
 			readSummarize: entry.readSummarize,
 			modelFallback: entry.modelFallback,
+			skillLoadPolicy: entry.skillLoadPolicy,
 			spawns: entry.spawns,
 			advisor: entry.advisor,
 			isolated: entry.isolated,

@@ -14,7 +14,7 @@
 
 ### Fixed
 
-- named agent profiles now load only their declared rules; omitted rules are unavailable in the prompt catalog and through rule URLs.
+- named agent profiles enable only their declared rules: triggered rules remain dynamic, other enabled rules load eagerly, and off rules are unavailable through rule URLs.
 - A named agent profile is closed-world for MCP: omitting `mcps:` now allows zero servers instead of inheriting every user server, and the allowlist is applied before discovery, so a profile that names no server spawns none (previously all servers were dialed and only their tools were filtered). Only a bare unnamed `omp` session still defaults to the user's servers.
 - Top-level `--agent` sessions now apply `tools:`/`mcps:` eager and discoverable maps, including after MCP tools connect. Hub catalogs fetch when logged in and cache names for offline startup.
 - `/mcp reauth` on a hub child (or hub key) stores the token under the hub origin so sibling servers share one login. `/mcp reauth colak` matches `mcp.json` `hubs.colak`.

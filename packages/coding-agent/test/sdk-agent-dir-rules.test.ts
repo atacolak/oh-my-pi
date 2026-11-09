@@ -158,6 +158,46 @@ describe("createAgentSession with agentDir", () => {
 		}
 	});
 
+	it("preserves enabled dynamic triggers without adding them to the startup prompt or rule catalog after reset", async () => {
+		const agentDir = tempDir.join("dynamic-agent");
+		await writeFile(
+			path.join(agentDir, "rules", "dynamic.md"),
+			"---\ndescription: dynamic trigger fixture\ncondition: [DYNAMIC_FORBIDDEN]\n---\nDYNAMIC_RULE_BODY\n",
+		);
+		await writeFile(
+			path.join(agentDir, "rules", "off-trigger.md"),
+			"---\ndescription: off trigger fixture\ncondition: [DYNAMIC_FORBIDDEN]\n---\nOFF_TRIGGER_BODY\n",
+		);
+		const { session, authStorage } = await createScopedSession(agentDir, ["dynamic"]);
+		try {
+			for (const reset of [false, true]) {
+				if (reset) expect(await session.newSession()).toBe(true);
+				const prompt = session.systemPrompt.join("\n");
+				expect(prompt).not.toContain("DYNAMIC_RULE_BODY");
+				expect(prompt).not.toContain("dynamic trigger fixture");
+				expect(prompt).not.toContain("OFF_TRIGGER_BODY");
+				const manager = session.ttsrManager;
+				if (!manager) throw new Error("expected the session's native ttsr manager");
+				expect(manager.checkDelta("DYNAMIC_FORBIDDEN", { source: "text" }).map(rule => rule.name)).toEqual([
+					"dynamic",
+				]);
+				const read = session.getToolByName("read");
+				if (!read) throw new Error("expected the native read tool");
+				const enabled = await read.execute("read-dynamic-rule", { path: "rule://dynamic" });
+				expect(JSON.stringify(enabled)).toContain("DYNAMIC_RULE_BODY");
+				expect(JSON.stringify(enabled)).not.toContain("condition:");
+				const denied = await read
+					.execute("read-off-trigger", { path: "rule://off-trigger" })
+					.catch(error => ({ error: String(error) }));
+				expect(JSON.stringify(denied)).toContain("Unknown rule: off-trigger");
+				expect(JSON.stringify(denied)).not.toContain("OFF_TRIGGER_BODY");
+			}
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
 	it("loads custom tools from its agentDir, not the default agent dir", async () => {
 		const agentDir = tempDir.join("scoped-agent");
 		await writeFile(path.join(agentDir, "tools", "scoped.ts"), toolSource("scoped_agent_dir_tool"));

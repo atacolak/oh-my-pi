@@ -37,7 +37,7 @@ export interface BucketRulesOptions {
 	/**
 	 * Rules the session's profile loads, in declared order. Present (even empty) closes
 	 * the rule set: undeclared rules are neither discoverable nor interrupt-triggered.
-	 * Named rules load eagerly regardless of `agents` globs or trigger metadata.
+	 * Named rules bypass `agents` globs: triggered rules stay dynamic; others load eagerly.
 	 * Absent keeps the legacy `agents`-scoped bucketing for a bare `main` session.
 	 *
 	 * `disabledRules` still wins — a disabled rule is not applied because a profile named
@@ -92,25 +92,23 @@ export function bucketRules(
 		includedRules.push(rule);
 	}
 
-	const replacedTtsrNames = options.replaceTtsrRules
-		? ttsrManager.replaceRules(declared !== undefined ? [] : includedRules)
-		: undefined;
+	const replacedTtsrNames = options.replaceTtsrRules ? ttsrManager.replaceRules(includedRules) : undefined;
 	const rulebookRules: Rule[] = [];
 	const alwaysApplyRules: Rule[] = [];
 	const declaredPicked: Array<{ rank: number; rule: Rule }> = [];
 
 	for (const rule of includedRules) {
-		if (declared !== undefined) {
-			const rank = declaredRank(rule, declaredOrder);
-			if (rank !== undefined) declaredPicked.push({ rank, rule });
-			continue;
-		}
 		const hasTtsrCondition =
 			(rule.condition && rule.condition.length > 0) ||
 			(rule.astCondition && rule.astCondition.length > 0) ||
 			rule.question !== undefined;
 		const isTtsrRule = hasTtsrCondition ? (replacedTtsrNames?.has(rule.name) ?? ttsrManager.addRule(rule)) : false;
-		if (isTtsrRule) continue;
+		if (isTtsrRule || (declared !== undefined && hasTtsrCondition)) continue;
+		if (declared !== undefined) {
+			const rank = declaredRank(rule, declaredOrder);
+			if (rank !== undefined) declaredPicked.push({ rank, rule });
+			continue;
+		}
 		if (rule.alwaysApply === true) {
 			alwaysApplyRules.push(rule);
 			continue;

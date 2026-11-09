@@ -75,6 +75,8 @@ async function withCli(
 				cacheWarming: "off",
 			},
 			compaction: { enabled: false },
+			// Request counts describe transport turns, not the episode recap side channel.
+			recap: { enabled: false },
 			bash: { allowCompoundCommands: true, direnv: "off" },
 		}),
 	);

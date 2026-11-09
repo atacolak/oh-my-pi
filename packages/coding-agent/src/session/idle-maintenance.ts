@@ -2,12 +2,14 @@
  * Idle maintenance owned by one session: the idle recap and idle compaction that run once the
  * session has been quiet for a while and its owner does not hold them back.
  *
- * A stretch of activity ends at `agent_end`. Its recap is armed once the run that produced the
- * `agent_end` has unwound and nothing is admitted, queued or scheduled; background work does not
- * hold it back. Idle compaction also waits until no background job or delivery can wake the
- * session. New activity, compaction, a session transition or disposal invalidates everything
- * captured before it: timers, the settling check and an in-flight recap, so a late reply can never
- * be announced.
+ * A completed run is recapped from its own `agent_end` snapshot, at once, because waiting for quiet
+ * loses the recap whenever another run is already admitted: the episode id captured with the messages
+ * addresses the write, so the next run neither cancels it nor receives it. The delayed recap remains for
+ * sessions that open no episode (in-memory), armed once a stretch's run has unwound and nothing is
+ * admitted, queued or scheduled; background work does not hold it back. Idle compaction waits until no
+ * background job or delivery can wake the session. New activity, compaction, a session transition or
+ * disposal invalidates everything captured before it: timers, the settling check and an in-flight
+ * delayed recap, so a late reply can never be announced.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { isPromptCachePersistent } from "@oh-my-pi/pi-catalog/compat/prompt-cache-persistent";
@@ -74,16 +76,26 @@ const cfgIdleCompaction = combine({
 	timeoutSeconds: cfgCompactionIdleTimeoutSeconds,
 });
 
-/** Work the current stretch of activity still owes; each flag drops once its work has been done. */
+/**
+ * Work the current stretch of activity still owes; each flag drops once its work has been done.
+ * `messages` and `episodeId` are the `agent_end` snapshot: the run's own messages and the row it
+ * closed, captured before any later run can extend or replace them.
+ */
 interface PendingStretch {
 	recap: boolean;
 	compaction: boolean;
+	messages: readonly AgentMessage[];
+	episodeId: string | null;
 }
 
 export class IdleMaintenance {
 	readonly #session: IdleMaintenanceSession;
 	readonly #options: IdleMaintenanceOptions;
 	readonly #stops: Array<() => void>;
+	/** Episode ids whose recap has been requested: an episode takes one, however often it settles. */
+	readonly #recappedEpisodes = new Set<string>();
+	/** Detached episode recaps: a later turn never cancels them, disposal does. */
+	readonly #recapLifetime = new AbortController();
 	#pending: PendingStretch | undefined;
 	/** Bumped to supersede the settling check that will arm this stretch. */
 	#check = 0;
@@ -127,6 +139,7 @@ export class IdleMaintenance {
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
+		this.#recapLifetime.abort();
 		this.invalidate();
 		for (const stop of this.#stops.splice(0)) stop();
 	}
@@ -138,12 +151,33 @@ export class IdleMaintenance {
 			case "auto_compaction_end":
 				this.invalidate();
 				break;
-			case "agent_end":
+			case "agent_end": {
 				this.invalidate();
-				// Nothing was generated to recap: the stretch owes no recap, however its blockers change later.
-				this.#pending = { recap: priorMessageWasGenerated(event.messages), compaction: true };
+				const messages = [...event.messages];
+				const episodeId = this.#session.sessionManager.episodeId;
+				const generated = priorMessageWasGenerated(messages);
+				const recapped = episodeId !== null && this.#recappedEpisodes.has(episodeId);
+				// A completed episode is recapped at once instead of waiting for the session to go
+				// quiet: the idle gate is exactly what starves a session whose next run is already
+				// admitted, and the captured id keeps the reply on the row it describes.
+				const completes =
+					generated &&
+					!recapped &&
+					event.isTerminal === true &&
+					episodeId !== null &&
+					cfgRecap.get(this.#session.settings).enabled;
+				this.#pending = {
+					// Nothing generated to recap, or already recapped: this stretch owes none,
+					// however its blockers change later.
+					recap: generated && !recapped && !completes,
+					compaction: true,
+					messages,
+					episodeId,
+				};
+				if (completes) this.#recapEpisode(episodeId);
 				this.#schedule();
 				break;
+			}
 		}
 	}
 
@@ -323,10 +357,12 @@ export class IdleMaintenance {
 	}
 
 	/**
-	 * Generate the recap with an ephemeral side-channel turn over the current conversation, journal it to
-	 * history.db (`session_recaps`), then hand it to the owner's `onRecap`. Live goal/title and the active todo
-	 * task anchor the request because the snapshot only carries conversation history. Quiet and unblocked state is
-	 * re-read when the reply lands, so a reply for a stretch that has since ended is never announced.
+	 * Generate the delayed idle recap with an ephemeral side-channel turn over the current conversation,
+	 * journal it, then hand it to the owner's `onRecap`. Live goal/title and the active todo task anchor the
+	 * request because the snapshot only carries conversation history. The generation test and the addressed
+	 * write both read the `agent_end` snapshot, never the whole session tail, which by then belongs to a
+	 * later run. Quiet and unblocked state is re-read when the reply lands, so a reply for a stretch that
+	 * has since ended is never announced.
 	 */
 	async #runRecap(): Promise<void> {
 		const pending = this.#pending;
@@ -335,7 +371,7 @@ export class IdleMaintenance {
 		const run = new AbortController();
 		this.#recapRun = run;
 		try {
-			if (!session.model || !priorMessageWasGenerated(session.messages)) {
+			if (!session.model || !priorMessageWasGenerated(pending.messages)) {
 				this.#complete(pending, "recap");
 				return;
 			}
@@ -353,7 +389,9 @@ export class IdleMaintenance {
 			}
 			this.#complete(pending, "recap");
 			if (!replyText.trim()) return;
-			session.sessionManager.recordRecap(replyText);
+			if (pending.episodeId !== null && !session.sessionManager.recordEpisodeRecap(pending.episodeId, replyText)) {
+				return;
+			}
 			this.#options.onRecap?.(replyText);
 		} catch (error) {
 			if (run.signal.aborted) return;
@@ -364,8 +402,39 @@ export class IdleMaintenance {
 		}
 	}
 
+	/**
+	 * Record one completed episode's recap without waiting for the session to go quiet. The episode id
+	 * captured at `agent_end` addresses the write, so a run started afterwards neither cancels it nor
+	 * receives it. A request that fails is not retried: one episode costs at most one side turn.
+	 */
+	#recapEpisode(episodeId: string): void {
+		this.#recappedEpisodes.add(episodeId);
+		void this.#runEpisodeRecap(episodeId).catch(error =>
+			logger.debug("Episode recap turn failed", { error: String(error) }),
+		);
+	}
+
+	async #runEpisodeRecap(episodeId: string): Promise<void> {
+		const session = this.#session;
+		if (!session.model) return;
+		const promptText = prompt.render(idleRecapPrompt, {
+			goal: this.#goalText() ?? "",
+			task: nextActionableTask(session.getTodoPhases())?.content ?? "",
+		});
+		const { replyText } = await session.runEphemeralTurn({
+			promptText,
+			signal: this.#recapLifetime.signal,
+		});
+		if (this.#disposed || !replyText.trim()) return;
+		if (!session.sessionManager.recordEpisodeRecap(episodeId, replyText)) return;
+		// Announce only while the owner still points at this session and is not composing; the
+		// recorded recap is available either way.
+		if (this.#isBlocked()) return;
+		this.#options.onRecap?.(replyText);
+	}
+
 	/** One kind of work is done. A stretch that owes nothing more is dropped, so later refreshes cost nothing. */
-	#complete(pending: PendingStretch, work: keyof PendingStretch): void {
+	#complete(pending: PendingStretch, work: "recap" | "compaction"): void {
 		pending[work] = false;
 		if (pending.recap || pending.compaction || this.#pending !== pending) return;
 		this.#pending = undefined;

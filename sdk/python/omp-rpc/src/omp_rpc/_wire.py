@@ -87,6 +87,11 @@ _CACHE_WARMING_MODE_VALUES: Final[frozenset[str]] = frozenset({"off", "streaming
 _decode_cache_warming_mode = cast("Decoder[CacheWarmingMode]", literal(_CACHE_WARMING_MODE_VALUES))
 
 
+CompactMode: TypeAlias = Literal["soft", "remote", "snapcompact"]
+_COMPACT_MODE_VALUES: Final[frozenset[str]] = frozenset({"soft", "remote", "snapcompact"})
+_decode_compact_mode = cast("Decoder[CompactMode]", literal(_COMPACT_MODE_VALUES))
+
+
 MessageUpdates: TypeAlias = Literal["full", "delta"]
 """`set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches."""
 _MESSAGE_UPDATES_VALUES: Final[frozenset[str]] = frozenset({"full", "delta"})
@@ -144,6 +149,26 @@ BtwStatus: TypeAlias = Literal["running", "complete", "cancelled", "error", "int
 """Side-question turn lifecycle; `interrupted` marks a turn whose process died while it ran."""
 _BTW_STATUS_VALUES: Final[frozenset[str]] = frozenset({"running", "complete", "cancelled", "error", "interrupted"})
 _decode_btw_status = cast("Decoder[BtwStatus]", literal(_BTW_STATUS_VALUES))
+
+
+McpServerScope: TypeAlias = Literal["project", "user", "plugin"]
+_MCP_SERVER_SCOPE_VALUES: Final[frozenset[str]] = frozenset({"project", "user", "plugin"})
+_decode_mcp_server_scope = cast("Decoder[McpServerScope]", literal(_MCP_SERVER_SCOPE_VALUES))
+
+
+McpServerTransport: TypeAlias = Literal["stdio", "http", "sse"]
+_MCP_SERVER_TRANSPORT_VALUES: Final[frozenset[str]] = frozenset({"stdio", "http", "sse"})
+_decode_mcp_server_transport = cast("Decoder[McpServerTransport]", literal(_MCP_SERVER_TRANSPORT_VALUES))
+
+
+McpServerStatusState: TypeAlias = Literal["connected", "connecting", "disconnected", "error", "auth_required"]
+_MCP_SERVER_STATUS_STATE_VALUES: Final[frozenset[str]] = frozenset({"connected", "connecting", "disconnected", "error", "auth_required"})
+_decode_mcp_server_status_state = cast("Decoder[McpServerStatusState]", literal(_MCP_SERVER_STATUS_STATE_VALUES))
+
+
+McpReauthStatus: TypeAlias = Literal["authorized", "no_auth_needed"]
+_MCP_REAUTH_STATUS_VALUES: Final[frozenset[str]] = frozenset({"authorized", "no_auth_needed"})
+_decode_mcp_reauth_status = cast("Decoder[McpReauthStatus]", literal(_MCP_REAUTH_STATUS_VALUES))
 
 
 AutoCompactionReason: TypeAlias = Literal["threshold", "overflow", "idle", "incomplete"]
@@ -649,10 +674,69 @@ class UsageLimitWrapUp:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class RuntimeGenerationState:
+    """Runtime generation layout of the process serving the session."""
+    running: str
+    """Generation directory the process was born in."""
+    behind: bool
+    """The running generation is no longer the one `current` selects."""
+    current: str | None = None
+    """Generation `generations/current` points at, when readable."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class UpgradeRuntimeResult:
+    """Outcome of `upgrade_runtime`."""
+    upgraded: bool
+    """The owner is restarting onto `current` now."""
+    scheduled: bool = False
+    """An idle-triggered upgrade is armed."""
+    running: str | None = None
+    """Generation the owner runs now."""
+    current: str | None = None
+    """Generation `generations/current` selects, when readable."""
+    reason: Literal["already_current", "not_generation_managed", "scheduled_on_idle"] | None = None
+    """Why no upgrade is running now."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionDiagnosticModel:
+    provider: str
+    id: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionExecutionMemory:
+    backend: Literal["hindsight"] = "hindsight"
+    scoping: str
+    scope_tags: tuple[str, ...] | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionExecution:
+    profile: str | None
+    cwd: str
+    memory: SessionExecutionMemory | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionDiagnostics:
+    version: int
+    observed_at: float
+    model: SessionDiagnosticModel | None
+    thinking_level: ThinkingLevel | None
+    config_warnings: tuple[str, ...]
+    warnings_truncated: bool
+    execution: SessionExecution | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
     model: ModelInfo | None = None
     thinking_level: ThinkingLevel | None = None
+    session_diagnostics: SessionDiagnostics | None = None
+    """Live configuration evidence; absent means warning readiness is unknown."""
     is_streaming: bool = False
     is_compacting: bool = False
     steering_mode: QueueMode = "one-at-a-time"
@@ -684,6 +768,8 @@ class SessionState:
     """System prompt sections, for session dumps."""
     dump_tools: tuple[ToolDescriptor, ...] = ()
     context_usage: ContextUsage | None = None
+    generation: RuntimeGenerationState | None = None
+    """Runtime generation of this process; absent when the entrypoint is not generation-managed."""
     goal: GoalModeState | None = None
     """Current goal mode; null when the session has no goal."""
 
@@ -979,6 +1065,19 @@ class LogoutAccount:
     detail: str
     type: Literal["api_key", "oauth"]
     active: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class McpServerStatusEntry:
+    """One MCP server: its definition's provenance plus the live connection state."""
+    name: str
+    scope: McpServerScope
+    transport: McpServerTransport
+    enabled: bool
+    status: McpServerStatusState
+    tool_count: int
+    auth_required: bool
+    last_error: str | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1699,6 +1798,12 @@ class LogoutResult:
     remaining_source: str | None = None
 
 
+@dataclass(slots=True, frozen=True, kw_only=True)
+class McpReauthResult:
+    server: McpServerStatusEntry
+    status: McpReauthStatus
+
+
 UserContent: TypeAlias = TextContent | ImageContent
 
 
@@ -2036,12 +2141,72 @@ def parse_usage_limit_wrap_up(value: object, path: str = "UsageLimitWrapUp") -> 
     )
 
 
+def parse_runtime_generation_state(value: object, path: str = "RuntimeGenerationState") -> RuntimeGenerationState:
+    payload = expect_object(value, path)
+    return RuntimeGenerationState(
+        running=required(payload, "running", decode_str, path),
+        behind=required(payload, "behind", decode_bool, path),
+        current=optional(payload, "current", decode_str, path),
+    )
+
+
+def parse_upgrade_runtime_result(value: object, path: str = "UpgradeRuntimeResult") -> UpgradeRuntimeResult:
+    payload = expect_object(value, path)
+    return UpgradeRuntimeResult(
+        upgraded=required(payload, "upgraded", decode_bool, path),
+        scheduled=defaulted(payload, "scheduled", decode_bool, path, False),
+        running=optional(payload, "running", decode_str, path),
+        current=optional(payload, "current", decode_str, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["already_current", "not_generation_managed", "scheduled_on_idle"]]', literal(frozenset({"already_current", "not_generation_managed", "scheduled_on_idle"}))), path),
+    )
+
+
+def parse_session_diagnostic_model(value: object, path: str = "SessionDiagnosticModel") -> SessionDiagnosticModel:
+    payload = expect_object(value, path)
+    return SessionDiagnosticModel(
+        provider=required(payload, "provider", decode_str, path),
+        id=required(payload, "id", decode_str, path),
+    )
+
+
+def parse_session_execution_memory(value: object, path: str = "SessionExecutionMemory") -> SessionExecutionMemory:
+    payload = expect_object(value, path)
+    required(payload, "backend", cast('Decoder[Literal["hindsight"]]', literal(frozenset({"hindsight"}))), path)
+    return SessionExecutionMemory(
+        scoping=required(payload, "scoping", decode_str, path),
+        scope_tags=required(payload, "scopeTags", nullable(array(decode_str)), path),
+    )
+
+
+def parse_session_execution(value: object, path: str = "SessionExecution") -> SessionExecution:
+    payload = expect_object(value, path)
+    return SessionExecution(
+        profile=required(payload, "profile", nullable(decode_str), path),
+        cwd=required(payload, "cwd", decode_str, path),
+        memory=required(payload, "memory", nullable(parse_session_execution_memory), path),
+    )
+
+
+def parse_session_diagnostics(value: object, path: str = "SessionDiagnostics") -> SessionDiagnostics:
+    payload = expect_object(value, path)
+    return SessionDiagnostics(
+        version=required(payload, "version", decode_int, path),
+        observed_at=required(payload, "observedAt", decode_float, path),
+        model=required(payload, "model", nullable(parse_session_diagnostic_model), path),
+        thinking_level=required(payload, "thinkingLevel", nullable(_decode_thinking_level), path),
+        config_warnings=required(payload, "configWarnings", array(decode_str), path),
+        warnings_truncated=required(payload, "warningsTruncated", decode_bool, path),
+        execution=optional(payload, "execution", parse_session_execution, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
         session_id=required(payload, "sessionId", decode_str, path),
         model=optional(payload, "model", parse_model_info, path),
         thinking_level=optional(payload, "thinkingLevel", _decode_thinking_level, path),
+        session_diagnostics=optional(payload, "sessionDiagnostics", parse_session_diagnostics, path),
         is_streaming=defaulted(payload, "isStreaming", decode_bool, path, False),
         is_compacting=defaulted(payload, "isCompacting", decode_bool, path, False),
         steering_mode=defaulted(payload, "steeringMode", _decode_queue_mode, path, "one-at-a-time"),
@@ -2066,6 +2231,7 @@ def parse_session_state(value: object, path: str = "SessionState") -> SessionSta
         system_prompt=defaulted(payload, "systemPrompt", scalar_or_array(decode_str), path, ()),
         dump_tools=defaulted(payload, "dumpTools", array(parse_tool_descriptor), path, ()),
         context_usage=optional(payload, "contextUsage", parse_context_usage, path),
+        generation=optional(payload, "generation", parse_runtime_generation_state, path),
         goal=defaulted(payload, "goal", nullable(parse_goal_mode_state), path, None),
     )
 
@@ -2391,6 +2557,20 @@ def parse_logout_account(value: object, path: str = "LogoutAccount") -> LogoutAc
         detail=required(payload, "detail", decode_str, path),
         type=required(payload, "type", cast('Decoder[Literal["api_key", "oauth"]]', literal(frozenset({"api_key", "oauth"}))), path),
         active=required(payload, "active", decode_bool, path),
+    )
+
+
+def parse_mcp_server_status_entry(value: object, path: str = "McpServerStatusEntry") -> McpServerStatusEntry:
+    payload = expect_object(value, path)
+    return McpServerStatusEntry(
+        name=required(payload, "name", decode_str, path),
+        scope=required(payload, "scope", _decode_mcp_server_scope, path),
+        transport=required(payload, "transport", _decode_mcp_server_transport, path),
+        enabled=required(payload, "enabled", decode_bool, path),
+        status=required(payload, "status", _decode_mcp_server_status_state, path),
+        tool_count=required(payload, "toolCount", decode_int, path),
+        auth_required=required(payload, "authRequired", decode_bool, path),
+        last_error=optional(payload, "lastError", decode_str, path),
     )
 
 
@@ -3213,6 +3393,14 @@ def parse_logout_result(value: object, path: str = "LogoutResult") -> LogoutResu
     )
 
 
+def parse_mcp_reauth_result(value: object, path: str = "McpReauthResult") -> McpReauthResult:
+    payload = expect_object(value, path)
+    return McpReauthResult(
+        server=required(payload, "server", parse_mcp_server_status_entry, path),
+        status=required(payload, "status", _decode_mcp_reauth_status, path),
+    )
+
+
 def parse_usage_limit_state(value: object, path: str = "UsageLimitState") -> UsageLimitState:
     return dispatch("stage", _USAGE_LIMIT_STATE_CASES)(value, path)
 
@@ -3404,6 +3592,15 @@ class WireClient:
         params: dict[str, object] = {}
         return parse_session_state(self._command("get_state", params), "get_state")
 
+    def upgrade_runtime(self, *, when_idle: bool | None = None, force: bool | None = None) -> UpgradeRuntimeResult:
+        """Restart the session owner onto the current runtime generation, now or when idle."""
+        params: dict[str, object] = {}
+        if when_idle is not None:
+            params["whenIdle"] = when_idle
+        if force is not None:
+            params["force"] = force
+        return parse_upgrade_runtime_result(self._command("upgrade_runtime", params), "upgrade_runtime")
+
     def set_fast_mode(self, enabled: bool) -> FastModeResult:
         """Enable or disable fast mode for the session."""
         params: dict[str, object] = {}
@@ -3585,11 +3782,13 @@ class WireClient:
         params["mode"] = mode
         self._command("set_interrupt_mode", params)
 
-    def compact(self, custom_instructions: str | None = None) -> CompactionResult:
+    def compact(self, *, custom_instructions: str | None = None, mode: CompactMode | None = None) -> CompactionResult:
         """Compact the conversation."""
         params: dict[str, object] = {}
         if custom_instructions is not None:
             params["customInstructions"] = custom_instructions
+        if mode is not None:
+            params["mode"] = mode
         return parse_compaction_result(self._command("compact", params), "compact")
 
     def set_auto_compaction(self, enabled: bool) -> None:
@@ -3748,6 +3947,24 @@ class WireClient:
         params["providerId"] = provider_id
         params["credentialId"] = credential_id
         return parse_logout_result(self._command("logout", params), "logout")
+
+    def get_mcp_status(self) -> tuple[McpServerStatusEntry, ...]:
+        """List configured, disabled and plugin MCP servers with their live connection state, sorted by name."""
+        params: dict[str, object] = {}
+        return required(expect_object(self._command("get_mcp_status", params), "get_mcp_status"), "servers", array(parse_mcp_server_status_entry), "get_mcp_status")
+
+    def set_mcp_enabled(self, name: str, *, enabled: bool) -> McpServerStatusEntry:
+        """Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state."""
+        params: dict[str, object] = {}
+        params["name"] = name
+        params["enabled"] = enabled
+        return required(expect_object(self._command("set_mcp_enabled", params), "set_mcp_enabled"), "server", parse_mcp_server_status_entry, "set_mcp_enabled")
+
+    def mcp_reauth(self, name: str) -> McpReauthResult:
+        """Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests."""
+        params: dict[str, object] = {}
+        params["name"] = name
+        return parse_mcp_reauth_result(self._command("mcp_reauth", params, timeout=900), "mcp_reauth")
 
     def predict_word(self, text: str, cursor: int) -> str | None:
         """Ghost-text suffix for the prose word ending at `cursor` (a UTF-16 offset); null when none applies."""
@@ -4062,6 +4279,7 @@ __all__ = [
     "CancelUiRequest",
     "CancellationResult",
     "CommandOutputEvent",
+    "CompactMode",
     "CompactionResult",
     "CompactionSummaryMessage",
     "ConfigUpdateEvent",
@@ -4111,6 +4329,12 @@ __all__ = [
     "LogoutResult",
     "ManualCompactionEndEvent",
     "ManualCompactionStartEvent",
+    "McpReauthResult",
+    "McpReauthStatus",
+    "McpServerScope",
+    "McpServerStatusEntry",
+    "McpServerStatusState",
+    "McpServerTransport",
     "MessageContent",
     "MessageEndEvent",
     "MessageStartEvent",
@@ -4148,10 +4372,15 @@ __all__ = [
     "RpcAgentEvent",
     "RpcFrameErrorEvent",
     "RpcNotification",
+    "RuntimeGenerationState",
     "SelectOptionDetail",
     "SelectUiRequest",
     "SessionCredits",
+    "SessionDiagnosticModel",
+    "SessionDiagnostics",
     "SessionEntries",
+    "SessionExecution",
+    "SessionExecutionMemory",
     "SessionInfoUpdateEvent",
     "SessionSettledEvent",
     "SessionState",
@@ -4202,6 +4431,7 @@ __all__ = [
     "TtsrTriggeredEvent",
     "TurnEndEvent",
     "TurnStartEvent",
+    "UpgradeRuntimeResult",
     "Usage",
     "UsageCost",
     "UsageLimitLowPriority",
@@ -4298,6 +4528,8 @@ __all__ = [
     "parse_logout_result",
     "parse_manual_compaction_end_event",
     "parse_manual_compaction_start_event",
+    "parse_mcp_reauth_result",
+    "parse_mcp_server_status_entry",
     "parse_message_end_event",
     "parse_message_start_event",
     "parse_message_update_event",
@@ -4329,10 +4561,15 @@ __all__ = [
     "parse_retry_fallback_succeeded_event",
     "parse_rpc_agent_event",
     "parse_rpc_frame_error_event",
+    "parse_runtime_generation_state",
     "parse_select_option_detail",
     "parse_select_ui_request",
     "parse_session_credits",
+    "parse_session_diagnostic_model",
+    "parse_session_diagnostics",
     "parse_session_entries",
+    "parse_session_execution",
+    "parse_session_execution_memory",
     "parse_session_info_update_event",
     "parse_session_settled_event",
     "parse_session_state",
@@ -4372,6 +4609,7 @@ __all__ = [
     "parse_ttsr_triggered_event",
     "parse_turn_end_event",
     "parse_turn_start_event",
+    "parse_upgrade_runtime_result",
     "parse_usage",
     "parse_usage_cost",
     "parse_usage_limit_low_priority",

@@ -3155,6 +3155,23 @@ pub struct SessionDiagnosticModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionExecutionMemory {
+	pub backend: LitHindsight,
+	pub scoping: String,
+	#[serde(rename = "scopeTags", deserialize_with = "Deserialize::deserialize")]
+	pub scope_tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionExecution {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub profile: Option<String>,
+	pub cwd: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub memory: Option<SessionExecutionMemory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionDiagnostics {
 	pub version: i64,
 	#[serde(rename = "observedAt")]
@@ -3167,6 +3184,8 @@ pub struct SessionDiagnostics {
 	pub config_warnings: Vec<String>,
 	#[serde(rename = "warningsTruncated")]
 	pub warnings_truncated: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub execution: Option<SessionExecution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6196,6 +6215,27 @@ impl UpgradeRuntimeResultReason {
 			Self::AlreadyCurrent => "already_current",
 			Self::NotGenerationManaged => "not_generation_managed",
 			Self::ScheduledOnIdle => "scheduled_on_idle",
+		}
+	}
+}
+
+/// The constant `"hindsight"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitHindsight;
+
+impl Serialize for LitHindsight {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("hindsight")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitHindsight {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("hindsight") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"hindsight\", got {value}")))
 		}
 	}
 }

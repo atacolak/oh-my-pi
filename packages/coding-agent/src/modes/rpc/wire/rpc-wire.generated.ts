@@ -521,6 +521,18 @@ export interface SessionDiagnosticModel {
 	id: string;
 }
 
+export interface SessionExecutionMemory {
+	backend: "hindsight";
+	scoping: string;
+	scopeTags: string[] | null;
+}
+
+export interface SessionExecution {
+	profile: string | null;
+	cwd: string;
+	memory: SessionExecutionMemory | null;
+}
+
 export interface SessionDiagnostics {
 	version: number;
 	observedAt: number;
@@ -528,6 +540,7 @@ export interface SessionDiagnostics {
 	thinkingLevel: ThinkingLevel | null;
 	configWarnings: string[];
 	warningsTruncated: boolean;
+	execution?: SessionExecution;
 }
 
 export interface SessionState {

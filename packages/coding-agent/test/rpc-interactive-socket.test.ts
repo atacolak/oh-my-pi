@@ -293,6 +293,23 @@ describe("an interactive session's published endpoint", () => {
 		}
 	}, 30_000);
 
+	it("reports live owner cwd changes while leaving unproven profile and memory scope unknown", async () => {
+		fixture = await createInteractiveFixture([]);
+		const moved = path.join(fixture.dir, "moved");
+		await fs.promises.mkdir(moved);
+		await fixture.session.sessionManager.moveTo(moved);
+		const probe = await probeSessionAttach(fixture.session.sessionId, {
+			endpointDir: fixture.dir,
+			includeState: true,
+		});
+		expect(probe.status).toBe("live");
+		if (probe.status !== "live") throw new Error("live owner was not observed");
+		expect(probe.state).toMatchObject({
+			sessionDiagnostics: { execution: { cwd: moved, profile: null, memory: null } },
+		});
+		expect(probe.state).not.toHaveProperty("systemPrompt");
+	}, 30_000);
+
 	it("serves get_state, a prompt and the live event stream to an attached client", async () => {
 		fixture = await createInteractiveFixture([{ content: ["interactive answer"] }]);
 		const peer = await SocketPeer.connect(fixture.endpoint);

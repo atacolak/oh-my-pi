@@ -2657,6 +2657,56 @@ func (v *SessionDiagnosticModel) decodeFrom(raw map[string]json.RawMessage) erro
 	return nil
 }
 
+type SessionExecutionMemory struct {
+	Scoping   string   `json:"scoping"`
+	ScopeTags []string `json:"scopeTags"`
+}
+
+func (v *SessionExecutionMemory) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionExecutionMemory", v.decodeFrom)
+}
+
+func (v *SessionExecutionMemory) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionExecutionMemory
+	d := fieldDecoder{raw: raw, owner: "SessionExecutionMemory"}
+	d.constant("backend", "hindsight")
+	d.required("scoping", &out.Scoping)
+	d.nullable("scopeTags", &out.ScopeTags)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v SessionExecutionMemory) MarshalJSON() ([]byte, error) {
+	type plain SessionExecutionMemory
+	return encodeObject(plain(v), `"backend":"hindsight"`, nil)
+}
+
+type SessionExecution struct {
+	Profile *string                 `json:"profile"`
+	Cwd     string                  `json:"cwd"`
+	Memory  *SessionExecutionMemory `json:"memory"`
+}
+
+func (v *SessionExecution) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionExecution", v.decodeFrom)
+}
+
+func (v *SessionExecution) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionExecution
+	d := fieldDecoder{raw: raw, owner: "SessionExecution"}
+	d.nullable("profile", &out.Profile)
+	d.required("cwd", &out.Cwd)
+	d.nullable("memory", &out.Memory)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionDiagnostics struct {
 	Version           int64                   `json:"version"`
 	ObservedAt        float64                 `json:"observedAt"`
@@ -2664,6 +2714,7 @@ type SessionDiagnostics struct {
 	ThinkingLevel     *ThinkingLevel          `json:"thinkingLevel"`
 	ConfigWarnings    []string                `json:"configWarnings"`
 	WarningsTruncated bool                    `json:"warningsTruncated"`
+	Execution         *SessionExecution       `json:"execution,omitempty"`
 }
 
 func (v *SessionDiagnostics) UnmarshalJSON(data []byte) error {
@@ -2679,6 +2730,7 @@ func (v *SessionDiagnostics) decodeFrom(raw map[string]json.RawMessage) error {
 	d.nullable("thinkingLevel", &out.ThinkingLevel)
 	d.required("configWarnings", &out.ConfigWarnings)
 	d.required("warningsTruncated", &out.WarningsTruncated)
+	d.optional("execution", &out.Execution)
 	if d.err != nil {
 		return d.err
 	}

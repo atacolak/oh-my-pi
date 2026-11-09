@@ -179,6 +179,13 @@ export type RpcCommand =
 // RPC State
 // ============================================================================
 
+/** Owner-reported execution scope; no credentials or provider configuration. */
+export interface RpcSessionExecution {
+	profile: string | null;
+	cwd: string;
+	memory: { backend: "hindsight"; scoping: string; scopeTags: string[] | null } | null;
+}
+
 /** Bounded live configuration evidence; absence on older owners means unavailable, not no warnings. */
 export interface RpcSessionDiagnostics {
 	version: 1;
@@ -187,6 +194,7 @@ export interface RpcSessionDiagnostics {
 	thinkingLevel: ThinkingLevel | null;
 	configWarnings: string[];
 	warningsTruncated: boolean;
+	execution?: RpcSessionExecution;
 }
 
 export interface RpcSessionState {

@@ -125,6 +125,8 @@ export const stateDefs = {
 		"Outcome of `upgrade_runtime`.",
 	),
 	SessionDiagnosticModel: { provider: "string", id: "string" },
+	SessionExecutionMemory: { backend: "'hindsight'", scoping: "string", scopeTags: "string[] | null" },
+	SessionExecution: { profile: "string | null", cwd: "string", memory: "SessionExecutionMemory | null" },
 	SessionDiagnostics: {
 		version: "number.integer",
 		observedAt: "number",
@@ -132,6 +134,7 @@ export const stateDefs = {
 		thinkingLevel: "ThinkingLevel | null",
 		configWarnings: "string[]",
 		warningsTruncated: "boolean",
+		"execution?": "SessionExecution",
 	},
 	SessionState: {
 		"model?": "ModelInfo",

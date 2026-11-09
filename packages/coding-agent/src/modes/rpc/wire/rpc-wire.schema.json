@@ -2752,6 +2752,68 @@
 				"id"
 			]
 		},
+		"SessionExecutionMemory": {
+			"type": "object",
+			"properties": {
+				"backend": {
+					"const": "hindsight"
+				},
+				"scoping": {
+					"type": "string"
+				},
+				"scopeTags": {
+					"anyOf": [
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"backend",
+				"scoping",
+				"scopeTags"
+			]
+		},
+		"SessionExecution": {
+			"type": "object",
+			"properties": {
+				"profile": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"cwd": {
+					"type": "string"
+				},
+				"memory": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SessionExecutionMemory"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"profile",
+				"cwd",
+				"memory"
+			]
+		},
 		"SessionDiagnostics": {
 			"type": "object",
 			"properties": {
@@ -2789,6 +2851,9 @@
 				},
 				"warningsTruncated": {
 					"type": "boolean"
+				},
+				"execution": {
+					"$ref": "#/$defs/SessionExecution"
 				}
 			},
 			"required": [

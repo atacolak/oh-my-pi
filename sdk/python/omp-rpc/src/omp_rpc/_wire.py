@@ -700,6 +700,20 @@ class SessionDiagnosticModel:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class SessionExecutionMemory:
+    backend: Literal["hindsight"] = "hindsight"
+    scoping: str
+    scope_tags: tuple[str, ...] | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionExecution:
+    profile: str | None
+    cwd: str
+    memory: SessionExecutionMemory | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionDiagnostics:
     version: int
     observed_at: float
@@ -707,6 +721,7 @@ class SessionDiagnostics:
     thinking_level: ThinkingLevel | None
     config_warnings: tuple[str, ...]
     warnings_truncated: bool
+    execution: SessionExecution | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2147,6 +2162,24 @@ def parse_session_diagnostic_model(value: object, path: str = "SessionDiagnostic
     )
 
 
+def parse_session_execution_memory(value: object, path: str = "SessionExecutionMemory") -> SessionExecutionMemory:
+    payload = expect_object(value, path)
+    required(payload, "backend", cast('Decoder[Literal["hindsight"]]', literal(frozenset({"hindsight"}))), path)
+    return SessionExecutionMemory(
+        scoping=required(payload, "scoping", decode_str, path),
+        scope_tags=required(payload, "scopeTags", nullable(array(decode_str)), path),
+    )
+
+
+def parse_session_execution(value: object, path: str = "SessionExecution") -> SessionExecution:
+    payload = expect_object(value, path)
+    return SessionExecution(
+        profile=required(payload, "profile", nullable(decode_str), path),
+        cwd=required(payload, "cwd", decode_str, path),
+        memory=required(payload, "memory", nullable(parse_session_execution_memory), path),
+    )
+
+
 def parse_session_diagnostics(value: object, path: str = "SessionDiagnostics") -> SessionDiagnostics:
     payload = expect_object(value, path)
     return SessionDiagnostics(
@@ -2156,6 +2189,7 @@ def parse_session_diagnostics(value: object, path: str = "SessionDiagnostics") -
         thinking_level=required(payload, "thinkingLevel", nullable(_decode_thinking_level), path),
         config_warnings=required(payload, "configWarnings", array(decode_str), path),
         warnings_truncated=required(payload, "warningsTruncated", decode_bool, path),
+        execution=optional(payload, "execution", parse_session_execution, path),
     )
 
 
@@ -4338,6 +4372,8 @@ __all__ = [
     "SessionDiagnosticModel",
     "SessionDiagnostics",
     "SessionEntries",
+    "SessionExecution",
+    "SessionExecutionMemory",
     "SessionInfoUpdateEvent",
     "SessionSettledEvent",
     "SessionState",
@@ -4524,6 +4560,8 @@ __all__ = [
     "parse_session_diagnostic_model",
     "parse_session_diagnostics",
     "parse_session_entries",
+    "parse_session_execution",
+    "parse_session_execution_memory",
     "parse_session_info_update_event",
     "parse_session_settled_event",
     "parse_session_state",

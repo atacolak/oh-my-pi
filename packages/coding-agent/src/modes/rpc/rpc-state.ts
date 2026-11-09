@@ -5,10 +5,32 @@ import { redactMemorySecrets } from "../../memory-backend/redact";
 import type { AgentSession } from "../../session/agent-session";
 import { isSessionSettled } from "../../session/session-settle";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
-import type { RpcSessionDiagnostics, RpcSessionState } from "./rpc-types";
+import type { RpcSessionDiagnostics, RpcSessionExecution, RpcSessionState } from "./rpc-types";
 
 const MAX_DIAGNOSTIC_WARNINGS = 20;
 const MAX_DIAGNOSTIC_WARNING_CHARS = 1024;
+
+/** Report live owner scope, never infer it from an actor name or a caller's settings. */
+export function getRpcSessionExecution(session: AgentSession): RpcSessionExecution {
+	const owner: AgentSession & { getAgentProfileName?: () => string | undefined } = session;
+	const profile = owner.getAgentProfileName?.();
+	const memory = session.getHindsightSessionState();
+	const resolvedTags = memory && "resolvedTags" in memory ? memory.resolvedTags : undefined;
+	return {
+		profile: profile ?? null,
+		cwd: session.sessionManager.getCwd(),
+		memory: memory
+			? {
+					backend: "hindsight",
+					scoping: memory.config.scoping,
+					scopeTags:
+						Array.isArray(resolvedTags) && resolvedTags.every((tag: unknown) => typeof tag === "string")
+							? [...resolvedTags]
+							: null,
+				}
+			: null,
+	};
+}
 
 /** Read the owner's effective configuration, never a launch selector or global default. */
 export function getRpcSessionDiagnostics(session: AgentSession): RpcSessionDiagnostics {
@@ -24,6 +46,7 @@ export function getRpcSessionDiagnostics(session: AgentSession): RpcSessionDiagn
 		warningsTruncated:
 			warnings.length > MAX_DIAGNOSTIC_WARNINGS ||
 			warnings.some(warning => warning.length > MAX_DIAGNOSTIC_WARNING_CHARS),
+		execution: getRpcSessionExecution(session),
 	};
 }
 

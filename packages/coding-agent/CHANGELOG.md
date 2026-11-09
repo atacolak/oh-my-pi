@@ -349,6 +349,26 @@
 ## [18.18.0] - 2026-11-07
 
 ## [18.18.0] - 2026-11-07
+- attached hosts can inspect effective model, thinking level and bounded configuration warnings without opening the terminal.
+- RPC clients can now manage MCP servers: `get_mcp_status` lists configured, disabled and plugin servers with their live state, `set_mcp_enabled` persists and applies enablement, and `mcp_reauth` runs the OAuth flow on the calling connection; the `compact` command accepts an explicit `mode` (`soft`, `remote` or `snapcompact`) and refuses unknown values
+- Interactive sessions now publish an owner-only attach endpoint (`~/.omp/run/<session-id>.sock` plus a JSON discovery sidecar) that serves the same RPC command surface as `--mode rpc`, so external clients can attach, negotiate, prompt or steer, receive session events and register host tools; the endpoint moves when the session switches, and a client disconnect detaches only that client instead of ending the session
+- `omp --mode rpc` and `--mode rpc-ui` now run in RPC bridge mode against the same brokered session owner as interactive launches: a live session is reached through a stdio-to-socket bridge, a cold launch starts one detached owner, and closing stdin only closes the bridge, leaving the session, its turn, and its endpoint running; a `bridge-<pid>.json` sidecar lets detached keepers find the bridge, while `--no-ui` and `--no-session` keep the in-process stdio lifecycle; WebUI clients attach to `<session-id>.sock` directly, not through the stdio bridge
+- `omp --attach <absolute transcript path>` interactively mirrors only the exact existing live owner; cold, mismatched, stale, or disappeared owners refuse with exit 2 without creating a session or starting a broker. Broker-backed persistent RPC owners are supported; terminal-less `--mode rpc --no-ui` owners are unsupported and refuse with exit 2 and `terminal-unavailable`, without changing their session. Updated brokers support concurrent viewers with independent acknowledgments and backpressure; closing one viewer never ends the owner, its jobs, or other viewers. The last explicit viewer resize wins. Input retains the existing authenticated-controller authority and is pinned to the selected owner generation, not a per-view capability. Already-running singleton brokers still refuse an occupied second viewer without takeover or cold fallback; installing the CLI alone does not change their capability.
+- Generation-managed sessions now report their birth generation and the current generation in `get_state.generation` (with a `behind` flag) and carry the running generation in the `<session-id>.json` sidecar, so hosts can show an upgrade badge as soon as the `current` symlink moves
+- Added the typed `upgrade_runtime` RPC command: it re-executes a busy session owner in place once it settles (or immediately with `force`), steps onto `generations/current`, keeps the same pid, PTY, session, and socket, and returns `whenIdle` scheduling or typed refusal reasons; the stdio bridge reconnects to the rebinding socket across the image replacement
+- Attached socket clients can answer the terminal's `select`, `confirm`, `input`, `editor`, and opted-in `ask` dialogs: the first answer settles the dialog and cancels the sibling presentation, and a client disconnect never cancels a dialog the terminal or another client can still answer; a shared session socket refuses `new_session`, `switch_session`, `open_session`, `fork`, and `handoff`, and serves per-view event filters, branch navigation, `/btw`, goals, live voice, dictation, login, and `mcp_*`
+
+### Changed
+
+- `omp --resume`, `--continue`, and the session picker now reconnect to a session that is already running in another omp process instead of opening a second copy; a live session that cannot be attached, or whose owner cannot be verified, refuses with a non-zero exit, and only a session with no owner opens cold
+
+### Fixed
+
+- Attached socket clients can answer HTML `ask` forms field by field while the terminal shows the complete form; the first submitted form cancels the other presentation
+- Exact-owner `--attach` now shows the terminal only after identity validation and refresh complete, so input typed as soon as the screen appears is not lost
+- Child-process RPC tests now run with hermetic `OMP_RUN_DIR`, `HOME`, and `PI_CODING_AGENT_DIR`, and `--no-session` launches no longer publish an attach socket that could never be resumed, so running the suite leaves no dead `.json`/`.sock` sidecars in `~/.omp/run`
+- Session attach endpoints now honor `OMP_RUN_DIR` for publication and discovery, matching RPC clients, so sessions kept in a custom run directory can be resumed, attached, and refreshed from the directory they publish in
+- Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
 ## [18.18.3] - 2026-11-09
 
 ### Breaking Changes
@@ -672,6 +692,7 @@
 
 ### Changed
 
+- Closing the terminal on an interactive session (`SIGHUP`) now detaches the TUI instead of exiting: the draft is saved for `--resume`, and the session, its background jobs, and its attach endpoint keep serving, while `Ctrl+C`, `Ctrl+D` and `/exit` still shut it down
 - `/resume` and `omp --resume` open at once on your titled sessions (read from `~/.omp/agent/history.db`), then fill in prompts, status, and untitled sessions when the full scan finishes; the first scan saves older sessions' titles too, so later opens list them right away
 - With `symbolPreset: ascii`, status glyphs are three columns wide (`[+]`, `[-]`, `[#]`, `[ ]`) and status spinners animate as `[|] [/] [-] [\]` ([#17732](https://github.com/can1357/oh-my-pi/pull/17732) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - The subagent HUD marks each running agent with the running status glyph instead of a dot ([#17732](https://github.com/can1357/oh-my-pi/pull/17732) by [@JustasMasiulis](https://github.com/JustasMasiulis))

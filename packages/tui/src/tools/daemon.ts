@@ -20,6 +20,12 @@ export interface DaemonSpec {
 	application: string;
 	args: string[];
 	env: Record<string, string>;
+	/**
+	 * Variables this spec declares as the child's identity. Presence — even as an
+	 * empty object — means the spawner must not supply these variables from its
+	 * own environment; the values here are exactly the child's identity.
+	 */
+	identity?: Record<string, string>;
 	cwd: string;
 	pty: boolean;
 	ready?: DaemonReadySpec;

@@ -295,30 +295,49 @@ describe("recall.execute gears", () => {
 		expect(recall).not.toHaveBeenCalled();
 	});
 
-	it("max reaches beyond 4800 in an explicitly named project while retaining the hard coding scope", async () => {
-		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
-		const recall = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] });
-		stubSweep({ observation: 5001, pending: 2, failed: 3 });
-		stubDecisionModel(memory => (memory === "observation 5000 body" ? 0.99 : 0.1));
-		registerState(client, {
-			recallTags: ["scope:coding", "project:oh-my-pi"],
-			config: { decisionModelUrl: "http://decision.local" },
-		});
-		const result = await recallTool().execute("project-max", {
-			query: "q",
-			budget: "max",
-			tags: ["project:memory", "scope:personal"],
-		});
-		expect(result.details).toMatchObject({
-			mode: "swept",
-			evaluatedCount: 5006,
-			totalAvailable: 5006,
-			tags: ["scope:coding", "project:memory"],
-			truncated: false,
-		});
-		expect(textOf(result)).toContain("observation 5000 body");
-		expect(recall).not.toHaveBeenCalled();
-	});
+	it.each(["per-project-tagged", "per-project"] as const)(
+		"max shortlists at most 4800 records in %s scope while retaining the hard coding boundary",
+		async scoping => {
+			const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+			const recall = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+				results: [],
+				trace: {
+					rrf_merged: Array.from({ length: 4801 }, (_, index) => ({
+						node_id: `ranked-${index}`,
+						text: `ranked memory ${index}`,
+					})),
+				},
+			});
+			stubSweep({ observation: 5001, pending: 2, failed: 3 });
+			const scoring = stubDecisionModel(memory => (memory === "ranked memory 4799" ? 0.99 : 0.1));
+			registerState(client, {
+				recallTags: ["scope:coding", "project:oh-my-pi"],
+				config: { scoping, decisionModelUrl: "http://decision.local" },
+			});
+			const result = await recallTool().execute("project-max", {
+				query: "q",
+				budget: "max",
+				tags: ["project:memory", "scope:personal"],
+			});
+			expect(result.details).toMatchObject({
+				mode: "shortlisted",
+				evaluatedCount: 4800,
+				tags: ["scope:coding", "project:memory"],
+				truncated: true,
+			});
+			expect(scoring.sizes.reduce((sum, size) => sum + size, 0)).toBe(4800);
+			expect(textOf(result)).toContain("ranked memory 4799");
+			expect(textOf(result)).not.toContain("ranked memory 4800");
+			expect(recall).toHaveBeenCalledWith(
+				"test-bank",
+				"q",
+				expect.objectContaining({
+					trace: true,
+					tags: ["scope:coding", "project:memory"],
+				}),
+			);
+		},
+	);
 
 	it("keeps wildcard and disjunctive project filters bounded instead of authorizing an exhaustive bank scan", async () => {
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
@@ -501,7 +520,7 @@ describe("recall.execute deep gears", () => {
 		expect(calls).toEqual([{ type: "world", consolidationState: undefined }]);
 		expect(requests.sizes).toEqual([2]);
 		expect(block).toContain("world fact 0");
-		expect(block).toContain("swept 2/2 (100%) available records");
+		expect(block).toContain("scanned 2/2 (100%)");
 	});
 
 	it("hands xhigh back to a traced high recall when page one busts the ceiling", async () => {
@@ -713,7 +732,7 @@ describe("recall.execute deep gears", () => {
 		const details = result.details as { scoredCandidates: { id: string; score: number; kept: boolean }[] };
 		expect(details.scoredCandidates[4799]).toMatchObject({ id: "ranked-4799", score: 0.99, kept: true });
 		expect(details.scoredCandidates.some(candidate => candidate.id === "ranked-4800")).toBe(false);
-		expect(textOf(result)).toContain("evaluated 4800/unknown (unknown) shortlisted of unknown available records");
+		expect(textOf(result)).toContain("scanned 4800/unknown (unknown)");
 		expect(textOf(result)).toContain("relevant near the end");
 		expect(textOf(result)).not.toContain("observation 0 body");
 	});
@@ -750,7 +769,7 @@ describe("recall.execute deep gears", () => {
 		const result = await recallTool().execute("call-over", { query: "anything", budget: "max" });
 		const block = textOf(result);
 
-		expect(block).toContain("shortlisted of 4801");
+		expect(block).toContain("/4801 (");
 		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: 4801, truncated: true });
 		expect(sweep.calls).toHaveLength(3);
 	});
@@ -763,7 +782,7 @@ describe("recall.execute deep gears", () => {
 
 		const result = await recallTool().execute("call-probe", { query: "anything", budget: "max" });
 
-		expect(textOf(result)).toContain("shortlisted of unknown");
+		expect(textOf(result)).toContain("/unknown (unknown)");
 		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 		expect(sweep.calls).toHaveLength(7);
 	});
@@ -865,7 +884,7 @@ describe("recall.execute deep gears", () => {
 			totalAvailable: 4800,
 			truncated: false,
 		});
-		expect(textOf(result)).toContain("swept 4800/4800");
+		expect(textOf(result)).toContain("scanned 4800/4800");
 	});
 
 	it("does not report truncation when an unvisited collection only repeats scored ids", async () => {
@@ -936,7 +955,7 @@ describe("recall.execute deep gears", () => {
 		const result = await recallTool().execute("call-duplicate-walk", { query: "anything", budget: "max" });
 		const block = textOf(result);
 
-		expect(block).toContain("shortlisted of unknown");
+		expect(block).toContain("/unknown (unknown)");
 		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 	});
 
@@ -953,7 +972,7 @@ describe("recall.execute deep gears", () => {
 		const result = await recallTool().execute("call-duplicate-bound", { query: "anything", budget: "max" });
 		const block = textOf(result);
 
-		expect(block).toContain("shortlisted of unknown");
+		expect(block).toContain("/unknown (unknown)");
 		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 	});
 
@@ -969,7 +988,7 @@ describe("recall.execute deep gears", () => {
 		const result = await recallTool().execute("call-small-collection", { query: "anything", budget: "max" });
 		const block = textOf(result);
 
-		expect(block).toContain("shortlisted of unknown");
+		expect(block).toContain("/unknown (unknown)");
 		expect(result.details).toMatchObject({ mode: "shortlisted", totalAvailable: null, truncated: true });
 	});
 
@@ -1215,9 +1234,7 @@ describe("recall coverage", () => {
 				{ id: "failed-0", score: null, kept: false },
 			],
 		});
-		expect(textOf(result)).toContain(
-			"swept 3/4 (75%) available records in [scope:coding, project:memory] at gear=default",
-		);
+		expect(textOf(result)).toContain("scanned 3/4 (75%) in [scope:coding, project:memory], depth=default");
 		expect(textOf(result)).not.toContain("pending 0 body");
 		expect(textOf(result)).not.toContain("failed 0 body");
 	});

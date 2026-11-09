@@ -20,25 +20,13 @@ export function parseRecallBudget(value: unknown): RecallGear | undefined {
 	return migrated === "default" || migrated === "deep" || migrated === "max" ? migrated : undefined;
 }
 
-export function isNamedProjectScope(tags: readonly string[] | undefined): boolean {
-	return tags?.some(tag => /^project:[a-z0-9][a-z0-9._-]*$/i.test(tag.trim())) ?? false;
-}
-
 /** Shared return-window boundary for manual recall and root agent policy. */
 export function clampRecallMaxTokens(value: number | undefined): number | undefined {
 	if (value === undefined) return undefined;
 	return Math.min(16384, Math.max(512, Math.round(value)));
 }
 
-/** A dedicated project bank or conjunctive named-project filter makes max exhaustive. */
-export function recallSweepCeiling(
-	gear: RecallGear,
-	scoping: string,
-	tags: readonly string[] | undefined,
-	tagsMatch?: string,
-): number {
-	const project =
-		scoping === "per-project" ||
-		((tagsMatch === undefined || tagsMatch === "all" || tagsMatch === "all_strict") && isNamedProjectScope(tags));
-	return gear === "max" && project ? Number.POSITIVE_INFINITY : GEAR_SWEEP_CAPS[gear];
+/** Bound every scope to the selected recall depth. */
+export function recallSweepCeiling(gear: RecallGear): number {
+	return GEAR_SWEEP_CAPS[gear];
 }

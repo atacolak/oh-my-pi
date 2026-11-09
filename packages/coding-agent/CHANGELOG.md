@@ -8,7 +8,7 @@
 - Added `memory_document_id` to Hindsight retain metadata so a stored memory names the document it landed in.
 - Added `hindsight.provenanceTags` (`HINDSIGHT_PROVENANCE_TAGS`) plus automatic `role:<agent-profile>` and `actor:<hcom-name>` tags so retained memories carry write-only provenance without narrowing recall or observation scopes.
 - Added optional `tags` to the `recall` and `reflect` tools; project filters can override the default project while the configured `scope:*` boundary remains enforced.
-- recall now reports timestamped evaluated/total coverage and percentages in results, injected memories and its tool description; unavailable distinct totals remain explicit.
+- recall now reports concise scanned/total coverage and percentages with depth in results, injected memories and its tool description; unavailable distinct totals remain explicit.
 - Added a compact `[role:… actor:…]` provenance badge to recalled memory footers.
 - Added optional `hindsight.scopeTags` so deterministic memory scope tags resolve retain, recall/reflect, and exact `observation_scopes` together; tagged mental models now require a full tag subset to become visible.
 - Added optional `hindsight.retainStrategy` (and `HINDSIGHT_RETAIN_STRATEGY`) to select a named Hindsight extraction strategy on retain; unset omits the field so the bank default applies.
@@ -17,7 +17,7 @@
 - Added `hindsight.recallCadence` (`boundary` default, `per-turn` opt-in) so a session can re-ask the bank every turn while never repeating a memory the transcript already holds.
 - Added opt-in single-survivor abstention via `hindsight.decisionModelUrl` / `hindsight.decisionModelThreshold`: a lone low-confidence recall result is dropped, and an unreachable decision service keeps the memory.
 - Added per-call `budget`, `maxTokens`, and `types` controls to the `recall` tool, and made tool recall apply the configured single-survivor abstention gate.
-- recall offers `default`, `deep` and `max`, with full scans of smaller scopes and exhaustive named-project scans at `max`.
+- recall offers `default`, `deep` and `max`, scanning up to 1200, 2400 and 4800 records in every scope, with smaller scopes scanned in full.
 - Hindsight `read memory://<id>` now resolves a bank memory natively, and recalled bullets link the id as `[memory://<id>]`; the read renders the full text with provenance, source memories, and consolidation history, and fails closed with one opaque error for missing and out-of-scope ids alike.
 - root agent memory policies can set recall depth, returned-token limits and retain cadence alongside auto-recall and auto-retain, while operator environment overrides still win.
 

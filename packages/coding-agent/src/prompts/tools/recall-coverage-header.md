@@ -1,1 +1,1 @@
-Found {{count}} relevant {{noun}} (decision model {{#if swept}}swept {{coverage.evaluatedCount}}/{{coverage.total}} ({{coverage.percentage}}){{else}}evaluated {{coverage.evaluatedCount}}/{{coverage.total}} ({{coverage.percentage}}) shortlisted of {{coverage.total}}{{/if}} available records in [{{coverage.scope}}] at gear={{coverage.gear}}, as of {{coverage.evaluatedAt}} UTC):
+Found {{count}} relevant {{noun}} (scanned {{coverage.evaluatedCount}}/{{coverage.total}} ({{coverage.percentage}}) in [{{coverage.scope}}], depth={{coverage.gear}}):

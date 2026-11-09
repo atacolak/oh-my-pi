@@ -23,7 +23,7 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
 	"budget?": type("'default' | 'deep' | 'max'").describe(
-		"default = evaluate up to 1200 records, deep = up to 2400, max = all named-project records or up to 4800 bank-wide; smaller scopes are swept in full (omitted = session setting)",
+		"recall depth: default scans up to 1200 records, deep up to 2400, max up to 4800 in any scope; smaller scopes are scanned in full (omitted = session setting)",
 	),
 	"maxTokens?": type("number").describe(
 		"tokens of surviving memories to return, clamped to 512..16384 (omitted = session setting)",

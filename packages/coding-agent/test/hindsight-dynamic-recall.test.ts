@@ -647,6 +647,46 @@ describe("recall refresh boundaries", () => {
 });
 
 describe("swept recall", () => {
+	it("bounds automatic project recall at 4800 ranked records and renders the actual coverage", async () => {
+		const client = new RecordingApi();
+		client.sweepBank([], 5001);
+		client.recallResponse = {
+			results: [],
+			trace: {
+				rrf_merged: Array.from({ length: 4801 }, (_, index) => ({
+					node_id: `ranked-${index}`,
+					text: `ranked memory ${index}`,
+				})),
+			},
+		};
+		const scored: string[] = [];
+		stubDecisionModel(memory => {
+			scored.push(memory);
+			return memory === "ranked memory 4799" ? 0.99 : 0.1;
+		});
+		const harness = makeHarness(client, {
+			config: makeConfig({
+				scoping: "per-project",
+				recallBudget: "max",
+				recallTypes: ["observation"],
+				decisionModelUrl: "http://decision.local",
+			}),
+		});
+		const outcome = await harness.state.recallForContext("q");
+		expect(outcome.details).toMatchObject({
+			mode: "shortlisted",
+			evaluatedCount: 4800,
+			totalAvailable: null,
+			gear: "max",
+		});
+		expect(scored).toHaveLength(4800);
+		expect(scored).not.toContain("ranked memory 4800");
+		expect(outcome.context).toContain("coverage: 4800/unknown (unknown)");
+		expect(outcome.context).toContain("(depth=max)");
+		expect(outcome.delivered.map(memory => memory.id)).toEqual(["ranked-4799"]);
+		expect(client.recallCalls).toHaveLength(1);
+	});
+
 	it("scores the whole fitted scope in rank order and skips the server-ranked recall", async () => {
 		const client = new RecordingApi();
 		client.sweepBank([
@@ -712,14 +752,15 @@ describe("swept recall", () => {
 			hasUI: false,
 			settings: SettingsClass.isolated({ "memory.backend": "hindsight" }),
 		} as unknown as ToolSession);
-		expect(tool.description).toContain("coverage is unknown");
+		expect(harness.state.lastRecallCoverage).toBeUndefined();
+		expect(tool.description).not.toContain("last recall:");
 		const outcome = await harness.state.recallForContext("q");
-		expect(outcome.context).toContain("2/2 (100%)");
-		expect(tool.description).toContain("2/2 (100%)");
-		const measuredAt = harness.state.lastRecallCoverage!.evaluatedAt;
-		expect(tool.description).toContain(measuredAt);
+		expect(outcome.context).toContain("coverage: 2/2 (100%)");
+		expect(outcome.context).toContain("(depth=default)");
+		expect(tool.description).toContain("last recall: 2/2 (100%)");
+		expect(tool.description).toContain("(depth=default)");
 		harness.state.resetConversationTracking();
-		expect(tool.description).toContain("coverage is unknown");
+		expect(harness.state.lastRecallCoverage).toBeUndefined();
 		expect(tool.description).not.toContain("2/2 (100%)");
 	});
 

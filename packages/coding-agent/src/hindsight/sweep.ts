@@ -22,7 +22,7 @@ export interface RecallCandidatePool {
 	totalAvailable: number | null;
 }
 
-/** Both recall surfaces use the same crossover, project-max boundary and ranked shortlist. */
+/** Both recall surfaces use the same depth ceiling and ranked shortlist. */
 export async function loadRecallCandidates(
 	client: HindsightClientApi,
 	bankId: string,
@@ -47,7 +47,7 @@ export async function loadRecallCandidates(
 			options.tags,
 			options.tagsMatch,
 			{
-				ceiling: recallSweepCeiling(options.gear, config.scoping, options.tags, options.tagsMatch),
+				ceiling: recallSweepCeiling(options.gear),
 				bailOnOverflow: true,
 			},
 			signal,

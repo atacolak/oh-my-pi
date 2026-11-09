@@ -15,4 +15,4 @@ Bank topology:
 
 stay in the default project scope unless the question explicitly concerns another repository. target that named project with `tags: ["project:<id>"]`, for example `project:exocortex` or `project:oh-my-pi`. an explicit project replaces the default project filter; a narrower scope is more likely to fit an exhaustive decision-model sweep. `area:<subsystem>` and `memory_shape:<shape>` add narrower filters. project targeting never removes the session's hard scope boundary or grants access to personal memory.
 
-choose recall depth: `default` evaluates up to 1200 available records, `deep` up to 2400, and `max` the whole named project or up to 4800 bank-wide records. smaller scopes are evaluated in full. inspect the timestamped coverage header for the actual evaluated count, total and percentage; unavailable totals or scores remain unknown.
+choose recall depth (`budget`): `default` scans up to 1200 records, `deep` up to 2400, and `max` up to 4800. smaller scopes are scanned in full. check the `coverage:` header for `scanned/total (%)` in the active scope.

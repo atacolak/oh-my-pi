@@ -20,9 +20,10 @@
  * lands against a missing bank.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { logger } from "@oh-my-pi/pi-utils";
+import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import type { HindsightClientApi } from "./client";
 import type { HindsightConfig } from "./config";
 
@@ -30,6 +31,9 @@ const DEFAULT_BANK_NAME = "omp";
 const PROJECT_TAG_PREFIX = "project:";
 const UNKNOWN_PROJECT = "unknown";
 const MISSION_SET_CAP = 10_000;
+const WORKSPACE_MANIFEST = "workspace.toml";
+const PREFERRED_SCOPE_MANIFEST = path.join(".systemd-ops", "scope.toml");
+const LEGACY_SCOPE_MANIFEST = ".systemd-ops.toml";
 
 export type RecallTagsMatch = "any" | "all" | "any_strict" | "all_strict";
 
@@ -65,25 +69,91 @@ function baseBankId(config: HindsightConfig): string {
 /**
  * Best-effort project label from a working-directory path.
  *
- * When `directory` lives inside a repository we resolve the primary
- * checkout root (or the shared common dir for bare-repo worktrees) via
- * the native VCS adapter and basename that, so every linked
- * worktree of one repo shares the same `project:<name>` tag.
- * Outside a repo (or when resolution fails), fall back to the cwd basename.
+ * The canonical project identity is the `[workspace].id` of the nearest
+ * `workspace.toml`, falling back to `[scope].id` in `.systemd-ops/scope.toml`
+ * (or legacy `.systemd-ops.toml`) walking up from the working directory.
+ * Matching declarations may coexist; conflicting IDs or both scope manifest
+ * flavours are ambiguous and contribute nothing. When a linked worktree carries
+ * no declaration, the primary checkout root is checked with the same rules.
  *
- * The basename is lowercased. The label becomes a tag, and Hindsight matches
- * tags literally, so a checkout at `.../General` would otherwise retain into a
+ * Otherwise we fall back to the primary checkout root basename (or the cwd
+ * basename), lowercased. The label becomes a tag, and Hindsight matches tags
+ * literally, so a checkout at `.../General` would otherwise retain into a
  * `project:General` scope that never meets the `project:general` scope every
  * other client of the same bank reads and writes.
  *
  * Sync only: this runs on the hot path of `computeBankScope`, which is
  * exposed as a sync API to callers like `backend.ts` and must stay sync.
- * Native repository discovery never launches a subprocess.
+ * Native repository discovery and manifest reads never launch a subprocess.
  */
 function projectLabel(directory: string): string {
 	if (!directory) return UNKNOWN_PROJECT;
+	const declared = declaredProjectLabel(directory);
+	if (declared) return declared;
 	const primary = vcs.repo(directory)?.primaryRoot() ?? null;
 	return path.basename(primary ?? directory).toLowerCase() || UNKNOWN_PROJECT;
+}
+
+/** Explicit managed-project identity, without a directory-name fallback. */
+export function declaredProjectLabel(directory: string): string | null {
+	if (!directory) return null;
+	const declared = scopeIdFromAncestors(directory);
+	if (declared) return declared;
+	const primary = vcs.repo(directory)?.primaryRoot() ?? null;
+	return primary ? scopeIdAt(primary) : null;
+}
+
+function normalizeScopeId(id: string): string {
+	return id
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+}
+
+function scopeIdFromManifest(manifest: string): string | null {
+	try {
+		const parsed = Bun.TOML.parse(fs.readFileSync(manifest, "utf8"));
+		if (!isRecord(parsed)) return null;
+		const workspaceId = isRecord(parsed.workspace) ? parsed.workspace.id : undefined;
+		const scopeId = isRecord(parsed.scope) ? parsed.scope.id : undefined;
+		const id = typeof workspaceId === "string" ? workspaceId : scopeId;
+		return typeof id === "string" ? normalizeScopeId(id) || null : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Declared scope id for exactly this directory, or null when absent/ambiguous/unusable. */
+function scopeIdAt(root: string): string | null {
+	const workspace = path.join(root, WORKSPACE_MANIFEST);
+	const preferred = path.join(root, PREFERRED_SCOPE_MANIFEST);
+	const legacy = path.join(root, LEGACY_SCOPE_MANIFEST);
+	const preferredExists = fs.existsSync(preferred);
+	const legacyExists = fs.existsSync(legacy);
+	if (preferredExists && legacyExists) return null;
+	const fallbackId = preferredExists
+		? scopeIdFromManifest(preferred)
+		: legacyExists
+			? scopeIdFromManifest(legacy)
+			: null;
+	if (fs.existsSync(workspace)) {
+		const workspaceId = scopeIdFromManifest(workspace);
+		if (workspaceId && fallbackId && workspaceId !== fallbackId) return null;
+		return workspaceId ?? fallbackId;
+	}
+	return fallbackId;
+}
+
+function scopeIdFromAncestors(directory: string): string | null {
+	let current = path.resolve(directory);
+	for (;;) {
+		const id = scopeIdAt(current);
+		if (id) return id;
+		const parent = path.dirname(current);
+		if (parent === current) return null;
+		current = parent;
+	}
 }
 
 function uniqueTags(tags: readonly string[]): string[] {
@@ -111,8 +181,10 @@ export function computeBankScope(config: HindsightConfig, directory: string): Ba
 			return scopedBank(base, config.scopeTags);
 		case "per-project":
 			return { bankId: `${base}-${projectLabel(directory)}` };
-		case "per-project-tagged":
-			return scopedBank(base, [...config.scopeTags, `${PROJECT_TAG_PREFIX}${projectLabel(directory)}`]);
+		case "per-project-tagged": {
+			const id = declaredProjectLabel(directory);
+			return scopedBank(base, id ? [...config.scopeTags, `${PROJECT_TAG_PREFIX}${id}`] : config.scopeTags);
+		}
 	}
 }
 

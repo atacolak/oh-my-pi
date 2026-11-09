@@ -39,12 +39,19 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	retainContext: "omp",
 	retainUpdateMode: "replace",
 	retainStrategy: null,
-	recallBudget: "mid",
+	recallBudget: "default",
 	recallMaxTokens: 1024,
 	recallTypes: ["world", "experience"],
 	recallContextTurns: 1,
 	recallMaxQueryChars: 800,
 	recallPromptPreamble: "preamble",
+	recallPreferObservations: true,
+	recallPrune: true,
+	recallDedup: true,
+	recallCadence: "boundary",
+	decisionModelUrl: null,
+	decisionModelApiKey: null,
+	decisionModelThreshold: 0.25,
 	debug: false,
 	requestTimeoutMs: 30_000,
 	reflectTimeoutMs: 30_000,
@@ -65,19 +72,17 @@ function firstItem(body: unknown): Record<string, unknown> {
 	return item as Record<string, unknown>;
 }
 
-let agentDir: TempDir;
-let originalAgentDir: string;
-
+// Retained tool items land in a durable outbox under the agent dir; keep it in a temp dir.
+let agentDirTemp: TempDir;
+let previousAgentDir: string;
 beforeEach(() => {
-	originalAgentDir = getAgentDir();
-	agentDir = TempDir.createSync("@hindsight-retain-seam-");
-	setAgentDir(agentDir.path());
+	previousAgentDir = getAgentDir();
+	agentDirTemp = TempDir.createSync("@hindsight-retain-seam-");
+	setAgentDir(agentDirTemp.path());
 });
-
-afterEach(() => {
-	setAgentDir(originalAgentDir);
-	agentDir.removeSync();
-	vi.restoreAllMocks();
+afterEach(async () => {
+	setAgentDir(previousAgentDir);
+	await agentDirTemp.remove();
 });
 
 describe("Hindsight retain strategy request bodies", () => {
@@ -105,7 +110,7 @@ describe("Hindsight retain strategy request bodies", () => {
 		await state.retainSession([{ role: "user", content: "remember this decision" }]);
 		const item = firstItem(bodies[0]);
 		expect(item).not.toHaveProperty("strategy");
-		expect(item.metadata).toEqual({ session_id: "sess-unset" });
+		expect(item.metadata).toEqual({ session_id: "sess-unset", memory_document_id: "sess-unset" });
 		expect(item.tags).toEqual(["scope:coding", "project:speech-core"]);
 		expect(JSON.stringify(item)).not.toContain("strategy:");
 	});
@@ -133,7 +138,7 @@ describe("Hindsight retain strategy request bodies", () => {
 		expect(item.strategy).toBe("personal_chat");
 		expect(item.tags).toEqual(["scope:coding", "project:speech-core"]);
 		expect(item.tags).not.toContain("strategy:personal_chat");
-		expect(item.metadata).toEqual({ session_id: "sess-1" });
+		expect(item.metadata).toEqual({ session_id: "sess-1", memory_document_id: "sess-1" });
 		expect(item.observation_scopes).toEqual([["scope:coding", "project:speech-core"]]);
 	});
 
@@ -155,7 +160,7 @@ describe("Hindsight retain strategy request bodies", () => {
 			banksSet: new Set(["personal"]),
 		});
 
-		await state.enqueueRetain("call-tabs", [{ content: "operator prefers tabs over spaces" }]);
+		await state.enqueueRetain("call-148", [{ content: "operator prefers tabs over spaces" }]);
 		await state.flushRetainQueue();
 		const item = firstItem(bodies[0]);
 		expect(item.strategy).toBe("personal_chat");
@@ -163,5 +168,62 @@ describe("Hindsight retain strategy request bodies", () => {
 		expect(item.tags).not.toContain("strategy:personal_chat");
 		expect(item.metadata).toEqual({ session_id: "sess-queue" });
 		expect(item.observation_scopes).toEqual([["scope:coding", "project:speech-core"]]);
+	});
+});
+
+describe("Hindsight retain queue durability across a rebuild", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("sends a queued memory with the strategy and scopes captured when it was queued", async () => {
+		const bodies: unknown[] = [];
+		let status = 503;
+		const fetchMock: typeof globalThis.fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit | BunFetchRequestInit): Promise<Response> => {
+				if (status < 300) bodies.push(JSON.parse(String(init?.body ?? "{}")));
+				return new Response("{}", { status });
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+		const queueWith = (
+			sessionId: string,
+			overrides: Partial<HindsightConfig>,
+			observationScopes: string[][] | undefined = [["scope:coding"]],
+		) => {
+			const state: HindsightSessionState = new HindsightSessionState({
+				sessionId,
+				client: new HindsightApi({ baseUrl: "http://hindsight.local" }),
+				bankId: "personal",
+				retainTags: ["scope:coding"],
+				observationScopes,
+				config: makeConfig({ retainStrategy: "personal_chat", ...overrides }),
+				session: {
+					sessionId,
+					emitNotice: () => {},
+					getHindsightSessionState: () => state,
+				} as object as AgentSession,
+				banksSet: new Set(["personal"]),
+			});
+			return state;
+		};
+
+		const first = queueWith("sess-before", {});
+		await first.enqueueRetain("call-durable-routing", [{ content: "operator prefers tabs over spaces" }]);
+		await first.flushRetainQueue();
+		expect(bodies).toHaveLength(0);
+		first.dispose();
+
+		// A rebuilt primary with different routing still delivers what the earlier state persisted.
+		status = 200;
+		const second = queueWith("sess-after", { retainStrategy: "other_strategy" }, undefined);
+		await second.flushRetainQueue();
+
+		const item = firstItem(bodies[0]);
+		expect(item.strategy).toBe("personal_chat");
+		expect(item.observation_scopes).toEqual([["scope:coding"]]);
+		expect(item.metadata).toEqual({ session_id: "sess-before" });
+		expect(item.content).toBe("operator prefers tabs over spaces");
 	});
 });

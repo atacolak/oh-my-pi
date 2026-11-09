@@ -1,13 +1,12 @@
 /**
- * Keeps a transcript's first-turn memory recall with the transcript.
+ * Keeps a transcript's memory recall with the transcript.
  *
- * The recall block becomes part of the system prompt, so it is history: a
- * session resumed in a new process sends the block it was sent with instead of
- * recalling again from a memory store that has changed since, which would
- * change the prompt bytes and miss every provider prompt-cache entry built on
- * them. Backends that can look memories up again also record which memories
- * the block holds, so a resume can report what changed since as a new message
- * rather than rewriting the block.
+ * A delivered recall is history: it rides a hidden turn entry, so a resumed
+ * session re-reads the block the model was given instead of recalling the same
+ * memories again. The record also names which memories the transcript already
+ * holds, so a resume can recall its next question without repeating them, and a
+ * backend that can look memories up again can report what changed since as a new
+ * message rather than rewriting the block.
  */
 import type { SessionEntry } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
@@ -20,6 +19,13 @@ export const MEMORY_RECALL_ENTRY_TYPE = "memory_recall";
  * report and its bookkeeping reach the transcript together, only once delivered.
  */
 export const MEMORY_RECALL_CHANGES_MESSAGE_TYPE = "memory-recall-changes";
+
+/**
+ * Hidden message carrying a delivered recall block. The block travels with the
+ * turn instead of the system prompt, so the provider prefix cache is keyed on
+ * bytes that do not change when a session recalls.
+ */
+export const MEMORY_RECALL_CONTEXT_MESSAGE_TYPE = "memory-recall-context";
 
 /** One memory in a recall block, as last reported to the model. */
 export interface RecalledMemory {

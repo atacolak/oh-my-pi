@@ -175,7 +175,7 @@ export const mnemopiBackend: MemoryBackend = {
 		const preparation = await state?.beforeAgentStartPrompt(promptText, signal);
 		if (!state || !preparation) return undefined;
 		return {
-			context: preparation.context,
+			contextEntry: preparation.contextEntry,
 			notice: preparation.notice,
 			commit: () => getMnemopiSessionState(session) === state && preparation.commit(),
 		};

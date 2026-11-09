@@ -50,14 +50,17 @@ const serveHindsightClient: RpcServe<HindsightApi, HindsightClientProtocol> = {
 	refreshMentalModel: (client, bankId, mentalModelId) => client.refreshMentalModel(bankId, mentalModelId),
 	deleteMentalModel: (client, bankId, mentalModelId) => client.deleteMentalModel(bankId, mentalModelId),
 	getMentalModelHistory: (client, bankId, mentalModelId) => client.getMentalModelHistory(bankId, mentalModelId),
+	getKnowledgeBaseTree: (client, bankId, options) => client.getKnowledgeBaseTree(bankId, options),
 };
 
 const serveHindsightState: RpcServe<HindsightSessionState, HindsightSessionStateProtocol> = {
 	client: state => state.client,
 	bankId: state => state.bankId,
+	resolvedTags: state => state.resolvedTags,
 	retainTags: state => state.retainTags,
 	recallTags: state => state.recallTags,
 	recallTagsMatch: state => state.recallTagsMatch,
+	observationScopes: state => state.observationScopes,
 	config: state => state.config,
 	lastRecallSnippet: state => state.lastRecallSnippet,
 	mentalModelsSnippet: state => state.mentalModelsSnippet,

@@ -300,7 +300,7 @@ describe("Settings.reloadForCwd", () => {
 			expect(settings.getProjectModelRole("default")).toBe("anthropic/external");
 		});
 
-		it("reapplies only native model roles over normal project-provider precedence", async () => {
+		it("reapplies native project yaml over other project-provider layers", async () => {
 			await Bun.write(
 				path.join(scopedProject, ".claude", "settings.json"),
 				JSON.stringify({
@@ -317,7 +317,7 @@ describe("Settings.reloadForCwd", () => {
 
 			expect(settings.getModelRole("default")).toBe("anthropic/native");
 			expect(settings.getProjectModelRole("default")).toBe("anthropic/native");
-			expect(cfgCompactionEnabled.get(settings)).toBe(true);
+			expect(cfgCompactionEnabled.get(settings)).toBe(false);
 		});
 
 		it("merges concurrent role writes under the project file lock", async () => {

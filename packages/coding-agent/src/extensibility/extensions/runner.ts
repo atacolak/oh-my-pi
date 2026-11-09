@@ -571,6 +571,7 @@ export class ExtensionRunner {
 	#errorListeners: Set<ExtensionErrorListener> = new Set();
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
+	#isCompactingFn: () => boolean = () => false;
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
@@ -905,6 +906,7 @@ export class ExtensionRunner {
 		// Context actions (required)
 		this.#getModel = contextActions.getModel;
 		this.#isIdleFn = contextActions.isIdle;
+		this.#isCompactingFn = contextActions.isCompacting ?? (() => false);
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
@@ -1782,6 +1784,7 @@ export class ExtensionRunner {
 			},
 			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel),
 			isIdle: () => this.#isIdleFn(),
+			isCompacting: () => this.#isCompactingFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),

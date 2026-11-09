@@ -270,6 +270,7 @@ import {
 	withoutAgentsMd,
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
+import { mcpServerAllowlist, type NamedLoadSet } from "./task/tool-load-spec";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
@@ -870,6 +871,11 @@ export interface CreateAgentSessionOptions {
 	mountedToolNames?: string[];
 	/** Limit the session to explicitly supplied tool names, without discovered extras. */
 	restrictToolNames?: boolean;
+	/** Agent-profile eager/discoverable maps. Applied on new and restored sessions. */
+	toolLoad?: NamedLoadSet;
+	/** Agent-profile mcps: filter and load modes. Applied on new and restored sessions. */
+	mcpLoad?: NamedLoadSet;
+
 	/**
 	 * Permit only caller-supplied SDK custom tools inside a restricted session.
 	 * They must still be named in {@link toolNames}; discovered extensions, MCP,
@@ -914,6 +920,12 @@ export interface CreateAgentSessionOptions {
 	 * "main" for a top-level session / "sub" for a subagent.
 	 */
 	agentName?: string;
+	/**
+	 * Rules the session's profile declares, in declared order. Present (even empty) means
+	 * the profile owns its always-apply set and rule `agents` globs are not consulted;
+	 * absent keeps the `agents`-scoped bucketing a bare `main` session relies on.
+	 */
+	declaredRules?: readonly string[];
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistryApi;
 	/**
@@ -2448,6 +2460,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			builtinRules: ttsrSettings.builtinRules,
 			disabledRules: ttsrSettings.disabledRules,
 			agentName: resolvedAgentName,
+			...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 		});
 		if (existingSession.injectedTtsrRules.length > 0) {
 			ttsrManager.restoreInjected(existingSession.injectedTtsrRules);
@@ -2895,6 +2908,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Filter browser MCP only when Eval can expose the built-in browser prelude.
 			filterBrowser: initialBrowserPreludeAvailable,
 			extensionRoots: buildSessionExtensionRoots(),
+			// A declared `mcps:` policy decides which servers may be dialed at all;
+			// an empty policy must spawn nothing. Undefined keeps every discovered server.
+			serverAllowlist: mcpServerAllowlist(options.mcpLoad),
 		};
 		if (enableMCP && !mcpManager && isMainThread()) {
 			if (deferMCPDiscoveryForUI) {
@@ -4303,6 +4319,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					disabledRules: ttsrSettings.disabledRules,
 					agentName: resolvedAgentName,
 					replaceTtsrRules: true,
+					...(options.declaredRules ? { declaredRules: options.declaredRules } : {}),
 				});
 				rulebookRules = buckets.rulebookRules;
 				alwaysApplyRules = buckets.alwaysApplyRules;
@@ -4539,10 +4556,25 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			? new Set(explicitlyRequestedToolNames)
 			: undefined;
 		const inheritedMountedNames = options.mountedToolNames && new Set(options.mountedToolNames);
-		const presentationPinnedToolNames =
-			explicitlyRequestedToolNames && inheritedMountedNames
-				? new Set(explicitlyRequestedToolNames.filter(name => !inheritedMountedNames.has(name)))
-				: explicitlyRequestedToolNameSet;
+		// An agent profile that declares a tool discoverable asks for the mount, not a
+		// top-level grant: keep such names out of the pin so the partition can place
+		// them under `xd://` instead of swallowing them in the explicitly-requested set.
+		const declaredDiscoverableToolNames = options.toolLoad?.declared
+			? new Set(options.toolLoad.discoverable.filter(name => !options.toolLoad?.eager.includes(name)))
+			: undefined;
+		// A declared `tools:` map is a closed world for every registration path:
+		// nothing outside it may become active.
+		const declaredToolLoadNames = options.toolLoad?.declared
+			? new Set([...options.toolLoad.names, ...options.toolLoad.eager, ...options.toolLoad.discoverable])
+			: undefined;
+		const presentationPinnedToolNames = explicitlyRequestedToolNames
+			? new Set(
+					explicitlyRequestedToolNames.filter(
+						name =>
+							inheritedMountedNames?.has(name) !== true && declaredDiscoverableToolNames?.has(name) !== true,
+					),
+				)
+			: undefined;
 		const xdevReadAvailable =
 			builtInRegistryToolNames.has("read") &&
 			(explicitlyRequestedToolNameSet === undefined || explicitlyRequestedToolNameSet.has("read"));
@@ -4558,13 +4590,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		// Custom tools and extension-registered tools are always included
 		// unless the effective registry winner is hidden / defaultInactive. Restricted callers own the list.
+		// MCP-origin tools follow the separate `mcps:` declaration, and caller-injected
+		// SDK custom tools are the caller's own protocol surface, not profile discovery.
 		const alwaysInclude: string[] = restrictToolNames
 			? []
 			: [
 					...sdkCustomTools.map(t => t.name),
 					...registeredTools.map(t => t.definition.name),
 					...settingsGatedCustomEntries.keys(),
-				].filter(name => !defaultInactiveToolNames.has(name));
+				].filter(
+					name =>
+						!defaultInactiveToolNames.has(name) &&
+						(declaredToolLoadNames === undefined ||
+							isMCPToolName(name) ||
+							sdkCustomToolNames.has(name) ||
+							declaredToolLoadNames.has(name)),
+				);
 		for (const name of alwaysInclude) {
 			if (toolRegistry.has(name) && !initialToolNames.includes(name)) {
 				initialToolNames.push(name);
@@ -4621,7 +4662,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			for (const name of initialToolNames) {
 				const tool = toolRegistry.get(name);
 				const explicitlyRequested = presentationPinnedToolNames?.has(name) === true;
-				if (tool && xdevReadAvailable && xdevWriteAvailable && !explicitlyRequested && isMountableUnderXdev(tool))
+				if (
+					tool &&
+					xdevReadAvailable &&
+					xdevWriteAvailable &&
+					!explicitlyRequested &&
+					isMountableUnderXdev(tool, declaredDiscoverableToolNames)
+				)
 					mountedNames.push(name);
 				else topLevelToolNames.push(name);
 			}
@@ -5269,6 +5316,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
+		if (options.toolLoad || options.mcpLoad) {
+			session.setAgentLoadPolicy(options.toolLoad, options.mcpLoad);
+			const enabled = session.getEnabledToolNames();
+			const mounted = (options.toolLoad?.discoverable ?? []).filter(name => enabled.includes(name));
+			await session.setActiveToolPresentation(enabled, mounted);
+		}
 		// The session now owns its cost gate; the interactive TUI starts compression after its first frame.
 		if (options.deferSkillDescriptionCompression !== true) skillDescriptions.startCompression();
 		credentialNoticeSession = session;
@@ -5390,6 +5443,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session.setToolBuiltIn(name, false);
 				session.setExtensionMCPTool(name, liveTool);
 				try {
+					// MCP-origin tools follow the separate `mcps:` declaration, whose
+					// closed world the session's MCP load policy already enforces.
+					if (declaredToolLoadNames && !isMCPToolName(name) && !declaredToolLoadNames.has(name)) {
+						if (!alreadyEnabled) return;
+						await session.setActiveToolPresentation(
+							enabled.filter(enabledName => enabledName !== name),
+							mounted.filter(mountedName => mountedName !== name),
+							existingTool !== undefined,
+							activationSignal,
+						);
+						return;
+					}
 					if ((registered.definition.defaultInactive || registered.definition.hidden) && !explicitlyRequested) {
 						if (!alreadyEnabled) return;
 						await session.setActiveToolPresentation(
@@ -5404,13 +5469,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					// explicit setActiveTools() decision that disabled the previous definition.
 					if (existingTool && !alreadyEnabled) return;
 					const shouldMount =
-						!explicitlyRequested &&
+						presentationPinnedToolNames?.has(name) !== true &&
 						toolSession.xdev !== undefined &&
 						builtInRegistryToolNames.has("read") &&
 						builtInRegistryToolNames.has("write") &&
 						enabled.includes("read") &&
 						(enabled.includes("write") || toolSession.deviceOnlyWrite === true) &&
-						isMountableUnderXdev(liveTool);
+						isMountableUnderXdev(liveTool, declaredDiscoverableToolNames);
 					const nextMounted = shouldMount
 						? mounted.includes(name)
 							? mounted

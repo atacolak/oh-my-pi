@@ -174,8 +174,6 @@ import {
 import { applyAgentCompactionPolicy } from "./task/agent-compaction";
 import { discoverAgents, getAgent } from "./task/discovery";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
-import type { AgentDefinition } from "./task/types";
-import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
 import type { AgentDefinition } from "./task/types";

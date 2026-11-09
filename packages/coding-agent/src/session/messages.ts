@@ -55,6 +55,7 @@ import type { AssistantMessage, ImageContent, Message, TextContent, UserMessage 
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
+import { MEMORY_RECALL_CHANGES_MESSAGE_TYPE, MEMORY_RECALL_CONTEXT_MESSAGE_TYPE } from "../memory-backend/recall-entry";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { cleanTinyMessage, formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
@@ -1099,6 +1100,7 @@ interface ConvertArrayMemo {
 	output: Message[];
 	tail: AgentMessage | undefined;
 	prefixOutputLen: number;
+	memoryRecallScope: string | null | undefined;
 }
 
 let convertGeneration = 0;
@@ -1330,10 +1332,11 @@ export function isUserAuthoredMessage(message: AgentMessage): boolean {
  * {@link convertMessageAt}; it stays separate so the index mapping `/context`
  * needs adds no cost here.
  */
-export function convertToLlm(messages: AgentMessage[]): Message[] {
+export function convertToLlm(messages: AgentMessage[], memoryRecallScope?: string | null): Message[] {
 	const len = messages.length;
 	const memo = convertArrayCache.get(messages);
-	const sameGeneration = memo !== undefined && memo.generation === convertGeneration;
+	const sameGeneration =
+		memo !== undefined && memo.generation === convertGeneration && memo.memoryRecallScope === memoryRecallScope;
 	const tail = len > 0 ? messages[len - 1] : undefined;
 
 	// Exact-repeat: same array, same length, same trailing identity → reuse the
@@ -1372,6 +1375,21 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 	let prefixOutputLen = 0;
 	for (let i = start; i < len; i++) {
 		if (i === len - 1) prefixOutputLen = out.length;
+		const message = messages[i];
+		if (
+			memoryRecallScope !== undefined &&
+			message.role === "custom" &&
+			(message.customType === MEMORY_RECALL_CONTEXT_MESSAGE_TYPE ||
+				message.customType === MEMORY_RECALL_CHANGES_MESSAGE_TYPE)
+		) {
+			const details = isRecord(message.details) ? message.details : undefined;
+			// Old unscoped entries remain in the journal, not provider replay.
+			if (
+				typeof details?.scope !== "string" ||
+				(memoryRecallScope === null ? details.backend === "hindsight" : details.scope !== memoryRecallScope)
+			)
+				continue;
+		}
 		const fragment = convertMessageAt(messages, i, convertOneCached);
 		for (const msg of fragment) out.push(msg);
 	}
@@ -1385,6 +1403,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 		output: out,
 		tail,
 		prefixOutputLen,
+		memoryRecallScope,
 	});
 	return out;
 }

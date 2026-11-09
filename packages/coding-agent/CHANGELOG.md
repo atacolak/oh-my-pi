@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- moved sessions no longer replay the previous project's recalled context during prompts or compaction; older unscoped recall stays in saved history and is fetched afresh when recall is enabled.
 - global Hindsight retains keep their actor and role provenance without inheriting project tags or observation scopes.
 - worker aliases follow the parent's live memory routing without dropping valid recall results after a scope refresh.
 - Hindsight tagged scopes now use only declared project identities; unbound workspaces no longer invent project tags.

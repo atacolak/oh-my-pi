@@ -1254,7 +1254,11 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	/** The hidden turn entry carrying a recall block; empty content yields no entry. */
 	#recallEntry(content: string): MemoryPromptPreparation["contextEntry"] {
 		if (!content) return undefined;
-		return { customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE, content };
+		return {
+			customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+			content,
+			details: { backend: "hindsight", scope: this.recallContextScope },
+		};
 	}
 
 	/** Adopts a recall unless a newer turn or reset superseded it; `""` means it found nothing new. */
@@ -1275,9 +1279,14 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		this.#recallRefreshRequested = true;
 	}
 
+	/** The active recall's routing and cwd identity, also used by provider replay. */
+	get recallContextScope(): string {
+		return this.#recallScope();
+	}
+
 	/**
-	 * Identifies the server, account, bank and tag filter a recall reads, so a persisted
-	 * recall is only reused for the same ones. The account is a hash of the API token.
+	 * Identifies the server, account, bank, tag filter and cwd a recall reads, so a
+	 * persisted recall is only reused for the same ones. The account is a hash of the API token.
 	 */
 	#recallScope(): string {
 		return JSON.stringify([
@@ -1287,6 +1296,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 			this.bankId,
 			this.recallTags ?? [],
 			this.recallTagsMatch ?? null,
+			this.session.sessionManager.getCwd(),
 		]);
 	}
 

@@ -2759,6 +2759,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			localProtocolOptions: () => this.#localProtocolOptions(),
 			transformContext: (messages, signal) => this.#transformContext(messages, signal),
 			convertToLlm: messages => this.#convertToLlm(messages),
+			memoryRecallScope: () => this.getHindsightSessionState()?.recallContextScope ?? null,
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
 			onSseEvent: this.#onSseEvent,

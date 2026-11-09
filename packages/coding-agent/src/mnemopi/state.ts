@@ -40,9 +40,9 @@ import { mnemopiEmbedClient } from "./embed-client";
 import { cfgMnemopiInjectionTokenLimit } from "./settings";
 
 /** The hidden turn entry carrying a recall block; empty content yields no entry. */
-function recallContextEntry(content: string): MemoryPromptPreparation["contextEntry"] {
+function recallContextEntry(content: string, scope: string): MemoryPromptPreparation["contextEntry"] {
 	if (!content) return undefined;
-	return { customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE, content };
+	return { customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE, content, details: { backend: "mnemopi", scope } };
 }
 
 /** A rendered recall block and where each tracked memory's text starts in it. */
@@ -764,7 +764,7 @@ export class MnemopiSessionState implements MnemopiSessionStateApi {
 			// change for the next resume to report.
 			const changes = this.#recallChanges(persisted.memories);
 			return {
-				contextEntry: recallContextEntry(persisted.text),
+				contextEntry: recallContextEntry(persisted.text, scope),
 				notice: changes && {
 					content: changes.content,
 					details: { scope, memories: changes.memories } satisfies MemoryRecallChangesDetails,
@@ -783,7 +783,7 @@ export class MnemopiSessionState implements MnemopiSessionStateApi {
 		// The staged block and the transcript carry it as delivered; the session caches the
 		// full one, which every later prompt render cuts to the current budget.
 		return {
-			contextEntry: recallContextEntry(record?.text ?? ""),
+			contextEntry: recallContextEntry(record?.text ?? "", scope),
 			commit: () => this.#commitRecall(generation, recall?.text ?? "", record),
 		};
 	}

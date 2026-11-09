@@ -140,11 +140,12 @@ import {
 	loadSystemPromptTemplateFile,
 	resolvePromptInput,
 } from "./system-prompt";
-import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
-import type { AgentDefinition } from "./task/types";
+import { applyAgentCompactionPolicy } from "./task/agent-compaction";
 import { discoverAgents, getAgent } from "./task/discovery";
-import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
+import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
+import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
+import type { AgentDefinition } from "./task/types";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
 import { registerLocalInferenceApi } from "./tiny/local-inference-api";
@@ -1877,6 +1878,7 @@ export async function buildSessionOptions(
 			// `agents`-scoped bucketing a bare `main` session relies on; an empty list is a
 			// profile that deliberately applies none.
 			options.declaredRules = agent.rules;
+			applyAgentCompactionPolicy(activeSettings, agent.compaction);
 		}
 	}
 
@@ -2084,6 +2086,19 @@ export async function runRootCommand(
 		setInteractiveHost(isInteractive);
 		if (!isInteractive) {
 			stopPendingStartupComposer();
+		}
+		// Experimental app-viewport backend is interactive-only. Set the env early
+		// enough that InteractiveMode's TUI constructor observes it, and reject
+		// print/protocol (and other non-interactive) startups with a clean usage error.
+		if (parsedArgs.alt) {
+			if (!isInteractive) {
+				process.stderr.write(
+					`${chalk.red("Error: --alt is only supported in interactive mode (not with --print, --mode, or piped input)")}\n`,
+				);
+				process.stderr.write(`Run \`omp --help\` for available flags.\n`);
+				process.exit(2);
+			}
+			Bun.env.PI_TUI_RENDER_BACKEND = "app-viewport";
 		}
 		// Account routing must use the effective settings, including `--config` and
 		// `PI_CONFIG_FILES` overlays, rather than independently re-reading only the

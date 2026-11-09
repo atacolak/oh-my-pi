@@ -8,7 +8,12 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { cfgCompactionMethodOrder } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	type AgentCompactionPolicy,
+	applyAgentCompactionPolicy,
+} from "@oh-my-pi/pi-coding-agent/task/agent-compaction";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { rejectionOf } from "./helpers/rejection";
@@ -61,7 +66,7 @@ describe.each([
 		}
 	});
 
-	async function createHarness(): Promise<{
+	async function createHarness(compaction: AgentCompactionPolicy = { methodOrder: ["snapcompact", "soft"] }): Promise<{
 		session: AgentSession;
 		sessionManager: SessionManager;
 		activeModel: Model;
@@ -103,10 +108,8 @@ describe.each([
 		for (const message of seed) sessionManager.appendMessage(message);
 		if (!sessionManager.getBranch()[0]?.id) throw new Error("Expected seeded branch entry");
 
-		const settings = Settings.isolated({
-			"compaction.methodOrder": ["snapcompact", "soft"],
-			"compaction.keepRecentTokens": 1,
-		});
+		const settings = Settings.isolated({ "compaction.keepRecentTokens": 1 });
+		applyAgentCompactionPolicy(settings, compaction);
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 		const notices: string[] = [];
 		session.subscribe(event => {
@@ -158,5 +161,17 @@ describe.each([
 		expect(compactSpy).not.toHaveBeenCalled();
 		expect(harness.notices.filter(notice => notice.includes("vision-capable"))).toEqual([]);
 		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toBeUndefined();
+	});
+
+	it("keeps the /compact mode over a profile's configured method order", async () => {
+		const harness = await createHarness({ methodOrder: ["soft"] });
+		expect(cfgCompactionMethodOrder.get(harness.session.settings)).toEqual(["soft"]);
+
+		const compactSpy = vi.spyOn(compactionModule, "compact");
+
+		const error = String(await rejectionOf(harness.session.compact(undefined, { mode: "snapcompact" })));
+
+		expect(error).toContain(`snapcompact needs a vision-capable model (${reason})`);
+		expect(compactSpy).not.toHaveBeenCalled();
 	});
 });

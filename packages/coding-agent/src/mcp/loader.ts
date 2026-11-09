@@ -37,6 +37,8 @@ export interface MCPToolsLoadOptions {
 	filterExa?: boolean;
 	/** Whether to filter out browser MCP servers when the built-in browser capability is enabled (default: false) */
 	filterBrowser?: boolean;
+	/** Restrict discovery and connection to these server names. An empty set dials nothing. */
+	serverAllowlist?: ReadonlySet<string>;
 	/** SQLite storage for MCP tool cache (null disables cache) */
 	cacheStorage?: AgentStorageApi | null;
 	/** Auth storage used to resolve OAuth credentials before initial MCP connect */
@@ -76,6 +78,7 @@ export async function discoverAndLoadMCPTools(cwd: string, options?: MCPToolsLoa
 			enableProjectConfig: options?.enableProjectConfig,
 			filterExa: options?.filterExa,
 			filterBrowser: options?.filterBrowser,
+			serverAllowlist: options?.serverAllowlist,
 		});
 	} catch (error) {
 		// If discovery fails entirely, return empty result

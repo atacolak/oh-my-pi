@@ -132,10 +132,43 @@ import {
 	normalizeSessionWorkspace,
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
-import { recordSessionRecap, recordSessionTitle } from "./session-index";
+import {
+	finishSessionEpisode,
+	recordSessionEpisodeRecap,
+	recordSessionRecap,
+	recordSessionTitle,
+	startSessionEpisode,
+	type EpisodeTriggerKind,
+} from "./session-index";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
+/** Companion CAS metadata for the plain-body `draft.txt` shared with `omp-rpc`. */
+export const DRAFT_META_FILENAME = "draft.meta.json";
+/** Bounded ring of cleared and displaced drafts, shared with `omp-rpc`. */
+export const DRAFT_HISTORY_FILENAME = "draft-history.jsonl";
+/** Newest recovery rows kept beyond `draft.txt`; the ring never grows past this. */
+export const DRAFT_HISTORY_LIMIT = 10;
+/** Host that wrote a draft revision or ring row. */
+export type DraftSource = "tui" | "rpc";
+
+/** Composer text handed back on resume. */
+export interface RecoveredDraft {
+	text: string;
+}
+
+interface DraftMeta {
+	rev: number;
+	updatedAt: string;
+	source: DraftSource;
+}
+
+interface DraftHistoryEntry {
+	rev: number;
+	updatedAt: string;
+	source: DraftSource;
+	text: string;
+}
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
 /** `model_usage` purpose carrying the billed usage of an assistant turn removed by `discardEntryDurably`. */
 const DISCARDED_TURN_USAGE_PURPOSE = "discarded-turn";
@@ -947,6 +980,8 @@ export class SessionManager {
 	readonly #blobs: BlobStore;
 
 	#sessionId = "";
+	/** Episode row of the run in flight, or of the run awaiting its settle recap. */
+	#episodeId: string | null = null;
 	/**
 	 * Parent-derived sibling family candidate stashed by the Task executor once
 	 * the child session exists. Session-scoped and non-persisted: the header
@@ -1006,6 +1041,12 @@ export class SessionManager {
 	#released = false;
 	/** Set by {@link releaseRetainedEntries}: `#entries` was cleared, so `#serializeBody()` is no longer authoritative. */
 	#entriesReleased = false;
+	/** Revision of the newest draft state this process wrote or observed. */
+	#draftRevision = 0;
+	/** `draft.txt` the remembered revision belongs to; a path switch forces a re-read. */
+	#draftRevisionKey: string | null = null;
+	/** Serializes this process's read-modify-write cycles over the shared draft hosts. */
+	#draftTail: Promise<void> = Promise.resolve();
 	/** Serializes async disk work (flush/close/atomic rewrite). Appends are synchronous and bypass it. */
 	#diskTail: Promise<void> = Promise.resolve();
 	#diskFailure: Error | undefined;
@@ -2207,6 +2248,122 @@ export class SessionManager {
 		return artifactsDir ? path.join(artifactsDir, "draft.txt") : null;
 	}
 
+	#draftMetaPath(): string | null {
+		const artifactsDir = this.getArtifactsDir();
+		return artifactsDir ? path.join(artifactsDir, DRAFT_META_FILENAME) : null;
+	}
+
+	#draftHistoryPath(): string | null {
+		const artifactsDir = this.getArtifactsDir();
+		return artifactsDir ? path.join(artifactsDir, DRAFT_HISTORY_FILENAME) : null;
+	}
+
+	async #readDraftText(draftPath: string): Promise<string | null> {
+		try {
+			return await this.#storage.readText(draftPath);
+		} catch (err) {
+			if (isEnoent(err)) return null;
+			throw err;
+		}
+	}
+
+	/** CAS head shared by both host writers; an absent or torn meta file is revision 0. */
+	async #readDraftRevision(): Promise<number> {
+		const metaPath = this.#draftMetaPath();
+		if (!metaPath) return 0;
+		let content: string;
+		try {
+			content = await this.#storage.readText(metaPath);
+		} catch (err) {
+			if (isEnoent(err)) return 0;
+			throw err;
+		}
+		try {
+			const parsed = JSON.parse(content) as { rev?: unknown };
+			return typeof parsed.rev === "number" && Number.isInteger(parsed.rev) && parsed.rev >= 0 ? parsed.rev : 0;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** How a process learns the shared head: on its first draft operation for this file. */
+	async #observeDraftRevision(): Promise<number> {
+		const draftPath = this.#draftPath();
+		if (this.#draftRevisionKey !== draftPath) {
+			this.#draftRevision = await this.#readDraftRevision();
+			this.#draftRevisionKey = draftPath;
+		}
+		return this.#draftRevision;
+	}
+
+	async #writeDraftMeta(meta: DraftMeta): Promise<void> {
+		const metaPath = this.#draftMetaPath();
+		if (!metaPath) return;
+		await this.#storage.writeTextAtomic(metaPath, JSON.stringify(meta));
+	}
+
+	/** Newest-last ring rows; legacy and torn lines are tolerated, never fatal. */
+	async #readDraftHistory(): Promise<DraftHistoryEntry[]> {
+		const historyPath = this.#draftHistoryPath();
+		if (!historyPath) return [];
+		let content: string;
+		try {
+			content = await this.#storage.readText(historyPath);
+		} catch (err) {
+			if (isEnoent(err)) return [];
+			throw err;
+		}
+		const history: DraftHistoryEntry[] = [];
+		for (const line of content.split("\n")) {
+			if (line.trim().length === 0) continue;
+			try {
+				const parsed = JSON.parse(line) as {
+					rev?: unknown;
+					updatedAt?: unknown;
+					source?: unknown;
+					text?: unknown;
+					archivedAt?: unknown;
+				};
+				if (typeof parsed?.text !== "string" || parsed.text.length === 0) continue;
+				const archivedAt = typeof parsed.archivedAt === "number" ? parsed.archivedAt : 0;
+				history.push({
+					rev: typeof parsed.rev === "number" && Number.isInteger(parsed.rev) && parsed.rev >= 0 ? parsed.rev : 0,
+					updatedAt:
+						typeof parsed.updatedAt === "string" && !Number.isNaN(Date.parse(parsed.updatedAt))
+							? parsed.updatedAt
+							: new Date(archivedAt).toISOString(),
+					source: parsed.source === "rpc" ? "rpc" : "tui",
+					text: parsed.text,
+				});
+			} catch {}
+		}
+		return history;
+	}
+
+	async #writeDraftHistory(history: readonly DraftHistoryEntry[]): Promise<void> {
+		const historyPath = this.#draftHistoryPath();
+		if (!historyPath) return;
+		const bounded = history.slice(-DRAFT_HISTORY_LIMIT);
+		if (bounded.length === 0) {
+			try {
+				await this.#storage.unlink(historyPath);
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
+			}
+			return;
+		}
+		await this.#storage.writeTextAtomic(historyPath, `${bounded.map(entry => JSON.stringify(entry)).join("\n")}\n`);
+	}
+
+	/** One recovery row; empty bodies and consecutive duplicates are not ring material. */
+	async #appendDraftHistory(entry: DraftHistoryEntry): Promise<void> {
+		if (entry.text.length === 0) return;
+		const history = await this.#readDraftHistory();
+		if (history.at(-1)?.text === entry.text) return;
+		history.push(entry);
+		await this.#writeDraftHistory(history);
+	}
+
 	#draftOnlySessionMarkerPath(): string | null {
 		const artifactsDir = this.getArtifactsDir();
 		return artifactsDir ? path.join(artifactsDir, DRAFT_ONLY_SESSION_MARKER) : null;
@@ -2430,6 +2587,8 @@ export class SessionManager {
 
 		this.#sessionFile = resolvedSessionFile;
 		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
+		// The next draft operation learns this file's shared CAS head on demand.
+		this.#draftRevisionKey = null;
 
 		const { entries: fileEntries, titleSlot } = loaded;
 		if (fileEntries.length === 0) {
@@ -3339,11 +3498,56 @@ export class SessionManager {
 		return this.#inMemoryArtifacts?.get(id) ?? null;
 	}
 
-	async saveDraft(text: string): Promise<void> {
+	/** Serialize this process's read-modify-write cycles over the shared draft hosts. */
+	#queueDraftMutation<T>(operation: () => Promise<T>): Promise<T> {
+		const run = this.#draftTail.then(operation);
+		this.#draftTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	/**
+	 * Persist the live composer body. `source` tags the writer (`"tui"` here,
+	 * `"rpc"` in Exocortex). A non-empty write yields when another host owns a
+	 * newer revision; the abandoned body joins the recovery ring instead of
+	 * clobbering the foreign draft.
+	 */
+	saveDraft(text: string, source: DraftSource = "tui"): Promise<void> {
+		return this.#queueDraftMutation(() => this.#saveDraftLocked(text, source));
+	}
+
+	async #saveDraftLocked(text: string, source: DraftSource): Promise<void> {
 		const draftPath = this.#draftPath();
 		if (!draftPath || !this.#persist) return;
 
+		const expectedRev = await this.#observeDraftRevision();
+		const onDiskRev = await this.#readDraftRevision();
+		if (onDiskRev !== expectedRev) {
+			// A clear that lost the race must leave the other host's draft alone.
+			if (text.length === 0) return;
+			if ((await this.#readDraftText(draftPath)) === text) {
+				this.#draftRevision = onDiskRev;
+				return;
+			}
+			await this.#appendDraftHistory({ rev: expectedRev + 1, updatedAt: new Date().toISOString(), source, text });
+			return;
+		}
+
+		const updatedAt = new Date().toISOString();
 		if (text.length === 0) {
+			// An empty overwrite never destroys the last non-empty draft. This
+			// holds for Escape/Ctrl+C and for a deliberate select-all-and-delete:
+			// the body stays in `draft.txt` as the live source and is only copied
+			// into the ring for audit. Only a real submission unlinks the sidecar.
+			const existing = await this.#readDraftText(draftPath);
+			if (existing !== null && existing.length > 0) {
+				await this.#appendDraftHistory({ rev: expectedRev, updatedAt, source, text: existing });
+				return;
+			}
+			// Nothing was ever typed: there is no live draft to keep, so leave
+			// close-time GC its "no sidecar, no pending draft" signal.
 			try {
 				await this.#storage.unlink(draftPath);
 			} catch (err) {
@@ -3363,12 +3567,57 @@ export class SessionManager {
 			await this.#writeDraftOnlySessionMarker();
 			this.#draftOnlySessionCleanupArmed = true;
 		}
-		await this.#storage.writeText(draftPath, text);
+		await this.#storage.writeTextAtomic(draftPath, text);
+		this.#draftRevision = expectedRev + 1;
+		await this.#writeDraftMeta({ rev: this.#draftRevision, updatedAt, source });
 	}
 
-	async consumeDraft(): Promise<string | null> {
+	/**
+	 * A submitted message owns the draft text now: archive it in the ring, then
+	 * clear `draft.txt`. Restoring never calls this.
+	 */
+	discardDraft(text: string = "", source: DraftSource = "tui"): Promise<void> {
+		return this.#queueDraftMutation(() => this.#discardDraftLocked(text, source));
+	}
+
+	async #discardDraftLocked(text: string, source: DraftSource): Promise<void> {
+		if (!this.#persist) return;
+		const draftPath = this.#draftPath();
+		const metaPath = this.#draftMetaPath();
+		if (!draftPath || !metaPath) return;
+
+		const expectedRev = await this.#observeDraftRevision();
+		const onDiskRev = await this.#readDraftRevision();
+		const body = text.length > 0 ? text : ((await this.#readDraftText(draftPath)) ?? "");
+		const updatedAt = new Date().toISOString();
+		if (onDiskRev !== expectedRev) {
+			// Another host advanced the draft; keep its sidecar but still record the
+			// text this submission consumed.
+			await this.#appendDraftHistory({ rev: expectedRev + 1, updatedAt, source, text: body });
+			return;
+		}
+
+		await this.#appendDraftHistory({ rev: expectedRev, updatedAt, source, text: body });
+		try {
+			await this.#storage.unlink(draftPath);
+		} catch (err) {
+			if (!isEnoent(err)) throw err;
+		}
+		this.#draftRevision = expectedRev + 1;
+		await this.#writeDraftMeta({ rev: this.#draftRevision, updatedAt, source });
+	}
+
+	/**
+	 * Composer text to restore on resume. A pure read of `draft.txt`: restoring
+	 * never deletes the sidecar, so an abandoned resume (or a second restart)
+	 * still finds the same text.
+	 */
+	async consumeDraftEntry(): Promise<RecoveredDraft | null> {
 		const draftPath = this.#draftPath();
 		if (!draftPath) return null;
+		// Adopt the shared head this resume is looking at; the next write CASes against it.
+		this.#draftRevision = await this.#readDraftRevision();
+		this.#draftRevisionKey = draftPath;
 
 		let draft: string;
 		try {
@@ -3377,16 +3626,16 @@ export class SessionManager {
 			if (isEnoent(err)) return null;
 			throw err;
 		}
+		if (draft.length === 0) return null;
 
-		try {
-			await this.#storage.unlink(draftPath);
-		} catch (err) {
-			if (!isEnoent(err)) throw err;
-		}
 		if (this.#entries.every(isDraftOnlyMetadataEntry) && this.#hasDraftOnlySessionMarker())
 			this.#draftOnlySessionCleanupArmed = true;
 
-		return draft;
+		return { text: draft };
+	}
+
+	async consumeDraft(): Promise<string | null> {
+		return (await this.consumeDraftEntry())?.text ?? null;
 	}
 
 	/** The source that set the session name: "user" (manual/RPC) or "auto" (generated title). */
@@ -3546,13 +3795,66 @@ export class SessionManager {
 	}
 
 	/**
-	 * Journal an idle recap for this session in history.db. Recaps never enter
-	 * the session file or LLM context; in-memory sessions are not journaled.
+	 * Journal a recap for the episode it settled: the session journal row plus the
+	 * episode row itself. The episode id is explicit because the reply lands after
+	 * the run — often after the next one started — so whichever episode is current
+	 * by then is not the row this recap describes. An episode takes one recap.
+	 * Recaps never enter the session file or LLM context; in-memory sessions are
+	 * not journaled.
 	 */
-	recordRecap(recap: string): void {
-		if (this.#persist && this.#storage instanceof FileSessionStorage) {
-			recordSessionRecap(this.#sessionId, this.#cwd, recap);
-		}
+	recordEpisodeRecap(episodeId: string, recap: string): boolean {
+		if (!(this.#persist && this.#storage instanceof FileSessionStorage)) return false;
+		if (!recordSessionEpisodeRecap(episodeId, recap)) return false;
+		recordSessionRecap(this.#sessionId, this.#cwd, recap);
+		return true;
+	}
+
+	/** Episode row of the run in flight, or of the run whose settle recap is still pending. */
+	get episodeId(): string | null {
+		return this.#episodeId;
+	}
+
+	/**
+	 * Open an indexed row for the run that just started.
+	 *
+	 * The id stays readable after {@link finishAgentEpisode}: the settle event that
+	 * closes the row is where its recap is addressed from.
+	 */
+	startAgentEpisode(trigger: {
+		kind?: EpisodeTriggerKind | null;
+		summary?: string | null;
+		focusTitle?: string | null;
+		startEntryId?: string | null;
+	}): void {
+		if (!(this.#persist && this.#storage instanceof FileSessionStorage)) return;
+		const episodeId = `episode:${crypto.randomUUID()}`;
+		this.#episodeId = episodeId;
+		startSessionEpisode({
+			episodeId,
+			sessionId: this.#sessionId,
+			cwd: this.#cwd,
+			startedAtMs: Date.now(),
+			focusTitle: trigger.focusTitle ?? null,
+			triggerKind: trigger.kind ?? null,
+			triggerSummary: trigger.summary ?? null,
+			startEntryId: trigger.startEntryId ?? null,
+		});
+	}
+
+	/** Close the open row with the facts only its end knows. */
+	finishAgentEpisode(input: {
+		stepCount: number;
+		endEntryId?: string | null;
+		outcome: "ok" | "error" | "aborted";
+	}): void {
+		if (!this.#episodeId) return;
+		finishSessionEpisode({
+			episodeId: this.#episodeId,
+			endedAtMs: Date.now(),
+			stepCount: input.stepCount,
+			endEntryId: input.endEntryId ?? null,
+			outcome: input.outcome,
+		});
 	}
 
 	/**
@@ -4288,9 +4590,11 @@ export class SessionManager {
 	 * session file while creating a fresh session file in this sessionDir.
 	 *
 	 * `options.sessionFile` pins the new session's file path (default: an
-	 * auto-named `<timestamp>_<id>.jsonl` in `sessionDir`). Artifacts are copied
-	 * recursively by default; nested agents that deliberately share their parent's
-	 * artifact root may disable this with `copyArtifacts: false`.
+	 * auto-named `<timestamp>_<id>.jsonl` in `sessionDir`). A pinned file also
+	 * anchors the manager's session directory to that file's parent, so the fork
+	 * never materializes the cwd-derived default directory it would not write to.
+	 * Artifacts are copied recursively by default; nested agents that deliberately
+	 * share their parent's artifact root may disable this with `copyArtifacts: false`.
 	 *
 	 * `seance` creates a read-only consult fork instead: artifacts stay in the
 	 * source (the header's `seanceSource` points lookups at them), inherited
@@ -4312,7 +4616,11 @@ export class SessionManager {
 			seance?: boolean;
 		},
 	): Promise<SessionManager> {
-		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
+		const dir =
+			sessionDir ??
+			(options?.sessionFile
+				? path.dirname(path.resolve(options.sessionFile))
+				: SessionManager.getDefaultSessionDir(cwd, undefined, storage));
 		const manager = new SessionManager(cwd, dir, true, storage);
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 

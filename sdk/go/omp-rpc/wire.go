@@ -2636,20 +2636,72 @@ func (v *UpgradeRuntimeResultReason) UnmarshalJSON(data []byte) error {
 	return unknownValue("UpgradeRuntimeResultReason", s)
 }
 
+type SessionDiagnosticModel struct {
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+}
+
+func (v *SessionDiagnosticModel) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionDiagnosticModel", v.decodeFrom)
+}
+
+func (v *SessionDiagnosticModel) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionDiagnosticModel
+	d := fieldDecoder{raw: raw, owner: "SessionDiagnosticModel"}
+	d.required("provider", &out.Provider)
+	d.required("id", &out.ID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SessionDiagnostics struct {
+	Version           int64                   `json:"version"`
+	ObservedAt        float64                 `json:"observedAt"`
+	Model             *SessionDiagnosticModel `json:"model"`
+	ThinkingLevel     *ThinkingLevel          `json:"thinkingLevel"`
+	ConfigWarnings    []string                `json:"configWarnings"`
+	WarningsTruncated bool                    `json:"warningsTruncated"`
+}
+
+func (v *SessionDiagnostics) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionDiagnostics", v.decodeFrom)
+}
+
+func (v *SessionDiagnostics) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionDiagnostics
+	d := fieldDecoder{raw: raw, owner: "SessionDiagnostics"}
+	d.required("version", &out.Version)
+	d.required("observedAt", &out.ObservedAt)
+	d.nullable("model", &out.Model)
+	d.nullable("thinkingLevel", &out.ThinkingLevel)
+	d.required("configWarnings", &out.ConfigWarnings)
+	d.required("warningsTruncated", &out.WarningsTruncated)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
-	SessionID             string         `json:"sessionId"`
-	Model                 *ModelInfo     `json:"model,omitempty"`
-	ThinkingLevel         *ThinkingLevel `json:"thinkingLevel,omitempty"`
-	IsStreaming           bool           `json:"isStreaming"`
-	IsCompacting          bool           `json:"isCompacting"`
-	SteeringMode          QueueMode      `json:"steeringMode"`
-	FollowUpMode          QueueMode      `json:"followUpMode"`
-	InterruptMode         InterruptMode  `json:"interruptMode"`
-	SessionFile           *string        `json:"sessionFile,omitempty"`
-	SessionName           *string        `json:"sessionName,omitempty"`
-	AutoCompactionEnabled bool           `json:"autoCompactionEnabled"`
-	FastModeEnabled       bool           `json:"fastModeEnabled"`
-	FastModeActive        bool           `json:"fastModeActive"`
+	SessionID     string         `json:"sessionId"`
+	Model         *ModelInfo     `json:"model,omitempty"`
+	ThinkingLevel *ThinkingLevel `json:"thinkingLevel,omitempty"`
+	// Live configuration evidence; absent means warning readiness is unknown.
+	SessionDiagnostics    *SessionDiagnostics `json:"sessionDiagnostics,omitempty"`
+	IsStreaming           bool                `json:"isStreaming"`
+	IsCompacting          bool                `json:"isCompacting"`
+	SteeringMode          QueueMode           `json:"steeringMode"`
+	FollowUpMode          QueueMode           `json:"followUpMode"`
+	InterruptMode         InterruptMode       `json:"interruptMode"`
+	SessionFile           *string             `json:"sessionFile,omitempty"`
+	SessionName           *string             `json:"sessionName,omitempty"`
+	AutoCompactionEnabled bool                `json:"autoCompactionEnabled"`
+	FastModeEnabled       bool                `json:"fastModeEnabled"`
+	FastModeActive        bool                `json:"fastModeActive"`
 	// `/slow` applies to the active model.
 	SlowModeSupported bool `json:"slowModeSupported"`
 	// `/slow` is on for the active model; always `false` when `slowModeSupported` is `false`.
@@ -2687,6 +2739,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.required("sessionId", &out.SessionID)
 	d.optional("model", &out.Model)
 	d.optional("thinkingLevel", &out.ThinkingLevel)
+	d.optional("sessionDiagnostics", &out.SessionDiagnostics)
 	d.defaulted("isStreaming", &out.IsStreaming, `false`)
 	d.defaulted("isCompacting", &out.IsCompacting, `false`)
 	d.defaulted("steeringMode", &out.SteeringMode, `"one-at-a-time"`)

@@ -18,7 +18,7 @@ export type SessionAttachRefusalCode =
 	| "ownership-unknown";
 
 export type SessionAttachProbe =
-	| { status: "live"; sessionId: string; terminal?: SessionAttachTerminal }
+	| { status: "live"; sessionId: string; terminal?: SessionAttachTerminal; state?: Record<string, unknown> }
 	| { status: "unreachable"; sessionId: string; endpoint: string }
 	| { status: "unknown"; sessionId: string; reason: string }
 	| { status: "absent"; sessionId: string; leaseHeld: boolean | null };
@@ -32,6 +32,8 @@ export interface SessionAttachProbeOptions {
 	endpointDir?: string;
 	timeoutMs?: number;
 	sessionPath?: string;
+	/** Return selected get_state evidence after the same owner/session fencing as attachment. */
+	includeState?: boolean;
 }
 
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
@@ -216,7 +218,7 @@ export async function probeSessionAttach(
 	}
 
 	const observation = await observeLiveSession(endpoint, sessionId, timeoutMs, options.sessionPath);
-	if (observation === "live") {
+	if (typeof observation === "object") {
 		if (options.sessionPath !== undefined) {
 			const current = await readPublication(sidecarPath, sessionId);
 			const beforeTerminal = terminalFromMetadata(
@@ -237,7 +239,12 @@ export async function probeSessionAttach(
 			}
 		}
 		const terminal = terminalFromMetadata(publication.kind === "published" ? publication.metadata : undefined);
-		return terminal === undefined ? { status: "live", sessionId } : { status: "live", sessionId, terminal };
+		return {
+			status: "live",
+			sessionId,
+			...(terminal === undefined ? {} : { terminal }),
+			...(options.includeState ? { state: observation.state } : {}),
+		};
 	}
 	if (observation === "unreachable") {
 		const current = await readPublication(sidecarPath, sessionId);
@@ -319,7 +326,7 @@ async function matchesSessionPath(observed: unknown, expected: string): Promise<
 	}
 }
 
-type LiveObservation = "live" | "unreachable" | "vanished";
+type LiveObservation = { state: Record<string, unknown> } | "unreachable" | "vanished";
 
 let probeSequence = 0;
 
@@ -377,7 +384,16 @@ async function observeLiveSession(
 		const data = isRecord(state.data) ? state.data : undefined;
 		if (data?.sessionId !== sessionId) return "unreachable";
 		if (sessionPath !== undefined && !(await matchesSessionPath(data.sessionFile, sessionPath))) return "unreachable";
-		return "live";
+		return {
+			state: {
+				model: isRecord(data.model) ? { provider: data.model.provider, id: data.model.id } : null,
+				thinkingLevel: data.thinkingLevel,
+				isStreaming: data.isStreaming,
+				isCompacting: data.isCompacting,
+				hasPendingAsyncWork: data.hasPendingAsyncWork,
+				sessionDiagnostics: data.sessionDiagnostics,
+			},
+		};
 	} catch {
 		return "unreachable";
 	} finally {

@@ -179,9 +179,20 @@ export type RpcCommand =
 // RPC State
 // ============================================================================
 
+/** Bounded live configuration evidence; absence on older owners means unavailable, not no warnings. */
+export interface RpcSessionDiagnostics {
+	version: 1;
+	observedAt: number;
+	model: { provider: string; id: string } | null;
+	thinkingLevel: ThinkingLevel | null;
+	configWarnings: string[];
+	warningsTruncated: boolean;
+}
+
 export interface RpcSessionState {
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
+	sessionDiagnostics?: RpcSessionDiagnostics;
 	isStreaming: boolean;
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";

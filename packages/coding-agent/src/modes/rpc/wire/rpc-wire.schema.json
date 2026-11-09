@@ -2737,6 +2737,69 @@
 			],
 			"description": "Outcome of `upgrade_runtime`."
 		},
+		"SessionDiagnosticModel": {
+			"type": "object",
+			"properties": {
+				"provider": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"provider",
+				"id"
+			]
+		},
+		"SessionDiagnostics": {
+			"type": "object",
+			"properties": {
+				"version": {
+					"type": "integer"
+				},
+				"observedAt": {
+					"type": "number"
+				},
+				"model": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SessionDiagnosticModel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"thinkingLevel": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ThinkingLevel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"configWarnings": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"warningsTruncated": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"version",
+				"observedAt",
+				"model",
+				"thinkingLevel",
+				"configWarnings",
+				"warningsTruncated"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
@@ -2748,6 +2811,10 @@
 				},
 				"thinkingLevel": {
 					"$ref": "#/$defs/ThinkingLevel"
+				},
+				"sessionDiagnostics": {
+					"$ref": "#/$defs/SessionDiagnostics",
+					"description": "Live configuration evidence; absent means warning readiness is unknown."
 				},
 				"isStreaming": {
 					"type": "boolean",

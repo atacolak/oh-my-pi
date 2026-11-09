@@ -28,6 +28,8 @@ import { sessionOwnerContext } from "../../launch/session-owner";
 import type { AgentSession } from "../../session/agent-session";
 import { RpcClientConnection, type RpcClientConn } from "./client-connection";
 import { MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, RpcFrameEncoder } from "./rpc-frame";
+import { getRpcSessionDiagnostics } from "./rpc-state";
+import type { RpcSessionDiagnostics } from "./rpc-types";
 
 const READY_FRAME = {
 	type: "ready",
@@ -63,6 +65,7 @@ export interface RpcSessionSocketMetadata {
 	terminal?: RpcSessionSocketTerminal;
 	/** Runtime generation this owner was born in, when generation-managed. */
 	generation?: string;
+	sessionDiagnostics?: RpcSessionDiagnostics;
 }
 
 export interface RpcSessionSocketOptions {
@@ -74,6 +77,8 @@ export interface RpcSessionSocketOptions {
 	subscribe: (listener: (event: object) => void) => () => void;
 	/** Broker coordinates of this process's owner PTY, read for every publication; omit when not an owner. */
 	terminal?: () => RpcSessionSocketTerminal | undefined;
+	/** Bounded effective configuration evidence; absent on generic socket hosts. */
+	diagnostics?: () => RpcSessionDiagnostics;
 	/**
 	 * Per-connection projection of a broadcast session event. Returning
 	 * `undefined` drops the frame for that connection; the raw event is sent
@@ -230,7 +235,19 @@ export class RpcSessionSocket {
 		}
 
 		this.#listener = { server, endpoint, sidecarPath, sessionId: identity.sessionId };
-		this.#unsubscribe ??= this.#options.subscribe(event => this.#broadcast(event));
+		this.#unsubscribe ??= this.#options.subscribe(event => {
+			this.#broadcast(event);
+			if (
+				isRecord(event) &&
+				(event.type === "model_changed" ||
+					event.type === "thinking_level_changed" ||
+					event.type === "config_warnings_changed")
+			) {
+				void this.rebind().catch(error => {
+					logger.warn("RPC session diagnostics publication failed", { error: toError(error).message });
+				});
+			}
+		});
 		if (!this.#exitHookInstalled) {
 			process.once("exit", this.#exitHandler);
 			this.#exitHookInstalled = true;
@@ -253,6 +270,7 @@ export class RpcSessionSocket {
 	#metadata(identity: RpcSessionSocketIdentity): RpcSessionSocketMetadata {
 		const terminal = this.#options.terminal?.();
 		const generation = readRuntimeGeneration()?.running;
+		const sessionDiagnostics = this.#options.diagnostics?.();
 		return {
 			pid: process.pid,
 			sessionId: identity.sessionId,
@@ -262,6 +280,7 @@ export class RpcSessionSocket {
 			startedAt: this.#startedAt,
 			...(terminal === undefined ? {} : { terminal }),
 			...(generation === undefined ? {} : { generation }),
+			...(sessionDiagnostics === undefined ? {} : { sessionDiagnostics }),
 		};
 	}
 
@@ -401,6 +420,7 @@ export function createAgentSessionSocket(
 			agent: session.model ? `${session.model.provider}/${session.model.id}` : "unknown",
 		}),
 		subscribe: listener => session.subscribe(event => listener(event)),
+		diagnostics: () => getRpcSessionDiagnostics(session),
 		terminal: () => {
 			const context = sessionOwnerContext();
 			return context === undefined ? undefined : { protocolVersion: 1, ...context };

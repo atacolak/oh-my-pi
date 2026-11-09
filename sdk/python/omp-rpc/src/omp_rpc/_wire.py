@@ -694,10 +694,28 @@ class UpgradeRuntimeResult:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class SessionDiagnosticModel:
+    provider: str
+    id: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionDiagnostics:
+    version: int
+    observed_at: float
+    model: SessionDiagnosticModel | None
+    thinking_level: ThinkingLevel | None
+    config_warnings: tuple[str, ...]
+    warnings_truncated: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
     model: ModelInfo | None = None
     thinking_level: ThinkingLevel | None = None
+    session_diagnostics: SessionDiagnostics | None = None
+    """Live configuration evidence; absent means warning readiness is unknown."""
     is_streaming: bool = False
     is_compacting: bool = False
     steering_mode: QueueMode = "one-at-a-time"
@@ -2121,12 +2139,33 @@ def parse_upgrade_runtime_result(value: object, path: str = "UpgradeRuntimeResul
     )
 
 
+def parse_session_diagnostic_model(value: object, path: str = "SessionDiagnosticModel") -> SessionDiagnosticModel:
+    payload = expect_object(value, path)
+    return SessionDiagnosticModel(
+        provider=required(payload, "provider", decode_str, path),
+        id=required(payload, "id", decode_str, path),
+    )
+
+
+def parse_session_diagnostics(value: object, path: str = "SessionDiagnostics") -> SessionDiagnostics:
+    payload = expect_object(value, path)
+    return SessionDiagnostics(
+        version=required(payload, "version", decode_int, path),
+        observed_at=required(payload, "observedAt", decode_float, path),
+        model=required(payload, "model", nullable(parse_session_diagnostic_model), path),
+        thinking_level=required(payload, "thinkingLevel", nullable(_decode_thinking_level), path),
+        config_warnings=required(payload, "configWarnings", array(decode_str), path),
+        warnings_truncated=required(payload, "warningsTruncated", decode_bool, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
         session_id=required(payload, "sessionId", decode_str, path),
         model=optional(payload, "model", parse_model_info, path),
         thinking_level=optional(payload, "thinkingLevel", _decode_thinking_level, path),
+        session_diagnostics=optional(payload, "sessionDiagnostics", parse_session_diagnostics, path),
         is_streaming=defaulted(payload, "isStreaming", decode_bool, path, False),
         is_compacting=defaulted(payload, "isCompacting", decode_bool, path, False),
         steering_mode=defaulted(payload, "steeringMode", _decode_queue_mode, path, "one-at-a-time"),
@@ -4296,6 +4335,8 @@ __all__ = [
     "SelectOptionDetail",
     "SelectUiRequest",
     "SessionCredits",
+    "SessionDiagnosticModel",
+    "SessionDiagnostics",
     "SessionEntries",
     "SessionInfoUpdateEvent",
     "SessionSettledEvent",
@@ -4480,6 +4521,8 @@ __all__ = [
     "parse_select_option_detail",
     "parse_select_ui_request",
     "parse_session_credits",
+    "parse_session_diagnostic_model",
+    "parse_session_diagnostics",
     "parse_session_entries",
     "parse_session_info_update_event",
     "parse_session_settled_event",

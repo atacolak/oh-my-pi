@@ -124,9 +124,22 @@ export const stateDefs = {
 		},
 		"Outcome of `upgrade_runtime`.",
 	),
+	SessionDiagnosticModel: { provider: "string", id: "string" },
+	SessionDiagnostics: {
+		version: "number.integer",
+		observedAt: "number",
+		model: "SessionDiagnosticModel | null",
+		thinkingLevel: "ThinkingLevel | null",
+		configWarnings: "string[]",
+		warningsTruncated: "boolean",
+	},
 	SessionState: {
 		"model?": "ModelInfo",
 		"thinkingLevel?": "ThinkingLevel",
+		"sessionDiagnostics?": doc(
+			"SessionDiagnostics",
+			"Live configuration evidence; absent means warning readiness is unknown.",
+		),
 		isStreaming: absentAs("boolean", false),
 		isCompacting: absentAs("boolean", false),
 		steeringMode: absentAs("QueueMode", "one-at-a-time"),

@@ -516,10 +516,26 @@ export interface UpgradeRuntimeResult {
 	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle";
 }
 
+export interface SessionDiagnosticModel {
+	provider: string;
+	id: string;
+}
+
+export interface SessionDiagnostics {
+	version: number;
+	observedAt: number;
+	model: SessionDiagnosticModel | null;
+	thinkingLevel: ThinkingLevel | null;
+	configWarnings: string[];
+	warningsTruncated: boolean;
+}
+
 export interface SessionState {
 	sessionId: string;
 	model?: ModelInfo;
 	thinkingLevel?: ThinkingLevel;
+	/** Live configuration evidence; absent means warning readiness is unknown. */
+	sessionDiagnostics?: SessionDiagnostics;
 	isStreaming?: boolean;
 	isCompacting?: boolean;
 	steeringMode?: QueueMode;

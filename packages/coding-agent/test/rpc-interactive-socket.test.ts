@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockHandler, type MockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type {
 	ExtensionAskDialogQuestion,
@@ -16,6 +17,7 @@ import type {
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import { createAgentSessionSocket, type RpcSessionSocket } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-socket";
+import { probeSessionAttach } from "@oh-my-pi/pi-coding-agent/launch/session-attach";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -115,15 +117,22 @@ interface InteractiveFixture {
 async function createInteractiveFixture(
 	responses: MockHandler[],
 	subagentEventBus?: EventBus,
+	reasoning = false,
+	fallbackChains?: Record<string, string[]>,
 ): Promise<InteractiveFixture> {
 	const dir = path.join(os.tmpdir(), `omp-interactive-socket-${Snowflake.next()}`);
 	fs.mkdirSync(dir, { recursive: true });
-	const mock = createMockModel({ responses });
-	const settings = Settings.isolated({ "compaction.enabled": false });
+	const mock = createMockModel({ responses, reasoning });
+	const model = reasoning ? getBundledModel("anthropic", "claude-sonnet-4-5") : mock.model;
+	if (!model) throw new Error("reasoning fixture model is unavailable");
+	const settings = Settings.isolated({
+		"compaction.enabled": false,
+		...(fallbackChains ? { "retry.fallbackChains": fallbackChains } : {}),
+	});
 	const sessionManager = SessionManager.inMemory(dir);
 	const agent = new Agent({
 		getApiKey: () => "test-key",
-		initialState: { model: mock.model, systemPrompt: ["Test"], tools: [], messages: [] },
+		initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 		convertToLlm,
 		streamFn: mock.stream,
 	});
@@ -131,7 +140,14 @@ async function createInteractiveFixture(
 		agent,
 		sessionManager,
 		settings,
-		modelRegistry: { getApiKey: () => "test-key" } as never,
+		modelRegistry: {
+			getApiKey: () => "test-key",
+			find: (provider: string, id: string) => (provider === model.provider && id === model.id ? model : undefined),
+			isProviderDiscoveryPending: () => false,
+			hasProvider: () => true,
+			getAll: () => [model],
+			getProviderModels: (provider: string) => (provider === model.provider ? [model] : []),
+		} as never,
 		toolRegistry: new Map(),
 	});
 	session.subscribe(() => {});
@@ -229,6 +245,53 @@ describe("an interactive session's published endpoint", () => {
 		closeSessionIndex();
 		closeModelCache();
 	});
+
+	it("publishes bounded redacted warnings and refreshes effective thinking through the live owner", async () => {
+		fixture = await createInteractiveFixture([], undefined, true, { default: ["fixture/missing"] });
+		const session = fixture.session;
+		const sidecarPath = path.join(fixture.dir, `${session.sessionId}.json`);
+		const changed = Promise.withResolvers<Record<string, unknown>>();
+		const watcher = fs.watch(fixture.dir, () => {
+			try {
+				const publication = JSON.parse(fs.readFileSync(sidecarPath, "utf8"));
+				if (publication.sessionDiagnostics?.thinkingLevel === "high") changed.resolve(publication);
+			} catch {}
+		});
+		try {
+			const token = `ghp_${"a".repeat(24)}`;
+			session.validateRetryFallbackChains();
+			session.configWarnings.push(`unknown fallback model; credential ${token}; ${"detail ".repeat(300)}`);
+			session.setThinkingLevel(ThinkingLevel.High);
+			expect(session.thinkingLevel).toBe(ThinkingLevel.High);
+			const publication = await withTimeout(changed.promise, 5000, "effective thinking was not republished");
+			const diagnostic = publication.sessionDiagnostics as {
+				thinkingLevel: string;
+				configWarnings: string[];
+				warningsTruncated: boolean;
+			};
+			expect(diagnostic.thinkingLevel).toBe("high");
+			expect(diagnostic.configWarnings[0]).toContain("fixture/missing");
+			expect(diagnostic.configWarnings[1]).toContain("[REDACTED]");
+			expect(diagnostic.configWarnings[1]).not.toContain(token);
+			expect(diagnostic.configWarnings[1]!.length).toBeLessThanOrEqual(1024);
+			expect(diagnostic.warningsTruncated).toBe(true);
+			const probe = await probeSessionAttach(session.sessionId, {
+				endpointDir: fixture.dir,
+				includeState: true,
+			});
+			expect(probe.status).toBe("live");
+			if (probe.status !== "live") throw new Error("live owner was not observed");
+			expect(probe.state).toMatchObject({
+				model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+				thinkingLevel: "high",
+				sessionDiagnostics: { configWarnings: diagnostic.configWarnings },
+			});
+			expect(probe.state).not.toHaveProperty("systemPrompt");
+			expect(probe.state).not.toHaveProperty("dumpTools");
+		} finally {
+			watcher.close();
+		}
+	}, 30_000);
 
 	it("serves get_state, a prompt and the live event stream to an attached client", async () => {
 		fixture = await createInteractiveFixture([{ content: ["interactive answer"] }]);

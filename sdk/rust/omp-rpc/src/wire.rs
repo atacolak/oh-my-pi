@@ -3149,6 +3149,27 @@ pub struct UpgradeRuntimeResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionDiagnosticModel {
+	pub provider: String,
+	pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionDiagnostics {
+	pub version: i64,
+	#[serde(rename = "observedAt")]
+	pub observed_at: f64,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub model: Option<SessionDiagnosticModel>,
+	#[serde(rename = "thinkingLevel", deserialize_with = "Deserialize::deserialize")]
+	pub thinking_level: Option<ThinkingLevel>,
+	#[serde(rename = "configWarnings")]
+	pub config_warnings: Vec<String>,
+	#[serde(rename = "warningsTruncated")]
+	pub warnings_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
@@ -3156,6 +3177,9 @@ pub struct SessionState {
 	pub model: Option<ModelInfo>,
 	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
 	pub thinking_level: Option<ThinkingLevel>,
+	/// Live configuration evidence; absent means warning readiness is unknown.
+	#[serde(rename = "sessionDiagnostics", default, skip_serializing_if = "Option::is_none")]
+	pub session_diagnostics: Option<SessionDiagnostics>,
 	#[serde(rename = "isStreaming", default = "default_session_state_is_streaming")]
 	pub is_streaming: bool,
 	#[serde(rename = "isCompacting", default = "default_session_state_is_compacting")]

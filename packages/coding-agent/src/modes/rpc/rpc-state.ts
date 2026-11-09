@@ -1,9 +1,31 @@
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { sanitizeText, truncate } from "@oh-my-pi/pi-utils";
 import { readRuntimeGeneration } from "../../launch/runtime-generation";
+import { redactMemorySecrets } from "../../memory-backend/redact";
 import type { AgentSession } from "../../session/agent-session";
 import { isSessionSettled } from "../../session/session-settle";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
-import type { RpcSessionState } from "./rpc-types";
+import type { RpcSessionDiagnostics, RpcSessionState } from "./rpc-types";
+
+const MAX_DIAGNOSTIC_WARNINGS = 20;
+const MAX_DIAGNOSTIC_WARNING_CHARS = 1024;
+
+/** Read the owner's effective configuration, never a launch selector or global default. */
+export function getRpcSessionDiagnostics(session: AgentSession): RpcSessionDiagnostics {
+	const warnings = session.configWarnings;
+	return {
+		version: 1,
+		observedAt: Date.now(),
+		model: session.model ? { provider: session.model.provider, id: session.model.id } : null,
+		thinkingLevel: session.thinkingLevel ?? null,
+		configWarnings: warnings
+			.slice(0, MAX_DIAGNOSTIC_WARNINGS)
+			.map(warning => truncate(redactMemorySecrets(sanitizeText(warning)), MAX_DIAGNOSTIC_WARNING_CHARS)),
+		warningsTruncated:
+			warnings.length > MAX_DIAGNOSTIC_WARNINGS ||
+			warnings.some(warning => warning.length > MAX_DIAGNOSTIC_WARNING_CHARS),
+	};
+}
 
 /**
  * Snapshot one RPC `get_state` payload. Shared by every transport so a second
@@ -14,6 +36,7 @@ export function getRpcSessionState(session: AgentSession, scheduledTurn?: () => 
 	return {
 		model: session.model,
 		thinkingLevel: session.thinkingLevel,
+		sessionDiagnostics: getRpcSessionDiagnostics(session),
 		isStreaming: session.isStreaming,
 		isCompacting: session.isCompacting,
 		steeringMode: session.steeringMode,

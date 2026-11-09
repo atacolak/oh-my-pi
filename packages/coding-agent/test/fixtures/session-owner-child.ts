@@ -29,6 +29,7 @@ const session = {
 	sessionFile: undefined,
 	model: undefined,
 	configWarnings: [],
+	getHindsightSessionState: () => undefined,
 	sessionManager: { getCwd: () => context.projectDir },
 	subscribe: () => () => {},
 } as unknown as AgentSession;

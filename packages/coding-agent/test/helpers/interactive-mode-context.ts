@@ -109,6 +109,7 @@ export function createSessionStub(
 		messages: [],
 		model: undefined,
 		configWarnings: [],
+		getHindsightSessionState: () => undefined,
 		sessionFile: undefined,
 		skills: [],
 		ttsrManager: undefined,

@@ -212,8 +212,7 @@ describe("bucketRules declared rules", () => {
 			declaredRules: ["gamma", "alpha"],
 		});
 		expect(alwaysApplyRules.map(r => r.name)).toEqual(["gamma", "alpha"]);
-		// An undeclared rule is not always-applied, but it stays discoverable.
-		expect(rulebookRules.map(r => r.name)).toEqual(["beta"]);
+		expect(rulebookRules).toEqual([]);
 	});
 
 	it("matches a declaration by the rule file's stem", () => {
@@ -235,17 +234,72 @@ describe("bucketRules declared rules", () => {
 
 	it("applies nothing when the profile declares an empty list", () => {
 		// An empty declaration is a profile that applies none, not one that falls back.
-		const rules = [rule("secret-management", { alwaysApply: true })];
-		const { alwaysApplyRules } = bucketRules(rules, new TtsrManager(), { declaredRules: [] });
-		expect(alwaysApplyRules).toHaveLength(0);
+		const rules = [
+			rule("secret-management", { alwaysApply: true }),
+			rule("on-demand"),
+			rule("interrupt", { condition: ["FORBIDDEN"] }),
+		];
+		const manager = new TtsrManager();
+		const { alwaysApplyRules, rulebookRules } = bucketRules(rules, manager, { declaredRules: [] });
+		expect(alwaysApplyRules).toEqual([]);
+		expect(rulebookRules).toEqual([]);
+		expect(manager.checkDelta("FORBIDDEN", { source: "text" })).toEqual([]);
 	});
 
-	it("keeps a declared rule with a condition in the interrupt manager", () => {
-		const rules = [rule("no-foo", { condition: ["FORBIDDEN"], alwaysApply: false })];
+	it("keeps an enabled text trigger dynamic and an off trigger inert", () => {
+		const rules = [
+			rule("off", { condition: ["FORBIDDEN"] }),
+			rule("no-foo", { condition: ["FORBIDDEN"], alwaysApply: true }),
+			rule("eager"),
+		];
 		const mgr = new TtsrManager();
-		const { alwaysApplyRules } = bucketRules(rules, mgr, { declaredRules: ["no-foo"] });
-		expect(alwaysApplyRules).toHaveLength(0);
-		expect(mgr.checkDelta("contains FORBIDDEN token", { source: "text" }).map(r => r.name)).toEqual(["no-foo"]);
+		const buckets = bucketRules(rules, mgr, { declaredRules: ["no-foo", "eager"] });
+		expect(buckets.alwaysApplyRules.map(rule => rule.name)).toEqual(["eager"]);
+		expect(buckets.rulebookRules).toEqual([]);
+		expect(mgr.checkDelta("contains FORBIDDEN token", { source: "text" }).map(rule => rule.name)).toEqual(["no-foo"]);
+	});
+
+	it("keeps an enabled AST trigger dynamic for code edits", async () => {
+		const rules = [rule("no-console", { astCondition: ["console.log($A)"] })];
+		const mgr = new TtsrManager();
+		const buckets = bucketRules(rules, mgr, { declaredRules: ["no-console"] });
+		expect(buckets).toEqual({ alwaysApplyRules: [], rulebookRules: [] });
+		const matches = await mgr.checkAstSnapshot("console.log(value)", {
+			source: "tool",
+			toolName: "edit",
+			filePaths: ["src/main.ts"],
+		});
+		expect(matches.map(rule => rule.name)).toEqual(["no-console"]);
+	});
+
+	it("keeps an enabled question rule available for completed-output judgment, not the prompt", async () => {
+		const mgr = new TtsrManager();
+		const rules = [rule("honest-tests", { question: "Does this claim unrun tests passed?" })];
+		const buckets = bucketRules(rules, mgr, { declaredRules: ["honest-tests"] });
+		expect(buckets).toEqual({ alwaysApplyRules: [], rulebookRules: [] });
+		const candidates = await mgr.judgedCandidates("tests passed", { source: "text" });
+		expect(candidates.map(candidate => candidate.rule.name)).toEqual(["honest-tests"]);
+		expect(mgr.checkDelta("tests passed", { source: "text" })).toEqual([]);
+	});
+
+	it("replaces dynamic registrations with only the newly enabled triggers on rebuild", () => {
+		const rules = [rule("old", { condition: ["OLD"] }), rule("new", { condition: ["NEW"] })];
+		const manager = new TtsrManager();
+		bucketRules(rules, manager, { declaredRules: ["old"] });
+		expect(manager.checkDelta("OLD", { source: "text" }).map(rule => rule.name)).toEqual(["old"]);
+		const buckets = bucketRules(rules, manager, { declaredRules: ["new"], replaceTtsrRules: true });
+		expect(buckets).toEqual({ alwaysApplyRules: [], rulebookRules: [] });
+		expect(manager.checkDelta("OLD NEW", { source: "text" }).map(rule => rule.name)).toEqual(["new"]);
+	});
+
+	it("removes previously registered interrupt rules when a rebuilt profile disables them", () => {
+		const rules = [rule("interrupt", { condition: ["FORBIDDEN"] })];
+		const manager = new TtsrManager();
+		bucketRules(rules, manager);
+		expect(manager.checkDelta("FORBIDDEN", { source: "text" }).map(rule => rule.name)).toEqual(["interrupt"]);
+		const buckets = bucketRules(rules, manager, { declaredRules: [], replaceTtsrRules: true });
+		expect(buckets).toEqual({ alwaysApplyRules: [], rulebookRules: [] });
+		expect(manager.checkDelta("FORBIDDEN", { source: "text" })).toEqual([]);
 	});
 
 	it("keeps the legacy agents-scoped bucket when nothing is declared", () => {

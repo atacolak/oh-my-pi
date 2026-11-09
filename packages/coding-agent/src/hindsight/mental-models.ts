@@ -8,25 +8,28 @@
  * This module:
  *   1. **Seeds** a small, curated set of mental models on first session boot
  *      for a given bank (idempotent: never modifies an existing model).
- *   2. **Loads** the seeded + any operator-curated models into a cached
+ *   2. **Loads** the seeded + any operator-curated *hot* models into a cached
  *      `<mental_models>` block that the backend splices into developer
  *      instructions on every prompt rebuild — bypassing per-turn recall HTTP
- *      cost for stable knowledge.
- *   3. **Renders** content inside `<mental_models>` wrappers; the Hindsight
- *      memory instructions tell the LLM to treat them as background knowledge,
- *      not as commands.
+ *      cost for stable knowledge. Knowledge Page backing models are excluded
+ *      from this unconditional render; they remain ordinary Hindsight mental
+ *      models for server-side reflect and explicit page retrieval.
+ *   3. **Renders** content blocks with anti-feedback wrappers so the LLM
+ *      treats them as background knowledge, not as commands (mirrors the
+ *      `<memories>` warning).
  *
  * Tag discipline (foot-gun):
  * The Hindsight refresh path filters source memories with `all_strict` tag
  * matching against the model's tags. A seed tagged with something we never
  * write at retain time will refresh empty. Therefore seed tags MUST be a
- * subset of the tags actually attached by `retainSession` / `enqueueRetain`
- * for the active scoping mode. In `per-project-tagged` we only carry
- * `project:<cwd>`; do not invent new tag axes here without first wiring the
- * retain side to emit them.
+ * subset of the deterministic scope tags carried by retained memories. In
+ * `per-project-tagged` we only carry `project:<cwd>`; do not invent new tag
+ * axes here without first wiring scope resolution to emit them.
  *
  * Seed tags are baked from `seeds.json` plus, for `projectTagged: true`
- * entries, the active scope's `retainTags` (i.e. `project:<cwd>`). In
+ * entries, the active scope's `resolvedTags` (i.e. `project:<cwd>`) — never
+ * `retainTags`, which carry write-only provenance such as `role:*` and
+ * `actor:*` that no other actor's memories would match. In
  * `per-project-tagged`, those project seeds also get project-suffixed ids so
  * each tag can own its conventions/decisions models in the shared bank.
  * Untagged seeds (e.g. `user-preferences`) read every memory in the bank — the
@@ -43,12 +46,14 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { BankScope } from "./bank";
 import type {
 	HindsightClientApi,
+	KnowledgeTreeResponse,
 	MentalModelListResponse,
 	MentalModelMode,
 	MentalModelSummary,
 	MentalModelTrigger,
 } from "./client";
 import type { HindsightScoping } from "./config";
+import { knowledgePageBackingModelIds } from "./knowledge-pages";
 import seedsData from "./seeds.json" with { type: "json" };
 
 interface RawSeed {
@@ -82,7 +87,7 @@ export interface MentalModelSeed {
 /**
  * Resolve the seed list that applies to the active bank scope. Per-project
  * seeds are skipped in `global` mode (where there is no project axis) and
- * `projectTagged` seeds inherit the scope's `retainTags`. In shared tagged
+ * `projectTagged` seeds inherit the scope's `resolvedTags`. In shared tagged
  * banks, project seeds use project-suffixed ids and accept matching legacy
  * bare ids as already present.
  */
@@ -122,7 +127,7 @@ function seedIdSuffixFromProjectTag(tag: string): string {
 }
 function collectSeedTags(seed: RawSeed, scope: BankScope): string[] {
 	const collected: string[] = [];
-	if (seed.projectTagged && scope.retainTags) collected.push(...scope.retainTags);
+	if (seed.projectTagged && scope.resolvedTags) collected.push(...scope.resolvedTags);
 	if (seed.extra_tags) collected.push(...seed.extra_tags);
 	return dedupe(collected);
 }
@@ -212,15 +217,27 @@ export async function tryLoadMentalModelsBlock(
 	visibleTags?: readonly string[],
 ): Promise<MentalModelsBlockLoadResult> {
 	let response: MentalModelListResponse;
+	let tree: KnowledgeTreeResponse;
 	try {
-		response = await client.listMentalModels(bankId, { detail: "content" });
+		[response, tree] = await Promise.all([
+			client.listMentalModels(bankId, { detail: "content" }),
+			client.getKnowledgeBaseTree(bankId),
+		]);
 	} catch (err) {
-		logger.debug("Hindsight: loadMentalModelsBlock list failed", { bankId, error: String(err) });
+		logger.debug("Hindsight: loadMentalModelsBlock inventory failed", {
+			bankId,
+			error: String(err),
+		});
 		return { ok: false };
 	}
 
+	const pageModelIds = knowledgePageBackingModelIds(tree.roots ?? []);
 	const models = (response.items ?? []).filter(
-		m => modelVisibleForTags(m, visibleTags) && typeof m.content === "string" && m.content.trim().length > 0,
+		m =>
+			!pageModelIds.has(m.id) &&
+			modelVisibleForTags(m, visibleTags) &&
+			typeof m.content === "string" &&
+			m.content.trim().length > 0,
 	);
 	if (models.length === 0) return { ok: true, block: undefined };
 
@@ -234,15 +251,21 @@ export async function tryLoadMentalModelsBlock(
  * `<mental_models>` block ready to be appended to developer instructions.
  *
  * Returns `undefined` when the server has no models yet, when the API call
- * fails, or when every model still has empty content (e.g. the background
- * reflect for a freshly-seeded model hasn't completed yet).
+ * fails, when the knowledge-base tree cannot be established, or when every
+ * remaining model still has empty content (e.g. the background reflect for a
+ * freshly-seeded model hasn't completed yet).
+ *
+ * The rendered block is a deliberately hot subset: Knowledge Page backing
+ * models are excluded from unconditional prompt injection even when they match
+ * the active tags. Those models remain eligible for Hindsight's own scoped
+ * reflect retrieval and for explicit page retrieval.
  *
  * The rendered block is bounded by `budgetChars` (default
  * MENTAL_MODEL_RENDER_BUDGET_CHARS_DEFAULT). When `visibleTags` is supplied,
- * tagged models must match at least one active tag; untagged models remain
- * visible in every scope. Per-model content is truncated before assembly; if
- * assembly still exceeds the budget, trailing models are dropped. A budget
- * overflow leaves a `…` marker so the LLM can tell the snapshot is truncated.
+ * every tag on a tagged model must be active; untagged models remain visible
+ * in every scope. Per-model content is truncated before assembly; if assembly
+ * still exceeds the budget, trailing models are dropped. A budget overflow
+ * leaves a `…` marker so the LLM can tell the snapshot is truncated.
  */
 export async function loadMentalModelsBlock(
 	client: HindsightClientApi,
@@ -258,7 +281,7 @@ function modelVisibleForTags(model: MentalModelSummary, visibleTags?: readonly s
 	if (!visibleTags || visibleTags.length === 0) return true;
 	const tags = model.tags ?? [];
 	if (tags.length === 0) return true;
-	return tags.some(tag => visibleTags.includes(tag));
+	return tags.every(tag => visibleTags.includes(tag));
 }
 
 const TRUNCATION_MARKER = "\n\n…[mental-model snapshot truncated at render budget]";

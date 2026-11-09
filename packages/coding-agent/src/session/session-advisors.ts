@@ -511,6 +511,8 @@ export interface SessionAdvisorsHost {
 		signal: AbortSignal,
 	): Promise<Model | undefined>;
 	resolveCompactionModelCandidates(preferredModel: Model | null | undefined, availableModels: Model[]): Model[];
+	/** Whether the owning session disabled model fallback (`model-fallback: false`). */
+	modelFallbackDisabled?(): boolean;
 	resolveRetryFallbackRole(
 		currentSelector: string,
 		currentModel?: Model | null,
@@ -2189,7 +2191,8 @@ export class SessionAdvisors {
 						signal,
 					)
 				: Promise.resolve(false);
-		if (!retrySettings.enabled || !retrySettings.modelFallback) return waitOrDecline();
+		if (!retrySettings.enabled || !retrySettings.modelFallback || this.#host.modelFallbackDisabled?.())
+			return waitOrDecline();
 		if (!retryFallbackAdmits(retrySettings.fallbackOn, usageLimit)) return waitOrDecline();
 		// Same two-key walk the main loop uses: the chain that owns this advisor's
 		// active fallback, then the chain the current model owns. Without the
@@ -2341,7 +2344,7 @@ export class SessionAdvisors {
 		currentModel: Model,
 		signal: AbortSignal,
 	): Promise<boolean> {
-		if (!cfgContextPromotionEnabled.get(this.#host.settings)) return false;
+		if (!cfgContextPromotionEnabled.get(this.#host.settings) || this.#host.modelFallbackDisabled?.()) return false;
 		const contextWindow = currentModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
 		const targetModel = await this.#host.resolveContextPromotionTarget(currentModel, contextWindow, signal);

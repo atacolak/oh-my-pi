@@ -5046,7 +5046,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					agentId: id,
 					agentDisplayName: agent.name,
 					agentName: agent.name,
-					...(agent.rules !== undefined ? { declaredRules: agent.rules } : {}),
+					declaredRules: agent.rules ?? [],
 					enableLsp: lspEnabled,
 					enableIrc: options.enableIrc,
 					skipPythonPreflight,

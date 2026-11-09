@@ -141,7 +141,6 @@ import {
 	resolvePromptInput,
 } from "./system-prompt";
 import { applyAgentCompactionPolicy } from "./task/agent-compaction";
-import { discoverAgents, getAgent } from "./task/discovery";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
@@ -1856,20 +1855,14 @@ export async function buildSessionOptions(
 		const tools = rootAgentToolNames(launchAgent);
 		if (tools) options.toolNames = tools;
 	}
-	if (options.agentName) {
-		const { agents } = await discoverAgents(options.cwd ?? getProjectDir());
-		const agent = getAgent(agents, options.agentName);
-		if (agent) {
-			options.toolLoad = agent.toolLoad;
-			// A named profile is closed-world for MCPs: omitting `mcps:` names no server,
-			// so the session neither dials nor mounts any user MCP.
-			options.mcpLoad = mcpLoadForNamedProfile(agent.mcpLoad);
-			// The profile owns its always-apply rule set. `undefined` keeps the legacy
-			// `agents`-scoped bucketing a bare `main` session relies on; an empty list is a
-			// profile that deliberately applies none.
-			options.declaredRules = agent.rules;
-			applyAgentCompactionPolicy(activeSettings, agent.compaction);
-		}
+	if (launchAgent) {
+		// Reuse the selected definition, including --agent-cwd; an execution-root namesake owns no policy here.
+		options.toolLoad = launchAgent.toolLoad;
+		// A named profile is closed-world for MCPs: omitting `mcps:` names no server.
+		options.mcpLoad = mcpLoadForNamedProfile(launchAgent.mcpLoad);
+		// Named profiles are closed-world for rules; omission means off, not ambient discovery.
+		options.declaredRules = launchAgent.rules ?? [];
+		applyAgentCompactionPolicy(activeSettings, launchAgent.compaction);
 	}
 
 	if (parsed.noLsp) {

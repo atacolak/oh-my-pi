@@ -45,7 +45,7 @@ async function writeFile(filePath: string, content: string): Promise<void> {
 	await fs.writeFile(filePath, content);
 }
 
-async function createScopedSession(agentDir: string) {
+async function createScopedSession(agentDir: string, declaredRules?: readonly string[]) {
 	const cwd = tempDir.join("project");
 	await fs.mkdir(cwd, { recursive: true });
 	const authStorage = await AuthStorage.create(tempDir.join("auth.db"));
@@ -58,6 +58,7 @@ async function createScopedSession(agentDir: string) {
 		modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
 		settings: Settings.isolated({ "compaction.enabled": false }),
 		model: buildLocalModel(),
+		declaredRules,
 		disableExtensionDiscovery: true,
 		skills: [],
 		contextFiles: [],
@@ -116,6 +117,41 @@ describe("createAgentSession with agentDir", () => {
 			const rebuilt = session.systemPrompt.join("\n");
 			expect(rebuilt).toContain(scopedRule);
 			expect(rebuilt).not.toContain(defaultRule);
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	it.each([
+		{ scope: "selected", declaredRules: ["enabled"] },
+		{ scope: "empty", declaredRules: [] },
+	])("keeps off rules out of prompts and rule URI after session reset: $scope", async ({ declaredRules }) => {
+		const agentDir = tempDir.join("binary-agent");
+		await writeFile(
+			path.join(agentDir, "rules", "enabled.md"),
+			"---\ndescription: enabled fixture\n---\nBINARY_ENABLED_RULE\n",
+		);
+		await writeFile(
+			path.join(agentDir, "rules", "hidden.md"),
+			"---\ndescription: hidden fixture\n---\nBINARY_HIDDEN_RULE\n",
+		);
+		const { session, authStorage } = await createScopedSession(agentDir, declaredRules);
+		try {
+			for (const reset of [false, true]) {
+				if (reset) expect(await session.newSession()).toBe(true);
+				const prompt = session.systemPrompt.join("\n");
+				expect(prompt).not.toContain("BINARY_HIDDEN_RULE");
+				expect(prompt).not.toContain("hidden fixture");
+				expect(prompt.includes("BINARY_ENABLED_RULE")).toBe(declaredRules.length > 0);
+				const read = session.getToolByName("read");
+				if (!read) throw new Error("expected the native read tool");
+				const denied = await read
+					.execute("read-hidden-rule", { path: "rule://hidden" })
+					.catch(error => ({ error: String(error) }));
+				expect(JSON.stringify(denied)).toContain("Unknown rule: hidden");
+				expect(JSON.stringify(denied)).not.toContain("BINARY_HIDDEN_RULE");
+			}
 		} finally {
 			await session.dispose();
 			authStorage.close();

@@ -263,6 +263,17 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
+	it("disables ambient rules for a named profile that omits its rules list", async () => {
+		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+		try {
+			const { options } = await optionsFor(["--agent", "flag-probe"], cwd);
+			// Undefined permits legacy ambient rules; an empty list closes the SDK rule catalog and URI surface.
+			expect(options.declaredRules).toEqual([]);
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("resolves role metadata from --agent-cwd while keeping execution cwd", async () => {
 		const roleRoot = await writeProjectAgent(HIDDEN_PROBE_MD);
 		const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-work-"));
@@ -282,6 +293,29 @@ describe("buildSessionOptions — --agent", () => {
 			expect(options.agentName).toBe("hidden-probe");
 			expect(options.rootAgentName).toBe("hidden-probe");
 			expect(options.automationAuthor).toBeUndefined();
+			expect(options.declaredRules).toEqual([]);
+		} finally {
+			await fs.rm(roleRoot, { recursive: true, force: true });
+			await fs.rm(executionCwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the selected role rule policy when execution cwd has a namesake profile", async () => {
+		const roleRoot = await writeProjectAgent(
+			HIDDEN_PROBE_MD.replace("name: hidden-probe", "name: hidden-probe\nrules: [role-only]"),
+		);
+		const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-namesake-"));
+		try {
+			await writeProjectAgentInto(
+				executionCwd,
+				HIDDEN_PROBE_MD.replace("name: hidden-probe", "name: hidden-probe\nrules: [execution-only]"),
+			);
+			const { options } = await optionsFor(
+				["--agent", "hidden-probe", "--agent-cwd", roleRoot, "--cwd", executionCwd],
+				executionCwd,
+				roleRoot,
+			);
+			expect(options.declaredRules).toEqual(["role-only"]);
 		} finally {
 			await fs.rm(roleRoot, { recursive: true, force: true });
 			await fs.rm(executionCwd, { recursive: true, force: true });

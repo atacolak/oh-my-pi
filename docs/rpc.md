@@ -55,6 +55,7 @@ A CLI `--mode rpc` / `--mode rpc-ui` launch without `--no-session` and without `
 - When the owner's socket closes while stdin is still open and the published `ownerPid` is still alive, the bridge keeps reconnecting to the same `<session-id>.sock` for up to 15 seconds. An owner `/restart` or `upgrade_runtime` re-executes in place (same pid) and rebinds the socket, so the bridge and its clients ride through the image replacement without losing the session.
 - `--no-ui` and `--no-session` keep the historical in-process stdio lifecycle; so do print mode, ACP, and re-entry into an owner process. Only brokered sockets refuse transcript swaps (`new_session`, `switch_session`, `open_session`, `fork`, `handoff`); `set_event_filter`, `set_ask_dialog`, branch navigation, `/btw`, goals, live voice, dictation, login, and `mcp_*` are served per view.
 - When an interactive owner has attached socket clients, its TUI dialogs (`select`, `confirm`, `input`, `editor`, and opt-in `ask`) also broadcast as `extension_ui_request` frames. The first answer settles the dialog and cancels the other presentation; a client disconnect never cancels a dialog the terminal or another client can still answer.
+- HTML `formDialog` prompts keep the complete form on the terminal and walk named fields on attached sockets using the standard `select`, `input`, and `editor` fallback. The first surface to submit or cancel the form settles it and closes the other presentation; `set_ask_dialog` only gates the legacy extension `askDialog` request.
 
 ## Transport and Framing
 
@@ -1372,7 +1373,8 @@ Use `--mode rpc --no-ui` for a host without a tool UI surface; use `--mode rpc-u
      host hint from `ExtensionUIDialogOptions.secret`; hosts that support
      masked input should hide typed characters when `secret: true`.
    - `ask` is emitted only after `set_ask_dialog` enables it. It carries every
-     question of one `ask` tool call:
+     question of one extension `ui.askDialog` call (the `ask` tool instead walks
+     its HTML form field by field through `select`, `input` and `editor`):
      `questions: Array<{ id: string, question: string, header?: string, options: Array<{ label: string, description?: string, preview?: string }>, multi?: boolean, recommended?: number }>`
      plus `timeout?: number`. `options` never include an "Other" entry; hosts
      always offer free text.

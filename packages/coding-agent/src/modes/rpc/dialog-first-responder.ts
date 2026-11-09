@@ -10,12 +10,15 @@
  * sibling presentation; a client disconnecting never rejects a dialog the
  * terminal (or another client) can still answer.
  */
+import { parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
 import type {
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResult,
+	ExtensionFormDialogResult,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
 } from "../../extensibility/extensions";
+import { askFieldByField } from "../../tools/ask";
 
 /** One dialog already issued to the socket transport, cancellable from here. */
 export interface DialogRequestHandle<T> {
@@ -97,7 +100,7 @@ export class DialogFirstResponder {
 		options: ExtensionUISelectItem[],
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
-		return this.#race(dialogOptions, tui, bridge => bridge.select(title, options, dialogOptions));
+		return this.#race(dialogOptions, tui, (bridge, merged) => bridge.select(title, options, merged));
 	}
 
 	confirm(
@@ -106,7 +109,7 @@ export class DialogFirstResponder {
 		message: string,
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<boolean> {
-		return this.#race(dialogOptions, tui, bridge => bridge.confirm(title, message, dialogOptions));
+		return this.#race(dialogOptions, tui, (bridge, merged) => bridge.confirm(title, message, merged));
 	}
 
 	input(
@@ -115,7 +118,7 @@ export class DialogFirstResponder {
 		placeholder?: string,
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
-		return this.#race(dialogOptions, tui, bridge => bridge.input(title, placeholder, dialogOptions));
+		return this.#race(dialogOptions, tui, (bridge, merged) => bridge.input(title, placeholder, merged));
 	}
 
 	editor(
@@ -125,7 +128,7 @@ export class DialogFirstResponder {
 		dialogOptions?: ExtensionUIDialogOptions,
 		editorOptions?: { promptStyle?: boolean },
 	): Promise<string | undefined> {
-		return this.#race(dialogOptions, tui, bridge => bridge.editor(title, prefill, dialogOptions, editorOptions));
+		return this.#race(dialogOptions, tui, (bridge, merged) => bridge.editor(title, prefill, merged, editorOptions));
 	}
 
 	/**
@@ -138,13 +141,43 @@ export class DialogFirstResponder {
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<ExtensionAskDialogResult | undefined> {
 		if (!this.#askDialogEnabled) return tui(dialogOptions);
-		return this.#race(dialogOptions, tui, bridge => bridge.ask(questions, dialogOptions));
+		return this.#race(dialogOptions, tui, (bridge, merged) => bridge.ask(questions, merged));
+	}
+
+	/** Keep the terminal's whole form while sockets use the standard RPC field fallback. */
+	formDialog(
+		tui: (dialogOptions?: ExtensionUIDialogOptions) => Promise<ExtensionFormDialogResult | undefined>,
+		html: string,
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<ExtensionFormDialogResult | undefined> {
+		return this.#race(dialogOptions, tui, (bridge, options) => {
+			const complete = async <T>(request: DialogRequestHandle<T>): Promise<T> => {
+				const value = await request.promise;
+				if (request.id !== undefined) bridge.dismiss(request.id);
+				return value;
+			};
+			return {
+				id: undefined,
+				promise: askFieldByField(
+					{
+						select: (title, items, fieldOptions) => complete(bridge.select(title, items, fieldOptions)),
+						input: (title, placeholder, fieldOptions) => complete(bridge.input(title, placeholder, fieldOptions)),
+						editor: (title, prefill, fieldOptions, editorOptions) =>
+							complete(bridge.editor(title, prefill, fieldOptions, editorOptions)),
+					},
+					parseHtmlForm(html),
+					options.timeout,
+					options.signal!,
+				),
+				cancel: () => {},
+			};
+		});
 	}
 
 	async #race<T>(
 		dialogOptions: ExtensionUIDialogOptions | undefined,
 		tui: (dialogOptions?: ExtensionUIDialogOptions) => Promise<T>,
-		socket: (bridge: DialogSocketBridge) => DialogRequestHandle<T>,
+		socket: (bridge: DialogSocketBridge, options: ExtensionUIDialogOptions) => DialogRequestHandle<T>,
 	): Promise<T> {
 		const bridge = this.#bridge;
 		// An already-aborted dialog is answered by the terminal's own dismissal path.
@@ -171,7 +204,7 @@ export class DialogFirstResponder {
 				: {}),
 		};
 
-		const request = socket(bridge);
+		const request = socket(bridge, options);
 		const tuiSettled = tui(options).then(
 			value => ({ source: "tui" as const, ok: true as const, value }),
 			error => ({ source: "tui" as const, ok: false as const, error }),

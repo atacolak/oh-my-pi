@@ -10,9 +10,11 @@ import type {
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResult,
 	ExtensionAskDialogSubmitResult,
+	ExtensionFormDialogResult,
 	ExtensionUIDialogOptions,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import { createAgentSessionSocket, type RpcSessionSocket } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-socket";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -563,6 +565,65 @@ describe("an interactive session's published endpoint", () => {
 	];
 
 	describe("terminal dialog fanout", () => {
+		it("lets a socket client submit an html form and closes its terminal presentation", async () => {
+			fixture = await createInteractiveFixture([]);
+			const peer = await SocketPeer.connect(fixture.endpoint);
+			const observer = await SocketPeer.connect(fixture.endpoint);
+			const tui = pendingTuiDialog<ExtensionFormDialogResult | undefined>(undefined);
+			spyOn(ExtensionUiController.prototype, "showFormDialog").mockImplementation((_html, options) =>
+				tui.present(options),
+			);
+			try {
+				await peer.next(frame => frame.type === "ready");
+				await observer.next(frame => frame.type === "ready");
+				await fixture.mode.initHooksAndCustomTools();
+				const answer = fixture.mode.getToolUIContext()!.formDialog!(
+					'<form><label>Store<select name="store"><option value="disk">Disk</option><option value="ram">Memory</option></select></label><label>Count<input type="number" name="count" min="1"></label></form>',
+				);
+				const choice = await peer.next(frame => frame.type === "extension_ui_request" && frame.method === "select");
+				peer.send({ type: "extension_ui_response", id: choice.id, value: "Memory" });
+				await observer.next(frame => frame.method === "cancel" && frame.targetId === choice.id);
+				observer.send({ type: "extension_ui_response", id: choice.id, value: "Disk" });
+				const input = await peer.next(frame => frame.type === "extension_ui_request" && frame.method === "input");
+				peer.send({ type: "extension_ui_response", id: input.id, value: "0" });
+				const retry = await peer.next(frame => frame.type === "extension_ui_request" && frame.method === "input");
+				peer.send({ type: "extension_ui_response", id: retry.id, value: "3" });
+				await expect(answer).resolves.toEqual({ data: { store: "ram", count: 3 }, timedOut: false });
+				expect(tui.signal()?.aborted).toBe(true);
+			} finally {
+				tui.resolve(undefined);
+				peer.close();
+				observer.close();
+			}
+		}, 20_000);
+
+		it("cancels the current socket field when the terminal submits the whole form first", async () => {
+			fixture = await createInteractiveFixture([]);
+			const peer = await SocketPeer.connect(fixture.endpoint);
+			const tui = pendingTuiDialog<ExtensionFormDialogResult | undefined>(undefined);
+			spyOn(ExtensionUiController.prototype, "showFormDialog").mockImplementation((_html, options) =>
+				tui.present(options),
+			);
+			try {
+				await peer.next(frame => frame.type === "ready");
+				await fixture.mode.initHooksAndCustomTools();
+				const answer = fixture.mode.getToolUIContext()!.formDialog!(
+					'<form><label>First<input name="first"></label><label>Second<input name="second"></label></form>',
+				);
+				const input = await peer.next(frame => frame.type === "extension_ui_request" && frame.method === "input");
+				tui.resolve({ data: { first: "terminal", second: "complete" } });
+				await expect(answer).resolves.toEqual({ data: { first: "terminal", second: "complete" } });
+				await peer.next(frame => frame.method === "cancel" && frame.targetId === input.id);
+				peer.send({ type: "extension_ui_response", id: input.id, value: "late" });
+				peer.send({ id: "form-barrier", type: "get_state" });
+				await frameOf(peer, "form-barrier");
+				expect(peer.seen.filter(frame => frame.method === "input")).toHaveLength(1);
+			} finally {
+				tui.resolve(undefined);
+				peer.close();
+			}
+		}, 20_000);
+
 		it("lets an attached client answer first and dismisses the terminal prompt", async () => {
 			fixture = await createInteractiveFixture([]);
 			const peer = await SocketPeer.connect(fixture.endpoint);

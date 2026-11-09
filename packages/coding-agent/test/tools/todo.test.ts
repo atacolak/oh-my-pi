@@ -141,7 +141,88 @@ describe("nextActionableTask", () => {
 });
 
 describe("passive todo phases", () => {
-	it("normalizes an empty passive phase name without promoting its tasks", async () => {
+	it("creates an unnamed passive append phase without auto-starting its tasks", async () => {
+		const tool = new TodoTool(createSession());
+		const result = await tool.execute("append", { op: "append", kind: "passive", items: ["retain report"] });
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			{ name: "Tasks", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+		]);
+		expect(nextActionableTask(result.details?.phases ?? [])).toBeUndefined();
+	});
+
+	it("ignores passive in-progress tasks when selecting an implicit append phase", async () => {
+		const tool = new TodoTool(
+			createSession([
+				{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "in_progress" }] },
+				{ name: "Work", tasks: [{ content: "ship change", status: "pending" }] },
+			]),
+		);
+		const result = await tool.execute("append", { op: "append", items: ["verify change"] });
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "in_progress" }] },
+			{
+				name: "Work",
+				tasks: [
+					{ content: "ship change", status: "in_progress" },
+					{ content: "verify change", status: "pending" },
+				],
+			},
+		]);
+	});
+
+	it("preserves a passive last phase when implicit append has no continuing task", async () => {
+		const tool = new TodoTool(
+			createSession([
+				{ name: "Work", tasks: [{ content: "ship change", status: "completed" }] },
+				{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			]),
+		);
+		const result = await tool.execute("append", { op: "append", items: ["keep note"] });
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.phases).toEqual([
+			{ name: "Work", tasks: [{ content: "ship change", status: "completed" }] },
+			{
+				name: "Reference",
+				kind: "passive",
+				tasks: [
+					{ content: "retain report", status: "pending" },
+					{ content: "keep note", status: "pending" },
+				],
+			},
+		]);
+		expect(nextActionableTask(result.details?.phases ?? [])).toBeUndefined();
+	});
+
+	it("keeps unnamed passive init phases pending and addressable by the fallback name", async () => {
+		for (const args of [
+			{ op: "init" as const, kind: "passive" as const, items: ["retain report"] },
+			{ op: "init" as const, list: [{ phase: "", kind: "passive" as const, items: ["retain report"] }] },
+		]) {
+			const tool = new TodoTool(createSession());
+			const initialized = await tool.execute("init", args);
+			expect(initialized.isError).toBeUndefined();
+			expect(initialized.details?.phases).toEqual([
+				{ name: "Tasks", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			]);
+			const appended = await tool.execute("append", { op: "append", phase: "Tasks", items: ["keep note"] });
+			expect(appended.isError).toBeUndefined();
+			expect(appended.details?.phases).toEqual([
+				{
+					name: "Tasks",
+					kind: "passive",
+					tasks: [
+						{ content: "retain report", status: "pending" },
+						{ content: "keep note", status: "pending" },
+					],
+				},
+			]);
+			expect(nextActionableTask(appended.details?.phases ?? [])).toBeUndefined();
+		}
+	});
+
+	it("keeps absent kind continuing and skips passive phases for promotion and selection", async () => {
 		const tool = new TodoTool(createSession());
 		const result = await tool.execute("call-passive", {
 			op: "init",

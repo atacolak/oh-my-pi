@@ -126,6 +126,7 @@ fn smoke_real_server() {
 		.call(&SetTodosCommand {
 			phases: vec![TodoPhase {
 				name:  "Smoke".into(),
+				kind:  None,
 				tasks: vec![TodoItem {
 					content: "blocked task".into(),
 					status:  TodoStatus::Blocked,

@@ -1,6 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, isEnoent, withLoopPhase } from "@oh-my-pi/pi-utils";
+import { formatHindsightMemoryRead, isHindsightMemoryInScope } from "../hindsight/content";
+import type { HindsightSessionStateApi } from "../hindsight/state";
 import { getMemoryRoot } from "../memories";
 import { getMnemopiSessionState, type MnemopiScopedMemoryHit, type MnemopiSessionStateApi } from "../mnemopi/state";
 import memoryDoc from "../prompts/internal-urls/memory.md" with { type: "text" };
@@ -29,15 +31,14 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 const DEFAULT_MEMORY_FILE = "memory_summary.md";
 const MEMORY_NAMESPACE = "root";
 
-/**
- * Hindsight keeps memories server-side and exposes no `memory://<id>`
- * addressing, yet the shared `recall` tool description still steers a
- * follow-up `read memory://<id>`. This corrective pointer lets that stray read
- * self-correct in one turn instead of derailing on the generic namespace
- * error (issue #7587).
- */
-const HINDSIGHT_UNADDRESSABLE =
-	"Hindsight memories are not addressable via memory://. Recall results are final — use `recall` to search or `reflect` to synthesize. `read memory://<id>` is only available with memory.backend=mnemopi.";
+/** Decode a URL namespace (percent escapes, surrounding space); malformed input stays literal. */
+function decodeNamespace(namespace: string): string {
+	try {
+		return decodeURIComponent(namespace).trim();
+	} catch {
+		return namespace.trim();
+	}
+}
 
 /**
  * Snapshot of memory roots for every registered session, deduped.
@@ -242,9 +243,61 @@ function callerMnemopiState(session: AgentSessionHandle): MnemopiSessionStateApi
 	return state?.aliasOf ?? state;
 }
 
+/**
+ * Hindsight state that answers a `memory://<id>` read: the caller's own bank scope (a subagent
+ * aliases its parent), or — for a contextless legacy caller — the one canonical primary state
+ * whose scope is unambiguous. Differently scoped sessions never answer for each other, so an
+ * ambiguous pool resolves to no state while still naming a known namespace.
+ */
+function resolveHindsightState(caller: MemoryCallerBinding): { state?: HindsightSessionStateApi } | undefined {
+	const own = caller.session?.getHindsightSessionState?.();
+	if (own) return { state: own.aliasOf ?? own };
+	if (!caller.legacy) return undefined;
+	const states = AgentRegistry.global()
+		.list()
+		.map(ref => ref.session?.getHindsightSessionState?.())
+		.filter((state): state is HindsightSessionStateApi => state !== undefined);
+	if (states.length === 0) return undefined;
+	const primaries = states.filter(state => state.aliasOf === undefined);
+	return { state: primaries.length === 1 ? primaries[0] : undefined };
+}
+
+/**
+ * One opaque error for a missing id and an out-of-scope id alike: an id must not probe whether a
+ * personal or sibling-scope memory exists.
+ */
+async function readHindsightMemory(
+	id: string,
+	state: HindsightSessionStateApi | undefined,
+	context: ResolveContext | undefined,
+): Promise<InternalResource> {
+	const notFound = new Error(`Memory ${id} was not found in the current memory scope.`);
+	if (!state) throw notFound;
+	const unit = await state.client.getMemory(state.bankId, id, { signal: context?.signal });
+	if (
+		!unit ||
+		!isHindsightMemoryInScope(unit.tags, {
+			scoping: state.config.scoping,
+			recallTags: state.recallTags,
+			recallTagsMatch: state.recallTagsMatch,
+		})
+	) {
+		throw notFound;
+	}
+	const content = formatHindsightMemoryRead(unit, id);
+	return {
+		url: `memory://${unit.id?.trim() || id}`,
+		content,
+		contentType: "text/markdown",
+		size: Buffer.byteLength(content, "utf-8"),
+		immutable: true,
+		notes: [],
+	};
+}
+
 function unknownNamespaceError(namespace: string): Error {
 	return new Error(
-		`Unknown memory namespace: ${namespace}. Supported: ${MEMORY_NAMESPACE} (file-backed memory summary), or a mnemopi memory id when memory.backend=mnemopi is active.`,
+		`Unknown memory namespace: ${namespace}. Supported: ${MEMORY_NAMESPACE} (file-backed memory summary), or a memory id from \`recall\` (mnemopi or Hindsight).`,
 	);
 }
 
@@ -266,7 +319,7 @@ function fileBackedRootUnavailableError(backend: string | undefined): Error {
 		backend === "mnemopi"
 			? " Use `recall`/`reflect` to search Mnemopi memories, or `read memory://<memory-id>` for a full row."
 			: backend === "hindsight"
-				? " Use `recall`/`reflect` to search Hindsight memories."
+				? " Use `recall`/`reflect` to search Hindsight memories, or `read memory://<memory-id>` for a full memory."
 				: "";
 	return new Error(
 		`File-backed memory artifacts only exist with memory.backend=local (active backend: ${backend}).${searchHint}`,
@@ -392,19 +445,23 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 		if (backend === "off") {
 			throw new Error("Unknown protocol: memory://");
 		}
-		const namespace = url.rawHost || url.hostname;
+		const namespace = decodeNamespace(url.rawHost || url.hostname);
 		if (!namespace) {
 			throw new Error("memory:// URL requires a namespace: memory://root or memory://<memory-id>");
 		}
 
-		// Mnemopi rows live in SQLite banks per session, keyed by memory id.
-		// Any host other than the file-backed `root` namespace is treated as a
-		// mnemopi memory id lookup. This is the read counterpart to
-		// `memory_edit update` and lets agents inspect the full content of a
-		// clipped recall preview before overwriting it (issue #4443).
+		// Any host other than the file-backed `root` namespace is a memory id lookup. Mnemopi
+		// rows live in SQLite banks per session; Hindsight units are fetched from the bank. Both
+		// are the read counterpart to recall, so an agent can inspect a clipped preview in full.
 		if (namespace !== MEMORY_NAMESPACE) {
+			const extraPath = url.pathname && url.pathname !== "/" ? url.pathname : "";
+			if (extraPath) {
+				throw new Error(`memory://<memory-id> takes no path; got ${url.href}`);
+			}
 			if (!caller.legacy) {
-				if (backend === "hindsight") throw new Error(HINDSIGHT_UNADDRESSABLE);
+				if (backend === "hindsight") {
+					return readHindsightMemory(namespace, resolveHindsightState(caller)?.state, context);
+				}
 				if (backend === "mnemopi") {
 					const hit = caller.session ? callerMnemopiState(caller.session)?.getScopedMemory(namespace) : undefined;
 					if (hit) return renderMnemopiMemory(url, hit);
@@ -415,24 +472,23 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 				throw unknownNamespaceError(namespace);
 			}
 
+			// The caller's own backend hint wins over whichever peers happen to be live.
+			if (backend === "hindsight") {
+				return readHindsightMemory(namespace, resolveHindsightState(caller)?.state, context);
+			}
 			const mnemopiStates = mnemopiSessionStatesFromRegistry();
-			const hindsightActive =
-				backend === "hindsight" ||
-				(mnemopiStates.length === 0 &&
-					AgentRegistry.global()
-						.list()
-						.some(ref => ref.session?.hindsightActive === true));
-			if (hindsightActive) {
-				throw new Error(HINDSIGHT_UNADDRESSABLE);
+			if (mnemopiStates.length > 0 || backend === "mnemopi") {
+				const hit = tryResolveMnemopiMemory(namespace);
+				if (hit) return renderMnemopiMemory(url, hit);
+				throw new Error(
+					`Mnemopi memory ${namespace} not found in any scoped bank. Use \`recall\` to list available ids.`,
+				);
 			}
-			if (mnemopiStates.length === 0) {
-				throw unknownNamespaceError(namespace);
-			}
-			const hit = tryResolveMnemopiMemory(namespace);
-			if (hit) return renderMnemopiMemory(url, hit);
-			throw new Error(
-				`Mnemopi memory ${namespace} not found in any scoped bank. Use \`recall\` to list available ids.`,
-			);
+			// A contextless caller may read a Hindsight memory only when one primary state exists,
+			// so the read cannot merge scopes; a local-backend caller keeps the filesystem namespace.
+			const hindsight = backend === "local" ? undefined : resolveHindsightState(caller);
+			if (hindsight) return readHindsightMemory(namespace, hindsight.state, context);
+			throw unknownNamespaceError(namespace);
 		}
 
 		// A project may retain files from an earlier local session. Reject known
@@ -484,6 +540,15 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 			completions.push({
 				value: "<memory-id>",
 				description: "Full mnemopi memory by id (from recall)",
+			});
+		}
+		const hindsightAvailable = caller.legacy
+			? resolveHindsightState(caller)?.state !== undefined
+			: caller.backend === "hindsight" && resolveHindsightState(caller)?.state !== undefined;
+		if (hindsightAvailable) {
+			completions.push({
+				value: "<memory-id>",
+				description: "Full Hindsight memory by id (from recall)",
 			});
 		}
 		return completions;

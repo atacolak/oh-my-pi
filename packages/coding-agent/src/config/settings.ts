@@ -37,6 +37,7 @@ import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
 import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
+import { migrateRecallBudget } from "../hindsight/recall-budget";
 import { AgentStorage, type AgentStorageApi } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { writeFileAtomically } from "../utils/atomic-file";
@@ -3498,6 +3499,9 @@ export class Settings {
 		//   bankId base when no explicit bankId is set.
 		const hindsightObj = raw.hindsight as Record<string, unknown> | undefined;
 		if (hindsightObj) {
+			if ("recallBudget" in hindsightObj) {
+				hindsightObj.recallBudget = migrateRecallBudget(hindsightObj.recallBudget);
+			}
 			if ("dynamicBankId" in hindsightObj) {
 				if (!("scoping" in hindsightObj) && hindsightObj.dynamicBankId === true) {
 					hindsightObj.scoping = "per-project";
@@ -3520,6 +3524,14 @@ export class Settings {
 			// frozen for the session lifetime rather than re-listed on a timer that
 			// rewrote the cached prompt prefix mid-session (#11961).
 			delete hindsightObj.mentalModelRefreshIntervalMs;
+		}
+		if ("hindsight.recallBudget" in raw) {
+			const hindsight = (raw.hindsight ?? {}) as Record<string, unknown>;
+			if (!("recallBudget" in hindsight)) {
+				hindsight.recallBudget = migrateRecallBudget(raw["hindsight.recallBudget"]);
+			}
+			raw.hindsight = hindsight;
+			delete raw["hindsight.recallBudget"];
 		}
 
 		// power.preventIdleSleep / power.preventSystemSleep / power.declareUserActive

@@ -50,7 +50,6 @@ export interface SessionMemoryHost {
 	setHindsightSessionState(state: HindsightSessionState | undefined): void;
 	getMnemopiSessionState(): MnemopiSessionState | undefined;
 	takeMnemopiSessionState(): MnemopiSessionState | undefined;
-	setBaseSystemPrompt(prompt: string[]): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	replaceMemoryTools(tools: AgentTool[]): Promise<void>;
 	rebaseHindsightCloseRetainBaseline(closeRetainBaselineTurns?: number): void;
@@ -64,7 +63,6 @@ export class SessionMemory {
 	readonly #createMemoryTools: (() => Promise<AgentTool[]>) | undefined;
 	#memoryBackendTransition: Promise<void> = Promise.resolve();
 	#localMemoryStartupAbort: AbortController | undefined;
-	#baseSystemPromptBeforeMemoryPromotion: string[] | undefined;
 	/** Cwd the running backend state was built for; a transcript is never retained after it moved. */
 	#runtimeCwd: string | undefined;
 	/** Apply waiting behind the current transition; later requests join it. */
@@ -180,25 +178,6 @@ export class SessionMemory {
 		return this.#memoryBackendTransition;
 	}
 
-	/** Base prompt captured before a per-turn memory promotion. */
-	get promotionSnapshot(): string[] | undefined {
-		return this.#baseSystemPromptBeforeMemoryPromotion;
-	}
-
-	/** Clears the per-turn memory promotion after a canonical prompt rebuild. */
-	clearPromotionSnapshot(): void {
-		this.#baseSystemPromptBeforeMemoryPromotion = undefined;
-	}
-
-	/** Captures the canonical prompt before the first per-turn memory promotion. */
-	capturePromotionSnapshot(prompt: string[]): void {
-		this.#baseSystemPromptBeforeMemoryPromotion ??= prompt;
-	}
-
-	/** Restores a promotion snapshot while rolling back a failed session switch. */
-	restorePromotionSnapshot(prompt: string[] | undefined): void {
-		this.#baseSystemPromptBeforeMemoryPromotion = prompt;
-	}
 	/** Rekeys memory backends after a conversation identity change. */
 	rekeyForCurrentSessionId(): void {
 		this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -266,17 +245,12 @@ export class SessionMemory {
 		return true;
 	}
 
-	/** Resets transcript-scoped memory counters and removes a promoted prompt. */
+	/** Resets transcript-scoped memory counters for the new transcript. */
 	async resetContextForNewTranscript(options?: { closeRetainBaselineTurns?: number }): Promise<void> {
-		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
 		this.#host.rebaseHindsightCloseRetainBaseline(options?.closeRetainBaselineTurns);
 		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight(options?.closeRetainBaselineTurns);
 		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
-		if (hadPromotedMemoryPrompt) {
-			this.#host.setBaseSystemPrompt(this.#baseSystemPromptBeforeMemoryPromotion!);
-			this.#baseSystemPromptBeforeMemoryPromotion = undefined;
-		}
-		if (resetHindsight || resetMnemopi || hadPromotedMemoryPrompt) {
+		if (resetHindsight || resetMnemopi) {
 			await this.#host.refreshBaseSystemPrompt();
 		}
 	}

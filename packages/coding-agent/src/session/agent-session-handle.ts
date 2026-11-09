@@ -22,6 +22,8 @@ import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { GoalModeState } from "../goals/state";
+import type { HindsightSessionStateApi } from "../hindsight/state";
+import type { MnemopiSessionStateApi } from "../mnemopi/state";
 import type { ApprovalGrantStore } from "../tools/approval-cache";
 import type { TokenRateMeter } from "../utils/token-rate";
 import type { AgentDefinition } from "../task/types";
@@ -121,6 +123,10 @@ export interface AgentSessionHandle {
 	readonly effectiveExtensionRoots: EffectiveExtensionRoots;
 	/** Whether the hindsight memory backend is active for the session. */
 	readonly hindsightActive: boolean;
+	/** Hindsight runtime state when the hindsight backend is installed; absent otherwise. */
+	getHindsightSessionState?(): HindsightSessionStateApi | undefined;
+	/** Mnemopi runtime state when the mnemopi backend is installed; absent otherwise. */
+	getMnemopiSessionState?(): MnemopiSessionStateApi | undefined;
 	/** Subscribe to every session event; returns the unsubscribe function. */
 	subscribe(listener: AgentSessionEventListener): () => void;
 	/** Subscribe to authoritative running/idle transitions; returns the unsubscribe function. */

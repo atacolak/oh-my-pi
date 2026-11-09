@@ -4712,7 +4712,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Read both dynamically so a `/model` switch or setting change takes
 		// effect on the next turn.
 		const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-			const converted = convertToLlm(messages);
+			const converted = convertToLlm(messages, session?.getHindsightSessionState()?.recallContextScope ?? null);
 			if (cfgImagesBlockImages.get(settings)) {
 				return replaceLlmImagesWithText(converted, "Image reading is disabled.");
 			}

@@ -316,6 +316,7 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			target = await locateSkillTarget(url, context, false);
 		} catch (error) {
 			if (!(error instanceof UnknownSkillError)) throw error;
+			if (context?.session?.skillRediscoveryHost?.().restrictSkillCatalog) throw error;
 			// Loaded skills always win; otherwise serve the resource an MCP server advertises under
 			// exactly this URI (Figma's `skill://figma/figma-use/SKILL.md`). Templates stay behind `mcp://`.
 			// A deferred MCP startup that fails cannot change the diagnosis: the skill is still unknown.
@@ -375,6 +376,7 @@ export class SkillProtocolHandler implements ProtocolHandler {
 				context?.containSkillPaths === true,
 			);
 		} catch (error) {
+			if (context?.session?.skillRediscoveryHost?.().restrictSkillCatalog) throw error;
 			if (error instanceof UnknownSkillError && !options?.localOnly && MCPManager.available()) return null;
 			throw error;
 		}

@@ -93,6 +93,7 @@ import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { LoopLimitConfig } from "../../modes/loop-limit";
 import type { MemoryRuntimeContext } from "../../memory-backend";
+import type { SkillLoadPolicy } from "../skill-load-policy";
 import type { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { NativeToolView } from "@oh-my-pi/pi-tui/tools/renderer";
@@ -101,6 +102,7 @@ import type { EphemeralTurnOptions, EphemeralTurnResult } from "../../session/ag
 import type { CompactMode } from "../../session/compact-modes";
 import type { CustomMessagePayload } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
+import type { AutomationAuthorPolicy } from "../../task/types";
 import type { BashToolInput, GlobToolInput, GrepToolInput, ReadToolInput, WriteToolInput } from "../../tools";
 import type { GlobToolDetails } from "@oh-my-pi/pi-tui/tools/glob";
 import type { GrepToolDetails } from "@oh-my-pi/pi-tui/tools/grep";
@@ -858,6 +860,8 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+	/** Resolved startup skill policy, independent of later profile edits; absent on older hosts. */
+	getSkillLoadPolicy?(): SkillLoadPolicy | undefined;
 
 	/** Run a /btw-style side turn without appending to history or executing tool calls.
 	 * Pass tools: false to omit tool definitions; existing context/provider hooks still run.
@@ -932,6 +936,10 @@ export interface ExtensionContext {
 	 * by default -- it does not narrow or widen OMP's own security model.
 	 */
 	isProjectTrusted(): boolean;
+	/** Resolved root `--agent` name, if this session launched from a definition. */
+	rootAgentName?: string;
+	/** Effective durable authoring grant from the resolved root AgentDefinition. */
+	automationAuthor?: AutomationAuthorPolicy;
 }
 
 /**

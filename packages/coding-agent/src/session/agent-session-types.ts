@@ -30,6 +30,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { SkillsSettings } from "../extensibility/settings";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { CursorMcpResourceAdapter } from "../cursor";
 import type { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import type { EvalPreludeDefinition } from "../eval/preludes";
@@ -260,6 +261,7 @@ export interface AgentSessionConfig {
 	evalToolSession?: ToolSession;
 	/** Loaded skills already discovered by the SDK. */
 	skills?: Skill[];
+	skillLoadPolicy?: SkillLoadPolicy;
 	/** Frozen routing hints shared with the system prompt and later skillful notices. */
 	skillDescriptions?: SkillDescriptionCatalog;
 	/** Skill loading warnings already captured by the SDK. */

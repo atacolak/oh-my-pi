@@ -1,15 +1,23 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { Message } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
+import {
+	MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+	MEMORY_RECALL_ENTRY_TYPE,
+} from "@oh-my-pi/pi-coding-agent/memory-backend/recall-entry";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
+import { cfgCompactionKeepRecentTokens } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import { SessionProviderBoundary } from "@oh-my-pi/pi-coding-agent/session/session-provider-boundary";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { getProjectAgentDir, getProjectDir, setProjectDir, removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -53,6 +61,7 @@ describe("createAgentSession cwd after /move", () => {
 				fetch(request) {
 					const pathname = new URL(request.url).pathname;
 					if (request.method === "PUT") return Response.json({});
+					if (pathname.endsWith("/knowledge-base/tree")) return Response.json({ roots: [] });
 					if (pathname.endsWith("/mental-models")) {
 						return Response.json({
 							items: [{ id: "source-model", name: "Source model", content: "SOURCE-MODEL-CANARY" }],
@@ -114,11 +123,32 @@ describe("createAgentSession cwd after /move", () => {
 				}));
 				const model = createMockModel({ handler: { content: ["ok"] } });
 				session.agent.streamFn = model.stream;
+				await session.applyMemoryBackend();
 				await session.getHindsightSessionState()?.mentalModelsLoadPromise;
+				const legacyScope: unknown = JSON.parse(session.getHindsightSessionState()!.recallContextScope);
+				if (!Array.isArray(legacyScope)) throw new Error("expected structured recall scope");
+				await session.sendCustomMessage({
+					customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+					content: "LEGACY-UNSCOPED-CANARY",
+					display: false,
+				});
+				sessionManager.appendCustomEntry(MEMORY_RECALL_ENTRY_TYPE, {
+					version: 1,
+					scope: JSON.stringify(legacyScope.slice(0, -1)),
+					text: "LEGACY-UNSCOPED-CANARY",
+					memories: [{ id: "legacy-source", text: "LEGACY-UNSCOPED-CANARY" }],
+				});
 				await session.prompt("Summarize this project.");
 				const sourcePrompt = model.calls[0]!.context.systemPrompt!.join("\n");
-				expect(sourcePrompt).toContain("SOURCE-RECALL-CANARY");
+				expect(JSON.stringify(model.calls[0]!.context.messages)).toContain("SOURCE-RECALL-CANARY");
+				expect(sourcePrompt).not.toContain("SOURCE-RECALL-CANARY");
 				expect(sourcePrompt).toContain("SOURCE-MODEL-CANARY");
+				expect(JSON.stringify(model.calls[0]!.context.messages)).not.toContain("LEGACY-UNSCOPED-CANARY");
+				expect(recalledBanks).toEqual(["source"]);
+				await session.prompt("Continue the same project.");
+				expect(JSON.stringify(model.calls[1]!.context.messages)).toContain("SOURCE-RECALL-CANARY");
+				expect(model.calls[1]!.context.systemPrompt!.join("\n")).toBe(sourcePrompt);
+				const sourceRecallCount = recalledBanks.length;
 
 				moved = true;
 				await sessionManager.moveTo(cwdB);
@@ -129,14 +159,46 @@ describe("createAgentSession cwd after /move", () => {
 				expect(session.getHindsightSessionState()?.bankId).toBe(destinationBank);
 				const movedPrompt = session.agent.state.systemPrompt.join("\n");
 				await session.prompt("Summarize the destination project.");
-				expect(model.calls).toHaveLength(2);
-				const destinationPrompt = model.calls[1]!.context.systemPrompt!.join("\n");
-				expect(recalledBanks).toEqual(destinationRecall === "disabled" ? ["source"] : ["source", destinationBank]);
+				expect(model.calls).toHaveLength(3);
+				const destinationPrompt = model.calls[2]!.context.systemPrompt!.join("\n");
+				expect(JSON.stringify(model.calls[2]!.context.messages)).not.toContain("SOURCE-RECALL-CANARY");
+				expect(recalledBanks.slice(sourceRecallCount)).toEqual(
+					destinationRecall === "disabled" ? [] : [destinationBank],
+				);
 				for (const prompt of [movedPrompt, destinationPrompt]) {
 					expect(prompt).not.toContain("SOURCE-RECALL-CANARY");
 					expect(prompt).not.toContain("SOURCE-MODEL-CANARY");
 					expect(prompt).toContain("# Memory");
 				}
+				const deliveredRecall = sessionManager
+					.getEntries()
+					.filter(
+						entry => entry.type === "custom_message" && entry.customType === MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+					);
+				expect(JSON.stringify(deliveredRecall)).toContain("SOURCE-RECALL-CANARY");
+				expect(JSON.stringify(deliveredRecall)).toContain("LEGACY-UNSCOPED-CANARY");
+				await session.reload();
+				await session.prompt("Continue after reloading the moved conversation.");
+				expect(JSON.stringify(model.calls[3]!.context.messages)).not.toContain("SOURCE-RECALL-CANARY");
+				cfgCompactionKeepRecentTokens.override(settings, 1);
+				const abort = new AbortController();
+				let compactionInput: Message[] | undefined;
+				const convert = SessionProviderBoundary.prototype.convertToLlmForSideRequest;
+				const intercept = spyOn(SessionProviderBoundary.prototype, "convertToLlmForSideRequest").mockImplementation(
+					function (this: SessionProviderBoundary, messages: AgentMessage[]) {
+						compactionInput = convert.call(this, messages);
+						abort.abort();
+						throw abort.signal.reason;
+					},
+				);
+				try {
+					await expect(session.compact()).rejects.toMatchObject({ name: "AbortError" });
+				} finally {
+					intercept.mockRestore();
+				}
+				expect(compactionInput).toBeDefined();
+				expect(JSON.stringify(compactionInput)).not.toContain("SOURCE-RECALL-CANARY");
+				expect(JSON.stringify(compactionInput)).not.toContain("LEGACY-UNSCOPED-CANARY");
 			} finally {
 				await session?.dispose();
 				authStorage.close();

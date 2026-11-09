@@ -237,7 +237,7 @@ it("labels every SQLite statement across scoped session memory flows", async () 
 			state.getGlobalRetainTarget(),
 		);
 		const prepared = await state.beforeAgentStartPrompt("espresso launch checklist");
-		expect(prepared?.context).toContain("espresso");
+		expect(prepared?.contextEntry?.content).toContain("espresso");
 		expect(prepared?.commit()).toBe(true);
 		expect(
 			await state.recallForCompaction([{ role: "user", content: "espresso launch checklist" }] as never),

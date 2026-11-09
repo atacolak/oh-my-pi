@@ -38,6 +38,18 @@ import { resetMemoryForTests } from "@oh-my-pi/pi-mnemopi";
 import { currentLoopPhase, isEnoent, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 
+import { isolateHindsightEnv, type RestoreHindsightEnv } from "./helpers/hindsight-env";
+
+// `HINDSIGHT_*` variables override every settings layer, so a host that retains out-of-process
+// (`HINDSIGHT_AUTO_RETAIN=false`) would otherwise turn retention assertions into no-ops.
+let restoreHindsightEnv: RestoreHindsightEnv = () => {};
+beforeEach(() => {
+	restoreHindsightEnv = isolateHindsightEnv();
+});
+afterEach(() => {
+	restoreHindsightEnv();
+});
+
 // Mnemopi is lazy-loaded at runtime; preload it for synchronous state construction.
 await Promise.all([loadMnemopi(), loadMnemopiCore()]);
 
@@ -67,12 +79,19 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		retainContext: "omp",
 		retainUpdateMode: "replace",
 		retainStrategy: null,
-		recallBudget: "mid",
+		recallBudget: "default",
 		recallMaxTokens: 1024,
 		recallTypes: ["world", "experience"],
 		recallContextTurns: 1,
 		recallMaxQueryChars: 800,
 		recallPromptPreamble: "preamble",
+		recallPreferObservations: true,
+		recallPrune: true,
+		recallDedup: true,
+		recallCadence: "boundary",
+		decisionModelUrl: null,
+		decisionModelApiKey: null,
+		decisionModelThreshold: 0.25,
 		debug: false,
 		requestTimeoutMs: 30_000,
 		reflectTimeoutMs: 120_000,
@@ -124,7 +143,7 @@ function registerState(client: HindsightApi, settings?: Settings, opts: Register
 		} as never,
 		banksSet: new Set(),
 		lastRetainedTurn: 0,
-		hasRecalledForFirstTurn: false,
+		recallDelivered: false,
 	});
 	void settings;
 }
@@ -298,14 +317,14 @@ describe("Mnemopi tool factories", () => {
 		};
 
 		expect(reflect.description).toContain("unlike `xd://recall`, blends them");
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		expect(recall.description).toContain("`reflect` synthesizes an answer");
 		expect(recall.description).toContain("Before any `xd://memory_edit update`");
 		expect(edit.description).toContain("Only ids returned by `xd://recall`.");
 
 		// A mounted device without a summary makes catalog summaries read its description;
 		// rendering refs must not depend on them, or this recurses without bound.
 		Object.assign(recall, { summary: undefined });
-		expect(recall.description).toContain("`reflect`: synthesized answer");
+		expect(recall.description).toContain("`reflect` synthesizes an answer");
 	});
 });
 
@@ -1902,7 +1921,7 @@ describe("recall.execute", () => {
 		registeredState = undefined;
 	});
 
-	it("returns the no-results sentinel when recall yields empty", async () => {
+	it("marks empty ranked recall useless without claiming whole-bank coverage", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({ results: [] } as never);
@@ -1910,10 +1929,18 @@ describe("recall.execute", () => {
 
 		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
 		const result = await tool.execute("call-3", { query: "anything" });
-		expect(result.content[0]).toEqual({ type: "text", text: "No relevant memories found." });
+		const text = result.content.find(item => item.type === "text");
+		expect(text?.text).toContain("No relevant memories found.");
+		expect(result.useless).toBe(true);
+		expect(result.details).toMatchObject({
+			mode: "shortlisted",
+			evaluatedCount: 0,
+			totalAvailable: null,
+			scoredCandidates: [],
+		});
 	});
 
-	it("formats non-empty results with count + UTC timestamp header", async () => {
+	it("preserves readable memory links without claiming unscored ranked results were evaluated", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
@@ -1926,10 +1953,18 @@ describe("recall.execute", () => {
 
 		const tool = MemoryRecallTool.createIf(makeSession(settings))!;
 		const result = await tool.execute("call-4", { query: "anything" });
-		const block = (result.content[0] as { text: string }).text;
-		expect(block).toMatch(/^Found 2 relevant memories \(as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/);
-		expect(block).toContain("- fact one [world]");
-		expect(block).toContain("- fact two");
+		const block = result.content.find(item => item.type === "text")?.text;
+		expect(result.details).toMatchObject({
+			mode: "shortlisted",
+			evaluatedCount: 0,
+			totalAvailable: null,
+			scoredCandidates: [
+				{ id: "1", score: null, kept: true },
+				{ id: "2", score: null, kept: true },
+			],
+		});
+		expect(block).toContain("- fact one [memory://1] [world]");
+		expect(block).toContain("- fact two [memory://2]");
 	});
 
 	it("forwards recall tags + tagsMatch from session state when present", async () => {
@@ -2214,7 +2249,7 @@ describe("reflect.execute", () => {
 		registeredState = undefined;
 	});
 
-	it("returns the reflect text and forwards context", async () => {
+	it("uses the server-high budget for default reflection while forwarding context", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
 		const reflectSpy = vi
@@ -2227,7 +2262,7 @@ describe("reflect.execute", () => {
 		expect(reflectSpy).toHaveBeenCalledWith(
 			"test-bank",
 			"what does the user prefer?",
-			expect.objectContaining({ context: "background", budget: "mid" }),
+			expect.objectContaining({ context: "background", budget: "high" }),
 		);
 		expect((result.content[0] as { text: string }).text).toBe("Synthesised answer");
 	});

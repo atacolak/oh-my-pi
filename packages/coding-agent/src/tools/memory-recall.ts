@@ -2,7 +2,7 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, untilAborted, toError } from "@oh-my-pi/pi-utils";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
-import { formatCurrentTime, formatMemories } from "../hindsight/content";
+import { formatCurrentTime, formatMemories, mergeRecallTags } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import type { ToolSession } from ".";
@@ -11,6 +11,7 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
+	"tags?": type("string[]").describe("additional tag filters merged with the session's recall scope"),
 });
 
 export type MemoryRecallParams = typeof memoryRecallSchema.infer;
@@ -81,7 +82,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 					budget: state.config.recallBudget,
 					maxTokens: state.config.recallMaxTokens,
 					types: state.config.recallTypes.length > 0 ? state.config.recallTypes : undefined,
-					tags: state.recallTags,
+					tags: mergeRecallTags(state.recallTags, params.tags),
 					tagsMatch: state.recallTagsMatch,
 				});
 				const results = response.results ?? [];

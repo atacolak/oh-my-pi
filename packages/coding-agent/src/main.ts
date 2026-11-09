@@ -140,11 +140,11 @@ import {
 	loadSystemPromptTemplateFile,
 	resolvePromptInput,
 } from "./system-prompt";
+import { applyAgentCompactionPolicy } from "./task/agent-compaction";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
-import type { AgentDefinition } from "./task/types";
-import { discoverAgents, getAgent } from "./task/discovery";
-import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
+import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
+import type { AgentDefinition } from "./task/types";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
 import { registerLocalInferenceApi } from "./tiny/local-inference-api";
@@ -1873,19 +1873,14 @@ export async function buildSessionOptions(
 		const tools = rootAgentToolNames(launchAgent);
 		if (tools) options.toolNames = tools;
 	}
-	if (options.agentName) {
-		const { agents } = await discoverAgents(options.cwd ?? getProjectDir());
-		const agent = getAgent(agents, options.agentName);
-		if (agent) {
-			options.toolLoad = agent.toolLoad;
-			// A named profile is closed-world for MCPs: omitting `mcps:` names no server,
-			// so the session neither dials nor mounts any user MCP.
-			options.mcpLoad = mcpLoadForNamedProfile(agent.mcpLoad);
-			// The profile owns its always-apply rule set. `undefined` keeps the legacy
-			// `agents`-scoped bucketing a bare `main` session relies on; an empty list is a
-			// profile that deliberately applies none.
-			options.declaredRules = agent.rules;
-		}
+	if (launchAgent) {
+		// Reuse the selected definition, including --agent-cwd; an execution-root namesake owns no policy here.
+		options.toolLoad = launchAgent.toolLoad;
+		// A named profile is closed-world for MCPs: omitting `mcps:` names no server.
+		options.mcpLoad = mcpLoadForNamedProfile(launchAgent.mcpLoad);
+		// Named profiles are closed-world for rules; omission means off, not ambient discovery.
+		options.declaredRules = launchAgent.rules ?? [];
+		applyAgentCompactionPolicy(activeSettings, launchAgent.compaction);
 	}
 
 	if (parsed.noLsp) {
@@ -2092,6 +2087,19 @@ export async function runRootCommand(
 		setInteractiveHost(isInteractive);
 		if (!isInteractive) {
 			stopPendingStartupComposer();
+		}
+		// Experimental app-viewport backend is interactive-only. Set the env early
+		// enough that InteractiveMode's TUI constructor observes it, and reject
+		// print/protocol (and other non-interactive) startups with a clean usage error.
+		if (parsedArgs.alt) {
+			if (!isInteractive) {
+				process.stderr.write(
+					`${chalk.red("Error: --alt is only supported in interactive mode (not with --print, --mode, or piped input)")}\n`,
+				);
+				process.stderr.write(`Run \`omp --help\` for available flags.\n`);
+				process.exit(2);
+			}
+			Bun.env.PI_TUI_RENDER_BACKEND = "app-viewport";
 		}
 		// Account routing must use the effective settings, including `--config` and
 		// `PI_CONFIG_FILES` overlays, rather than independently re-reading only the

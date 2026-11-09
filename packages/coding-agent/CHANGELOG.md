@@ -291,6 +291,8 @@
 
 ## [18.2.10] - 2026-09-22
 - Persisted `steer()` / `followUp()` queues in the session artifact directory and restored them when the session is resumed, so mid-turn user messages survive a process restart
+- Added the `compaction` value to `retry.fallbackRevertPolicy` (`/settings` → Model → Retry & Fallback → "Fallback Revert Policy" → "Next compaction"): return to the primary model only after the context has been compacted, instead of as soon as the primary's cooldown expires.
+
 ### Fixed
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.

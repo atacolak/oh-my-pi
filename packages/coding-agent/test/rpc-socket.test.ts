@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { IpcConnection } from "@oh-my-pi/pi-natives";
 import { Snowflake, withTimeout } from "@oh-my-pi/pi-utils";
+import * as runtimeGeneration from "../src/launch/runtime-generation";
 import type { RpcClientConn } from "../src/modes/rpc/client-connection";
 import { RpcFrameDecoder } from "../src/modes/rpc/rpc-frame";
 import {
@@ -165,24 +166,32 @@ describe("RPC session socket", () => {
 		return { socket, endpoint };
 	}
 
-	it("publishes an owner-only socket and a sidecar naming the session", async () => {
-		const { socket, endpoint } = await publish();
+	it.each([undefined, "a".repeat(40)])("publishes owner-only session metadata for generation %s", async generation => {
+		const generationProbe = spyOn(runtimeGeneration, "readRuntimeGeneration").mockReturnValue(
+			generation === undefined ? undefined : { running: generation, current: "b".repeat(40), behind: true },
+		);
+		try {
+			const { socket, endpoint } = await publish();
 
-		expect(socket.endpoint).toBe(endpoint);
-		expect(socket.sidecarPath).toBe(path.join(directory, "sess-1.json"));
-		expect(fs.statSync(endpoint).mode & 0o777).toBe(0o600);
+			expect(socket.endpoint).toBe(endpoint);
+			expect(socket.sidecarPath).toBe(path.join(directory, "sess-1.json"));
+			expect(fs.statSync(endpoint).mode & 0o777).toBe(0o600);
 
-		const sidecarPath = path.join(directory, "sess-1.json");
-		expect(fs.statSync(sidecarPath).mode & 0o777).toBe(0o600);
-		const metadata = readSidecar(directory);
-		expect(metadata).toEqual({
-			pid: process.pid,
-			sessionId: "sess-1",
-			sessionFile: "/tmp/session.jsonl",
-			cwd: "/tmp/project",
-			agent: "anthropic/claude-sonnet-4-5",
-			startedAt: expect.any(Number),
-		});
+			const sidecarPath = path.join(directory, "sess-1.json");
+			expect(fs.statSync(sidecarPath).mode & 0o777).toBe(0o600);
+			const metadata = readSidecar(directory);
+			expect(metadata).toEqual({
+				pid: process.pid,
+				sessionId: "sess-1",
+				sessionFile: "/tmp/session.jsonl",
+				cwd: "/tmp/project",
+				agent: "anthropic/claude-sonnet-4-5",
+				startedAt: expect.any(Number),
+				...(generation === undefined ? {} : { generation }),
+			});
+		} finally {
+			generationProbe.mockRestore();
+		}
 	});
 
 	it("sends ready before any frame the surface produces", async () => {

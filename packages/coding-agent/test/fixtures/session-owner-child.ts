@@ -28,6 +28,7 @@ const session = {
 	sessionId,
 	sessionFile: undefined,
 	model: undefined,
+	configWarnings: [],
 	sessionManager: { getCwd: () => context.projectDir },
 	subscribe: () => () => {},
 } as unknown as AgentSession;

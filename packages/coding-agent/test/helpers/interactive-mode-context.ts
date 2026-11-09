@@ -108,6 +108,7 @@ export function createSessionStub(
 		retryAttempt: 0,
 		messages: [],
 		model: undefined,
+		configWarnings: [],
 		sessionFile: undefined,
 		skills: [],
 		ttsrManager: undefined,

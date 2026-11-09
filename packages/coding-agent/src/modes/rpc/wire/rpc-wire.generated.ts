@@ -387,6 +387,8 @@ export type QueuedMessageQueue = "steering" | "followUp";
 
 export type CacheWarmingMode = "off" | "streaming" | "idle";
 
+export type CompactMode = "soft" | "remote" | "snapcompact";
+
 /** `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches. */
 export type MessageUpdates = "full" | "delta";
 
@@ -493,10 +495,50 @@ export interface UsageLimitWrapUp {
 /** Provider-neutral state of an account past its usage limit, discriminated by `stage`. */
 export type UsageLimitState = UsageLimitLowPriority | UsageLimitWrapUp;
 
+/** Runtime generation layout of the process serving the session. */
+export interface RuntimeGenerationState {
+	/** Generation directory the process was born in. */
+	running: string;
+	/** The running generation is no longer the one `current` selects. */
+	behind: boolean;
+	/** Generation `generations/current` points at, when readable. */
+	current?: string;
+}
+
+/** Outcome of `upgrade_runtime`. */
+export interface UpgradeRuntimeResult {
+	/** The owner is restarting onto `current` now. */
+	upgraded: boolean;
+	/** An idle-triggered upgrade is armed. */
+	scheduled?: boolean;
+	/** Generation the owner runs now. */
+	running?: string;
+	/** Generation `generations/current` selects, when readable. */
+	current?: string;
+	/** Why no upgrade is running now. */
+	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle";
+}
+
+export interface SessionDiagnosticModel {
+	provider: string;
+	id: string;
+}
+
+export interface SessionDiagnostics {
+	version: number;
+	observedAt: number;
+	model: SessionDiagnosticModel | null;
+	thinkingLevel: ThinkingLevel | null;
+	configWarnings: string[];
+	warningsTruncated: boolean;
+}
+
 export interface SessionState {
 	sessionId: string;
 	model?: ModelInfo;
 	thinkingLevel?: ThinkingLevel;
+	/** Live configuration evidence; absent means warning readiness is unknown. */
+	sessionDiagnostics?: SessionDiagnostics;
 	isStreaming?: boolean;
 	isCompacting?: boolean;
 	steeringMode?: QueueMode;
@@ -528,6 +570,8 @@ export interface SessionState {
 	systemPrompt?: string[];
 	dumpTools?: ToolDescriptor[];
 	contextUsage?: ContextUsage;
+	/** Runtime generation of this process; absent when the entrypoint is not generation-managed. */
+	generation?: RuntimeGenerationState;
 	/** Current goal mode; null when the session has no goal. */
 	goal?: GoalModeState | null;
 }
@@ -796,6 +840,26 @@ export interface LogoutAccount {
 	detail: string;
 	type: "api_key" | "oauth";
 	active: boolean;
+}
+
+export type McpServerScope = "project" | "user" | "plugin";
+
+export type McpServerTransport = "stdio" | "http" | "sse";
+
+export type McpServerStatusState = "connected" | "connecting" | "disconnected" | "error" | "auth_required";
+
+export type McpReauthStatus = "authorized" | "no_auth_needed";
+
+/** One MCP server: its definition's provenance plus the live connection state. */
+export interface McpServerStatusEntry {
+	name: string;
+	scope: McpServerScope;
+	transport: McpServerTransport;
+	enabled: boolean;
+	status: McpServerStatusState;
+	toolCount: number;
+	authRequired: boolean;
+	lastError?: string;
 }
 
 export interface HandoffResult {
@@ -1599,6 +1663,11 @@ export interface OpenSessionParams {
 	modelId?: string;
 }
 
+export interface UpgradeRuntimeParams {
+	whenIdle?: boolean;
+	force?: boolean;
+}
+
 export interface SetFastModeParams {
 	enabled: boolean;
 }
@@ -1765,6 +1834,7 @@ export interface SetInterruptModeParams {
 
 export interface CompactParams {
 	customInstructions?: string;
+	mode?: CompactMode;
 }
 
 export interface SetAutoCompactionParams {
@@ -1886,6 +1956,28 @@ export interface LogoutResult {
 	remainingSource?: string;
 }
 
+export interface GetMcpStatusResult {
+	servers: McpServerStatusEntry[];
+}
+
+export interface SetMcpEnabledParams {
+	name: string;
+	enabled: boolean;
+}
+
+export interface SetMcpEnabledResult {
+	server: McpServerStatusEntry;
+}
+
+export interface McpReauthParams {
+	name: string;
+}
+
+export interface McpReauthResult {
+	server: McpServerStatusEntry;
+	status: McpReauthStatus;
+}
+
 export interface PredictWordParams {
 	text: string;
 	cursor: number;
@@ -1937,6 +2029,7 @@ export interface RpcWireCommands {
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
 	get_state: { params: undefined; result: SessionState };
+	upgrade_runtime: { params: UpgradeRuntimeParams; result: UpgradeRuntimeResult };
 	set_fast_mode: { params: SetFastModeParams; result: FastModeResult };
 	set_slow_mode: { params: SetSlowModeParams; result: SetSlowModeResult };
 	goal: { params: GoalParams; result: GoalResult };
@@ -1994,6 +2087,9 @@ export interface RpcWireCommands {
 	login: { params: LoginParams; result: LoginResult };
 	get_logout_accounts: { params: GetLogoutAccountsParams; result: GetLogoutAccountsResult };
 	logout: { params: LogoutParams; result: LogoutResult };
+	get_mcp_status: { params: undefined; result: GetMcpStatusResult };
+	set_mcp_enabled: { params: SetMcpEnabledParams; result: SetMcpEnabledResult };
+	mcp_reauth: { params: McpReauthParams; result: McpReauthResult };
 	predict_word: { params: PredictWordParams; result: PredictWordResult };
 	predict_word_feedback: { params: PredictWordFeedbackParams; result: undefined };
 	btw: { params: BtwParams; result: BtwResult };

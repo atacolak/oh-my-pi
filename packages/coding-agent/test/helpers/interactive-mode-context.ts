@@ -108,6 +108,7 @@ export function createSessionStub(
 		retryAttempt: 0,
 		messages: [],
 		model: undefined,
+		configWarnings: [],
 		sessionFile: undefined,
 		skills: [],
 		ttsrManager: undefined,
@@ -128,6 +129,10 @@ export function createSessionStub(
 		getEnabledToolNames: () => [],
 		getContextUsage: () => undefined,
 		getGoalModeState: () => undefined,
+		setGoalModeState: vi.fn(),
+		goalRuntime: {
+			clearAccounting: vi.fn(),
+		},
 		refreshMCPTools: vi.fn(async () => {}),
 		setMCPPromptCommands: vi.fn(),
 		setActiveToolsByName: vi.fn(async () => {}),
@@ -173,6 +178,8 @@ export function createMcpManagerStub(overrides?: McpManagerOverrides): MCPManage
 		getServerResources: vi.fn(() => undefined),
 		getServerPrompts: vi.fn(() => undefined),
 		getNotificationState: vi.fn(() => ({ enabled: false, subscriptions: new Map<string, ReadonlySet<string>>() })),
+		addConnectionStatusListener: vi.fn(() => () => {}),
+		waitForStartup: vi.fn(async () => ({ connected: [], pending: [], failed: [] })),
 	} satisfies McpManagerOverrides;
 	if (overrides) layer(stub, overrides);
 	return stub as unknown as MCPManager;

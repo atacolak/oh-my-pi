@@ -141,18 +141,18 @@ describe("nextActionableTask", () => {
 });
 
 describe("passive todo phases", () => {
-	it("keeps absent kind continuing and skips passive phases for promotion and selection", async () => {
+	it("normalizes an empty passive phase name without promoting its tasks", async () => {
 		const tool = new TodoTool(createSession());
 		const result = await tool.execute("call-passive", {
 			op: "init",
 			list: [
-				{ phase: "Reference", kind: "passive", items: ["retain report"] },
+				{ phase: "", kind: "passive", items: ["retain report"] },
 				{ phase: "Execution", items: ["ship change"] },
 			],
 		});
 
 		expect(result.details?.phases).toEqual([
-			{ name: "Reference", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
+			{ name: "Tasks", kind: "passive", tasks: [{ content: "retain report", status: "pending" }] },
 			{ name: "Execution", tasks: [{ content: "ship change", status: "in_progress" }] },
 		]);
 
@@ -185,14 +185,14 @@ describe("passive todo phases", () => {
 		expect(continuingStarted.details?.phases[1]?.tasks.map(task => task.status)).toEqual(["pending", "in_progress"]);
 	});
 
-	it("accepts generic kind inputs and rejects an invalid tool literal", async () => {
+	it("preserves passive kind in flattened empty-name init and rejects an invalid tool literal", async () => {
 		const flat = await new TodoTool(createSession()).execute("flat", {
 			op: "init",
-			phase: "Reference",
+			phase: "",
 			kind: "passive",
 			items: ["retain report"],
 		});
-		expect(flat.details?.phases[0]).toMatchObject({ name: "Reference", kind: "passive" });
+		expect(flat.details?.phases[0]).toMatchObject({ name: "Tasks", kind: "passive" });
 		expect(flat.details?.phases[0]?.tasks[0]?.status).toBe("pending");
 
 		const tool = new TodoTool(createSession([{ name: "Work", tasks: [] }]));
@@ -606,6 +606,39 @@ describe("TodoTool operations", () => {
 });
 
 describe("TodoTool lenient init shapes", () => {
+	it("names an empty init phase Tasks so append can target it", async () => {
+		for (const args of [
+			{ op: "init" as const, phase: "", items: ["First"] },
+			{ op: "init" as const, list: [{ phase: "", items: ["First"] }] },
+		]) {
+			const tool = new TodoTool(createSession());
+			await tool.execute("init", args);
+			const appended = await tool.execute("append", { op: "append", phase: "Tasks", items: ["Second"] });
+			expect(appended.isError).toBeUndefined();
+			expect(appended.details?.phases.map(phase => [phase.name, phase.tasks.map(task => task.content)])).toEqual([
+				["Tasks", ["First", "Second"]],
+			]);
+		}
+	});
+
+	it("rejects normalized duplicate phases without replacing existing state", async () => {
+		const initial: TodoPhase[] = [{ name: "Existing", tasks: [{ content: "Keep", status: "in_progress" }] }];
+		const session = createSession(initial);
+		const tool = new TodoTool(session);
+		const result = await tool.execute("init", {
+			op: "init",
+			list: [
+				{ phase: "", items: ["A"] },
+				{ phase: "Tasks", items: ["B"] },
+			],
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([
+			expect.objectContaining({ text: expect.stringContaining('Duplicate phase "Tasks"') }),
+		]);
+		expect(session.getTodoPhases?.()).toEqual(initial);
+	});
+
 	it("accepts a flattened init with bare items and no phase", async () => {
 		const tool = new TodoTool(createSession());
 		const result = await tool.execute("call-1", { op: "init", items: ["First", "Second"] });

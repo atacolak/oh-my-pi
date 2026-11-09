@@ -180,7 +180,9 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 						type: "toolCall",
 						id: askCallId,
 						name: "ask",
-						arguments: { questions: [{ id: "deploy_target", question: "Which deploy target?" }] },
+						arguments: {
+							html: '<form><label>Which deploy target?<input name="deploy_target"></label></form>',
+						},
 					},
 				],
 				api: "anthropic-messages",
@@ -201,8 +203,8 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 				role: "toolResult",
 				toolCallId: askCallId,
 				toolName: "ask",
-				content: [{ type: "text", text: "User selected: staging" }],
-				details: { selectedOptions: ["staging"] },
+				content: [{ type: "text", text: 'User answers:\n{"deploy_target":"staging"}' }],
+				details: { answers: [{ name: "deploy_target", question: "Which deploy target?", answer: "staging" }] },
 				isError: false,
 				timestamp: Date.now(),
 			});
@@ -212,8 +214,10 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 			const result = await session.navigateTree(tr1Id, {
 				allowAskReopen: true,
 				reanswerAskResult: {
-					content: [{ type: "text", text: "User selected: production" }],
-					details: { selectedOptions: ["production"] },
+					content: [{ type: "text", text: 'User answers:\n{"deploy_target":"production"}' }],
+					details: {
+						answers: [{ name: "deploy_target", question: "Which deploy target?", answer: "production" }],
+					},
 				},
 			});
 			expect(result.cancelled).toBe(false);

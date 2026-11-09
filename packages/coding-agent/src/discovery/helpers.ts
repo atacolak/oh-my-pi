@@ -30,7 +30,9 @@ import {
 import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { MCPRequestIdFormat } from "../mcp/types";
+import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
 
@@ -210,6 +212,28 @@ export function parseArrayOrCSV(value: unknown): string[] | undefined {
 	return undefined;
 }
 
+/**
+ * Add camelCase aliases for a record's kebab-case keys, leaving it untouched
+ * when every key is already camelCase.
+ *
+ * `parseFrontmatter` normalizes keys unless a caller parses with `rawKeys`
+ * (JSON/YAML definitions, extension loaders), so both spellings must resolve.
+ * An existing camelCase key always wins over its kebab-case alias. Values are
+ * carried over by reference: nested data such as an opaque `output` schema is
+ * never rewritten.
+ */
+function withCamelCaseAliases(record: Record<string, unknown>): Record<string, unknown> {
+	let aliased: Record<string, unknown> | undefined;
+	for (const [key, value] of Object.entries(record)) {
+		if (!key.includes("-")) continue;
+		const camel = key.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+		if (camel === key || record[camel] !== undefined) continue;
+		aliased ??= { ...record };
+		aliased[camel] = value;
+	}
+	return aliased ?? record;
+}
+
 interface RuleMarkdownOptions {
 	ruleName?: string;
 	stripNamePattern?: RegExp;
@@ -297,24 +321,33 @@ export interface ParsedAgentFields {
 	tools?: string[];
 	spawns?: string[] | "*";
 	model?: string[];
+	/** `false` = the agent disables client- and server-side model fallback for its sessions. */
+	modelFallback?: boolean;
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
+	skills?: SkillLoadPolicy;
 	readSummarize?: boolean;
 	blocking?: boolean;
+	hide?: boolean;
 	/** `true` = keep `yield` and the output schema when `task.structured` is off. */
 	structured?: boolean;
+	/** Root-only Hindsight policy: kebab-case keys inside `memory` are accepted. */
+	memory?: AgentMemoryPolicy;
 	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
 	advisor?: boolean | string;
+	/** Root-only durable authoring grant. Independent from `spawns`. */
+	automationAuthor?: AutomationAuthorPolicy;
 }
 
 /**
  * Parse agent fields from frontmatter.
  * Returns null if required fields (name, description) are missing.
  */
-export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAgentFields | null {
+export function parseAgentFields(rawFrontmatter: Record<string, unknown>): ParsedAgentFields | null {
+	const frontmatter = withCamelCaseAliases(rawFrontmatter);
 	const name = typeof frontmatter.name === "string" ? frontmatter.name : undefined;
 	const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined;
 
@@ -374,9 +407,12 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 
 	const thinkingLevel = parseConfiguredThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
+	const modelFallback = parseBoolean(frontmatter.modelFallback);
 	const blocking = parseBoolean(frontmatter.blocking);
+	const hide = parseBoolean(frontmatter.hide);
 	const structured = parseBoolean(frontmatter.structured);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
+	const memory = parseAgentMemoryPolicy(frontmatter.memory);
 	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
 	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
 	if (prewalk === undefined && typeof frontmatter.prewalk === "string") {
@@ -389,24 +425,118 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		const trimmed = frontmatter.advisor.trim();
 		if (trimmed) advisor = trimmed;
 	}
-	const autoloadSkills = parseArrayOrCSV(frontmatter.autoloadSkills)
-		?.map(s => s.trim())
-		.filter(Boolean);
+	const rawSkills = frontmatter.skills;
+	const skillFields =
+		rawSkills !== null && typeof rawSkills === "object" && !Array.isArray(rawSkills)
+			? (rawSkills as Record<string, unknown>)
+			: undefined;
+	const names = (value: unknown): string[] => [
+		...new Set((parseArrayOrCSV(value) ?? []).map(name => name.trim()).filter(Boolean)),
+	];
+	const eager = [...new Set([...names(frontmatter.autoloadSkills), ...names(skillFields?.eager)])];
+	const skills: SkillLoadPolicy | undefined = skillFields
+		? {
+				eager,
+				...(Object.hasOwn(skillFields, "discoverable") ? { discoverable: names(skillFields.discoverable) } : {}),
+			}
+		: undefined;
+	const autoloadSkills = eager.length > 0 ? eager : undefined;
+	const automationAuthor = parseAutomationAuthor(frontmatter.automationAuthor);
+
 	return {
 		name,
 		description,
 		tools,
 		spawns,
 		model,
+		modelFallback,
 		output,
 		thinkingLevel,
+		memory,
 		blocking,
+		hide,
 		structured,
 		autoloadSkills,
+		skills,
 		readSummarize,
 		prewalk,
 		advisor,
+		automationAuthor,
 	};
+}
+
+function parseAgentMemoryPolicy(value: unknown): AgentMemoryPolicy | undefined {
+	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = withCamelCaseAliases(value as Record<string, unknown>);
+	const autoRetain = parseBoolean(record.autoRetain);
+	const autoRecall = parseBoolean(record.autoRecall);
+	let recallBudget: AgentMemoryPolicy["recallBudget"];
+	switch (record.recallBudget) {
+		case "default":
+		case "low":
+		case "mid":
+		case "high":
+			recallBudget = "default";
+			break;
+		case "deep":
+		case "xhigh":
+			recallBudget = "deep";
+			break;
+		case "max":
+			recallBudget = "max";
+	}
+	const recallMaxTokens =
+		typeof record.recallMaxTokens === "number" &&
+		Number.isSafeInteger(record.recallMaxTokens) &&
+		record.recallMaxTokens > 0
+			? Math.min(16384, Math.max(512, record.recallMaxTokens))
+			: undefined;
+	const retainEveryNTurns =
+		typeof record.retainEveryNTurns === "number" &&
+		Number.isSafeInteger(record.retainEveryNTurns) &&
+		record.retainEveryNTurns >= 1
+			? record.retainEveryNTurns
+			: undefined;
+	if (
+		autoRetain === undefined &&
+		autoRecall === undefined &&
+		recallBudget === undefined &&
+		recallMaxTokens === undefined &&
+		retainEveryNTurns === undefined
+	)
+		return undefined;
+	return {
+		...(autoRetain !== undefined ? { autoRetain } : {}),
+		...(autoRecall !== undefined ? { autoRecall } : {}),
+		...(recallBudget !== undefined ? { recallBudget } : {}),
+		...(recallMaxTokens !== undefined ? { recallMaxTokens } : {}),
+		...(retainEveryNTurns !== undefined ? { retainEveryNTurns } : {}),
+	};
+}
+
+function parseAutomationAuthor(value: unknown): AutomationAuthorPolicy | undefined {
+	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = withCamelCaseAliases(value as Record<string, unknown>);
+	const jurisdiction = record.jurisdiction;
+	if (jurisdiction !== "descendants" && jurisdiction !== "scope") return undefined;
+	const allowed = record.allowedAgents;
+	let allowedAgents: string[] | "*";
+	if (allowed === "*") {
+		allowedAgents = "*";
+	} else if (
+		Array.isArray(allowed) &&
+		allowed.length > 0 &&
+		allowed.every(item => typeof item === "string" && item.trim().length > 0)
+	) {
+		allowedAgents = allowed.map(item => String(item).trim());
+	} else {
+		return undefined;
+	}
+	return { allowedAgents, jurisdiction };
 }
 
 async function globIf(

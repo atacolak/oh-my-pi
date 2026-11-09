@@ -567,6 +567,13 @@ import { cfgDisabledProviders, cfgModelRoles } from "../config/model-settings";
 import { cfgEvalJs, cfgEvalPy, cfgEvalToolsEnabled, cfgEvalWorkpoolFreshAgents } from "../eval/settings";
 import { cfgExtensions, type SkillsSettings } from "../extensibility/settings";
 import {
+	cfgHindsightAutoRecall,
+	cfgHindsightAutoRetain,
+	cfgHindsightRecallBudget,
+	cfgHindsightRecallMaxTokens,
+	cfgHindsightRetainEveryNTurns,
+} from "../hindsight/settings";
+import {
 	cfgImagesAutoResize,
 	cfgMagicKeyword,
 	cfgMagicKeywordsEnabled,
@@ -2867,6 +2874,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#maintenance.resolveContextPromotionTarget(model, contextWindow, signal),
 			resolveCompactionModelCandidates: (model, availableModels) =>
 				this.#maintenance.resolveCompactionModelCandidates(model, availableModels),
+			modelFallbackDisabled: () => this.#disableModelFallback,
 			resolveRetryFallbackRole: (selector, model, roleHint) =>
 				this.#recovery.resolveRetryFallbackRole(selector, model, roleHint),
 			retryFallbackChainKeys: (selector, model, options) =>
@@ -3474,6 +3482,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Request preference from the live setting for the current model's API. */
 	get preferWebsockets(): boolean | undefined {
 		return resolveWebsocketPreference(this.settings, this.model);
+	}
+
+	/** Effective memory policy: environment > root agent memory > persisted settings. */
+	getAgentMemoryPolicy() {
+		return {
+			autoRetain: cfgHindsightAutoRetain.get(this.settings),
+			autoRecall: cfgHindsightAutoRecall.get(this.settings),
+			recallBudget: cfgHindsightRecallBudget.get(this.settings),
+			recallMaxTokens: cfgHindsightRecallMaxTokens.get(this.settings),
+			retainEveryNTurns: cfgHindsightRetainEveryNTurns.get(this.settings),
+		};
 	}
 
 	getHindsightSessionState(): HindsightSessionState | undefined {

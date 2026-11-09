@@ -467,6 +467,11 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 						},
 					}
 				: {}),
+			// `model-fallback: false` is a property of the agent definition, not of the
+			// transcript's model grant, so revival reads it back from `session_init`
+			// instead of re-resolving discovery (a definition that changed or vanished
+			// must not silently re-enable fallback on a parked worker).
+			...(init.modelFallback === false ? { disableModelFallback: true, disableServerSideFallback: true } : {}),
 			expectedAgentRef: expectedRef,
 			taskDepth,
 			toolNames: revivedToolNames,

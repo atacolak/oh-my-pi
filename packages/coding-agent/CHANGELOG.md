@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `--agent <name>` to start a root session from a discovered agent definition (user `~/.omp/agent/agents`, project `.omp/agents`, extension, or bundled). The agent's tools, thinking level, model, body, and autoload skills apply unless `--tools` / `--thinking` / `--model` / `--system-prompt` override them. Unknown names fail with a usage error listing available agents.
+- Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.
+- Resume and fork now restore a session's original `--agent` identity from the session header. An explicit `--agent` on resume switches the profile and records it, so the following resume keeps it (the session's model and thinking level still come from the transcript unless `--model` / `--thinking` are passed); a persisted privileged role that is missing from discovery fails closed.
+- Root `--agent` sessions now evaluate `agents` frontmatter rule scoping against the launched definition name, including restore from the session header.
+- Agent definitions accept `model-fallback: false` to pin that agent's sessions to their resolved model: root `--agent` launches, resume restores, spawned subagents (including cold-revived ones), and their advisors skip client-side retry fallback, context promotion, usage-aware startup fallback, and server-side fallback for that agent, while omitting the key keeps `retry.modelFallback` in charge. Agent frontmatter also reads every multi-word key under either spelling (`model-fallback`, `read-summarize`, `thinking-level`, `autoload-skills`, `automation-author`/`allowed-agents`), so raw-key parsers stop dropping them; camelCase wins when a record supplies both.
+- agent definitions accept `memory: { autoRecall, recallBudget, recallMaxTokens, autoRetain, retainEveryNTurns }` with camelCase or kebab-case keys; root sessions and SDK `agentMemory` apply these settings beneath operator environment overrides, while subagents inherit the parent policy.
+
+### Fixed
+
+- root agents with memory recall gears no longer fail to launch on legacy releases; `default` uses `mid`, while `deep` and `max` use the legacy `high` ceiling.
 ## [18.18.3] - 2026-11-09
 
 ### Breaking Changes

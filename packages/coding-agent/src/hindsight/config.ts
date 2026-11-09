@@ -6,6 +6,7 @@
  * override per-shell (CI, prod) without touching the persisted settings file.
  */
 import type { Settings } from "../config/settings";
+import type { RecallGear } from "./recall-budget";
 import {
 	cfgHindsightApiToken,
 	cfgHindsightApiUrl,
@@ -15,15 +16,22 @@ import {
 	cfgHindsightBankIdPrefix,
 	cfgHindsightBankMission,
 	cfgHindsightDebug,
+	cfgHindsightDecisionModelApiKey,
+	cfgHindsightDecisionModelThreshold,
+	cfgHindsightDecisionModelUrl,
 	cfgHindsightGlobalScope,
 	cfgHindsightMentalModelAutoSeed,
 	cfgHindsightMentalModelMaxRenderChars,
 	cfgHindsightMentalModelsEnabled,
 	cfgHindsightProvenanceTags,
 	cfgHindsightRecallBudget,
+	cfgHindsightRecallCadence,
 	cfgHindsightRecallContextTurns,
+	cfgHindsightRecallDedup,
 	cfgHindsightRecallMaxQueryChars,
 	cfgHindsightRecallMaxTokens,
+	cfgHindsightRecallPreferObservations,
+	cfgHindsightRecallPrune,
 	cfgHindsightRecallTimeoutMs,
 	cfgHindsightRecallTypes,
 	cfgHindsightReflectTimeoutMs,
@@ -41,6 +49,18 @@ import {
 } from "./settings";
 
 export type HindsightScoping = "global" | "per-project" | "per-project-tagged";
+
+/**
+ * Root agent memory policy from a `memory:` frontmatter block. A field the agent omits
+ * inherits the session setting; `HINDSIGHT_AUTO_*` remains the operator's override.
+ */
+export interface HindsightAgentMemoryPolicy {
+	autoRetain?: boolean;
+	autoRecall?: boolean;
+	recallBudget?: RecallGear;
+	recallMaxTokens?: number;
+	retainEveryNTurns?: number;
+}
 
 export interface HindsightConfig {
 	hindsightApiUrl: string | null;
@@ -73,12 +93,30 @@ export interface HindsightConfig {
 	/** Per-item Hindsight extraction strategy. Null/empty omits the request field. */
 	retainStrategy: string | null;
 
-	recallBudget: "low" | "mid" | "high";
+	recallBudget: RecallGear;
 	recallMaxTokens: number;
 	recallTypes: string[];
 	recallContextTurns: number;
 	recallMaxQueryChars: number;
 	recallPromptPreamble: string;
+	/** Let observations supersede the raw facts they were consolidated from. */
+	recallPreferObservations: boolean;
+	/** Recall-stage pruning on the server; a no-op where no recall decision model runs. */
+	recallPrune: boolean;
+	/** Recall-stage dedup on the server; a no-op where no recall decision model runs. */
+	recallDedup: boolean;
+	/**
+	 * `boundary` recalls once per context epoch; `per-turn` asks again every turn while
+	 * deduping what the transcript already holds. The default stays `boundary`: per-turn
+	 * without server-side pruning repeats near-miss memories every turn.
+	 */
+	recallCadence: "per-turn" | "boundary";
+	/** Decision-model base URL; unset disables single-survivor abstention. */
+	decisionModelUrl: string | null;
+	/** Bearer token for the decision model; unset sends none. */
+	decisionModelApiKey: string | null;
+	/** Minimum `noul` score for a lone recall survivor to be delivered. */
+	decisionModelThreshold: number;
 
 	debug: boolean;
 
@@ -140,6 +178,13 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 		recallContextTurns: cfgHindsightRecallContextTurns.get(settings),
 		recallMaxQueryChars: cfgHindsightRecallMaxQueryChars.get(settings),
 		recallPromptPreamble: DEFAULT_PREAMBLE,
+		recallPreferObservations: cfgHindsightRecallPreferObservations.get(settings),
+		recallPrune: cfgHindsightRecallPrune.get(settings),
+		recallDedup: cfgHindsightRecallDedup.get(settings),
+		recallCadence: cfgHindsightRecallCadence.get(settings),
+		decisionModelUrl: cfgHindsightDecisionModelUrl.get(settings)?.trim() || null,
+		decisionModelApiKey: cfgHindsightDecisionModelApiKey.get(settings) ?? null,
+		decisionModelThreshold: cfgHindsightDecisionModelThreshold.get(settings),
 
 		debug: cfgHindsightDebug.get(settings),
 
@@ -158,7 +203,7 @@ export function loadHindsightConfig(settings: Settings): HindsightConfig {
 
 /**
  * Write-only provenance tags for one session's retains: operator-configured
- * tags plus `role:<profile>` for the mounted agent profile.
+ * tags plus `role:<profile>` and the named HCOM actor, when present.
  *
  * The profile is lowercased like rule scoping, so two spellings of one agent
  * cannot split provenance into two literal tag values. Provenance is merged
@@ -170,6 +215,8 @@ export function resolveProvenanceTags(
 ): string[] {
 	const profile = agentProfile?.trim().toLowerCase();
 	const tags = profile ? [...config.provenanceTags, `role:${profile}`] : [...config.provenanceTags];
+	const instanceName = process.env.HCOM_INSTANCE_NAME?.trim().toLowerCase();
+	if (instanceName) tags.push(`actor:${instanceName}`);
 	return [...new Set(tags.map(tag => tag.trim()).filter(Boolean))];
 }
 

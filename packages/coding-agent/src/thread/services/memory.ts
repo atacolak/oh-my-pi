@@ -50,6 +50,7 @@ const serveHindsightClient: RpcServe<HindsightApi, HindsightClientProtocol> = {
 	refreshMentalModel: (client, bankId, mentalModelId) => client.refreshMentalModel(bankId, mentalModelId),
 	deleteMentalModel: (client, bankId, mentalModelId) => client.deleteMentalModel(bankId, mentalModelId),
 	getMentalModelHistory: (client, bankId, mentalModelId) => client.getMentalModelHistory(bankId, mentalModelId),
+	getMemory: (client, bankId, memoryId) => client.getMemory(bankId, memoryId),
 	getKnowledgeBaseTree: (client, bankId, options) => client.getKnowledgeBaseTree(bankId, options),
 };
 

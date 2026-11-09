@@ -13,7 +13,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
-import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { HindsightSessionState, type HindsightSessionStateApi } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -41,12 +41,19 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 		retainContext: "omp",
 		retainUpdateMode: "replace",
 		retainStrategy: null,
-		recallBudget: "mid",
+		recallBudget: "default",
 		recallMaxTokens: 1024,
 		recallTypes: ["world", "experience"],
 		recallContextTurns: 1,
 		recallMaxQueryChars: 800,
 		recallPromptPreamble: "preamble",
+		recallPreferObservations: true,
+		recallPrune: true,
+		recallDedup: true,
+		recallCadence: "boundary",
+		decisionModelUrl: null,
+		decisionModelApiKey: null,
+		decisionModelThreshold: 0.25,
 		debug: false,
 		requestTimeoutMs: 30_000,
 		reflectTimeoutMs: 30_000,
@@ -126,7 +133,7 @@ interface StateOptions {
 	provenanceTags?: string[];
 	config?: HindsightConfig;
 	session?: object;
-	aliasOf?: HindsightSessionState;
+	aliasOf?: HindsightSessionStateApi;
 }
 
 function makeState(client: HindsightApi, options: StateOptions = {}): HindsightSessionState {
@@ -171,18 +178,22 @@ function makeToolSession(state: HindsightSessionState): ToolSession {
 	} as unknown as ToolSession;
 }
 
-let agentDir: TempDir;
-let originalAgentDir: string;
-
+// Retained tool items land in a durable outbox under the agent dir; keep it in a temp dir.
+let agentDirTemp: TempDir;
+let previousAgentDir: string;
+let previousInstanceName: string | undefined;
 beforeEach(() => {
-	originalAgentDir = getAgentDir();
-	agentDir = TempDir.createSync("@hindsight-provenance-");
-	setAgentDir(agentDir.path());
+	previousInstanceName = process.env.HCOM_INSTANCE_NAME;
+	delete process.env.HCOM_INSTANCE_NAME;
+	previousAgentDir = getAgentDir();
+	agentDirTemp = TempDir.createSync("@hindsight-provenance-");
+	setAgentDir(agentDirTemp.path());
 });
-
-afterEach(() => {
-	setAgentDir(originalAgentDir);
-	agentDir.removeSync();
+afterEach(async () => {
+	if (previousInstanceName === undefined) delete process.env.HCOM_INSTANCE_NAME;
+	else process.env.HCOM_INSTANCE_NAME = previousInstanceName;
+	setAgentDir(previousAgentDir);
+	await agentDirTemp.remove();
 });
 
 describe("provenance is write-only", () => {
@@ -218,7 +229,7 @@ describe("provenance is write-only", () => {
 			provenanceTags: ["role:builder"],
 		});
 
-		await state.enqueueRetain("call-tabs", [{ content: "operator prefers tabs" }]);
+		await state.enqueueRetain("call-212", [{ content: "operator prefers tabs" }]);
 		await state.flushRetainQueue();
 
 		expect(client.batchCalls).toHaveLength(1);
@@ -229,23 +240,90 @@ describe("provenance is write-only", () => {
 	it("a global retain drops project tags and scopes but keeps its provenance stamp", async () => {
 		const client = new RecordingApi();
 		const state = makeState(client, {
-			retainTags: ["scope:coding"],
-			recallTags: ["scope:coding"],
-			recallTagsMatch: "all_strict",
-			observationScopes: [["scope:coding"]],
-			provenanceTags: ["role:builder"],
+			retainTags: ["scope:coding", "project:omp"],
+			observationScopes: [["scope:coding", "project:omp"]],
+			provenanceTags: ["role:builder", "actor:memory-writer"],
 			config: makeConfig({ globalScope: true }),
 		});
-
-		await state.enqueueRetain("call-shared", [{ content: "shared across projects", scope: "global" }]);
+		await state.enqueueRetain("global-provenance", [
+			{ content: "project-specific constraint" },
+			{ content: "shared global preference", scope: "global" },
+		]);
 		await state.flushRetainQueue();
+		expect(client.batchCalls).toHaveLength(2);
+		expect(client.batchCalls).toEqual(
+			expect.arrayContaining([
+				{
+					bankId: "personal",
+					tags: ["scope:coding", "project:omp", "role:builder", "actor:memory-writer"],
+					observationScopes: [["scope:coding", "project:omp"]],
+				},
+				{
+					bankId: "personal",
+					tags: ["role:builder", "actor:memory-writer"],
+					observationScopes: undefined,
+				},
+			]),
+		);
+	});
 
-		// Tagging a global item with the project's tags would hide it from every other project's
-		// `any`-match recall, and a project observation scope would consolidate it there; the
-		// write-only provenance stamp still rides along.
-		expect(client.batchCalls).toHaveLength(1);
-		expect(client.batchCalls[0]?.tags).toEqual(["role:builder"]);
-		expect(client.batchCalls[0]?.observationScopes).toBeUndefined();
+	it("a remote alias retains to the live parent destination without inheriting its provenance", async () => {
+		const oldClient = new RecordingApi();
+		const nextClient = new RecordingApi();
+		let parent = makeState(oldClient, {
+			retainTags: ["scope:coding", "project:old"],
+			provenanceTags: ["role:lead"],
+		});
+		const remote: HindsightSessionStateApi = {
+			get client() {
+				return parent.client;
+			},
+			get bankId() {
+				return parent.bankId;
+			},
+			get banksSet() {
+				return parent.banksSet;
+			},
+			get config() {
+				return parent.config;
+			},
+			get retainTags() {
+				return parent.retainTags;
+			},
+			get resolvedTags() {
+				return parent.resolvedTags;
+			},
+			get recallTags() {
+				return parent.recallTags;
+			},
+			get recallTagsMatch() {
+				return parent.recallTagsMatch;
+			},
+			get observationScopes() {
+				return parent.observationScopes;
+			},
+		};
+		const child = makeState(oldClient, {
+			aliasOf: remote,
+			retainTags: parent.retainTags,
+			provenanceTags: ["role:scout"],
+		});
+		parent = makeState(nextClient, {
+			retainTags: ["scope:coding", "project:next"],
+			observationScopes: [["scope:coding", "project:next"]],
+			provenanceTags: ["role:lead"],
+		});
+		parent.bankId = "next-bank";
+		await child.enqueueRetain("remote-rebound", [{ content: "new project constraint" }]);
+		await child.flushRetainQueue();
+		expect(oldClient.batchCalls).toHaveLength(0);
+		expect(nextClient.batchCalls).toEqual([
+			{
+				bankId: "next-bank",
+				tags: ["scope:coding", "project:next", "role:scout"],
+				observationScopes: [["scope:coding", "project:next"]],
+			},
+		]);
 	});
 
 	it("recall is unaffected: identical request filters and results with or without provenance", async () => {
@@ -275,7 +353,7 @@ describe("provenance is write-only", () => {
 
 		// The same session really stamps provenance on its writes; recall just never
 		// sees it. Without this precondition the invariance assertion above is vacuous.
-		await stamped.enqueueRetain("call-fact", [{ content: "shared fact" }]);
+		await stamped.enqueueRetain("call-247", [{ content: "shared fact" }]);
 		await stamped.flushRetainQueue();
 		expect(stampedClient.batchCalls[0]?.tags).toContain("role:builder");
 		expect(stampedClient.recallCalls[0]?.options?.tags).not.toContain("role:builder");
@@ -301,7 +379,7 @@ describe("provenance is write-only", () => {
 			aliasOf: parent,
 		});
 
-		await child.enqueueRetain("call-child", [{ content: "subagent discovered a constraint" }]);
+		await child.enqueueRetain("call-273", [{ content: "subagent discovered a constraint" }]);
 		await child.flushRetainQueue();
 
 		expect(client.batchCalls).toHaveLength(1);
@@ -438,6 +516,7 @@ describe("backend provenance wiring", () => {
 	});
 
 	it("stamps configured provenance plus the mounted agent profile role on the primary state", async () => {
+		process.env.HCOM_INSTANCE_NAME = " Helper_One ";
 		const bodies = captureFetchBodies();
 		const settings = provenanceSettings();
 		const fake = fakeAgentSession({ sessionId: "parent-session", profile: "builder", settings });
@@ -446,19 +525,19 @@ describe("backend provenance wiring", () => {
 			session: fake.session,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDirTemp.path(),
 			taskDepth: 0,
 		});
 
 		const state = fake.installed();
-		expect(state?.resolvedTags).toEqual(["scope:coding", "project:omp"]);
-		expect(state?.provenanceTags).toEqual(["team:infra", "role:builder"]);
-		await state!.enqueueRetain("call-split", [{ content: "the tag split is write-only" }]);
+		expect(state?.resolvedTags).toEqual(["scope:coding"]);
+		expect(state?.provenanceTags).toEqual(["team:infra", "role:builder", "actor:helper_one"]);
+		await state!.enqueueRetain("call-425", [{ content: "the tag split is write-only" }]);
 		await state!.flushRetainQueue();
 
 		const item = retainItem(bodies);
-		expect(item.tags).toEqual(["scope:coding", "project:omp", "team:infra", "role:builder"]);
-		expect(item.observation_scopes).toEqual([["scope:coding", "project:omp"]]);
+		expect(item.tags).toEqual(["scope:coding", "team:infra", "role:builder", "actor:helper_one"]);
+		expect(item.observation_scopes).toEqual([["scope:coding"]]);
 	});
 
 	it("a subagent aliases the parent scope but stamps its own role and runs no auto-retain", async () => {
@@ -469,7 +548,7 @@ describe("backend provenance wiring", () => {
 			session: parent.session,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDirTemp.path(),
 			taskDepth: 0,
 		});
 
@@ -478,7 +557,7 @@ describe("backend provenance wiring", () => {
 			session: child.session,
 			settings,
 			modelRegistry: {} as never,
-			agentDir: "/tmp",
+			agentDir: agentDirTemp.path(),
 			taskDepth: 1,
 			parentHindsightSessionState: parent.installed(),
 		});
@@ -488,11 +567,11 @@ describe("backend provenance wiring", () => {
 		// No session listeners means no automatic recall or cadence retain.
 		expect(childState?.unsubscribe).toBeUndefined();
 
-		await childState!.enqueueRetain("call-child", [{ content: "subagent discovered a constraint" }]);
+		await childState!.enqueueRetain("call-460", [{ content: "subagent discovered a constraint" }]);
 		await childState!.flushRetainQueue();
 
 		const item = retainItem(bodies);
-		expect(item.tags).toEqual(["scope:coding", "project:omp", "team:infra", "role:scout"]);
+		expect(item.tags).toEqual(["scope:coding", "team:infra", "role:scout"]);
 		expect(item.tags).not.toContain("role:builder");
 	});
 });

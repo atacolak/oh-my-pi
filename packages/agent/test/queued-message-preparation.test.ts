@@ -858,7 +858,13 @@ describe("queued message preparation", () => {
 describe("queued message gate", () => {
 	it("drops the candidates it vetoes and delivers the recomputed batch", async () => {
 		const mock = createMockModel({ handler: { content: ["done"] } });
-		const agent = new Agent({ streamFn: mock.stream, initialState: { model: mock.model } });
+		// one-at-a-time so the gate sees each delivery unit as its own claim; the
+		// default "all" would present both follow-ups as a single batch.
+		const agent = new Agent({
+			streamFn: mock.stream,
+			initialState: { model: mock.model },
+			followUpMode: "one-at-a-time",
+		});
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
 		const first = createUserMessage("first");
 		const second = createUserMessage("second");
@@ -885,7 +891,13 @@ describe("queued message gate", () => {
 
 	it("releases what it claimed when the final batch no longer holds it", async () => {
 		const mock = createMockModel({ handler: { content: ["done"] } });
-		const agent = new Agent({ streamFn: mock.stream, initialState: { model: mock.model } });
+		// Delivery units only split into separate claims under one-at-a-time; the
+		// default "all" mode delivers the whole queue as one batch.
+		const agent = new Agent({
+			streamFn: mock.stream,
+			initialState: { model: mock.model },
+			followUpMode: "one-at-a-time",
+		});
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
 		const lead = createUserMessage("lead");
 		const vetoed = createUserMessage("vetoed");

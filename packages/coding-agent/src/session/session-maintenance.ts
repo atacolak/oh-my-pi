@@ -88,6 +88,7 @@ import { isCompleteReadResult } from "../tools/read-supersede";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ContextUsageBreakdown, HandoffResult, SessionHandoffOptions } from "./agent-session-types";
+import { formatEpisodeIndex } from "./episode-index-text";
 import { findCompactMode } from "./compact-modes";
 import {
 	type CompactionMethod,
@@ -118,6 +119,7 @@ import {
 	getReadableCompactionEntry,
 } from "./session-context";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
+import { listSessionEpisodes } from "./session-index";
 import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
@@ -129,6 +131,7 @@ import {
 	type CompactionSettings,
 	cfgCompactionAutoContinue,
 	cfgCompactionEnabled,
+	cfgCompactionEpisodeIndex,
 	cfgCompactionMethodOrder,
 	cfgContextPromotionEnabled,
 	cfgSnapcompactShape,
@@ -1520,6 +1523,7 @@ export class SessionMaintenance {
 							...(snapcompactShapeSetting === "auto" ? {} : { shape }),
 							maxFrames,
 							includeThinking: snapcompactIncludeThinking,
+							episodes: this.#episodeIndexText(),
 						},
 						effectiveSettings,
 						0,
@@ -4079,6 +4083,16 @@ export class SessionMaintenance {
 	 * passes that need the recovery band reject a context above it
 	 * ({@link #snapcompactLeavesNoHeadroom}).
 	 */
+	/**
+	 * The EPISODES text a snapcompact summary carries: the session's own runs,
+	 * assembled here so snapcompact stays a pure renderer that takes a string.
+	 * Undefined when the session has no indexed episodes.
+	 */
+	#episodeIndexText(): string | undefined {
+		if (!cfgCompactionEpisodeIndex.get(this.#host.settings)) return undefined;
+		return formatEpisodeIndex(listSessionEpisodes(this.#host.sessionManager.getSessionId()));
+	}
+
 	async #renderSnapcompactArchive(
 		preparation: CompactionPreparation,
 		options: snapcompact.Options<AgentMessage>,
@@ -4829,6 +4843,7 @@ export class SessionMaintenance {
 				...(shapeSetting === "auto" ? {} : { shape }),
 				maxFrames,
 				includeThinking: snapcompact.readerIncludesThinking(model),
+				episodes: this.#episodeIndexText(),
 			},
 		);
 	}
@@ -5706,6 +5721,7 @@ export class SessionMaintenance {
 								...(shapeSetting === "auto" ? {} : { shape }),
 								maxFrames,
 								includeThinking: snapcompactIncludeThinking,
+								episodes: this.#episodeIndexText(),
 							},
 							effectiveSettings,
 							pendingTokens,

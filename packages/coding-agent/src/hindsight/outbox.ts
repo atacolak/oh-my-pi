@@ -24,13 +24,32 @@ export interface RetainInput {
 	scope?: MemoryWriteScope;
 }
 
+/**
+ * Scope retain tags plus write-only provenance tags, deduped in order; undefined when both are empty.
+ * Provenance survives a global write even though global writes drop the scope tags.
+ */
+export function mergeRetainWriteTags(
+	retainTags: readonly string[] | undefined,
+	provenanceTags: readonly string[] | undefined,
+): string[] | undefined {
+	const merged = [
+		...new Set([...(retainTags ?? []), ...(provenanceTags ?? [])].map(tag => tag.trim()).filter(Boolean)),
+	];
+	return merged.length > 0 ? merged : undefined;
+}
+
 /** A published event file. Never rewritten, so its mtime is its enqueue time. */
 export interface OutboxEvent {
 	version: 1;
 	/** Also the server `document_id`, so a resend replaces instead of duplicating. */
 	id: string;
 	scope: MemoryWriteScope;
+	/** Scope tags plus write-only provenance, or provenance alone for a global event. */
 	tags: string[];
+	/** Deterministic observation consolidation scopes; omitted for global events. */
+	observationScopes?: string[][];
+	/** Per-retain extraction strategy override; omitted from the request when unset. */
+	strategy?: string;
 	timestamp: string;
 	content: string;
 	context: string;
@@ -42,8 +61,14 @@ export interface RetainCall {
 	toolCallId: string;
 	/** Context for items without their own. */
 	context: string;
-	/** Tags of project-scoped items; global items are retained untagged. */
+	/** Tags shared by project-scoped items; global items keep only the provenance tags. */
 	tags: string[] | undefined;
+	/** Write-only provenance tags merged into every event, including global ones. */
+	provenanceTags?: string[];
+	/** Exact deterministic observation consolidation scopes; global events drop them. */
+	observationScopes?: string[][];
+	/** Per-retain extraction strategy override. */
+	strategy?: string;
 }
 
 export interface DrainResult {
@@ -168,19 +193,35 @@ export class HindsightOutbox {
 		const scope = item.scope ?? "project";
 		const context = this.#clean(item.context ?? call.context);
 		const content = this.#clean(item.content);
+		// A global write drops the scope tags — that is what makes it visible from every
+		// project — but keeps the write-only provenance stamp, so the actor/role of a global
+		// retain is still recorded. Project writes carry both.
+		const tags = mergeRetainWriteTags(scope === "global" ? undefined : call.tags, call.provenanceTags)?.map(tag =>
+			this.#clean(tag),
+		);
+		// Project observation scopes would scope a global memory to one project, which is
+		// exactly what the global write exists to avoid.
+		const observationScopes =
+			scope === "global"
+				? undefined
+				: call.observationScopes?.map(scopeTags => scopeTags.map(tag => this.#clean(tag)));
+		const strategy = call.strategy ? this.#clean(call.strategy) : undefined;
 		// Tool call ids are not guaranteed unique, so the persisted fields are part of the
 		// identity: a reused id with new content is a new document, not a replacement.
 		const identity = JSON.stringify([call.sessionId, call.toolCallId, index, scope, context, content]);
-		return {
+		const event: OutboxEvent = {
 			version: 1,
 			id: `omp-retain-${new Bun.CryptoHasher("sha256").update(identity).digest("hex").slice(0, 32)}`,
 			scope,
-			tags: scope === "global" ? [] : (call.tags ?? []).map(tag => this.#clean(tag)),
+			tags: tags ?? [],
 			timestamp: new Date().toISOString(),
 			content,
 			context,
 			sessionId: this.#clean(call.sessionId),
 		};
+		if (observationScopes && observationScopes.length > 0) event.observationScopes = observationScopes;
+		if (strategy) event.strategy = strategy;
+		return event;
 	}
 
 	/** Events are stored at rest: strip terminal controls, the bearer token, and recognizable secrets. */
@@ -268,6 +309,8 @@ export class HindsightOutbox {
 					timestamp: new Date(event.timestamp),
 					metadata: { session_id: event.sessionId },
 					tags: event.tags.length > 0 ? event.tags : undefined,
+					observationScopes: event.observationScopes,
+					strategy: event.strategy,
 					documentId: event.id,
 					updateMode: "replace",
 				})),
@@ -342,7 +385,13 @@ async function readEvent(file: string, now: number): Promise<Pending | undefined
 			Number.isFinite(Date.parse(event.timestamp)) &&
 			typeof event.content === "string" &&
 			typeof event.context === "string" &&
-			typeof event.sessionId === "string";
+			typeof event.sessionId === "string" &&
+			(event.observationScopes === undefined ||
+				(Array.isArray(event.observationScopes) &&
+					event.observationScopes.every(
+						scope => Array.isArray(scope) && scope.every(tag => typeof tag === "string"),
+					))) &&
+			(event.strategy === undefined || typeof event.strategy === "string");
 		return valid ? { file, event, published } : undefined;
 	} catch {
 		return undefined;

@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR:** [#9969](https://github.com/can1357/oh-my-pi/pull/9969) — discover nested project roots lazily
-> - **upstream base:** [omp 18.18.5 (`1891f380b2`)](https://github.com/can1357/oh-my-pi/tree/1891f380b296aeda26971abd81b89ef3247eea06)
+> - **upstream base:** [omp 18.18.6 (`9058ab9d22`)](https://github.com/can1357/oh-my-pi/tree/9058ab9d229663e229e2867824ba6df6f21e9e59)
 >
 > PR head `fix/nested-lsp-roots` stays independently reviewable without this banner.
 

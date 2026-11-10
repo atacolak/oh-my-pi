@@ -34,6 +34,7 @@ import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { MCPRequestIdFormat } from "../mcp/types";
 import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { type AgentCompactionPolicy, parseAgentCompaction } from "../task/agent-compaction";
 
 import { realpathIfExists, resolveContainedPath } from "./contained-path";
 import { buildPluginDirRoot } from "./plugin-dir-roots";
@@ -342,6 +343,8 @@ export interface ParsedAgentFields {
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
 	advisor?: boolean | string;
+	/** Per-agent compaction policy from the `compaction:` block. */
+	compaction?: AgentCompactionPolicy;
 	/** Root-only durable authoring grant. Independent from `spawns`. */
 	automationAuthor?: AutomationAuthorPolicy;
 }
@@ -466,6 +469,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		readSummarize,
 		prewalk,
 		advisor,
+		compaction: parseAgentCompaction(frontmatter.compaction),
 		automationAuthor,
 	};
 }
@@ -1017,6 +1021,7 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 	// Process direct files
 	for (const match of directFiles) {
 		if (match.path.includes("/")) continue;
+		if (isExtensionTestFile(match.path)) continue;
 		discovered.add(path.join(dir, match.path));
 	}
 	// Track which subdirectories have package.json manifests with declared extensions
@@ -1059,6 +1064,13 @@ export async function discoverExtensionModulePaths(_ctx: LoadContext, dir: strin
 		discovered.add(path.join(dir, preferredPath));
 	}
 	return [...discovered];
+}
+
+export function isExtensionTestFile(fileName: string): boolean {
+	const dot = fileName.lastIndexOf(".");
+	if (dot <= 0) return false;
+	const stem = fileName.slice(0, dot);
+	return stem.endsWith(".test") || stem.endsWith(".spec");
 }
 
 /**

@@ -35,10 +35,10 @@ export interface BucketRulesOptions {
 	/** Replace existing TTSR registrations before bucketing this complete rule snapshot. */
 	replaceTtsrRules?: boolean;
 	/**
-	 * Rules the session's profile declares, in declared order. Present (even empty) means
-	 * the profile owns its always-apply set: the bucket is exactly these rules, matched by
-	 * `rule.name` or the rule file's stem, and the legacy `agents` globs are not consulted.
-	 * Absent keeps the `agents`-scoped bucketing a bare `main` session relies on.
+	 * Rules the session's profile loads, in declared order. Present (even empty) closes
+	 * the rule set: undeclared rules are neither discoverable nor interrupt-triggered.
+	 * Named rules bypass `agents` globs: triggered rules stay dynamic; others load eagerly.
+	 * Absent keeps the legacy `agents`-scoped bucketing for a bare `main` session.
 	 *
 	 * `disabledRules` still wins — a disabled rule is not applied because a profile named
 	 * it, and an unknown name is simply absent from the bucket rather than an error.
@@ -88,6 +88,7 @@ export function bucketRules(
 		if (!includeBuiltin && rule._source?.provider === BUILTIN_DEFAULTS_PROVIDER_ID) continue;
 		// A declaring profile replaces the `agents` globs rather than adding to them.
 		if (!declared && !ruleAppliesToAgent(rule, options.agentName)) continue;
+		if (declared !== undefined && declaredRank(rule, declaredOrder) === undefined) continue;
 		includedRules.push(rule);
 	}
 
@@ -102,14 +103,13 @@ export function bucketRules(
 			(rule.astCondition && rule.astCondition.length > 0) ||
 			rule.question !== undefined;
 		const isTtsrRule = hasTtsrCondition ? (replacedTtsrNames?.has(rule.name) ?? ttsrManager.addRule(rule)) : false;
-		if (isTtsrRule) continue;
-		if (declared) {
+		if (isTtsrRule || (declared !== undefined && hasTtsrCondition)) continue;
+		if (declared !== undefined) {
 			const rank = declaredRank(rule, declaredOrder);
-			if (rank !== undefined) {
-				declaredPicked.push({ rank, rule });
-				continue;
-			}
-		} else if (rule.alwaysApply === true) {
+			if (rank !== undefined) declaredPicked.push({ rank, rule });
+			continue;
+		}
+		if (rule.alwaysApply === true) {
 			alwaysApplyRules.push(rule);
 			continue;
 		}

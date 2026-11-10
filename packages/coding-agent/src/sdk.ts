@@ -151,7 +151,7 @@ import { applyAgentMemoryPolicy } from "./hindsight/agent-memory-policy";
 import type { HindsightSessionStateApi } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions, outRepliesActive } from "./internal-urls";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
-import { holdSharedLsp } from "./lsp/client";
+import { createLspClientOwner, holdSharedLsp, releaseLspClientOwner } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import {
 	deduplicateMCPToolsByName,
@@ -2609,6 +2609,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// mutation (any tool) bumped it in the meantime.
 		const fileMutationVersions = new Map<string, number>();
 		const disposeCallbacks = new Set<() => void>();
+		const lspClientOwner = createLspClientOwner();
+		disposeCallbacks.add(() => releaseLspClientOwner(lspClientOwner));
 		const activeToolNames = new Set<string>();
 		const toolRegistry = new Map<string, Tool & Pick<ToolDefinition, "defaultInactive">>();
 		const setActiveToolNames = (names: Iterable<string>): void => {
@@ -2640,6 +2642,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				return sessionManager.getAdditionalDirectories();
 			},
 			enableLsp,
+			lspClientOwner,
 			lspReadOnly,
 			enableIrc: restrictToolNames ? false : options.enableIrc,
 			/**
@@ -5245,6 +5248,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			interactivePrompts: options.interactivePrompts,
 			rebindModelAfterDiscovery: options.model === undefined || options.rebindModelAfterDiscovery === true,
 			toolRegistry,
+			lspClientOwner,
 			reconcileBrowserMcpFilter: mcpManager
 				? async enabled => {
 						await mcpManager.reconcileBrowserFilter(enabled);
@@ -5312,6 +5316,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			obfuscator,
 			agentId: resolvedAgentId,
 			agentKind,
+			agentProfile: options.agentName,
 			agentRegistry,
 			providerSessionId: options.providerSessionId,
 			accountPoolScope,
@@ -5785,7 +5790,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				for (const server of startupLspServers) server.status = "connecting";
 				void (async () => {
 					try {
-						const result = await logger.time("warmupLspServers", warmupLspServers, cwd);
+						const result = await logger.time(
+							"warmupLspServers",
+							warmupLspServers,
+							cwd,
+							undefined,
+							lspClientOwner,
+						);
 						const serversByName = new Map(result.servers.map(server => [server.name, server] as const));
 						for (const server of startupLspServers) {
 							const next = serversByName.get(server.name);
@@ -5831,6 +5842,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				modelRegistry,
 				agentDir,
 				taskDepth,
+				hindsightCloseRetainBaselineTurns: session.hindsightCloseRetainBaselineTurns,
+				hindsightLoadedMessageCount: session.hindsightLoadedMessageCount,
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 			});
@@ -5904,9 +5917,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// reference is intentionally discarded (the listener retains it).
 		if (!restrictToolNames) {
 			if (cfgAutolearnEnabled.get(settings) && taskDepth === 0) {
-				await logger.time("startMemoryStartupTask", startMemoryBackend);
+				const start = logger.time("startMemoryStartupTask", startMemoryBackend);
+				session.trackMemoryBackendStart(start);
+				await start;
 			} else {
-				void logger.time("startMemoryStartupTask", startMemoryBackend);
+				session.trackMemoryBackendStart(logger.time("startMemoryStartupTask", startMemoryBackend));
 			}
 			if (taskDepth === 0) {
 				new AutoLearnController({

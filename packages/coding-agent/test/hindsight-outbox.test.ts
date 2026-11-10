@@ -80,7 +80,12 @@ function fixture(overrides: Record<string, unknown> = {}, sessionId = "session-a
 	const session = {
 		sessionId,
 		settings,
-		sessionManager: { getCwd: () => "/projects/alpha", getEntries: () => [] },
+		sessionManager: {
+			getCwd: () => "/projects/alpha",
+			getEntries: () => [],
+			getSessionId: () => sessionId,
+		},
+		getAgentProfileName: () => undefined,
 		getHindsightSessionState: () => current,
 		setHindsightSessionState: (next: HindsightSessionState | undefined) => {
 			const previous = current;

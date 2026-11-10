@@ -359,6 +359,18 @@ describe("formatMemories", () => {
 	it("returns an empty string for no results", () => {
 		expect(formatMemories([])).toBe("");
 	});
+
+	it("surfaces actor/role provenance as a compact bracketed badge", () => {
+		const out = formatMemories([
+			{ text: "fact one", type: "world", tags: ["project:omp", "role:builder", "actor:HindsightProvenance"] },
+			{ text: "fact two", tags: ["scope:coding"] },
+		]);
+		expect(out).toContain("- fact one [world] [role:builder actor:HindsightProvenance]");
+		expect(out).toContain("- fact two");
+		// Scope tags are not provenance; only actor/role earn a badge.
+		expect(out).not.toContain("[project:omp]");
+		expect(out).not.toContain("[scope:coding]");
+	});
 });
 
 describe("formatCurrentTime", () => {

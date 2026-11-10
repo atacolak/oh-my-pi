@@ -5,7 +5,7 @@ import type { Settings } from "../config/settings";
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
-import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
+import { continuingPhases, getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
@@ -259,7 +259,7 @@ export class TodoTracker {
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
-		const incompleteByPhase = phases
+		const incompleteByPhase = continuingPhases(phases)
 			.map(phase => ({
 				name: phase.name,
 				tasks: phase.tasks
@@ -331,7 +331,7 @@ export class TodoTracker {
 		if (this.#midRunNudgeCount >= MID_RUN_NUDGE_MAX_PER_CYCLE) return null;
 		if (!cfgTodoEnabled.get(this.#host.settings) || !cfgTodoReminders.get(this.#host.settings)) return null;
 		if (this.#host.planModeEnabled() || !this.#host.getActiveToolNames().includes("todo")) return null;
-		const incomplete = this.#phases
+		const incomplete = continuingPhases(this.#phases)
 			.flatMap(phase => phase.tasks)
 			.filter(task => task.status === "pending" || task.status === "in_progress");
 		if (incomplete.length === 0) return null;
@@ -371,6 +371,7 @@ export class TodoTracker {
 	#clonePhases(phases: TodoPhase[]): TodoPhase[] {
 		return phases.map(phase => ({
 			name: phase.name,
+			...(phase.kind !== undefined ? { kind: phase.kind } : {}),
 			tasks: phase.tasks.map(task =>
 				task.blocker !== undefined
 					? { content: task.content, status: task.status, blocker: task.blocker }

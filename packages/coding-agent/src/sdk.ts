@@ -138,13 +138,16 @@ import {
 } from "./extensibility/skill-descriptions";
 import { resolvePath } from "./extensibility/utils";
 import {
+	buildSkillPromptMessage,
 	type LoadSkillsOptions,
 	loadSkills as loadSkillsInternal,
 	type Skill,
 	type SkillWarning,
 	setActiveSkills,
 } from "./extensibility/skills";
+import { type SkillLoadPolicy, selectSkills } from "./extensibility/skill-load-policy";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
+import { applyAgentMemoryPolicy } from "./hindsight/agent-memory-policy";
 import type { HindsightSessionStateApi } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions, outRepliesActive } from "./internal-urls";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
@@ -220,6 +223,7 @@ import {
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
 	replaceLlmImagesWithText,
+	SKILL_PROMPT_MESSAGE_TYPE,
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
@@ -271,6 +275,7 @@ import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
 import { isScoutSpawnable } from "./task/spawn-policy";
+import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "./task/types";
 import { isMainThread } from "./thread/identity";
 import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import {
@@ -587,6 +592,10 @@ export interface CreateAgentSessionOptions {
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
 	spawns?: string;
+	/** Skill names to inject as hidden autoload prompts before the first turn. */
+	autoloadSkills?: string[];
+	/** Profile visibility retained across catalog refresh and skill URI rediscovery. */
+	skillLoadPolicy?: SkillLoadPolicy;
 	/** User-authorized model agents inherited from the parent session for nested delegation. */
 	inheritedSessionAgents?: readonly AgentDefinition[];
 
@@ -641,6 +650,8 @@ export interface CreateAgentSessionOptions {
 	/** Raw model pattern(s) (e.g. from --model CLI flag) to resolve after extensions load.
 	 * Used when model lookup is deferred because extension-provided models aren't registered yet. */
 	modelPattern?: string | string[];
+	/** Refuse unresolved modelPattern after extension registration and discovery instead of returning a model-less session. */
+	requireModelPattern?: boolean;
 	/** Authenticated fallback selector for deferred subagent model patterns. */
 	modelPatternAuthFallback?: string;
 	/** Role name used to install retry fallbacks after deferred subagent patterns resolve. */
@@ -894,6 +905,15 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Resolved root `--agent` name. Distinct from IRC display name. */
+	rootAgentName?: string;
+	/** Effective durable authoring grant from the resolved root AgentDefinition. */
+	automationAuthor?: AutomationAuthorPolicy;
+	/**
+	 * Root agent `memory` policy. Applied to session settings when this is a root
+	 * session (`taskDepth === 0`, no parent task); `HINDSIGHT_AUTO_*` wins over it.
+	 */
+	agentMemory?: AgentMemoryPolicy;
 	/**
 	 * Agent definition name used to evaluate rule `agents` scoping. Defaults to
 	 * "main" for a top-level session / "sub" for a subagent.
@@ -1468,6 +1488,8 @@ function createCustomToolContext(ctx: ExtensionContext): CustomToolContext {
 	return {
 		sessionManager: ctx.sessionManager,
 		modelRegistry: ctx.modelRegistry,
+		rootAgentName: ctx.rootAgentName,
+		automationAuthor: ctx.automationAuthor,
 		model: ctx.model,
 		isIdle: ctx.isIdle,
 		hasQueuedMessages: ctx.hasPendingMessages,
@@ -1965,6 +1987,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const settings = await (options.settings ??
 		options.settingsManager ??
 		logger.time("settings", Settings.init, { cwd, agentDir }));
+	if (!options.parentTaskPrefix && !options.taskDepth) {
+		applyAgentMemoryPolicy(settings, options.agentMemory);
+	}
 	// Discovery provider toggles and process-wide setting effects (theme, request limits, …)
 	// follow the newest holder: each top-level session holds both on its settings until disposed,
 	// then hands them back to the previous holder. Subagents and helper sessions never take them,
@@ -2395,6 +2420,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		skills = discovered.skills;
 		skillWarnings = discovered.warnings;
 	}
+	const eagerSkills = [...new Set([...(options.autoloadSkills ?? []), ...(options.skillLoadPolicy?.eager ?? [])])];
+	const skillLoadPolicy: SkillLoadPolicy | undefined = options.skillLoadPolicy
+		? {
+				eager: eagerSkills,
+				...(options.skillLoadPolicy.discoverable !== undefined
+					? { discoverable: [...options.skillLoadPolicy.discoverable] }
+					: {}),
+			}
+		: undefined;
+	skills = selectSkills(skills, skillLoadPolicy);
 
 	// Agent identity must resolve before rule discovery: `agents` frontmatter decides
 	// which rules are bucketed into this session at all.
@@ -2550,6 +2585,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		agentRegistry.unregister(resolvedAgentId, ref);
 	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
+
+	/** Manager created during startup; ownership transfers only once AgentSession exists. */
+	let ownedMcpManager: MCPManager | undefined;
 
 	try {
 		const getActiveModelString = (): string | undefined => {
@@ -2831,8 +2869,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		let mcpManager: MCPManagerApi | undefined = enableMCP ? options.mcpManager : undefined;
 		// A subagent worker thread never connects MCP servers itself: it reuses the main thread's manager.
 		if (enableMCP && !mcpManager && !isMainThread()) mcpManager = MCPManager.instance();
-		/** Manager this session created by running discovery (it owns its callbacks); unset when reused. */
-		let ownedMcpManager: MCPManager | undefined;
 		toolSession.mcpManager = mcpManager;
 		toolSession.mcpToolScope = options.mcpToolScope;
 		toolSession.enableMCP = enableMCP;
@@ -3344,7 +3380,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					}
 				}
 				const usageReservePolicy = cfgRetryUsageReservePolicy.get(settings);
-				const modelFallbackEnabled = cfgRetryModelFallback.get(settings);
+				const modelFallbackEnabled = cfgRetryModelFallback.get(settings) && !options.disableModelFallback;
 				if (
 					((modelFallbackEnabled && (hasUsageFallbackCandidate || usageFallbackTriggered)) ||
 						usageReservePolicy === "fail-closed") &&
@@ -3495,6 +3531,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const hint =
 					deferredModelPatterns.length === 1 ? providerModelHint(deferredModelPatterns[0], allEnabledModels) : "";
 				modelFallbackMessage = `Model ${requested} not found${hint ? `.${hint}` : ""}`;
+				if (options.requireModelPattern) {
+					throw new Error(
+						`Configured model${options.agentName ? ` for agent "${options.agentName}"` : ""} is unavailable after extension registration and model discovery: ${deferredModelPatterns.join(", ")}. Check the configured agent model or role; no turn was started.`,
+					);
+				}
 			}
 		}
 
@@ -3762,6 +3803,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				...(options.parentAgentId ? { parentId: options.parentAgentId } : {}),
 			}),
 			createAnnotationsAPI,
+			options.rootAgentName,
+			options.automationAuthor,
+			() => ({
+				eager: [...eagerSkills],
+				...(skillLoadPolicy?.discoverable !== undefined ? { discoverable: [...skillLoadPolicy.discoverable] } : {}),
+			}),
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());
@@ -3788,6 +3835,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			settings,
 			localProtocolOptions,
+			rootAgentName: options.rootAgentName,
+			automationAuthor: options.automationAuthor,
 			autoApprove: options.autoApprove ?? false,
 			spotlightShape,
 		});
@@ -5147,6 +5196,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			evalToolSession: toolSession,
 			customCommands: customCommandsResult.commands,
 			skills,
+			skillLoadPolicy,
 			skillDescriptions,
 			skillWarnings,
 			skillsReloadable: options.skills === undefined,
@@ -5218,7 +5268,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setMcpServerInstructionsSource: source => {
 				hostMcpServerInstructions = source;
 			},
-			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
+			disconnectOwnedMcpManager: ownedMcpManager ? ownedMcpManager.disconnectAll.bind(ownedMcpManager) : undefined,
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
@@ -5905,6 +5955,39 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		}
 
+		if (eagerSkills.length && skills.length > 0) {
+			for (const name of eagerSkills) {
+				if (
+					hasExistingSession &&
+					session.messages.some(
+						entry =>
+							entry.role === "custom" &&
+							entry.customType === SKILL_PROMPT_MESSAGE_TYPE &&
+							entry.details !== null &&
+							typeof entry.details === "object" &&
+							"name" in entry.details &&
+							entry.details.name === name,
+					)
+				)
+					continue;
+				const skill = skills.find(entry => entry.name === name);
+				if (!skill) {
+					logger.warn("Autoload skill not found", { name });
+					continue;
+				}
+				const { message } = await buildSkillPromptMessage(skill, { args: "" }, "autoload");
+				await session.sendCustomMessage(
+					{
+						customType: SKILL_PROMPT_MESSAGE_TYPE,
+						content: message,
+						display: false,
+						details: { name: skill.name, path: skill.filePath },
+					},
+					{ triggerTurn: false },
+				);
+			}
+		}
+
 		if (ownedMcpManager && !deferMCPDiscoveryForUI) {
 			const currentMcpManagerTools = ownedMcpManager.getTools();
 			let sameMcpManagerTools = currentMcpManagerTools.length === initialMcpManagerTools.length;
@@ -5964,6 +6047,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				await session.dispose();
 				if (hasRegistered) unregisterUnlessParked();
 			} else {
+				await ownedMcpManager?.disconnectAll();
 				if (hasRegistered) unregisterUnlessParked();
 				if (asyncJobManager) {
 					if (AsyncJobManager.instance() === asyncJobManager) {

@@ -29,11 +29,13 @@ import {
 import {
 	hasMcpAuthorizationHeader,
 	lookupMcpOAuthCredentialForServer,
+	mcpOAuthCredentialIdsForServerUrl,
 	removeManagedMcpOAuthCredential,
 } from "./oauth-credentials";
 import { MCPOAuthFlow, type MCPStoredOAuthCredential, mcpOAuthCredentialId } from "./oauth-flow";
 import type { AuthStorage } from "../session/auth-storage";
-import type { MCPAuthChallenge, MCPAuthConfig, MCPServerConfig } from "./types";
+import type { MCPAuthChallenge, MCPAuthConfig, MCPConfigFile, MCPServerConfig } from "./types";
+import { DEFAULT_COLAB_HUB_SERVERS, hubChildUrl } from "./hub";
 
 export function withTimeout<T>(
 	promise: Promise<T>,
@@ -238,6 +240,14 @@ export async function findMcpServerForAuth(
 	if (userConfig.mcpServers?.[name]) {
 		return { filePath: userPath, scope: "user", config: userConfig.mcpServers[name], discovered: false };
 	}
+	const projectHub = hubAuthTarget(projectConfig, name, { children: false });
+	if (projectHub) {
+		return { filePath: projectPath, scope: "project", config: projectHub, discovered: true };
+	}
+	const userHub = hubAuthTarget(userConfig, name, { children: false });
+	if (userHub) {
+		return { filePath: userPath, scope: "user", config: userHub, discovered: true };
+	}
 
 	// Standalone fallback files match the discovery paths used by the
 	// mcp-json provider; precedence is preserved by iteration order. Both are
@@ -258,13 +268,58 @@ export async function findMcpServerForAuth(
 		if (config) {
 			return { filePath: standalonePaths[index]!, scope: "project", config, discovered: false };
 		}
+		const hub = hubAuthTarget(fallbackConfig, name, { children: false });
+		if (hub) {
+			return { filePath: standalonePaths[index]!, scope: "project", config: hub, discovered: true };
+		}
 	}
 
 	const config = mcpManager?.getServerConfig(name);
 	const source = mcpManager?.getSource(name);
-	if (!config || !source) return null;
+	if (config && source) {
+		return { filePath: userPath, scope: "user", config, discovered: true };
+	}
 
-	return { filePath: userPath, scope: "user", config, discovered: true };
+	const projectHubChild = hubAuthTarget(projectConfig, name, { children: true });
+	if (projectHubChild) {
+		return { filePath: projectPath, scope: "project", config: projectHubChild, discovered: true };
+	}
+	const userHubChild = hubAuthTarget(userConfig, name, { children: true });
+	if (userHubChild) {
+		return { filePath: userPath, scope: "user", config: userHubChild, discovered: true };
+	}
+	for (const [index, fallbackConfig] of fallbackConfigs.entries()) {
+		const hubChild = hubAuthTarget(fallbackConfig, name, { children: true });
+		if (hubChild) {
+			return { filePath: standalonePaths[index]!, scope: "project", config: hubChild, discovered: true };
+		}
+	}
+	return null;
+}
+
+function hubAuthTarget(
+	file: MCPConfigFile | null | undefined,
+	name: string,
+	opts: { children: boolean },
+): MCPServerConfig | undefined {
+	const hubs = file?.hubs;
+	if (!hubs) return undefined;
+	if (!opts.children) {
+		const url = hubs[name]?.url?.trim();
+		return url ? { type: "http", url } : undefined;
+	}
+	if (hubs[name]?.url) return undefined;
+	if (!DEFAULT_COLAB_HUB_SERVERS.includes(name)) return undefined;
+	for (const entry of Object.values(hubs)) {
+		const hubUrl = entry?.url?.trim();
+		if (!hubUrl) continue;
+		try {
+			return { type: "http", url: hubChildUrl(hubUrl, name) };
+		} catch {
+			continue;
+		}
+	}
+	return undefined;
 }
 
 /** Strip the `auth` block so a probe or flow starts from the raw server config. */
@@ -591,9 +646,13 @@ export async function runMcpOAuthFlow(opts: McpOAuthFlowRunOptions): Promise<OAu
 		// Deterministic per-URL id: every profile resolves its own credential row
 		// under the same key, so shared project configs stay profile-isolated.
 		// Random fallback only for flows that never knew the server URL.
+		// Hub children also write the origin id so `/mcp reauth youtube` lights
+		// up whatsapp/mail/storage looking up [childUrl, hubOrigin].
 		const credentialId = opts.serverUrl
 			? mcpOAuthCredentialId(opts.serverUrl)
 			: `mcp_oauth_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+		const persistIds = opts.serverUrl ? mcpOAuthCredentialIdsForServerUrl(opts.serverUrl) : [credentialId];
+		if (!persistIds.includes(credentialId)) persistIds.unshift(credentialId);
 
 		// Embed refresh material so the credential is self-contained: token
 		// refresh must work for configs that carry no auth block at all.
@@ -607,7 +666,9 @@ export async function runMcpOAuthFlow(opts: McpOAuthFlowRunOptions): Promise<OAu
 			authorizationUrl: flow.authorizationUrl,
 		};
 
-		await opts.authStorage.credentials.set(credentialId, oauthCredential);
+		for (const id of persistIds) {
+			await opts.authStorage.credentials.set(id, oauthCredential);
+		}
 		opts.onFlowComplete?.();
 
 		return {

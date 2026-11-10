@@ -15,7 +15,7 @@
 ### Fixed
 
 - root agents with memory recall gears no longer fail to launch on legacy releases; `default` uses `mid`, while `deep` and `max` use the legacy `high` ceiling.
-- configured task agents retry model discovery before starting and report an unavailable configured selector instead of failing with “no model selected”.
+- configured task agents retry model discovery and resolve extension-provided models before starting; unavailable selectors report a clear error instead of “no model selected”.
 
 ## [18.18.6] - 2026-11-09
 

@@ -650,6 +650,8 @@ export interface CreateAgentSessionOptions {
 	/** Raw model pattern(s) (e.g. from --model CLI flag) to resolve after extensions load.
 	 * Used when model lookup is deferred because extension-provided models aren't registered yet. */
 	modelPattern?: string | string[];
+	/** Refuse unresolved modelPattern after extension registration and discovery instead of returning a model-less session. */
+	requireModelPattern?: boolean;
 	/** Authenticated fallback selector for deferred subagent model patterns. */
 	modelPatternAuthFallback?: string;
 	/** Role name used to install retry fallbacks after deferred subagent patterns resolve. */
@@ -2584,6 +2586,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
 
+	/** Manager created during startup; ownership transfers only once AgentSession exists. */
+	let ownedMcpManager: MCPManager | undefined;
+
 	try {
 		const getActiveModelString = (): string | undefined => {
 			const activeModel = agent?.state.model;
@@ -2864,8 +2869,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		let mcpManager: MCPManagerApi | undefined = enableMCP ? options.mcpManager : undefined;
 		// A subagent worker thread never connects MCP servers itself: it reuses the main thread's manager.
 		if (enableMCP && !mcpManager && !isMainThread()) mcpManager = MCPManager.instance();
-		/** Manager this session created by running discovery (it owns its callbacks); unset when reused. */
-		let ownedMcpManager: MCPManager | undefined;
 		toolSession.mcpManager = mcpManager;
 		toolSession.mcpToolScope = options.mcpToolScope;
 		toolSession.enableMCP = enableMCP;
@@ -3528,6 +3531,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const hint =
 					deferredModelPatterns.length === 1 ? providerModelHint(deferredModelPatterns[0], allEnabledModels) : "";
 				modelFallbackMessage = `Model ${requested} not found${hint ? `.${hint}` : ""}`;
+				if (options.requireModelPattern) {
+					throw new Error(
+						`Configured model${options.agentName ? ` for agent "${options.agentName}"` : ""} is unavailable after extension registration and model discovery: ${deferredModelPatterns.join(", ")}. Check the configured agent model or role; no turn was started.`,
+					);
+				}
 			}
 		}
 
@@ -5260,7 +5268,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setMcpServerInstructionsSource: source => {
 				hostMcpServerInstructions = source;
 			},
-			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
+			disconnectOwnedMcpManager: ownedMcpManager ? ownedMcpManager.disconnectAll.bind(ownedMcpManager) : undefined,
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
@@ -6039,6 +6047,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				await session.dispose();
 				if (hasRegistered) unregisterUnlessParked();
 			} else {
+				await ownedMcpManager?.disconnectAll();
 				if (hasRegistered) unregisterUnlessParked();
 				if (asyncJobManager) {
 					if (AsyncJobManager.instance() === asyncJobManager) {

@@ -17,6 +17,7 @@ import {
 	rebuildScopedModels,
 	resolveScopedModels,
 } from "@oh-my-pi/pi-coding-agent/main";
+import * as mcpModule from "@oh-my-pi/pi-coding-agent/mcp";
 import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -666,6 +667,48 @@ describe("createAgentSession deferred model pattern resolution", () => {
 			await session.dispose();
 		}
 	});
+
+	test.each(["owned", "inherited"] as const)(
+		"required-model rejection disconnects only its %s MCP manager",
+		async ownership => {
+			const manager = new mcpModule.MCPManager(tempDir, null);
+			vi.spyOn(mcpModule, "discoverAndLoadMCPTools").mockResolvedValue({
+				manager,
+				tools: [],
+				errors: [],
+				connectedServers: ["probe"],
+				exaApiKeys: [],
+			});
+			try {
+				await manager.connectServers(
+					{
+						probe: {
+							type: "stdio",
+							command: process.execPath,
+							args: [path.join(import.meta.dir, "fixtures", "instructions-mcp.ts")],
+						},
+					},
+					{},
+					undefined,
+					5_000,
+				);
+				expect(manager.getConnectionStatus("probe")).toBe("connected");
+				await expect(
+					createAgentSession({
+						...buildSessionOptions("missing-provider/missing-model"),
+						requireModelPattern: true,
+						enableMCP: true,
+						parentTaskPrefix: "required-model-cleanup",
+						mcpManager: ownership === "inherited" ? manager : undefined,
+					}),
+				).rejects.toThrow(/Configured model.*missing-provider\/missing-model/);
+				expect(manager.getConnectionStatus("probe")).toBe(ownership === "owned" ? "disconnected" : "connected");
+			} finally {
+				await manager.disconnectAll();
+			}
+		},
+		20_000,
+	);
 
 	test("names the provider's near ids when a deferred provider-qualified pattern stays unresolved", async () => {
 		const { session, modelFallbackMessage } = await createAgentSession(

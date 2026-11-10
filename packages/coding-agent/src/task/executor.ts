@@ -4769,11 +4769,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					`Requested exact model ${JSON.stringify(modelPatterns)} is unavailable. Use an exact provider/model[:level] selector; do not substitute another model.`,
 				);
 			}
-			if (!model && configuredModelPatterns.length > 0) {
-				throw new Error(
-					`Configured model for agent "${agent.name}" is unavailable after model discovery: ${configuredModelPatterns.join(", ")}. Check the configured agent model or role; no child session was created.`,
-				);
-			}
+			// Extension factories can register the configured model during SDK startup.
+			// Require resolution there, after registration, before any child turn starts.
+			const deferredModelPatterns = !model && configuredModelPatterns.length > 0 ? modelPatterns : undefined;
 			if (modelResolutionWarning) {
 				logger.warn("Subagent model resolution warning", {
 					warning: modelResolutionWarning,
@@ -4976,13 +4974,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					oauthAccountPools: options.oauthAccountPools,
 					inheritedSessionAgents: options.inheritedSessionAgents,
 					model,
-					modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
-					modelPatternAuthFallback:
-						model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
-					modelPatternFallbackRole:
-						model || modelOverride === undefined ? undefined : subagentRetryFallbackRole(id),
-					modelPatternDefaultFallbackChain:
-						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
+					modelPattern: deferredModelPatterns,
+					requireModelPattern: configuredModelPatterns.length > 0,
+					modelPatternAuthFallback: deferredModelPatterns ? options.parentActiveModelPattern : undefined,
+					modelPatternFallbackRole: deferredModelPatterns ? subagentRetryFallbackRole(id) : undefined,
+					modelPatternDefaultFallbackChain: deferredModelPatterns ? inheritedRetryFallbackChain : undefined,
 					thinkingLevel: effectiveThinkingLevel,
 					...(perCallModelGrants
 						? {

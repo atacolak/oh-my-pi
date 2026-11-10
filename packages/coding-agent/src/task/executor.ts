@@ -4742,13 +4742,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 							modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings),
 						)
 					: undefined;
-			const {
-				model,
-				thinkingLevel: resolvedThinkingLevel,
-				explicitThinkingLevel,
-				authFallbackUsed,
-				warning: modelResolutionWarning,
-			} = await awaitAbortable(
+			const resolveConfiguredModel = () =>
 				resolveModelOverrideWithAuthFallback(
 					modelPatterns,
 					options.parentActiveModelPattern,
@@ -4756,11 +4750,28 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					settings,
 					id,
 					options.perCallModelGrants ? { exactOnly: true } : undefined,
-				),
-			);
+				);
+			let resolution = await awaitAbortable(resolveConfiguredModel());
+			if (!resolution.model && !options.perCallModelGrants && configuredModelPatterns.length > 0) {
+				modelRegistry.refreshInBackground();
+				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
+				resolution = await awaitAbortable(resolveConfiguredModel());
+			}
+			const {
+				model,
+				thinkingLevel: resolvedThinkingLevel,
+				explicitThinkingLevel,
+				authFallbackUsed,
+				warning: modelResolutionWarning,
+			} = resolution;
 			if (options.perCallModelGrants && !model) {
 				throw new PerCallModelError(
 					`Requested exact model ${JSON.stringify(modelPatterns)} is unavailable. Use an exact provider/model[:level] selector; do not substitute another model.`,
+				);
+			}
+			if (!model && configuredModelPatterns.length > 0) {
+				throw new Error(
+					`Configured model for agent "${agent.name}" is unavailable after model discovery: ${configuredModelPatterns.join(", ")}. Check the configured agent model or role; no child session was created.`,
 				);
 			}
 			if (modelResolutionWarning) {

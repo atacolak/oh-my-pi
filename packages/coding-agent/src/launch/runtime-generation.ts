@@ -41,6 +41,21 @@ function parseGenerationEntry(entry: string): GenerationEntryLayout | undefined 
 	return { root: path.join(parent, "generations"), running, relativePath: match[3] || undefined };
 }
 
+/** Import-time evidence, distinct from the mutable `generations/current` selection. */
+export interface RuntimeBootIdentity {
+	readonly bootId: string;
+	readonly importedGeneration: string | null;
+}
+
+const runtimeBootIdentity: RuntimeBootIdentity = Object.freeze({
+	bootId: crypto.randomUUID(),
+	importedGeneration: parseGenerationEntry(import.meta.path)?.running ?? null,
+});
+
+export function readRuntimeBootIdentity(): RuntimeBootIdentity {
+	return runtimeBootIdentity;
+}
+
 function generationIdFromPath(resolved: string): string | undefined {
 	const nested = GENERATION_ID_PATTERN.exec(resolved);
 	if (nested?.[1]) return nested[1];

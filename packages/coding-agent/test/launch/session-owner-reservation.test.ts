@@ -1,6 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createSessionManager } from "@oh-my-pi/pi-coding-agent/main";
 import { readSessionHeaderId } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
@@ -38,6 +41,24 @@ async function createSession(tempDir: TempDir): Promise<{ sessionId: string; ses
 	const sessionId = await readSessionHeaderId(sessionPath);
 	if (!sessionId) throw new Error("Expected a session header");
 	return { sessionId, sessionPath };
+}
+
+async function openExactReceiver(tempDir: TempDir, sessionId: string, sessionPath: string): Promise<SessionManager> {
+	owner.consumeSessionOwnerContext({
+		[owner.SESSION_OWNER_CONTEXT_ENV]: JSON.stringify({
+			projectDir: tempDir.path(),
+			name: "exact-receiver",
+			id: "private-receiver-generation",
+			restartTarget: { sessionId, sessionFile: sessionPath },
+		}),
+	});
+	const manager = await createSessionManager(
+		parseArgs(["--restore", sessionPath]),
+		tempDir.path(),
+		Settings.isolated(),
+	);
+	if (!manager) throw new Error("expected exact receiver");
+	return manager;
 }
 
 describe("strict session reservation", () => {
@@ -127,6 +148,278 @@ describe("strict session reservation", () => {
 		expect(jsonlFiles(tempDir.path())).toEqual([sessionPath]);
 		expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
 	}, 30_000);
+
+	it.each(["exact", "wrong-id", "copied-path", "missing", "busy"] as const)(
+		"keeps an exact restart receiver on its selected journal or refuses (%s)",
+		async state => {
+			using tempDir = TempDir.createSync("@omp-exact-receiver-");
+			const { sessionId, sessionPath } = await createSession(tempDir);
+			const before = await Bun.file(sessionPath).text();
+			const canonical = await fs.promises.realpath(sessionPath);
+			const copied = path.join(tempDir.path(), "copied.jsonl");
+			if (state === "copied-path") await Bun.write(copied, before);
+			if (state === "missing") await fs.promises.unlink(sessionPath);
+			const holder = state === "busy" ? await LeaseHolder.spawn(tempDir, sessionId, sessionPath) : undefined;
+			let manager: SessionManager | undefined;
+			try {
+				if (holder) expect(await holder.held()).toBe("held");
+				owner.consumeSessionOwnerContext({
+					[owner.SESSION_OWNER_CONTEXT_ENV]: JSON.stringify({
+						projectDir: tempDir.path(),
+						name: "exact-receiver",
+						id: "private-receiver-generation",
+						restartTarget: {
+							sessionId: state === "wrong-id" ? "another-full-session-id" : sessionId,
+							sessionFile: canonical,
+						},
+					}),
+				});
+				const open = createSessionManager(
+					parseArgs(["--restore", state === "copied-path" ? copied : canonical]),
+					tempDir.path(),
+					Settings.isolated(),
+				);
+				if (state !== "exact") {
+					const error = await rejectionOf(open.then(value => (manager = value)));
+					expect(error).toBeInstanceOf(Error);
+					expect(manager).toBeUndefined();
+					if (state === "missing") {
+						expect(await Bun.file(sessionPath).exists()).toBe(false);
+					} else {
+						expect(await Bun.file(sessionPath).text()).toBe(before);
+					}
+					return;
+				}
+				manager = await open;
+				if (!manager) throw new Error("expected exact receiver session");
+				expect(manager.getSessionId()).toBe(sessionId);
+				expect(manager.getSessionFile()).toBe(canonical);
+				expect(manager.hasSessionOwnership()).toBe(true);
+				manager.appendMessage(userTurn("continued exact conversation"));
+				await manager.flush();
+				expect(jsonlFiles(tempDir.path())).toEqual([sessionPath]);
+				const after = await Bun.file(sessionPath).text();
+				expect(after.startsWith(before)).toBe(true);
+				expect(after).toContain("continued exact conversation");
+			} finally {
+				owner.resetSessionOwnerContextForTest();
+				await manager?.close().catch(() => {});
+				await holder?.close();
+			}
+		},
+		30_000,
+	);
+
+	it.each(["before-first-write", "after-first-write"] as const)(
+		"refuses a receiver journal deleted %s instead of recreating it",
+		async phase => {
+			using tempDir = TempDir.createSync("@omp-receiver-deleted-");
+			const { sessionId, sessionPath } = await createSession(tempDir);
+			let manager: SessionManager | undefined;
+			try {
+				manager = await openExactReceiver(tempDir, sessionId, sessionPath);
+				if (phase === "after-first-write") {
+					manager.appendMessage(userTurn("first receiver turn"));
+					await manager.flush();
+				}
+				await fs.promises.unlink(sessionPath);
+				manager.appendMessage(userTurn("must remain pending in memory"));
+				expect(await rejectionOf(manager.flush())).toBeInstanceOf(Error);
+				expect(manager.getSessionId()).toBe(sessionId);
+				expect(manager.getSessionFile()).toBe(sessionPath);
+				expect(await Bun.file(sessionPath).exists()).toBe(false);
+				manager.appendMessage(userTurn("must not recover into a fresh journal"));
+				expect(await rejectionOf(manager.flush())).toBeInstanceOf(Error);
+				expect(jsonlFiles(tempDir.path())).toEqual([]);
+			} finally {
+				owner.resetSessionOwnerContextForTest();
+				await manager?.close().catch(() => {});
+			}
+		},
+	);
+
+	it.each(["deleted-before-open", "replaced-after-open"] as const)(
+		"refuses a receiver append when its journal is %s at the file-writer boundary",
+		async phase => {
+			using tempDir = TempDir.createSync("@omp-receiver-writer-fence-");
+			const { sessionId, sessionPath } = await createSession(tempDir);
+			const replacement = `${JSON.stringify({ type: "session", id: "foreign-journal", version: 3 })}\n`;
+			let manager: SessionManager | undefined;
+			let stopInterference = () => {};
+			try {
+				manager = await openExactReceiver(tempDir, sessionId, sessionPath);
+				if (phase === "replaced-after-open") {
+					manager.appendMessage(userTurn("first receiver turn"));
+					await manager.flush();
+					await Bun.write(sessionPath, replacement);
+				} else {
+					const openWriter = FileSessionStorage.prototype.openWriter;
+					let removed = false;
+					const spy = vi
+						.spyOn(FileSessionStorage.prototype, "openWriter")
+						.mockImplementation(function (this: FileSessionStorage, file, options) {
+							if (file === sessionPath && !removed) {
+								removed = true;
+								fs.unlinkSync(file);
+							}
+							return openWriter.call(this, file, options);
+						});
+					stopInterference = () => spy.mockRestore();
+				}
+				manager.appendMessage(userTurn("must not reach a missing or foreign journal"));
+				expect(await rejectionOf(manager.flush())).toBeInstanceOf(Error);
+				expect(manager.getSessionId()).toBe(sessionId);
+				expect(manager.getSessionFile()).toBe(sessionPath);
+				if (phase === "deleted-before-open") {
+					expect(jsonlFiles(tempDir.path())).toEqual([]);
+				} else {
+					expect(await Bun.file(sessionPath).text()).toBe(replacement);
+					expect(jsonlFiles(tempDir.path())).toEqual([sessionPath]);
+				}
+			} finally {
+				stopInterference();
+				owner.resetSessionOwnerContextForTest();
+				await manager?.close().catch(() => {});
+			}
+		},
+	);
+
+	for (const operation of ["sync", "async"] as const) {
+		it.each(["replaced", "equal-size-replaced", "contested"] as const)(
+			`refuses ${operation} receiver rewrite recovery on a %s journal instead of forking`,
+			async conflict => {
+				using tempDir = TempDir.createSync("@omp-receiver-conflict-");
+				const { sessionId, sessionPath } = await createSession(tempDir);
+				let manager: SessionManager | undefined;
+				let stopRace = () => {};
+				try {
+					manager = await openExactReceiver(tempDir, sessionId, sessionPath);
+					manager.appendMessage(userTurn("first receiver turn"));
+					await manager.flush();
+					const before = await Bun.file(sessionPath).text();
+					const replacement =
+						conflict === "equal-size-replaced"
+							? before.replace(sessionId, Bun.randomUUIDv7())
+							: `${JSON.stringify({ type: "session", id: "foreign-journal", version: 3 })}\n`;
+					if (conflict === "equal-size-replaced") {
+						expect(replacement).not.toBe(before);
+						expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(before));
+					}
+					let interference = 0;
+					if (conflict !== "contested") await Bun.write(sessionPath, replacement);
+					const race = (file: string) => {
+						if (file !== sessionPath || conflict !== "contested") return;
+						interference++;
+						fs.appendFileSync(
+							file,
+							`${JSON.stringify({
+								type: "message",
+								id: `external-${interference}`,
+								parentId: null,
+								timestamp: new Date().toISOString(),
+								message: userTurn(`external writer ${interference}`),
+							})}\n`,
+						);
+					};
+					const syncWrite = FileSessionStorage.prototype.writeLinesSync;
+					const atomicWrite = FileSessionStorage.prototype.writeLinesAtomic;
+					const syncSpy = vi
+						.spyOn(FileSessionStorage.prototype, "writeLinesSync")
+						.mockImplementation(function (this: FileSessionStorage, file, lines, options) {
+							race(file);
+							return syncWrite.call(this, file, lines, options);
+						});
+					let forcedSync = false;
+					const receiver = manager;
+					const atomicSpy = vi
+						.spyOn(FileSessionStorage.prototype, "writeLinesAtomic")
+						.mockImplementation(function (this: FileSessionStorage, file, lines, options) {
+							if (operation === "sync" && file === sessionPath && !forcedSync) {
+								forcedSync = true;
+								// A real append during the atomic publish takes the synchronous rewrite path.
+								receiver.appendMessage(userTurn("sync append during rewrite"));
+								receiver.flushSync();
+							}
+							race(file);
+							return atomicWrite.call(this, file, lines, options);
+						});
+					stopRace = () => {
+						syncSpy.mockRestore();
+						atomicSpy.mockRestore();
+					};
+					const failure = await rejectionOf(manager.rewriteEntries());
+					expect(failure).toBeInstanceOf(Error);
+					expect(manager.getSessionId()).toBe(sessionId);
+					expect(manager.getSessionFile()).toBe(sessionPath);
+					expect(jsonlFiles(tempDir.path())).toEqual([sessionPath]);
+					const after = await Bun.file(sessionPath).text();
+					if (conflict !== "contested") {
+						expect(after).toBe(replacement);
+					} else {
+						expect(interference).toBeGreaterThan(0);
+						expect(after.startsWith(before)).toBe(true);
+						for (let index = 1; index <= interference; index++) {
+							expect(after).toContain(`external writer ${index}`);
+						}
+					}
+				} finally {
+					stopRace();
+					owner.resetSessionOwnerContextForTest();
+					await manager?.close().catch(() => {});
+				}
+			},
+		);
+	}
+
+	for (const ownership of ["reserved", "written"] as const) {
+		it.each(["new", "fork", "branch"] as const)(
+			`permits an explicit %s from a ${ownership} exact receiver without changing the original journal`,
+			async transition => {
+				using tempDir = TempDir.createSync("@omp-receiver-transition-");
+				const { sessionId, sessionPath } = await createSession(tempDir);
+				let manager: SessionManager | undefined;
+				try {
+					manager = await openExactReceiver(tempDir, sessionId, sessionPath);
+					if (ownership === "written") {
+						manager.appendMessage(userTurn("owner turn before transition"));
+						await manager.flush();
+					}
+					const original = await Bun.file(sessionPath).text();
+					const history = manager.buildSessionContext().messages;
+					let destination: string | undefined;
+					if (transition === "new") destination = await manager.newSession();
+					else if (transition === "fork") destination = (await manager.fork())?.newSessionFile;
+					else {
+						const leafId = manager.getLeafId();
+						if (!leafId) throw new Error("expected an original branch leaf");
+						destination = manager.createBranchedSession(leafId);
+					}
+					if (!destination) throw new Error("expected an explicit destination");
+					const nextId = manager.getSessionId();
+					expect(nextId).not.toBe(sessionId);
+					expect(manager.getSessionFile()).toBe(destination);
+					expect(isSessionLeaseHeld(sessionId)).toBe(false);
+					const turn = userTurn("turn after explicit transition");
+					manager.appendMessage(turn);
+					await manager.flush();
+					expect(await Bun.file(sessionPath).text()).toBe(original);
+					expect(jsonlFiles(tempDir.path()).sort()).toEqual([sessionPath, destination].sort());
+					const reopened = await SessionManager.open(destination, tempDir.path());
+					try {
+						expect(reopened.getSessionId()).toBe(nextId);
+						expect(reopened.buildSessionContext().messages).toEqual(
+							transition === "new" ? [turn] : [...history, turn],
+						);
+					} finally {
+						await reopened.close();
+					}
+				} finally {
+					owner.resetSessionOwnerContextForTest();
+					await manager?.close().catch(() => {});
+				}
+			},
+		);
+	}
 
 	it("releases a reservation the manager never adopts", async () => {
 		using tempDir = TempDir.createSync("@omp-session-reservation-");

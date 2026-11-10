@@ -66,7 +66,18 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
-	| { id?: string; type: "upgrade_runtime"; whenIdle?: boolean; force?: boolean }
+	| { id?: string; type: "get_refresh_preflight" }
+	| {
+			id?: string;
+			type: "upgrade_runtime";
+			whenIdle?: boolean;
+			force?: boolean;
+			refresh?: boolean;
+			graceful?: boolean;
+			compactBeforeRestart?: boolean;
+			expectedSessionId?: string;
+			expectedSessionFile?: string;
+	  }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
 	| {
@@ -403,13 +414,44 @@ export interface RpcAbortAndRestoreQueueResult {
 	truncated?: true;
 }
 
+/** Bounded owner-observed work. Null counts mean unavailable, never idle. */
+export interface RpcRefreshPreflight {
+	sessionId: string;
+	sessionFile: string | null;
+	/** Actual reopened owner evidence; null when ownership or the canonical journal cannot be established. */
+	restartReceipt?: RpcRuntimeRestartReceipt | null;
+	ephemeralWork: {
+		streaming: boolean;
+		admittedSubmission: boolean;
+		compacting: boolean;
+		inFlightTools: number | null;
+		taskSubagents: number | null;
+		backgroundJobs: number | null;
+		/** Services owned by this session; descendants are covered only by their task/job observations. */
+		services: number | null;
+		servicesUninspected: boolean;
+		hasEphemeralWork: boolean | null;
+	};
+	primaryPromptTools: { names: string[]; total: number; truncated: boolean };
+	/** Full exact-session refresh is separate from the legacy generation-only upgrade. */
+	refreshModes: { graceful: boolean; force: boolean };
+}
+
+export interface RpcRuntimeRestartReceipt {
+	sessionId: string;
+	sessionFile: string;
+	bootId: string;
+	importedGeneration: string | null;
+	basePromptDigest: string;
+}
+
 /** `upgrade_runtime` outcome: whether the owner is moving, is already current, or when it will move. */
 export interface RpcUpgradeRuntimeResult {
 	upgraded: boolean;
 	scheduled: boolean;
 	running?: string;
 	current?: string;
-	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle";
+	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle" | "checkpoint_requested";
 }
 
 export interface RpcReadyFrame {
@@ -502,6 +544,7 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "get_refresh_preflight"; success: true; data: RpcRefreshPreflight }
 	| {
 			id?: string;
 			type: "response";

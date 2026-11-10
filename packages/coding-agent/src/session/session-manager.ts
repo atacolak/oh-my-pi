@@ -122,6 +122,7 @@ import { loadPinnedSessionIds, sortPinnedFirst } from "./session-pins";
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
+	type SessionOwnershipClaim,
 	type SessionReservation,
 	type SessionStorage,
 	type SessionStorageWriter,
@@ -913,16 +914,16 @@ export interface SessionPersistenceNotice {
 export type SessionOwnershipPolicy = "branch" | "require-owner";
 
 /**
- * A `"require-owner"` session could not be written: another live omp process
- * owns its journal, and this manager must not fork a second transcript. The
- * owner path turns this into a startup refusal; nothing was appended.
+ * A `"require-owner"` session lost its journal's ownership or identity.
+ * This manager must not fork a second transcript. The owner path turns this
+ * into a refusal; nothing was appended to another journal.
  */
 export class SessionOwnershipConflictError extends Error {
 	readonly sessionId: string;
 	readonly sessionFile: string;
 
 	constructor(sessionId: string, sessionFile: string) {
-		super(`Session "${sessionId}" is open in another process; refusing to write a second transcript.`);
+		super(`Session "${sessionId}" lost journal ownership or identity; refusing to write another transcript.`);
 		this.name = "SessionOwnershipConflictError";
 		this.sessionId = sessionId;
 		this.sessionFile = sessionFile;
@@ -1100,7 +1101,7 @@ export class SessionManager {
 	 * `release` is unset while another live process holds the session, and
 	 * after {@link close} gave the claim up.
 	 */
-	#sessionClaim: { sessionId: string; release: (() => void) | undefined } | undefined;
+	#sessionClaim: { sessionId: string; release: SessionOwnershipClaim | undefined } | undefined;
 	/** How this manager reacts when another live process owns its journal. */
 	#ownershipPolicy: SessionOwnershipPolicy = "branch";
 	/**
@@ -1235,6 +1236,14 @@ export class SessionManager {
 		reservation.release();
 	}
 
+	/** An intentional fresh target ends the opened journal's strict ownership contract. */
+	#leaveSessionForExplicitTransition(): void {
+		this.#sessionClaim?.release?.();
+		this.#sessionClaim = undefined;
+		this.#releaseOwnershipReservation();
+		this.#ownershipPolicy = "branch";
+	}
+
 	/**
 	 * Whether another live omp process owns this session, claiming it first
 	 * when it is free. A non-owner never writes the session's file: its next
@@ -1244,6 +1253,13 @@ export class SessionManager {
 	 */
 	#sessionOwnedElsewhere(): boolean {
 		if (this.#released || this.#sessionFileRelocating) return false;
+		if (
+			this.#ownershipPolicy === "require-owner" &&
+			this.#sessionFile &&
+			!this.#storage.existsSync(this.#sessionFile)
+		) {
+			return true;
+		}
 		this.#claimSession();
 		const claim = this.#sessionClaim;
 		return claim !== undefined && claim.sessionId === this.#sessionId && claim.release === undefined;
@@ -1334,6 +1350,7 @@ export class SessionManager {
 			content = this.#storage.readTextSync(contested);
 		} catch (readError) {
 			if (!isEnoent(readError)) return this.#moveOffSessionFile("replaced");
+			if (this.#ownershipPolicy === "require-owner") return undefined;
 			this.#expectedDiskSize = null;
 			return contested;
 		}
@@ -1357,6 +1374,7 @@ export class SessionManager {
 			// A synchronous rewrite during the read already recovered; retry against its result.
 			if (this.#diskEpoch !== epoch || this.#sessionFile !== contested) return this.#sessionFile;
 			if (!isEnoent(readError)) return this.#moveOffSessionFile("replaced");
+			if (this.#ownershipPolicy === "require-owner") return undefined;
 			this.#expectedDiskSize = null;
 			return contested;
 		}
@@ -1385,7 +1403,7 @@ export class SessionManager {
 	 * await it. Returns the sibling.
 	 */
 	#moveOffSessionFile(reason: SessionPersistenceNotice["reason"]): string {
-		if (reason === "open-elsewhere" && this.#ownershipPolicy === "require-owner") {
+		if (this.#ownershipPolicy === "require-owner") {
 			throw new SessionOwnershipConflictError(this.#sessionId, this.#sessionFile as string);
 		}
 		const from = this.#sessionFile as string;
@@ -1606,7 +1624,11 @@ export class SessionManager {
 				? this.#moveOffSessionFile("open-elsewhere")
 				: sessionFile;
 		const body = this.#serializeBody();
-		const options = { expectedSize: this.#expectedDiskSize, commitGuard };
+		const options = {
+			expectedSize: this.#expectedDiskSize,
+			expectedSessionId: this.#ownershipPolicy === "require-owner" ? this.#sessionId : undefined,
+			commitGuard,
+		};
 		try {
 			await (this.#storage.writeLinesAtomic
 				? this.#storage.writeLinesAtomic(target, body.lines, options)
@@ -1643,6 +1665,7 @@ export class SessionManager {
 		this.#writer = this.#storage.openWriter(this.#sessionFile, {
 			flags: "a",
 			onError: err => this.#noteDiskFailure(err),
+			expectedSessionId: this.#ownershipPolicy === "require-owner" ? this.#sessionId : undefined,
 		});
 		return this.#writer;
 	}
@@ -1773,7 +1796,10 @@ export class SessionManager {
 			this.#closeWriterEventually();
 			for (let recoveries = 0; ; recoveries++) {
 				try {
-					const options = { expectedSize: this.#expectedDiskSize };
+					const options = {
+						expectedSize: this.#expectedDiskSize,
+						expectedSessionId: this.#ownershipPolicy === "require-owner" ? this.#sessionId : undefined,
+					};
 					if (this.#storage.writeLinesSync) this.#storage.writeLinesSync(targetPath, body.lines, options);
 					else this.#storage.writeTextSync(targetPath, body.lines.join(""), options);
 					break;
@@ -1905,6 +1931,7 @@ export class SessionManager {
 				const body = this.#serializeBody();
 				const options = {
 					expectedSize: this.#expectedDiskSize,
+					expectedSessionId: this.#ownershipPolicy === "require-owner" ? this.#sessionId : undefined,
 					commitGuard: () => !this.#released && this.#diskEpoch === epoch,
 				};
 				try {
@@ -2139,6 +2166,7 @@ export class SessionManager {
 			this.#sessionDir = path.resolve(options.sessionDir);
 			this.#storage.ensureDirSync(this.#sessionDir);
 		}
+		this.#leaveSessionForExplicitTransition();
 		this.#sessionId = mintSessionId();
 		this.#taskSiblingCandidate = undefined;
 		this.#sessionName = undefined;
@@ -2605,6 +2633,7 @@ export class SessionManager {
 		this.#reconcileSessionDirForFallback();
 
 		const timestamp = nowIso();
+		this.#leaveSessionForExplicitTransition();
 		this.#sessionId = mintSessionId();
 		this.#taskSiblingCandidate = undefined;
 		this.#sessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
@@ -3329,6 +3358,19 @@ export class SessionManager {
 		return this.#sessionFile;
 	}
 
+	/** Observe this manager's own claim or live bootstrap reservation without acquiring a lease. */
+	hasSessionOwnership(): boolean {
+		if (this.#released || this.#sessionFileRelocating) return false;
+		const claim = this.#sessionClaim;
+		if (claim?.sessionId === this.#sessionId && claim.release?.active === true) return true;
+		const reservation = this.#ownershipReservation;
+		return (
+			reservation?.sessionId === this.#sessionId &&
+			reservation.active === true &&
+			path.resolve(reservation.sessionPath) === this.#sessionFile
+		);
+	}
+
 	/**
 	 * Whether the current session has actually been materialized to durable
 	 * storage (the JSONL exists on disk / in the active storage backend).
@@ -3342,6 +3384,11 @@ export class SessionManager {
 	 */
 	isSessionOnDisk(): boolean {
 		return !!this.#sessionFile && this.#storage.existsSync(this.#sessionFile);
+	}
+
+	/** Whether persistence requires this journal, even if its backing file has disappeared. */
+	requiresSessionFile(): boolean {
+		return this.#persist && this.#shouldHaveSessionFile();
 	}
 
 	/**
@@ -4265,6 +4312,7 @@ export class SessionManager {
 			parentId = labelEntry.id;
 		}
 
+		this.#leaveSessionForExplicitTransition();
 		this.#header = header;
 		this.#entries = [...entriesToKeep, ...labels];
 		this.#sessionId = newSessionId;

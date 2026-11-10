@@ -2621,6 +2621,7 @@ const (
 	UpgradeRuntimeResultReasonAlreadyCurrent       UpgradeRuntimeResultReason = "already_current"
 	UpgradeRuntimeResultReasonNotGenerationManaged UpgradeRuntimeResultReason = "not_generation_managed"
 	UpgradeRuntimeResultReasonScheduledOnIdle      UpgradeRuntimeResultReason = "scheduled_on_idle"
+	UpgradeRuntimeResultReasonCheckpointRequested  UpgradeRuntimeResultReason = "checkpoint_requested"
 )
 
 func (v *UpgradeRuntimeResultReason) UnmarshalJSON(data []byte) error {
@@ -2629,11 +2630,149 @@ func (v *UpgradeRuntimeResultReason) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	switch value := UpgradeRuntimeResultReason(s); value {
-	case UpgradeRuntimeResultReasonAlreadyCurrent, UpgradeRuntimeResultReasonNotGenerationManaged, UpgradeRuntimeResultReasonScheduledOnIdle:
+	case UpgradeRuntimeResultReasonAlreadyCurrent, UpgradeRuntimeResultReasonNotGenerationManaged, UpgradeRuntimeResultReasonScheduledOnIdle, UpgradeRuntimeResultReasonCheckpointRequested:
 		*v = value
 		return nil
 	}
 	return unknownValue("UpgradeRuntimeResultReason", s)
+}
+
+type RefreshEphemeralWork struct {
+	Streaming          bool   `json:"streaming"`
+	AdmittedSubmission bool   `json:"admittedSubmission"`
+	Compacting         bool   `json:"compacting"`
+	InFlightTools      *int64 `json:"inFlightTools"`
+	TaskSubagents      *int64 `json:"taskSubagents"`
+	BackgroundJobs     *int64 `json:"backgroundJobs"`
+	// Services owned by this session; null means unavailable.
+	Services *int64 `json:"services"`
+	// Unknown inventory is never reported as idle.
+	HasEphemeralWork *bool `json:"hasEphemeralWork"`
+	// Detached broker services are not inspected by this observation.
+	ServicesUninspected bool `json:"servicesUninspected"`
+}
+
+func (v *RefreshEphemeralWork) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshEphemeralWork", v.decodeFrom)
+}
+
+func (v *RefreshEphemeralWork) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshEphemeralWork
+	d := fieldDecoder{raw: raw, owner: "RefreshEphemeralWork"}
+	d.required("streaming", &out.Streaming)
+	d.required("admittedSubmission", &out.AdmittedSubmission)
+	d.required("compacting", &out.Compacting)
+	d.nullable("inFlightTools", &out.InFlightTools)
+	d.nullable("taskSubagents", &out.TaskSubagents)
+	d.nullable("backgroundJobs", &out.BackgroundJobs)
+	d.nullable("services", &out.Services)
+	d.nullable("hasEphemeralWork", &out.HasEphemeralWork)
+	d.defaulted("servicesUninspected", &out.ServicesUninspected, `true`)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RefreshPrimaryPromptTools struct {
+	Names     []string `json:"names"`
+	Total     int64    `json:"total"`
+	Truncated bool     `json:"truncated"`
+}
+
+func (v *RefreshPrimaryPromptTools) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshPrimaryPromptTools", v.decodeFrom)
+}
+
+func (v *RefreshPrimaryPromptTools) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshPrimaryPromptTools
+	d := fieldDecoder{raw: raw, owner: "RefreshPrimaryPromptTools"}
+	d.required("names", &out.Names)
+	d.required("total", &out.Total)
+	d.required("truncated", &out.Truncated)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RefreshModes struct {
+	Graceful bool `json:"graceful"`
+	Force    bool `json:"force"`
+}
+
+func (v *RefreshModes) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshModes", v.decodeFrom)
+}
+
+func (v *RefreshModes) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshModes
+	d := fieldDecoder{raw: raw, owner: "RefreshModes"}
+	d.required("graceful", &out.Graceful)
+	d.required("force", &out.Force)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RuntimeRestartReceipt struct {
+	SessionID          string  `json:"sessionId"`
+	SessionFile        string  `json:"sessionFile"`
+	BootID             string  `json:"bootId"`
+	ImportedGeneration *string `json:"importedGeneration"`
+	BasePromptDigest   string  `json:"basePromptDigest"`
+}
+
+func (v *RuntimeRestartReceipt) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RuntimeRestartReceipt", v.decodeFrom)
+}
+
+func (v *RuntimeRestartReceipt) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RuntimeRestartReceipt
+	d := fieldDecoder{raw: raw, owner: "RuntimeRestartReceipt"}
+	d.required("sessionId", &out.SessionID)
+	d.required("sessionFile", &out.SessionFile)
+	d.required("bootId", &out.BootID)
+	d.nullable("importedGeneration", &out.ImportedGeneration)
+	d.required("basePromptDigest", &out.BasePromptDigest)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RefreshPreflight struct {
+	SessionID          string                    `json:"sessionId"`
+	SessionFile        *string                   `json:"sessionFile"`
+	EphemeralWork      RefreshEphemeralWork      `json:"ephemeralWork"`
+	PrimaryPromptTools RefreshPrimaryPromptTools `json:"primaryPromptTools"`
+	RefreshModes       RefreshModes              `json:"refreshModes"`
+	RestartReceipt     *RuntimeRestartReceipt    `json:"restartReceipt,omitempty"`
+}
+
+func (v *RefreshPreflight) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshPreflight", v.decodeFrom)
+}
+
+func (v *RefreshPreflight) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshPreflight
+	d := fieldDecoder{raw: raw, owner: "RefreshPreflight"}
+	d.required("sessionId", &out.SessionID)
+	d.nullable("sessionFile", &out.SessionFile)
+	d.required("ephemeralWork", &out.EphemeralWork)
+	d.required("primaryPromptTools", &out.PrimaryPromptTools)
+	d.required("refreshModes", &out.RefreshModes)
+	d.optional("restartReceipt", &out.RestartReceipt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
 }
 
 type SessionDiagnosticModel struct {
@@ -8276,10 +8415,27 @@ func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	return out, err
 }
 
+// GetRefreshPreflight sends "get_refresh_preflight": Observe refresh hazards and bounded mounted tools without restarting or starting a broker.
+func (c Commands) GetRefreshPreflight(ctx context.Context) (RefreshPreflight, error) {
+	var out RefreshPreflight
+	err := c.call(ctx, "get_refresh_preflight", nil, 0, &out)
+	return out, err
+}
+
 // UpgradeRuntimeCommand holds the parameters of "upgrade_runtime".
 type UpgradeRuntimeCommand struct {
 	WhenIdle *bool `json:"whenIdle,omitempty"`
 	Force    *bool `json:"force,omitempty"`
+	// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	Refresh *bool `json:"refresh,omitempty"`
+	// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	Graceful *bool `json:"graceful,omitempty"`
+	// Compact before teardown; failure preserves the running owner.
+	CompactBeforeRestart *bool `json:"compactBeforeRestart,omitempty"`
+	// Full selected session id; supply together with expectedSessionFile.
+	ExpectedSessionID *string `json:"expectedSessionId,omitempty"`
+	// Canonical absolute transcript path; supply together with expectedSessionId.
+	ExpectedSessionFile *string `json:"expectedSessionFile,omitempty"`
 }
 
 // UpgradeRuntime sends "upgrade_runtime": Restart the session owner onto the current runtime generation, now or when idle.

@@ -139,6 +139,7 @@ export function createSessionStub(
 		setActiveToolsByName: vi.fn(async () => {}),
 		runIdleCompaction: vi.fn(async () => {}),
 		waitForIdle: async () => {},
+		waitForAdmittedSubmissions: async () => {},
 		hasPendingAsyncWork: () => false,
 		getAsyncJobSnapshot: () => null,
 		settleAsyncWork: async () => {},

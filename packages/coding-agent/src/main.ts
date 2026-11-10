@@ -82,6 +82,7 @@ import { registerDaemonProjectPresence } from "./launch/presence";
 import { sanitizeTerminalGeometry } from "./launch/protocol";
 import {
 	decideRpcSessionAttach,
+	matchesSessionPath,
 	probeSessionAttach,
 	resolveSessionEndpointDir,
 	type SessionAttachTerminal,
@@ -101,7 +102,7 @@ import {
 	runPersistentRpcLaunch,
 	shouldBootBrokeredSession,
 } from "./launch/session-boot";
-import { isSessionOwnerProcess } from "./launch/session-owner";
+import { isSessionOwnerProcess, sessionOwnerContext } from "./launch/session-owner";
 import type { MCPManager } from "./mcp";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import { formatSessionContinuationNotice } from "./modes/persistence-failure";
@@ -109,6 +110,7 @@ import type { PrintModeOptions } from "./modes/print-mode";
 import type { RpcModeOptions } from "./modes/rpc/rpc-mode";
 import type { RpcSessionSocket } from "./modes/rpc/rpc-socket";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
+import { ModelRuntimeUpgrade } from "./modes/rpc/model-runtime-upgrade";
 import { CURRENT_SETUP_VERSION } from "@oh-my-pi/pi-tui/setup/setup-version";
 import type * as SetupWizardModule from "./modes/setup";
 import type { SetupScene } from "@oh-my-pi/pi-tui/setup/scenes/types";
@@ -159,7 +161,7 @@ import {
 	SessionMoveRefusedError,
 	type SessionOwnershipPolicy,
 } from "./session/session-manager";
-import type { SessionReservation } from "./session/session-storage";
+import { FileSessionStorage, type SessionReservation } from "./session/session-storage";
 import { forkIfMovedAway } from "./session/session-transfer";
 import { shouldShowStartupSplash } from "./startup-splash";
 import {
@@ -697,6 +699,7 @@ async function runInteractiveMode(
 	startupGoal?: string,
 	startupRestore?: () => Promise<RestoreOutcome>,
 	sessionSocket?: RpcSessionSocket,
+	modelRuntimeUpgrade?: ModelRuntimeUpgrade,
 ): Promise<void> {
 	const InteractiveModeConstructor = await loadInteractiveModeConstructor();
 	let mode: InteractiveMode;
@@ -717,7 +720,7 @@ async function runInteractiveMode(
 		throw error;
 	}
 
-	await mode.attachSessionSocket(sessionSocket);
+	await mode.attachSessionSocket(sessionSocket, undefined, modelRuntimeUpgrade);
 
 	let setupWizard: typeof SetupWizardModule | undefined;
 	let setupScenes: SetupScene[] = [];
@@ -1329,6 +1332,45 @@ export async function createSessionManager(
 		ownerAttach?: SessionOwnerAttachSelection;
 	} = {},
 ): Promise<SessionManager | undefined> {
+	const selectedRestartTarget = sessionOwnerContext()?.restartTarget;
+	const restartTarget = selectedRestartTarget && {
+		sessionId: selectedRestartTarget.sessionId,
+		sessionFile: selectedRestartTarget.sessionFile,
+	};
+	if (restartTarget) {
+		if (
+			!parsed.restore ||
+			parsed.resume !== restartTarget.sessionFile ||
+			parsed.noSession ||
+			parsed.fork ||
+			!(await matchesSessionPath(restartTarget.sessionFile, restartTarget.sessionFile))
+		) {
+			throw new SessionResolutionError("Exact restart receiver refused a different or unavailable transcript");
+		}
+		const storage = new FileSessionStorage();
+		const reservation = storage.reserveSession(restartTarget.sessionId, restartTarget.sessionFile);
+		let manager: SessionManager | undefined;
+		try {
+			manager = await SessionManager.open(restartTarget.sessionFile, parsed.sessionDir, storage, {
+				throwIfMissing: true,
+				suppressBreadcrumb: true,
+				ownershipPolicy: "require-owner",
+				ownershipReservation: reservation,
+			});
+			if (
+				manager.getSessionId() !== restartTarget.sessionId ||
+				manager.getSessionFile() !== restartTarget.sessionFile ||
+				!(await matchesSessionPath(restartTarget.sessionFile, restartTarget.sessionFile))
+			) {
+				throw new SessionResolutionError("Exact restart receiver no longer identifies the selected conversation");
+			}
+			return manager;
+		} catch (error) {
+			await manager?.close().catch(() => {});
+			reservation.release();
+			throw error;
+		}
+	}
 	if (parsed.fork) {
 		if (parsed.noSession) {
 			throw new SessionResolutionError("--fork requires session persistence");
@@ -2360,6 +2402,10 @@ export async function runRootCommand(
 						}
 						await runBrokeredOwnerLaunch({ kind: "cold", sessionId: explicitRpcResumeId }, explicitRpcResumeId);
 					}
+				}
+				// Initial native owners need the same cold reservation as direct
+				// sessions. Exact restart receivers reserve their pinned target below.
+				if (!sessionOwnerContext()?.restartTarget) {
 					const gate = await logger.time("resolveStartupSessionGate", resolveStartupSessionGate, {
 						cwd,
 						sessionDir: parsedArgs.sessionDir,
@@ -2379,6 +2425,11 @@ export async function runRootCommand(
 						);
 					}
 					if (gate.kind === "attach") {
+						if (isSessionOwnerProcess()) {
+							throw new SessionResolutionError(
+								`Session "${gate.target.session.id}" already has a live owner; refusing a second owner.`,
+							);
+						}
 						if (brokersPersistentSession) {
 							await runBrokeredOwnerLaunch({
 								kind: "attach",
@@ -2395,7 +2446,7 @@ export async function runRootCommand(
 						liveAttach = { sessionId: gate.target.session.id, terminal: gate.terminal };
 					}
 					if (gate.kind === "cold") {
-						if (brokersPersistentSession) {
+						if (brokersPersistentSession && !isSessionOwnerProcess()) {
 							gate.reservation.release();
 							await runBrokeredOwnerLaunch(
 								{ kind: "cold", sessionId: gate.target.session.id },
@@ -2409,7 +2460,12 @@ export async function runRootCommand(
 							recent: gate.target.recent,
 						};
 					}
-					if (gate.kind === "none" && brokersPersistentSession && typeof parsedArgs.resume !== "string") {
+					if (
+						gate.kind === "none" &&
+						brokersPersistentSession &&
+						!isSessionOwnerProcess() &&
+						typeof parsedArgs.resume !== "string"
+					) {
 						await runBrokeredOwnerLaunch({ kind: "none" });
 					}
 				}
@@ -2634,6 +2690,7 @@ export async function runRootCommand(
 				"SQLite lock protection is unavailable with this Bun build: reading omp's own databases from inside omp (e.g. `grep -r ~/.omp`, `cp ~/.omp/agent/agent.db`) can corrupt them. Avoid it, and report this with your Bun version (#15586).",
 			);
 		}
+		const modelRuntimeUpgrade = isInteractive ? new ModelRuntimeUpgrade() : undefined;
 		const buildStartupSessionOptions = async (manager: SessionManager | undefined) => {
 			const options = await logger.time(
 				"buildSessionOptions",
@@ -2702,6 +2759,17 @@ export async function runRootCommand(
 
 		const createAgentSessionImpl = deps.createAgentSession ?? createAgentSession;
 		const createSession = async (options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> => {
+			if (
+				modelRuntimeUpgrade &&
+				options.restrictToolNames !== true &&
+				!options.customTools?.some(tool => tool.name === modelRuntimeUpgrade.tool.name) &&
+				!options.mcpTools?.some(tool => tool.name === modelRuntimeUpgrade.tool.name) &&
+				!options.preloadedExtensions?.extensions.some(extension =>
+					extension.tools.has(modelRuntimeUpgrade.tool.name),
+				)
+			) {
+				options.customTools = [...(options.customTools ?? []), modelRuntimeUpgrade.tool];
+			}
 			const result = await logger.time("createAgentSession", createAgentSessionImpl, options);
 			// Kick off background model discovery only after createAgentSession finishes its parallel
 			// discovery arms; running these concurrently contends for the event loop and stretches
@@ -3166,6 +3234,7 @@ export async function runRootCommand(
 						initialArgs.goal,
 						parsedArgs.restore ? () => restoreSession(session, { eventBus, subagentEventBus }) : undefined,
 						sessionSocket,
+						modelRuntimeUpgrade,
 					);
 				} finally {
 					startupLease?.dispose();

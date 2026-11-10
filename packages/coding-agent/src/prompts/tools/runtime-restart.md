@@ -1,0 +1,1 @@
+acknowledge a requested restart after saving your current checkpoint. the owner waits for this turn and all session-owned work to finish before restarting the same conversation. this tool cannot request an unprompted or forced restart.

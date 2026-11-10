@@ -2,6 +2,7 @@ import { vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { getActiveProfile, setProfile } from "@oh-my-pi/pi-utils";
+import { runCli } from "../../src/cli";
 import { extractProfileFlags } from "../../src/cli/profile-bootstrap";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
@@ -12,7 +13,10 @@ import { SessionManager } from "../../src/session/session-manager";
 import * as workerClient from "../../src/subprocess/worker-client";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
-if (process.argv[2] === "receive") {
+if (process.argv[2] === "receive" && process.argv[3] === "--version") {
+	// Forward the read-only capability query to the real CLI; this fixture only tests profile propagation.
+	await runCli(process.argv.slice(3));
+} else if (process.argv[2] === "receive") {
 	const extracted = extractProfileFlags(process.argv.slice(3));
 	// Require argv propagation even on the spawn fallback, whose env could mask a regression.
 	setProfile(extracted.profile);

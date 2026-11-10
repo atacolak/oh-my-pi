@@ -86,11 +86,30 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 
 	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
 	{
+		name: "get_refresh_preflight",
+		doc: "Observe refresh hazards and bounded mounted tools without restarting or starting a broker.",
+		result: "RefreshPreflight",
+	},
+	{
 		name: "upgrade_runtime",
 		doc: "Restart the session owner onto the current runtime generation, now or when idle.",
 		params: {
 			"whenIdle?": "boolean",
 			"force?": "boolean",
+			"refresh?": doc(
+				"boolean",
+				"Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.",
+			),
+			"graceful?": doc(
+				"boolean",
+				"Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.",
+			),
+			"compactBeforeRestart?": doc("boolean", "Compact before teardown; failure preserves the running owner."),
+			"expectedSessionId?": doc("string", "Full selected session id; supply together with expectedSessionFile."),
+			"expectedSessionFile?": doc(
+				"string",
+				"Canonical absolute transcript path; supply together with expectedSessionId.",
+			),
 		},
 		result: "UpgradeRuntimeResult",
 	},

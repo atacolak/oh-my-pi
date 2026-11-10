@@ -8,14 +8,21 @@ import {
 	isCompiledBinary,
 	isExecutable,
 	isFullyQualifiedPath,
+	isRecord,
 	logger,
 	postmortem,
 	stripWindowsExtendedLengthPathPrefix,
 	WhichCachePolicy,
 	workerHostEntry,
+	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import { stripGitRepoLocationEnv } from "@oh-my-pi/pi-utils/env";
 import type { Subprocess } from "bun";
+import {
+	RESTART_RECEIVER_PROBE_ARG,
+	RESTART_RECEIVER_PROTOCOL,
+	type RestartReceiverProbe,
+} from "../launch/restart-receiver-probe";
 
 /**
  * Shared lifecycle scaffolding for the ONNX inference subprocess clients
@@ -158,6 +165,111 @@ export function resolveCliEntryCmd(): string[] {
 	const hostEntry = workerHostEntry();
 	if (hostEntry) return [executable, hostEntry];
 	return [executable, path.resolve(import.meta.dir, "..", "cli.ts")];
+}
+
+/** Refuse an unavailable restart receiver before the current session is disposed. */
+export function validateCliEntryCmd(entryCmd: readonly string[]): void {
+	const executable = entryCmd[0];
+	if (!executable || !isExecutable(executable)) {
+		throw new Error(`CLI receiver executable is unavailable: ${executable ?? "(missing)"}`);
+	}
+	const entry = entryCmd[1];
+	if (entry === undefined) return;
+	try {
+		if (!fs.statSync(entry).isFile()) throw new Error("entry is not a file");
+		fs.accessSync(entry, fs.constants.R_OK);
+	} catch (cause) {
+		throw new Error(`CLI receiver entry is unavailable: ${entry}`, { cause });
+	}
+}
+
+/**
+ * Ask the selected image to attest its exact-session receiver before teardown.
+ * --version is first so older images only print their version, never start a session.
+ */
+export async function attestCliRestartReceiver(
+	entryCmd: readonly string[],
+	timeoutMs = 5_000,
+): Promise<RestartReceiverProbe> {
+	validateCliEntryCmd(entryCmd);
+	const identities = entryCmd.slice(0, 2).map(file => ({
+		path: fs.realpathSync(file),
+		stat: fs.statSync(file, { bigint: true }),
+	}));
+	const nonce = Bun.randomUUIDv7();
+	const env = workerEnvFromParent();
+	for (const key of Object.keys(env)) {
+		if (key.startsWith("HCOM_") || key === "OMP_SESSION_OWNER_CONTEXT") delete env[key];
+	}
+	const child = Bun.spawn({
+		cmd: [...entryCmd, "--version", RESTART_RECEIVER_PROBE_ARG, nonce],
+		env,
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "ignore",
+		timeout: timeoutMs,
+		killSignal: "SIGKILL",
+	});
+	const stopReading = new AbortController();
+	let responseBytes = 0;
+	const maxResponseBytes = 8_192;
+	const output = (child.stdout as ReadableStream<Uint8Array>).pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				responseBytes += chunk.byteLength;
+				if (responseBytes > maxResponseBytes) throw new Error("Restart receiver response exceeds its byte budget");
+				controller.enqueue(chunk);
+			},
+		}),
+		{ signal: stopReading.signal },
+	);
+	try {
+		const [stdout, exitCode] = await withTimeout(
+			Promise.all([new Response(output).text(), child.exited]),
+			timeoutMs,
+			"Restart receiver probe timed out",
+		);
+		if (exitCode !== 0) throw new Error("Replacement image could not attest its exact-session receiver");
+		let probe: unknown;
+		try {
+			probe = JSON.parse(stdout);
+		} catch {
+			throw new Error("Replacement image does not advertise exact-session restart support");
+		}
+		if (
+			!isRecord(probe) ||
+			probe.type !== "restart_receiver" ||
+			probe.protocol !== RESTART_RECEIVER_PROTOCOL ||
+			probe.nonce !== nonce ||
+			typeof probe.version !== "string" ||
+			probe.version.length === 0
+		) {
+			throw new Error("Replacement image returned an incompatible exact-session receiver attestation");
+		}
+		for (const [index, identity] of identities.entries()) {
+			const file = entryCmd[index];
+			const current = fs.statSync(file, { bigint: true });
+			if (
+				fs.realpathSync(file) !== identity.path ||
+				current.dev !== identity.stat.dev ||
+				current.ino !== identity.stat.ino ||
+				current.size !== identity.stat.size ||
+				current.mtimeNs !== identity.stat.mtimeNs
+			) {
+				throw new Error("Replacement image changed during receiver attestation");
+			}
+		}
+		return {
+			type: "restart_receiver",
+			protocol: RESTART_RECEIVER_PROTOCOL,
+			nonce,
+			version: probe.version,
+		};
+	} finally {
+		stopReading.abort();
+		if (child.exitCode === null) child.kill("SIGKILL");
+		await child.exited;
+	}
 }
 
 /**

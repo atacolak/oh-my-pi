@@ -4,6 +4,12 @@ import { IpcConnection, ipcEndpoint } from "@oh-my-pi/pi-natives";
 import { getBaseConfigRoot, isEnoent, isPidAlive, isRecord, toError, withTimeout } from "@oh-my-pi/pi-utils";
 import { isSessionLeaseHeld } from "../session/session-storage";
 
+/** Exact conversation selected by the caller, not a pane, title, or session prefix. */
+export interface SessionRestartTarget {
+	readonly sessionId: string;
+	readonly sessionFile: string;
+}
+
 export interface SessionAttachTerminal {
 	protocolVersion: 1;
 	projectDir: string;
@@ -317,7 +323,8 @@ function terminalFromMetadata(metadata: SessionAttachMetadata | undefined): Sess
 	return { protocolVersion: 1, projectDir, name, id };
 }
 
-async function matchesSessionPath(observed: unknown, expected: string): Promise<boolean> {
+/** Match a journal to an absolute, already-canonical target; unavailable evidence refuses. */
+export async function matchesSessionPath(observed: unknown, expected: string): Promise<boolean> {
 	if (typeof observed !== "string" || !path.isAbsolute(observed)) return false;
 	try {
 		return (await fs.realpath(observed)) === expected && (await fs.realpath(expected)) === expected;

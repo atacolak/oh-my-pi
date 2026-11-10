@@ -513,7 +513,50 @@ export interface UpgradeRuntimeResult {
 	/** Generation `generations/current` selects, when readable. */
 	current?: string;
 	/** Why no upgrade is running now. */
-	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle";
+	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle" | "checkpoint_requested";
+}
+
+export interface RefreshEphemeralWork {
+	streaming: boolean;
+	admittedSubmission: boolean;
+	compacting: boolean;
+	inFlightTools: number | null;
+	taskSubagents: number | null;
+	backgroundJobs: number | null;
+	/** Services owned by this session; null means unavailable. */
+	services: number | null;
+	/** Unknown inventory is never reported as idle. */
+	hasEphemeralWork: boolean | null;
+	/** Detached broker services are not inspected by this observation. */
+	servicesUninspected?: boolean;
+}
+
+export interface RefreshPrimaryPromptTools {
+	names: string[];
+	total: number;
+	truncated: boolean;
+}
+
+export interface RefreshModes {
+	graceful: boolean;
+	force: boolean;
+}
+
+export interface RuntimeRestartReceipt {
+	sessionId: string;
+	sessionFile: string;
+	bootId: string;
+	importedGeneration: string | null;
+	basePromptDigest: string;
+}
+
+export interface RefreshPreflight {
+	sessionId: string;
+	sessionFile: string | null;
+	ephemeralWork: RefreshEphemeralWork;
+	primaryPromptTools: RefreshPrimaryPromptTools;
+	refreshModes: RefreshModes;
+	restartReceipt?: RuntimeRestartReceipt | null;
 }
 
 export interface SessionDiagnosticModel {
@@ -1676,6 +1719,16 @@ export interface OpenSessionParams {
 export interface UpgradeRuntimeParams {
 	whenIdle?: boolean;
 	force?: boolean;
+	/** Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported. */
+	refresh?: boolean;
+	/** Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported. */
+	graceful?: boolean;
+	/** Compact before teardown; failure preserves the running owner. */
+	compactBeforeRestart?: boolean;
+	/** Full selected session id; supply together with expectedSessionFile. */
+	expectedSessionId?: string;
+	/** Canonical absolute transcript path; supply together with expectedSessionId. */
+	expectedSessionFile?: string;
 }
 
 export interface SetFastModeParams {
@@ -2039,6 +2092,7 @@ export interface RpcWireCommands {
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
 	get_state: { params: undefined; result: SessionState };
+	get_refresh_preflight: { params: undefined; result: RefreshPreflight };
 	upgrade_runtime: { params: UpgradeRuntimeParams; result: UpgradeRuntimeResult };
 	set_fast_mode: { params: SetFastModeParams; result: FastModeResult };
 	set_slow_mode: { params: SetSlowModeParams; result: SetSlowModeResult };

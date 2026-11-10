@@ -2765,7 +2765,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#inLogContext(() => this.#deliverAsyncJobResult(manager, jobId, text, job)),
 			);
 			this.yieldQueue.register<AsyncResultEntry>("async-result", {
-				isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
+				isStale: entry =>
+					entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId, entry.job),
 				build: buildAsyncResultBatchMessage,
 			});
 		}
@@ -3756,18 +3757,18 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		jobId: string,
 		text: string,
 		job?: AsyncJob,
-	): Promise<void> {
-		if (this.#isDisposed) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
+	): Promise<boolean> {
+		if (this.#isDisposed) return false;
+		if (manager.isDeliverySuppressed(jobId, job)) return false;
 		// Snapshot the generation before the async format step: a `/new` during it
 		// bumps the epoch, so this delivery belongs to the replaced session and
 		// must not enqueue — the suppression marker alone is unreliable because
 		// job-id reuse clears it.
 		const epoch = this.#asyncDeliveryEpoch;
 		const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
-		if (this.#isDisposed) return;
-		if (epoch !== this.#asyncDeliveryEpoch) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
+		if (this.#isDisposed) return false;
+		if (epoch !== this.#asyncDeliveryEpoch) return false;
+		if (manager.isDeliverySuppressed(jobId, job)) return false;
 		const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
 		await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
 			jobId,
@@ -3776,6 +3777,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			durationMs,
 			epoch,
 		});
+		return true;
 	}
 
 	/**

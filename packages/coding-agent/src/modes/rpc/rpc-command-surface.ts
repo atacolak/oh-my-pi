@@ -24,10 +24,14 @@ import type {
 	WordCompletionMethod,
 	WordCompletionQuery,
 } from "@oh-my-pi/pi-tui/prompt/word-completion";
-import { isRecord, logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { readRuntimeGeneration } from "../../launch/runtime-generation";
+import type { SessionRestartTarget } from "../../launch/session-attach";
+import restartNotice from "../../prompts/runtime-restart.md" with { type: "text" };
+import type { ModelRuntimeUpgrade, RuntimeRestartOptions } from "./model-runtime-upgrade";
 import {
 	type BuiltSkillPromptMessage,
 	loadSkillPrompt,
@@ -47,6 +51,7 @@ import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
 import { findCompactMode } from "../../session/compact-modes";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { findMostRecentNonEmptySession, findRecentSessionContinuation } from "../../session/session-listing";
+import { isSessionSettled } from "../../session/session-settle";
 import { probeSessionLeases } from "../../session/session-storage";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
@@ -85,6 +90,12 @@ import { RpcSessionEventForwarder } from "./rpc-session-events";
 import type { RpcSessionSocket, RpcSessionSocketSurface } from "./rpc-socket";
 import { RpcSessionSettleWatcher, watchedScheduledTurnProbe } from "./rpc-session-settle";
 import { getRpcSessionState } from "./rpc-state";
+import {
+	GracefulRestartResults,
+	getRpcRefreshPreflight,
+	getRpcRuntimeRestartReceipt,
+	isGracefulRestartSettled,
+} from "./rpc-refresh-preflight";
 import type { AgentSessionEvent } from "../../session/agent-session-events";
 import type { EventBus } from "../../utils/event-bus";
 import { RpcSubagentRegistry, readRpcSubagentTranscript, resolveOwnedLiveSubagent } from "./rpc-subagents";
@@ -915,7 +926,12 @@ export interface RpcCommandSurfaceOptions {
 	 * Restart this process onto `generations/current`. Wired by an interactive
 	 * owner; absent on transports that cannot replace their own process.
 	 */
-	upgradeRuntime?: () => void;
+	upgradeRuntime?: (
+		target?: SessionRestartTarget,
+		canRestart?: () => boolean,
+		options?: RuntimeRestartOptions,
+	) => void;
+	modelRuntimeUpgrade?: ModelRuntimeUpgrade;
 	/**
 	 * Subagent registry owned by this surface's transport when it has no RPC
 	 * runner (a terminal-hosted publication). The stdio runner supplies its own
@@ -949,11 +965,16 @@ export class RpcCommandSurface {
 	readonly #host: RpcHostCommandServices | undefined;
 	readonly #subagents: RpcSubagentRegistry | undefined;
 	readonly #mcpManager: MCPManager | undefined;
-	readonly #upgradeRuntime: (() => void) | undefined;
+	readonly #upgradeRuntime: RpcCommandSurfaceOptions["upgradeRuntime"];
+	readonly #modelRuntimeUpgrade: ModelRuntimeUpgrade | undefined;
+	#unbindModelRuntimeUpgrade: (() => void) | undefined;
+	#pendingGracefulUpgrade: { id: string; acknowledge: () => RpcUpgradeRuntimeResult } | undefined;
+	#gracefulResults: GracefulRestartResults | undefined;
 	readonly #mcpUiAborts = new WeakMap<RpcClientConn, AbortController>();
 	#mcpControl: RpcMcpControl | undefined;
 	#idleUpgradeArmed = false;
 	#unsubscribeIdleUpgrade: (() => void) | undefined;
+	#upgradeEpoch = 0;
 	readonly #refusedCommands: Readonly<Record<string, true>> | undefined;
 	readonly #eventFilter:
 		| ((
@@ -980,6 +1001,12 @@ export class RpcCommandSurface {
 		this.#subagents = options.subagents;
 		this.#mcpManager = options.mcpManager ?? options.host?.mcpManager;
 		this.#upgradeRuntime = options.upgradeRuntime;
+		this.#modelRuntimeUpgrade = options.modelRuntimeUpgrade;
+		this.#unbindModelRuntimeUpgrade = options.modelRuntimeUpgrade?.bind(this.#session, request => {
+			const pending = this.#pendingGracefulUpgrade;
+			if (!pending || pending.id !== request) throw new Error("no matching restart request is pending");
+			return pending.acknowledge();
+		});
 		this.#refusedCommands = options.refusedCommands;
 		this.#eventFilter = options.eventFilter;
 		this.hostToolBridge = new RpcHostToolBridge(options.defaultConn);
@@ -997,6 +1024,8 @@ export class RpcCommandSurface {
 
 	dispose(): void {
 		this.#disarmIdleUpgrade();
+		this.#unbindModelRuntimeUpgrade?.();
+		this.#unbindModelRuntimeUpgrade = undefined;
 		this.#unsubscribeObserve?.();
 		this.#unsubscribeObserve = undefined;
 		this.#unsubscribeCommandMetadata?.();
@@ -1021,48 +1050,95 @@ export class RpcCommandSurface {
 		this.#output({ type: "available_commands_update", commands: await buildAvailableSlashCommands(this.#session) });
 	}
 
-	#isSettledForUpgrade(): boolean {
-		const session = this.#session;
+	#isSettledForUpgrade(graceful = false): boolean {
 		return (
-			!session.isStreaming &&
-			!session.isCompacting &&
-			session.queuedMessageCount === 0 &&
-			!session.hasPendingAsyncWork()
+			!this.#session.isCompacting &&
+			isSessionSettled(this.#session) &&
+			(!graceful ||
+				(isGracefulRestartSettled(getRpcRefreshPreflight(this.#session)) &&
+					this.#gracefulResults?.areConsumed() === true))
 		);
 	}
 
-	#armIdleUpgrade(upgrade: () => void): void {
-		if (this.#idleUpgradeArmed) return;
+	#hasUpgradeTarget(refresh: boolean): boolean {
+		const generation = readRuntimeGeneration();
+		return !!generation && (generation.behind || (refresh && generation.current === generation.running));
+	}
+
+	#armIdleUpgrade(upgrade: () => void, refresh = false, graceful = false): void {
+		// The newly acknowledged request replaces the previous idle intent.
+		this.#disarmIdleUpgrade(!graceful);
+		const epoch = this.#upgradeEpoch;
 		this.#idleUpgradeArmed = true;
-		this.#unsubscribeIdleUpgrade = this.#session.subscribe(event => {
+		let waitingForAdmission = false;
+		const recheck = () => {
+			if (epoch !== this.#upgradeEpoch) return;
+			if (this.#session.hasAdmittedSubmission) {
+				if (waitingForAdmission) return;
+				waitingForAdmission = true;
+				void this.#session.waitForAdmittedSubmissions().then(() => {
+					waitingForAdmission = false;
+					setImmediate(recheck);
+				});
+				return;
+			}
+			this.#runIdleUpgradeWhenSettled(upgrade, refresh, graceful);
+		};
+		const unsubscribeSession = this.#session.subscribe(event => {
+			if (epoch !== this.#upgradeEpoch) return;
 			if (event.type !== "agent_end" && event.type !== "queue_update" && event.type !== "auto_compaction_end") {
 				return;
 			}
-			this.#runIdleUpgradeWhenSettled(upgrade);
+			recheck();
 		});
-		setImmediate(() => this.#runIdleUpgradeWhenSettled(upgrade));
+		const unsubscribeJobs = graceful
+			? this.#session.asyncJobManager?.onJobSettled(() => setImmediate(recheck))
+			: undefined;
+		this.#unsubscribeIdleUpgrade = () => {
+			unsubscribeSession();
+			unsubscribeJobs?.();
+		};
+		setImmediate(recheck);
 	}
 
-	#runIdleUpgradeWhenSettled(upgrade: () => void): void {
+	#runIdleUpgradeWhenSettled(upgrade: () => void, refresh: boolean, graceful: boolean): void {
 		if (!this.#idleUpgradeArmed) return;
-		if (!readRuntimeGeneration()?.behind) {
+		if (!this.#hasUpgradeTarget(refresh)) {
 			this.#disarmIdleUpgrade();
 			return;
 		}
-		if (!this.#isSettledForUpgrade()) return;
-		this.#disarmIdleUpgrade();
-		setImmediate(upgrade);
+		if (!this.#isSettledForUpgrade(graceful)) return;
+		this.#scheduleUpgrade(upgrade, false, refresh, graceful);
 	}
 
-	#disarmIdleUpgrade(): void {
+	#disarmIdleUpgrade(clearGraceful = true): void {
+		this.#upgradeEpoch++;
+		if (clearGraceful) {
+			this.#gracefulResults?.dispose();
+			this.#gracefulResults = undefined;
+		}
+		this.#pendingGracefulUpgrade = undefined;
 		this.#idleUpgradeArmed = false;
 		this.#unsubscribeIdleUpgrade?.();
 		this.#unsubscribeIdleUpgrade = undefined;
 	}
 
-	#upgradeRuntimeGeneration(command: RpcCommand & { type: "upgrade_runtime" }): RpcResponse {
-		const upgrade = this.#upgradeRuntime;
-		if (!upgrade) {
+	#scheduleUpgrade(upgrade: () => void, force = false, refresh = false, graceful = false): void {
+		this.#disarmIdleUpgrade(!graceful);
+		const epoch = this.#upgradeEpoch;
+		setImmediate(() => {
+			if (epoch !== this.#upgradeEpoch || !this.#hasUpgradeTarget(refresh)) return;
+			if (!force && !this.#isSettledForUpgrade(graceful)) {
+				this.#armIdleUpgrade(upgrade, refresh, graceful);
+				return;
+			}
+			upgrade();
+		});
+	}
+
+	async #upgradeRuntimeGeneration(command: RpcCommand & { type: "upgrade_runtime" }): Promise<RpcResponse> {
+		const restart = this.#upgradeRuntime;
+		if (!restart) {
 			return rpcError(
 				command.id,
 				"upgrade_runtime",
@@ -1070,7 +1146,111 @@ export class RpcCommandSurface {
 				"upgrade_unavailable",
 			);
 		}
+		const graceful = command.graceful === true;
+		const refresh = command.refresh === true || graceful || command.compactBeforeRestart === true;
+		if (refresh && command.force === true) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"Forced exact-session refresh is unavailable; wait until the conversation is settled.",
+				"refresh_force_unsupported",
+			);
+		}
+		const sessionId = this.#session.sessionId;
+		const sessionFile = this.#session.sessionFile;
+		const requestEpoch = this.#upgradeEpoch;
+		const hasExpectedTarget = command.expectedSessionId !== undefined || command.expectedSessionFile !== undefined;
+		if (
+			hasExpectedTarget &&
+			(command.expectedSessionId !== sessionId ||
+				typeof command.expectedSessionFile !== "string" ||
+				!path.isAbsolute(command.expectedSessionFile))
+		) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"The expected full session id and canonical transcript must identify the current conversation.",
+				"session_target_mismatch",
+			);
+		}
+		let target: SessionRestartTarget | undefined;
+		const upgrade = () => {
+			// A deferred request belongs to the exact conversation that accepted it.
+			if (this.#session.sessionId !== sessionId || this.#session.sessionFile !== sessionFile) return;
+			const epoch = this.#upgradeEpoch;
+			restart(
+				target,
+				() => {
+					if (
+						epoch !== this.#upgradeEpoch ||
+						this.#session.sessionId !== sessionId ||
+						this.#session.sessionFile !== sessionFile ||
+						!this.#hasUpgradeTarget(refresh)
+					) {
+						return false;
+					}
+					if (command.force !== true && !this.#isSettledForUpgrade(graceful)) {
+						this.#armIdleUpgrade(upgrade, refresh, graceful);
+						return false;
+					}
+					return true;
+				},
+				{ graceful, compactBeforeRestart: command.compactBeforeRestart === true },
+			);
+		};
 		const generation = readRuntimeGeneration();
+		if (sessionFile && this.#session.sessionManager.requiresSessionFile()) {
+			if (!sessionId) {
+				return rpcError(
+					command.id,
+					"upgrade_runtime",
+					"The current conversation identity is unavailable.",
+					"session_target_unavailable",
+				);
+			}
+			try {
+				target = { sessionId, sessionFile: await fs.realpath(sessionFile) };
+			} catch {
+				return rpcError(
+					command.id,
+					"upgrade_runtime",
+					"The canonical conversation transcript is unavailable.",
+					"session_target_unavailable",
+				);
+			}
+		}
+		if (refresh && (!hasExpectedTarget || !target)) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"Exact-session refresh requires the full session id and canonical persisted transcript.",
+				"session_target_required",
+			);
+		}
+		if (hasExpectedTarget && target?.sessionFile !== command.expectedSessionFile) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"The expected canonical transcript does not match the current conversation.",
+				"session_target_mismatch",
+			);
+		}
+		if (requestEpoch !== this.#upgradeEpoch) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"The upgrade request was cancelled before its target was verified.",
+				"upgrade_cancelled",
+			);
+		}
+		if (this.#session.sessionId !== sessionId || this.#session.sessionFile !== sessionFile) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"The selected conversation changed before restart was scheduled.",
+				"session_changed",
+			);
+		}
 		if (!generation) {
 			this.#disarmIdleUpgrade();
 			const result: RpcUpgradeRuntimeResult = {
@@ -1084,7 +1264,7 @@ export class RpcCommandSurface {
 			running: generation.running,
 			...(generation.current === undefined ? {} : { current: generation.current }),
 		};
-		if (!generation.behind) {
+		if (!generation.behind && !refresh) {
 			this.#disarmIdleUpgrade();
 			const result: RpcUpgradeRuntimeResult = {
 				upgraded: false,
@@ -1094,9 +1274,56 @@ export class RpcCommandSurface {
 			};
 			return rpcSuccess(command.id, "upgrade_runtime", result);
 		}
+		if (!this.#hasUpgradeTarget(refresh)) {
+			return rpcError(command.id, "upgrade_runtime", "The runtime target is unavailable.", "upgrade_unavailable");
+		}
+		if (graceful) {
+			if (!this.#modelRuntimeUpgrade?.isMounted(this.#session)) {
+				return rpcError(
+					command.id,
+					"upgrade_runtime",
+					"The native model restart tool is not mounted.",
+					"graceful_unavailable",
+				);
+			}
+			this.#disarmIdleUpgrade();
+			this.#gracefulResults = new GracefulRestartResults(this.#session);
+			const epoch = this.#upgradeEpoch;
+			const requestId = crypto.randomUUID();
+			let acknowledgedEpoch: number | undefined;
+			this.#pendingGracefulUpgrade = {
+				id: requestId,
+				acknowledge: () => {
+					this.#armIdleUpgrade(upgrade, refresh, true);
+					acknowledgedEpoch = this.#upgradeEpoch;
+					return { upgraded: false, scheduled: true, ...observed, reason: "scheduled_on_idle" };
+				},
+			};
+			void this.#session
+				.sendCustomMessage(
+					{ customType: "runtime-restart", content: prompt.render(restartNotice, { requestId }), display: false },
+					{ triggerTurn: true, deliverAs: "steer" },
+				)
+				.finally(() => {
+					if (acknowledgedEpoch !== undefined && acknowledgedEpoch === this.#upgradeEpoch) {
+						this.#runIdleUpgradeWhenSettled(upgrade, refresh, true);
+					}
+				})
+				.catch(error => {
+					if (epoch !== this.#upgradeEpoch) return;
+					this.#disarmIdleUpgrade();
+					logger.warn("Graceful restart checkpoint request failed", { error: String(error) });
+				});
+			return rpcSuccess(command.id, "upgrade_runtime", {
+				upgraded: false,
+				scheduled: true,
+				...observed,
+				reason: "checkpoint_requested",
+			});
+		}
 		if (!this.#isSettledForUpgrade() && command.force !== true) {
 			if (command.whenIdle === true) {
-				this.#armIdleUpgrade(upgrade);
+				this.#armIdleUpgrade(upgrade, refresh);
 				const result: RpcUpgradeRuntimeResult = {
 					upgraded: false,
 					scheduled: true,
@@ -1112,8 +1339,7 @@ export class RpcCommandSurface {
 				"session_busy",
 			);
 		}
-		this.#disarmIdleUpgrade();
-		setImmediate(upgrade);
+		this.#scheduleUpgrade(upgrade, command.force === true, refresh);
 		const result: RpcUpgradeRuntimeResult = { upgraded: true, scheduled: false, ...observed };
 		return rpcSuccess(command.id, "upgrade_runtime", result);
 	}
@@ -1703,6 +1929,12 @@ export class RpcCommandSurface {
 					getRpcSessionState(session, host?.scheduledTurnPending ?? NO_SCHEDULED_TURN),
 				);
 			}
+
+			case "get_refresh_preflight":
+				return rpcSuccess(id, "get_refresh_preflight", {
+					...getRpcRefreshPreflight(session),
+					restartReceipt: await getRpcRuntimeRestartReceipt(session),
+				});
 
 			case "upgrade_runtime":
 				return this.#upgradeRuntimeGeneration(command);
@@ -2498,7 +2730,8 @@ export async function serveInteractiveSessionSocket(options: {
 	/** The terminal's shutdown state; `new_session`-free surfaces report it verbatim. */
 	isShuttingDown?: () => boolean;
 	/** Restart this owner onto `generations/current`; wires `upgrade_runtime`. */
-	upgradeRuntime?: () => void;
+	upgradeRuntime?: RpcCommandSurfaceOptions["upgradeRuntime"];
+	modelRuntimeUpgrade?: ModelRuntimeUpgrade;
 }): Promise<ServedSessionSocket> {
 	const session = options.session;
 	const clients = new RpcClientRegistry();
@@ -2626,6 +2859,7 @@ export async function serveInteractiveSessionSocket(options: {
 		subagents,
 		mcpManager: options.mcpManager,
 		upgradeRuntime: options.upgradeRuntime,
+		modelRuntimeUpgrade: options.modelRuntimeUpgrade,
 		refusedCommands: SHARED_SESSION_REFUSED_COMMANDS,
 		eventFilter: (conn, events, messageUpdates) => eventView(conn ?? defaultConn).setFilter(events, messageUpdates),
 		host: {

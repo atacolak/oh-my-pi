@@ -77,6 +77,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
 import { restartArgv } from "../cli/flag-tables";
 import { SESSION_OWNER_WORKER_ARG } from "../cli/worker-selectors";
+import { matchesSessionPath, type SessionRestartTarget } from "../launch/session-attach";
 import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
@@ -167,6 +168,7 @@ import { formatQueueShorthand } from "@oh-my-pi/pi-tui/prompt/queue-input";
 import { isTranscriptEntry, type SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
 import { loadPinnedSessionIds } from "../session/session-pins";
+import { readSessionHeaderIdSync } from "../session/session-storage";
 import {
 	canAutoCreateWorktree,
 	planWorktreeExit,
@@ -180,7 +182,9 @@ import { buildStaticInlineHint } from "../slash-commands/builtin-completions";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
 import { type DictationTarget, MicCursor, type SttCallbacks, STTController, type SttState } from "../stt";
 import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
-import { resolveCliEntryCmd } from "../subprocess/worker-client";
+import { attestCliRestartReceiver, resolveCliEntryCmd, validateCliEntryCmd } from "../subprocess/worker-client";
+import type { ModelRuntimeUpgrade, RuntimeRestartOptions } from "./rpc/model-runtime-upgrade";
+import { getRpcRefreshPreflight, isGracefulRestartSettled } from "./rpc/rpc-refresh-preflight";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
@@ -8222,7 +8226,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * generation of the PTY this publication belongs to, which enables the
 	 * transport-local `terminal_refresh` request for an attaching mirror.
 	 */
-	async attachSessionSocket(socket: RpcSessionSocket | undefined, owner?: { generation: string }): Promise<void> {
+	async attachSessionSocket(
+		socket: RpcSessionSocket | undefined,
+		owner?: { generation: string },
+		modelRuntimeUpgrade?: ModelRuntimeUpgrade,
+	): Promise<void> {
 		if (!socket || this.#servedSessionSocket) return;
 		const { serveInteractiveSessionSocket } = await import("./rpc/rpc-command-surface");
 		const generation = owner?.generation ?? sessionOwnerContext()?.id;
@@ -8233,7 +8241,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			firstResponder: this.dialogFirstResponder,
 			mcpManager: this.mcpManager,
 			isShuttingDown: () => this.#isShuttingDown,
-			upgradeRuntime: () => void this.restart(),
+			upgradeRuntime: (target, canRestart, options) => void this.restart(target, canRestart, options),
+			modelRuntimeUpgrade,
 			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
 		});
 	}
@@ -8459,8 +8468,113 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * exec. On Windows (no exec semantics) or on exec failure, falls back to
 	 * spawning the replacement and lingering only to forward its exit code.
 	 */
-	async restart(): Promise<void> {
+	async restart(
+		expectedTarget?: SessionRestartTarget,
+		canRestart?: () => boolean,
+		options: RuntimeRestartOptions = {},
+	): Promise<void> {
 		if (this.#isShuttingDown) return;
+		const target = expectedTarget && {
+			sessionId: expectedTarget.sessionId,
+			sessionFile: expectedTarget.sessionFile,
+		};
+		const entry = resolveUpgradedCliEntryCmd(resolveCliEntryCmd());
+		try {
+			validateCliEntryCmd(entry.cmd);
+		} catch (error) {
+			// A refusal must not clear admitted input or dispose the running owner.
+			this.showWarning(`Restart receiver refused: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		const persistedFile = this.sessionManager.requiresSessionFile()
+			? this.sessionManager.getSessionFile()
+			: undefined;
+		if (target && target.sessionId !== this.sessionManager.getSessionId()) {
+			this.showWarning("Restart target refused: the full session id does not match the current conversation");
+			return;
+		}
+		if (
+			target &&
+			(!persistedFile ||
+				!(await matchesSessionPath(persistedFile, target.sessionFile)) ||
+				target.sessionId !== this.sessionManager.getSessionId() ||
+				persistedFile !== this.sessionManager.getSessionFile())
+		) {
+			this.showWarning("Restart target refused: the canonical transcript does not match the current conversation");
+			return;
+		}
+		// Canonical path observation may yield while another restart begins.
+		if (this.#isShuttingDown) return;
+		if (persistedFile && readSessionHeaderIdSync(persistedFile) !== this.sessionManager.getSessionId()) {
+			this.showWarning("Restart session refused: the journal no longer identifies the current session");
+			return;
+		}
+		if (persistedFile && !this.sessionManager.hasSessionOwnership()) {
+			this.showWarning("Restart ownership refused: this session manager does not own the journal");
+			return;
+		}
+		const owner = sessionOwnerContext();
+		if (target && !owner) {
+			this.showWarning("Restart receiver refused: exact restart requires the brokered owner route");
+			return;
+		}
+		const selectedSessionId = this.sessionManager.getSessionId();
+		const selectedSessionFile = this.sessionManager.getSessionFile();
+		try {
+			await attestCliRestartReceiver(entry.cmd);
+		} catch (error) {
+			this.showWarning(`Restart receiver refused: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		// Revalidate after every preparation phase; the final admission check has no await before closing.
+		for (const prepare of options.graceful || options.compactBeforeRestart ? [true, false] : [false]) {
+			const pathStillMatches =
+				!target || (persistedFile !== undefined && (await matchesSessionPath(persistedFile, target.sessionFile)));
+			if (this.#isShuttingDown) return;
+			const currentOwner = sessionOwnerContext();
+			if (
+				!pathStillMatches ||
+				this.sessionManager.getSessionId() !== selectedSessionId ||
+				this.sessionManager.getSessionFile() !== selectedSessionFile ||
+				currentOwner?.id !== owner?.id ||
+				currentOwner?.name !== owner?.name ||
+				currentOwner?.projectDir !== owner?.projectDir
+			) {
+				this.showWarning("Restart target refused: the selected conversation changed during restart preparation");
+				return;
+			}
+			if (
+				persistedFile &&
+				(readSessionHeaderIdSync(persistedFile) !== selectedSessionId || !this.sessionManager.hasSessionOwnership())
+			) {
+				this.showWarning("Restart ownership refused: the selected journal changed during restart preparation");
+				return;
+			}
+			try {
+				if (canRestart && !canRestart()) {
+					this.showWarning("Restart deferred: the request was cancelled or the conversation is no longer settled");
+					return;
+				}
+			} catch (error) {
+				this.showWarning(`Restart admission refused: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+			if (options.graceful && (!canRestart || !isGracefulRestartSettled(getRpcRefreshPreflight(this.session)))) {
+				this.showWarning("Restart deferred: session-owned work is active or its state is unknown");
+				return;
+			}
+			if (prepare) {
+				try {
+					if (options.compactBeforeRestart) await this.session.compact();
+					await this.sessionManager.flush();
+				} catch (error) {
+					this.showWarning(
+						`Restart preparation refused: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return;
+				}
+			}
+		}
 		this.#beginClose();
 		try {
 			await this.#teardown();
@@ -8469,13 +8583,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		const sessionFile = this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined;
+		// An exact caller selection is pinned before teardown, never rediscovered after it.
+		const sessionFile =
+			target?.sessionFile ??
+			(this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined);
 		// Pass the profile explicitly: native exec does not inherit Bun's process.env updates.
 		const activeProfile = getActiveProfile();
-		const owner = sessionOwnerContext();
 		const launchArgv = process.argv.slice(2);
 		if (launchArgv[0] === SESSION_OWNER_WORKER_ARG) launchArgv.shift();
-		const entry = resolveUpgradedCliEntryCmd(resolveCliEntryCmd());
 		const cmd = [...entry.cmd];
 		if (owner) cmd.push(SESSION_OWNER_WORKER_ARG);
 		cmd.push(
@@ -8492,7 +8607,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// A configured running-entry override must name the entry actually
 		// executed, including the upgraded generation.
 		const carriedEnv: [string, string][] = [];
-		if (owner) carriedEnv.push([SESSION_OWNER_CONTEXT_ENV, JSON.stringify(owner)]);
+		if (owner) carriedEnv.push([SESSION_OWNER_CONTEXT_ENV, JSON.stringify({ ...owner, restartTarget: target })]);
 		const runningEntryOverride = process.env.OMP_RUNNING_GENERATION_ENTRY?.trim();
 		if (entry.upgraded && runningEntryOverride && entry.entry) {
 			carriedEnv.push(["OMP_RUNNING_GENERATION_ENTRY", entry.entry]);

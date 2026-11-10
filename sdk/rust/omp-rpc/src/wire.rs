@@ -3149,6 +3149,72 @@ pub struct UpgradeRuntimeResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshEphemeralWork {
+	pub streaming: bool,
+	#[serde(rename = "admittedSubmission")]
+	pub admitted_submission: bool,
+	pub compacting: bool,
+	#[serde(rename = "inFlightTools", deserialize_with = "Deserialize::deserialize")]
+	pub in_flight_tools: Option<i64>,
+	#[serde(rename = "taskSubagents", deserialize_with = "Deserialize::deserialize")]
+	pub task_subagents: Option<i64>,
+	#[serde(rename = "backgroundJobs", deserialize_with = "Deserialize::deserialize")]
+	pub background_jobs: Option<i64>,
+	/// Services owned by this session; null means unavailable.
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub services: Option<i64>,
+	/// Unknown inventory is never reported as idle.
+	#[serde(rename = "hasEphemeralWork", deserialize_with = "Deserialize::deserialize")]
+	pub has_ephemeral_work: Option<bool>,
+	/// Detached broker services are not inspected by this observation.
+	#[serde(rename = "servicesUninspected", default = "default_refresh_ephemeral_work_services_uninspected")]
+	pub services_uninspected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshPrimaryPromptTools {
+	pub names: Vec<String>,
+	pub total: i64,
+	pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshModes {
+	pub graceful: bool,
+	pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeRestartReceipt {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(rename = "sessionFile")]
+	pub session_file: String,
+	#[serde(rename = "bootId")]
+	pub boot_id: String,
+	#[serde(rename = "importedGeneration", deserialize_with = "Deserialize::deserialize")]
+	pub imported_generation: Option<String>,
+	#[serde(rename = "basePromptDigest")]
+	pub base_prompt_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshPreflight {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(rename = "sessionFile", deserialize_with = "Deserialize::deserialize")]
+	pub session_file: Option<String>,
+	#[serde(rename = "ephemeralWork")]
+	pub ephemeral_work: RefreshEphemeralWork,
+	#[serde(rename = "primaryPromptTools")]
+	pub primary_prompt_tools: RefreshPrimaryPromptTools,
+	#[serde(rename = "refreshModes")]
+	pub refresh_modes: RefreshModes,
+	#[serde(rename = "restartReceipt", default, skip_serializing_if = "Option::is_none")]
+	pub restart_receipt: Option<RuntimeRestartReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionDiagnosticModel {
 	pub provider: String,
 	pub id: String,
@@ -5494,6 +5560,21 @@ pub struct UpgradeRuntimeParams {
 	pub when_idle: Option<bool>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub force: Option<bool>,
+	/// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub refresh: Option<bool>,
+	/// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub graceful: Option<bool>,
+	/// Compact before teardown; failure preserves the running owner.
+	#[serde(rename = "compactBeforeRestart", default, skip_serializing_if = "Option::is_none")]
+	pub compact_before_restart: Option<bool>,
+	/// Full selected session id; supply together with expectedSessionFile.
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	/// Canonical absolute transcript path; supply together with expectedSessionId.
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6206,6 +6287,8 @@ pub enum UpgradeRuntimeResultReason {
 	NotGenerationManaged,
 	#[serde(rename = "scheduled_on_idle")]
 	ScheduledOnIdle,
+	#[serde(rename = "checkpoint_requested")]
+	CheckpointRequested,
 }
 
 impl UpgradeRuntimeResultReason {
@@ -6215,6 +6298,7 @@ impl UpgradeRuntimeResultReason {
 			Self::AlreadyCurrent => "already_current",
 			Self::NotGenerationManaged => "not_generation_managed",
 			Self::ScheduledOnIdle => "scheduled_on_idle",
+			Self::CheckpointRequested => "checkpoint_requested",
 		}
 	}
 }
@@ -6348,6 +6432,10 @@ fn default_queued_messages_state_live_steered() -> i64 {
 
 fn default_upgrade_runtime_result_scheduled() -> bool {
 	serde_json::from_str("false").expect("valid wire default")
+}
+
+fn default_refresh_ephemeral_work_services_uninspected() -> bool {
+	serde_json::from_str("true").expect("valid wire default")
 }
 
 fn default_session_state_is_streaming() -> bool {
@@ -6664,6 +6752,20 @@ impl Command for GetStateCommand {
 	}
 }
 
+/// Observe refresh hazards and bounded mounted tools without restarting or starting a broker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetRefreshPreflightCommand {}
+
+impl Command for GetRefreshPreflightCommand {
+	const NAME: &'static str = "get_refresh_preflight";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = RefreshPreflight;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<RefreshPreflight>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
 /// Restart the session owner onto the current runtime generation, now or when idle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UpgradeRuntimeCommand {
@@ -6671,6 +6773,21 @@ pub struct UpgradeRuntimeCommand {
 	pub when_idle: Option<bool>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub force: Option<bool>,
+	/// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub refresh: Option<bool>,
+	/// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub graceful: Option<bool>,
+	/// Compact before teardown; failure preserves the running owner.
+	#[serde(rename = "compactBeforeRestart", default, skip_serializing_if = "Option::is_none")]
+	pub compact_before_restart: Option<bool>,
+	/// Full selected session id; supply together with expectedSessionFile.
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	/// Canonical absolute transcript path; supply together with expectedSessionId.
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
 }
 
 impl Command for UpgradeRuntimeCommand {

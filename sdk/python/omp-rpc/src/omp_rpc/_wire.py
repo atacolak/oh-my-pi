@@ -689,8 +689,56 @@ class UpgradeRuntimeResult:
     """Generation the owner runs now."""
     current: str | None = None
     """Generation `generations/current` selects, when readable."""
-    reason: Literal["already_current", "not_generation_managed", "scheduled_on_idle"] | None = None
+    reason: Literal["already_current", "not_generation_managed", "scheduled_on_idle", "checkpoint_requested"] | None = None
     """Why no upgrade is running now."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RefreshEphemeralWork:
+    streaming: bool
+    admitted_submission: bool
+    compacting: bool
+    in_flight_tools: int | None
+    task_subagents: int | None
+    background_jobs: int | None
+    services: int | None
+    """Services owned by this session; null means unavailable."""
+    has_ephemeral_work: bool | None
+    """Unknown inventory is never reported as idle."""
+    services_uninspected: bool = True
+    """Detached broker services are not inspected by this observation."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RefreshPrimaryPromptTools:
+    names: tuple[str, ...]
+    total: int
+    truncated: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RefreshModes:
+    graceful: bool
+    force: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RuntimeRestartReceipt:
+    session_id: str
+    session_file: str
+    boot_id: str
+    imported_generation: str | None
+    base_prompt_digest: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RefreshPreflight:
+    session_id: str
+    session_file: str | None
+    ephemeral_work: RefreshEphemeralWork
+    primary_prompt_tools: RefreshPrimaryPromptTools
+    refresh_modes: RefreshModes
+    restart_receipt: RuntimeRestartReceipt | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2150,7 +2198,62 @@ def parse_upgrade_runtime_result(value: object, path: str = "UpgradeRuntimeResul
         scheduled=defaulted(payload, "scheduled", decode_bool, path, False),
         running=optional(payload, "running", decode_str, path),
         current=optional(payload, "current", decode_str, path),
-        reason=optional(payload, "reason", cast('Decoder[Literal["already_current", "not_generation_managed", "scheduled_on_idle"]]', literal(frozenset({"already_current", "not_generation_managed", "scheduled_on_idle"}))), path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["already_current", "not_generation_managed", "scheduled_on_idle", "checkpoint_requested"]]', literal(frozenset({"already_current", "not_generation_managed", "scheduled_on_idle", "checkpoint_requested"}))), path),
+    )
+
+
+def parse_refresh_ephemeral_work(value: object, path: str = "RefreshEphemeralWork") -> RefreshEphemeralWork:
+    payload = expect_object(value, path)
+    return RefreshEphemeralWork(
+        streaming=required(payload, "streaming", decode_bool, path),
+        admitted_submission=required(payload, "admittedSubmission", decode_bool, path),
+        compacting=required(payload, "compacting", decode_bool, path),
+        in_flight_tools=required(payload, "inFlightTools", nullable(decode_int), path),
+        task_subagents=required(payload, "taskSubagents", nullable(decode_int), path),
+        background_jobs=required(payload, "backgroundJobs", nullable(decode_int), path),
+        services=required(payload, "services", nullable(decode_int), path),
+        has_ephemeral_work=required(payload, "hasEphemeralWork", nullable(decode_bool), path),
+        services_uninspected=defaulted(payload, "servicesUninspected", decode_bool, path, True),
+    )
+
+
+def parse_refresh_primary_prompt_tools(value: object, path: str = "RefreshPrimaryPromptTools") -> RefreshPrimaryPromptTools:
+    payload = expect_object(value, path)
+    return RefreshPrimaryPromptTools(
+        names=required(payload, "names", array(decode_str), path),
+        total=required(payload, "total", decode_int, path),
+        truncated=required(payload, "truncated", decode_bool, path),
+    )
+
+
+def parse_refresh_modes(value: object, path: str = "RefreshModes") -> RefreshModes:
+    payload = expect_object(value, path)
+    return RefreshModes(
+        graceful=required(payload, "graceful", decode_bool, path),
+        force=required(payload, "force", decode_bool, path),
+    )
+
+
+def parse_runtime_restart_receipt(value: object, path: str = "RuntimeRestartReceipt") -> RuntimeRestartReceipt:
+    payload = expect_object(value, path)
+    return RuntimeRestartReceipt(
+        session_id=required(payload, "sessionId", decode_str, path),
+        session_file=required(payload, "sessionFile", decode_str, path),
+        boot_id=required(payload, "bootId", decode_str, path),
+        imported_generation=required(payload, "importedGeneration", nullable(decode_str), path),
+        base_prompt_digest=required(payload, "basePromptDigest", decode_str, path),
+    )
+
+
+def parse_refresh_preflight(value: object, path: str = "RefreshPreflight") -> RefreshPreflight:
+    payload = expect_object(value, path)
+    return RefreshPreflight(
+        session_id=required(payload, "sessionId", decode_str, path),
+        session_file=required(payload, "sessionFile", nullable(decode_str), path),
+        ephemeral_work=required(payload, "ephemeralWork", parse_refresh_ephemeral_work, path),
+        primary_prompt_tools=required(payload, "primaryPromptTools", parse_refresh_primary_prompt_tools, path),
+        refresh_modes=required(payload, "refreshModes", parse_refresh_modes, path),
+        restart_receipt=optional(payload, "restartReceipt", nullable(parse_runtime_restart_receipt), path),
     )
 
 
@@ -3585,13 +3688,28 @@ class WireClient:
         params: dict[str, object] = {}
         return parse_session_state(self._command("get_state", params), "get_state")
 
-    def upgrade_runtime(self, *, when_idle: bool | None = None, force: bool | None = None) -> UpgradeRuntimeResult:
+    def get_refresh_preflight(self) -> RefreshPreflight:
+        """Observe refresh hazards and bounded mounted tools without restarting or starting a broker."""
+        params: dict[str, object] = {}
+        return parse_refresh_preflight(self._command("get_refresh_preflight", params), "get_refresh_preflight")
+
+    def upgrade_runtime(self, *, when_idle: bool | None = None, force: bool | None = None, refresh: bool | None = None, graceful: bool | None = None, compact_before_restart: bool | None = None, expected_session_id: str | None = None, expected_session_file: str | None = None) -> UpgradeRuntimeResult:
         """Restart the session owner onto the current runtime generation, now or when idle."""
         params: dict[str, object] = {}
         if when_idle is not None:
             params["whenIdle"] = when_idle
         if force is not None:
             params["force"] = force
+        if refresh is not None:
+            params["refresh"] = refresh
+        if graceful is not None:
+            params["graceful"] = graceful
+        if compact_before_restart is not None:
+            params["compactBeforeRestart"] = compact_before_restart
+        if expected_session_id is not None:
+            params["expectedSessionId"] = expected_session_id
+        if expected_session_file is not None:
+            params["expectedSessionFile"] = expected_session_file
         return parse_upgrade_runtime_result(self._command("upgrade_runtime", params), "upgrade_runtime")
 
     def set_fast_mode(self, enabled: bool) -> FastModeResult:
@@ -4358,6 +4476,10 @@ __all__ = [
     "QueuedMessagesState",
     "ReadyEvent",
     "RedactedThinkingContent",
+    "RefreshEphemeralWork",
+    "RefreshModes",
+    "RefreshPreflight",
+    "RefreshPrimaryPromptTools",
     "RemoveQueuedMessageResult",
     "RestoredQueuedMessage",
     "RetryFallbackAppliedEvent",
@@ -4366,6 +4488,7 @@ __all__ = [
     "RpcFrameErrorEvent",
     "RpcNotification",
     "RuntimeGenerationState",
+    "RuntimeRestartReceipt",
     "SelectOptionDetail",
     "SelectUiRequest",
     "SessionCredits",
@@ -4547,6 +4670,10 @@ __all__ = [
     "parse_queued_messages_state",
     "parse_ready_event",
     "parse_redacted_thinking_content",
+    "parse_refresh_ephemeral_work",
+    "parse_refresh_modes",
+    "parse_refresh_preflight",
+    "parse_refresh_primary_prompt_tools",
     "parse_remove_queued_message_result",
     "parse_restored_queued_message",
     "parse_retry_fallback_applied_event",
@@ -4554,6 +4681,7 @@ __all__ = [
     "parse_rpc_agent_event",
     "parse_rpc_frame_error_event",
     "parse_runtime_generation_state",
+    "parse_runtime_restart_receipt",
     "parse_select_option_detail",
     "parse_select_ui_request",
     "parse_session_credits",

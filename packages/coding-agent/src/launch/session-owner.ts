@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import type { DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
 import { SESSION_OWNER_WORKER_ARG } from "../cli/worker-selectors";
 import {
@@ -14,6 +15,7 @@ import {
 	type SessionAttachProbe,
 	type SessionAttachRefusalCode,
 	type SessionAttachTerminal,
+	type SessionRestartTarget,
 } from "./session-attach";
 
 /** Private launch metadata the broker injects into a session-owner child. */
@@ -48,6 +50,8 @@ export interface SessionOwnerContext {
 	projectDir: string;
 	name: string;
 	id: string;
+	/** Exact conversation selected before an in-place restart; never a resume hint. */
+	restartTarget?: SessionRestartTarget;
 }
 
 export interface SessionOwnerLaunchOptions {
@@ -71,7 +75,7 @@ function parseSessionOwnerContext(raw: string): SessionOwnerContext {
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new TypeError("Session owner launch context is not an object");
 	}
-	const { projectDir, name, id } = parsed as Partial<SessionOwnerContext>;
+	const { projectDir, name, id, restartTarget } = parsed as Partial<SessionOwnerContext>;
 	if (typeof projectDir !== "string" || projectDir.length === 0) {
 		throw new TypeError("Session owner launch context has no project directory");
 	}
@@ -81,7 +85,18 @@ function parseSessionOwnerContext(raw: string): SessionOwnerContext {
 	if (typeof id !== "string" || id.length === 0) {
 		throw new TypeError("Session owner launch context has no broker generation");
 	}
-	return { projectDir, name, id };
+	if (
+		restartTarget !== undefined &&
+		(typeof restartTarget !== "object" ||
+			restartTarget === null ||
+			typeof restartTarget.sessionId !== "string" ||
+			restartTarget.sessionId.length === 0 ||
+			typeof restartTarget.sessionFile !== "string" ||
+			!path.isAbsolute(restartTarget.sessionFile))
+	) {
+		throw new TypeError("Session owner restart target requires a full session id and absolute transcript");
+	}
+	return { projectDir, name, id, ...(restartTarget === undefined ? {} : { restartTarget }) };
 }
 
 /**

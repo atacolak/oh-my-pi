@@ -4,16 +4,19 @@ import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runRootCommand } from "@oh-my-pi/pi-coding-agent/main";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { setInteractiveHost, TempDir } from "@oh-my-pi/pi-utils";
 
 describe("runRootCommand — --alt mode guard", () => {
 	const previousBackend = Bun.env.PI_TUI_RENDER_BACKEND;
+	let previousInteractiveHost: boolean;
 
 	beforeEach(() => {
+		previousInteractiveHost = setInteractiveHost(false);
 		delete Bun.env.PI_TUI_RENDER_BACKEND;
 	});
 
 	afterEach(() => {
+		setInteractiveHost(previousInteractiveHost);
 		if (previousBackend === undefined) {
 			delete Bun.env.PI_TUI_RENDER_BACKEND;
 		} else {

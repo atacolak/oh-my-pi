@@ -1930,11 +1930,22 @@ export class RpcCommandSurface {
 				);
 			}
 
-			case "get_refresh_preflight":
+			case "get_refresh_preflight": {
+				const restartReceipt = await getRpcRuntimeRestartReceipt(session);
 				return rpcSuccess(id, "get_refresh_preflight", {
 					...getRpcRefreshPreflight(session),
-					restartReceipt: await getRpcRuntimeRestartReceipt(session),
+					restartReceipt,
+					refreshModes: {
+						graceful: Boolean(
+							restartReceipt &&
+							this.#upgradeRuntime &&
+							this.#modelRuntimeUpgrade?.isMounted(session) &&
+							this.#hasUpgradeTarget(true),
+						),
+						force: false,
+					},
 				});
+			}
 
 			case "upgrade_runtime":
 				return this.#upgradeRuntimeGeneration(command);

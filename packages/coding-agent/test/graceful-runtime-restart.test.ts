@@ -105,6 +105,51 @@ describe("graceful runtime restart", () => {
 		}
 	});
 
+	it.each([
+		"available",
+		"missing-restart-route",
+		"missing-model-tool",
+		"released-journal",
+		"unmanaged-entry",
+	] as const)("advertises graceful restart only for an owned native-capable conversation: %s", async state => {
+		const adapter = new ModelRuntimeUpgrade();
+		const { session, manager } = await makeSession(adapter);
+		const runningEntry = path.join(temp.path(), "generations", GENERATION, "cli.ts");
+		await Bun.write(runningEntry, "// private generation fixture\n");
+		await fs.symlink(path.dirname(runningEntry), path.join(temp.path(), "generations", "current"));
+		if (state === "released-journal") await manager.close();
+		const upgrade = vi.fn();
+		const send = vi.spyOn(session, "sendCustomMessage");
+		const served = await serveInteractiveSessionSocket({
+			session,
+			socket: createAgentSessionSocket(session, { endpointDir: path.join(temp.path(), "run") }),
+			...(state === "missing-restart-route" ? {} : { upgradeRuntime: upgrade }),
+			...(state === "missing-model-tool" ? {} : { modelRuntimeUpgrade: adapter }),
+		});
+		const previousEntry = process.env.OMP_RUNNING_GENERATION_ENTRY;
+		const previousLink = process.env.OMP_GENERATION_LINK;
+		process.env.OMP_RUNNING_GENERATION_ENTRY =
+			state === "unmanaged-entry" ? path.join(temp.path(), "cli.ts") : runningEntry;
+		process.env.OMP_GENERATION_LINK = path.join(temp.path(), "generations", "current");
+		try {
+			expect(await served.surface.handleCommand({ type: "get_refresh_preflight" })).toMatchObject({
+				success: true,
+				data: {
+					refreshModes: { graceful: state === "available", force: false },
+					ephemeralWork: { services: null, servicesUninspected: true, hasEphemeralWork: null },
+				},
+			});
+			expect(upgrade).not.toHaveBeenCalled();
+			expect(send).not.toHaveBeenCalled();
+		} finally {
+			await served.close();
+			if (previousEntry === undefined) delete process.env.OMP_RUNNING_GENERATION_ENTRY;
+			else process.env.OMP_RUNNING_GENERATION_ENTRY = previousEntry;
+			if (previousLink === undefined) delete process.env.OMP_GENERATION_LINK;
+			else process.env.OMP_GENERATION_LINK = previousLink;
+		}
+	});
+
 	it.each(["bash", "task", "watched", "expired", "already-finished", "later-foreground-turn"] as const)(
 		"checkpoints and preserves %s job results before restart",
 		async jobType => {

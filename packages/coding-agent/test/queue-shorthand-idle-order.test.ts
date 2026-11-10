@@ -198,6 +198,30 @@ describe("queue shorthand on an idle session with a transcript (#10802)", () => 
 		expect(dropped).toEqual([]);
 	});
 
+	it("keeps the first item in its own turn and batches the remaining items in all mode", async () => {
+		const { session, mock, dropped, submitList } = await setup();
+		session.setFollowUpMode("all", false);
+
+		await submitList();
+
+		const requestedUserTexts = mock.calls.map(call =>
+			call.context.messages
+				.filter(message => message.role === "user")
+				.map(message =>
+					typeof message.content === "string"
+						? message.content
+						: message.content.map(part => (part.type === "text" ? part.text : "")).join(""),
+				),
+		);
+		expect(requestedUserTexts).toHaveLength(2);
+		expect(requestedUserTexts[0]?.slice(-1)).toEqual(["ITEM ONE"]);
+		expect(requestedUserTexts[0]).not.toContain("ITEM TWO");
+		expect(requestedUserTexts[0]).not.toContain("ITEM THREE");
+		expect(requestedUserTexts[1]?.slice(-2)).toEqual(["ITEM TWO", "ITEM THREE"]);
+		expect(session.getQueuedMessages().followUp).toEqual([]);
+		expect(dropped).toEqual([]);
+	});
+
 	it("sends a /skill: first item before the queued follow-ups", async () => {
 		const skill = await writeSkill("recap");
 		const { mock, submitList } = await setup(new Map([["skill:recap", skill]]));

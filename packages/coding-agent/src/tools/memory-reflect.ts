@@ -3,6 +3,7 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt, untilAborted, toError } from "@oh-my-pi/pi-utils";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { ensureBankExists } from "../hindsight/bank";
+import { mergeRecallTags } from "../hindsight/content";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
 import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import type { ToolSession } from ".";
@@ -12,6 +13,7 @@ import { cfgMemoryBackend } from "../memory-backend/settings";
 const memoryReflectSchema = type({
 	query: type("string").describe("question to answer"),
 	"context?": type("string").describe("optional context"),
+	"tags?": type("string[]").describe("additional tag filters merged with the session's recall scope"),
 });
 
 export type MemoryReflectParams = typeof memoryReflectSchema.infer;
@@ -76,12 +78,20 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 			}
 
 			try {
-				await ensureBankExists(state.client, state.bankId, state.config, state.banksSet);
-				const response = await state.client.reflect(state.bankId, params.query, {
+				// Snapshot routing before the first await so a live primary rebuild
+				// cannot send this call to a bank that was never ensured.
+				const client = state.client;
+				const bankId = state.bankId;
+				const config = state.config;
+				const banksSet = state.banksSet;
+				const recallTags = mergeRecallTags(state.recallTags, params.tags);
+				const recallTagsMatch = state.recallTagsMatch;
+				await ensureBankExists(client, bankId, config, banksSet);
+				const response = await client.reflect(bankId, params.query, {
 					context: params.context,
-					budget: state.config.recallBudget,
-					tags: state.recallTags,
-					tagsMatch: state.recallTagsMatch,
+					budget: config.recallBudget,
+					tags: recallTags,
+					tagsMatch: recallTagsMatch,
 				});
 				const text = response.text?.trim() || "No relevant information found to reflect on.";
 				return {

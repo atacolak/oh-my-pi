@@ -45,7 +45,7 @@ async function writeFile(filePath: string, content: string): Promise<void> {
 	await fs.writeFile(filePath, content);
 }
 
-async function createScopedSession(agentDir: string) {
+async function createScopedSession(agentDir: string, declaredRules?: readonly string[]) {
 	const cwd = tempDir.join("project");
 	await fs.mkdir(cwd, { recursive: true });
 	const authStorage = await AuthStorage.create(tempDir.join("auth.db"));
@@ -58,6 +58,7 @@ async function createScopedSession(agentDir: string) {
 		modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
 		settings: Settings.isolated({ "compaction.enabled": false }),
 		model: buildLocalModel(),
+		declaredRules,
 		disableExtensionDiscovery: true,
 		skills: [],
 		contextFiles: [],
@@ -116,6 +117,81 @@ describe("createAgentSession with agentDir", () => {
 			const rebuilt = session.systemPrompt.join("\n");
 			expect(rebuilt).toContain(scopedRule);
 			expect(rebuilt).not.toContain(defaultRule);
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	it.each([
+		{ scope: "selected", declaredRules: ["enabled"] },
+		{ scope: "empty", declaredRules: [] },
+	])("keeps off rules out of prompts and rule URI after session reset: $scope", async ({ declaredRules }) => {
+		const agentDir = tempDir.join("binary-agent");
+		await writeFile(
+			path.join(agentDir, "rules", "enabled.md"),
+			"---\ndescription: enabled fixture\n---\nBINARY_ENABLED_RULE\n",
+		);
+		await writeFile(
+			path.join(agentDir, "rules", "hidden.md"),
+			"---\ndescription: hidden fixture\n---\nBINARY_HIDDEN_RULE\n",
+		);
+		const { session, authStorage } = await createScopedSession(agentDir, declaredRules);
+		try {
+			for (const reset of [false, true]) {
+				if (reset) expect(await session.newSession()).toBe(true);
+				const prompt = session.systemPrompt.join("\n");
+				expect(prompt).not.toContain("BINARY_HIDDEN_RULE");
+				expect(prompt).not.toContain("hidden fixture");
+				expect(prompt.includes("BINARY_ENABLED_RULE")).toBe(declaredRules.length > 0);
+				const read = session.getToolByName("read");
+				if (!read) throw new Error("expected the native read tool");
+				const denied = await read
+					.execute("read-hidden-rule", { path: "rule://hidden" })
+					.catch(error => ({ error: String(error) }));
+				expect(JSON.stringify(denied)).toContain("Unknown rule: hidden");
+				expect(JSON.stringify(denied)).not.toContain("BINARY_HIDDEN_RULE");
+			}
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	it("preserves enabled dynamic triggers without adding them to the startup prompt or rule catalog after reset", async () => {
+		const agentDir = tempDir.join("dynamic-agent");
+		await writeFile(
+			path.join(agentDir, "rules", "dynamic.md"),
+			"---\ndescription: dynamic trigger fixture\ncondition: [DYNAMIC_FORBIDDEN]\n---\nDYNAMIC_RULE_BODY\n",
+		);
+		await writeFile(
+			path.join(agentDir, "rules", "off-trigger.md"),
+			"---\ndescription: off trigger fixture\ncondition: [DYNAMIC_FORBIDDEN]\n---\nOFF_TRIGGER_BODY\n",
+		);
+		const { session, authStorage } = await createScopedSession(agentDir, ["dynamic"]);
+		try {
+			for (const reset of [false, true]) {
+				if (reset) expect(await session.newSession()).toBe(true);
+				const prompt = session.systemPrompt.join("\n");
+				expect(prompt).not.toContain("DYNAMIC_RULE_BODY");
+				expect(prompt).not.toContain("dynamic trigger fixture");
+				expect(prompt).not.toContain("OFF_TRIGGER_BODY");
+				const manager = session.ttsrManager;
+				if (!manager) throw new Error("expected the session's native ttsr manager");
+				expect(manager.checkDelta("DYNAMIC_FORBIDDEN", { source: "text" }).map(rule => rule.name)).toEqual([
+					"dynamic",
+				]);
+				const read = session.getToolByName("read");
+				if (!read) throw new Error("expected the native read tool");
+				const enabled = await read.execute("read-dynamic-rule", { path: "rule://dynamic" });
+				expect(JSON.stringify(enabled)).toContain("DYNAMIC_RULE_BODY");
+				expect(JSON.stringify(enabled)).not.toContain("condition:");
+				const denied = await read
+					.execute("read-off-trigger", { path: "rule://off-trigger" })
+					.catch(error => ({ error: String(error) }));
+				expect(JSON.stringify(denied)).toContain("Unknown rule: off-trigger");
+				expect(JSON.stringify(denied)).not.toContain("OFF_TRIGGER_BODY");
+			}
 		} finally {
 			await session.dispose();
 			authStorage.close();

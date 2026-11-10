@@ -20,6 +20,8 @@ export interface RecallResultLike {
 	text: string;
 	type?: string | null;
 	mentioned_at?: string | null;
+	/** Tags carried by the recalled memory; actor/role entries render as a provenance badge. */
+	tags?: readonly string[];
 }
 
 const MEMORIES_REGEX = /<memories>[\s\S]*?<\/memories>/g;
@@ -62,14 +64,41 @@ export function hasSubstantiveContent(content: string): boolean {
 	return SUBSTANTIVE_CHAR_RE.test(content);
 }
 
+/**
+ * Union a session's recall tag filter with caller-supplied `tags`.
+ *
+ * Omitted (or empty) extra tags leave the session filter exactly as it was —
+ * same array, same effective query. Provided tags are additive: they can
+ * narrow the caller's own lookup but never replace the session scope, so a
+ * tool call cannot drop the project tag and silently become a personal silo.
+ */
+export function mergeRecallTags(
+	scopeTags: string[] | undefined,
+	extraTags: readonly string[] | undefined,
+): string[] | undefined {
+	if (!extraTags || extraTags.length === 0) return scopeTags;
+	const merged = [...new Set([...(scopeTags ?? []), ...extraTags].map(tag => tag.trim()).filter(Boolean))];
+	return merged.length > 0 ? merged : undefined;
+}
+
+const PROVENANCE_TAG_RE = /^(?:actor|role):\S+$/;
+
+/** Compact `[role:builder actor:id]` footer for recall provenance; empty when the item carries none. */
+function provenanceBadge(tags: readonly string[] | undefined): string {
+	if (!tags || tags.length === 0) return "";
+	const labels = tags.map(tag => tag.trim()).filter(tag => PROVENANCE_TAG_RE.test(tag));
+	return labels.length > 0 ? ` [${labels.join(" ")}]` : "";
+}
+
 /** Format recall results into a bullet list for context injection. */
 export function formatMemories(results: RecallResultLike[]): string {
 	if (results.length === 0) return "";
 	return results
 		.map(r => {
 			const typeStr = r.type ? ` [${r.type}]` : "";
+			const provenanceStr = provenanceBadge(r.tags);
 			const dateStr = r.mentioned_at ? ` (${r.mentioned_at})` : "";
-			return `- ${r.text}${typeStr}${dateStr}`;
+			return `- ${r.text}${typeStr}${provenanceStr}${dateStr}`;
 		})
 		.join("\n\n");
 }

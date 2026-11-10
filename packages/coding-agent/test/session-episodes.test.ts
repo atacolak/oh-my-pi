@@ -9,9 +9,20 @@ import {
 	recordSessionEpisodeRecap,
 	startSessionEpisode,
 } from "@oh-my-pi/pi-coding-agent/session/session-index";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 setDefaultTimeout(30_000);
+
+function message(role: "user", text: string, id: string): SessionEntry {
+	return {
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: new Date(0).toISOString(),
+		message: { role, content: [{ type: "text", text }], timestamp: 0 },
+	};
+}
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 let root = "";
@@ -85,6 +96,52 @@ describe("session_episodes", () => {
 		open("ep-1");
 		recordSessionEpisodeRecap("ep-1", "did the thing");
 		expect(listSessionEpisodes("sid-1")[0]!.recap).toBe("did the thing");
+	});
+
+	it("populates trigger and tool targets from the slice its start entry joins to", () => {
+		// The start entry is the leaf the run began from, so the run's own prompt is
+		// the entry after it. Deriving from that slice is what makes the fields a
+		// fact about this run rather than a timestamp guess.
+		startSessionEpisode({
+			episodeId: "ep-facts",
+			sessionId: "sid-facts",
+			cwd: "/repo",
+			startedAtMs: 1_000,
+			startEntryId: "leaf",
+		});
+		const entries: SessionEntry[] = [
+			message("user", "an earlier prompt", "leaf"),
+			message("user", "Fix the retry loop in sync.ts", "prompt"),
+			{
+				type: "message",
+				id: "call",
+				parentId: "prompt",
+				timestamp: new Date(0).toISOString(),
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "bun test retry.test.ts" } },
+					],
+					api: "x",
+					provider: "x",
+					model: "x",
+					usage: {} as never,
+					stopReason: "toolUse",
+					timestamp: 0,
+				},
+			},
+		];
+		finishSessionEpisode({
+			episodeId: "ep-facts",
+			endedAtMs: 2_000,
+			stepCount: 1,
+			outcome: "ok",
+			endEntryId: "call",
+			entries,
+		});
+		const row = listSessionEpisodes("sid-facts")[0]!;
+		expect(row.triggerSummary).toBe("Fix the retry loop in sync.ts");
+		expect(row.toolTargets).toContain("bash(bun test retry.test.ts)");
 	});
 
 	it("keeps sessions apart", () => {

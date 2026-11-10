@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compaction";
+import { CompactionCancelledError, createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	type AnthropicFallbackCreditHandle,
 	type Api,
@@ -36,6 +36,7 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
+	getRetryFallbackRevertPolicy,
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
@@ -9247,5 +9248,473 @@ describe("AgentSession retry fallback", () => {
 
 		expect(requestedModels).toContain("openrouter/z-ai/glm-4.7@chutes");
 		expect(getLastAssistantMessage(session).stopReason).not.toBe("error");
+	});
+
+	it("maps retry.fallbackRevertPolicy values, defaulting unset to cooldown-expiry", () => {
+		expect(getRetryFallbackRevertPolicy(Settings.isolated({}))).toBe("cooldown-expiry");
+		expect(getRetryFallbackRevertPolicy(Settings.isolated({ "retry.fallbackRevertPolicy": "never" }))).toBe("never");
+		expect(getRetryFallbackRevertPolicy(Settings.isolated({ "retry.fallbackRevertPolicy": "cooldown-expiry" }))).toBe(
+			"cooldown-expiry",
+		);
+		expect(getRetryFallbackRevertPolicy(Settings.isolated({ "retry.fallbackRevertPolicy": "compaction" }))).toBe(
+			"compaction",
+		);
+		expect(() => Settings.isolated({ "retry.fallbackRevertPolicy": "bogus" })).toThrow(
+			/Invalid value for retry\.fallbackRevertPolicy/,
+		);
+	});
+
+	/** Compaction short-circuit: `session_before_compact` answers directly, so `session.compact()` commits without a summarizer call. */
+	async function createCompactionShortCircuitRunner(
+		sessionManager: SessionManager,
+		outcome: "commit" | "cancel" = "commit",
+	): Promise<ExtensionRunner> {
+		const runtime = new ExtensionRuntime();
+		const extension = await loadExtensionFromFactory(
+			pi => {
+				pi.on("session_before_compact", async event => {
+					if (outcome === "cancel") return { cancel: true };
+					return {
+						compaction: {
+							summary: "compacted",
+							shortSummary: undefined,
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					};
+				});
+			},
+			tempDir.path(),
+			new EventBus(),
+			runtime,
+			"compaction-short-circuit",
+		);
+		return new ExtensionRunner([extension], runtime, tempDir.path(), sessionManager, modelRegistry);
+	}
+
+	it("compaction policy: stays on the fallback past cooldown expiry when no compaction happened", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("First prompt triggers fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		now += 240;
+		await session.prompt("Cooldown expired but no compaction: stay on fallback");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+	});
+
+	it("compaction policy: committed manual compaction restores the primary at the next prompt", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"compaction.autoContinue": false,
+			// Keep the kept region minimal so `session.compact()` has history to
+			// summarize instead of reporting "session too small".
+			"compaction.keepRecentTokens": 1,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const extensionRunner = await createCompactionShortCircuitRunner(sessionManager);
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("First prompt triggers fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		await session.compact();
+		now += 240;
+		await session.prompt("Post-compaction prompt retries the primary");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(session.model?.id).toBe(primaryModel.id);
+		expect(session.servingModel).toMatchObject({
+			selector: `${primaryModel.provider}/${primaryModel.id}`,
+			isFallback: false,
+		});
+	});
+
+	it("compaction policy: committed auto compaction restores the primary at the next prompt", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"compaction.autoContinue": false,
+			"compaction.keepRecentTokens": 1,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const extensionRunner = await createCompactionShortCircuitRunner(sessionManager);
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
+		let autoCompacted = false;
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end" && event.result !== undefined && !event.aborted && !event.skipped) {
+				autoCompacted = true;
+			}
+		});
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("First prompt triggers fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		await session.runIdleCompaction();
+		expect(autoCompacted).toBe(true);
+		now += 240;
+		await session.prompt("Post-auto-compaction prompt retries the primary");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(session.model?.id).toBe(primaryModel.id);
+	});
+
+	it("compaction policy: a still-suppressed primary keeps the fallback until its cooldown expires", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"compaction.autoContinue": false,
+			"compaction.keepRecentTokens": 1,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const extensionRunner = await createCompactionShortCircuitRunner(sessionManager);
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("First prompt triggers fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		await session.compact();
+		await session.prompt("The compaction landed but the primary is still cooling down");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		now += 240;
+		await session.prompt("The cooldown expired after the compaction: restore the primary");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+		]);
+		expect(session.model?.id).toBe(primaryModel.id);
+	});
+
+	it("compaction policy: an aborted compaction does not release the hold", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"compaction.autoContinue": false,
+			"compaction.keepRecentTokens": 1,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const extensionRunner = await createCompactionShortCircuitRunner(sessionManager, "cancel");
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("Arm the fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		await expect(session.compact()).rejects.toBeInstanceOf(CompactionCancelledError);
+
+		now += 240;
+		await session.prompt("An aborted compaction is not a boundary");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+	});
+
+	it("compaction policy: a skipped compaction does not release the hold", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"compaction.autoContinue": false,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await session.prompt("Arm the fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		// The default `compaction.keepRecentTokens` keeps this short history whole,
+		// so the pass ends as a skipped no-op instead of committing.
+		await expect(session.compact()).rejects.toThrow("Nothing to compact");
+
+		now += 240;
+		await session.prompt("A skipped compaction is not a boundary");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+	});
+
+	it("compaction policy: an explicit model change discards the arm and its boundary credit", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		const chosenModel = getBundledModel("google", "gemini-2.5-flash");
+		if (!primaryModel || !fallbackModel || !chosenModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"compaction.autoContinue": false,
+			"compaction.keepRecentTokens": 1,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const extensionRunner = await createCompactionShortCircuitRunner(sessionManager);
+		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
+
+		await session.prompt("Arm the fallback");
+		await session.waitForIdle();
+		expect(session.model?.id).toBe(fallbackModel.id);
+
+		await session.setModelTemporary(chosenModel);
+		await session.compact();
+		await session.prompt("Post-compaction prompt stays on the explicit choice");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${chosenModel.provider}/${chosenModel.id}`,
+		]);
+		expect(session.model?.id).toBe(chosenModel.id);
+	});
+
+	it("compaction policy: a pinned arm never restores, even across a compaction", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled test models to exist");
+
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: fallbackModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				mock.push({ content: [`ok:${model.provider}/${model.id}`] });
+				return mock.stream(model, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"compaction.autoContinue": false,
+			"compaction.keepRecentTokens": 1,
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const extensionRunner = await createCompactionShortCircuitRunner(sessionManager);
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+			extensionRunner,
+			initialRetryFallback: {
+				role: "default",
+				originalSelector: `${primaryModel.provider}/${primaryModel.id}`,
+				originalThinkingLevel: undefined,
+				pinned: true,
+			},
+		});
+
+		await session.prompt("On the pinned fallback");
+		await session.waitForIdle();
+		await session.compact();
+		await session.prompt("Boundary crossed: pinned arm stays");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+	});
+
+	it("compaction policy: advisors keep cooldown-expiry restore semantics", async () => {
+		const mainModel = getBundledModel("openai", "gpt-4o-mini");
+		const advisorPrimary = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const advisorFallback = getBundledModel("google", "gemini-2.5-flash");
+		if (!mainModel || !advisorPrimary || !advisorFallback) {
+			throw new Error("Expected bundled advisor fallback models to exist");
+		}
+
+		const mainMock = createMockModel({
+			responses: [{ content: ["Primary complete"] }, { content: ["Primary complete again"] }],
+		});
+		const advisorMock = createMockModel();
+		let advisorPrimaryAttempts = 0;
+		const requestedAdvisorModels: string[] = [];
+		const fallbackSucceeded = Promise.withResolvers<void>();
+		const advisorPrimarySelector = `${advisorPrimary.provider}/${advisorPrimary.id}`;
+		const advisorRoleSelector = `${advisorPrimarySelector}:high`;
+		const advisorFallbackSelector = `${advisorFallback.provider}/${advisorFallback.id}`;
+
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: mainModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: mainMock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": { advisor: [advisorFallbackSelector] },
+			"retry.fallbackRevertPolicy": "compaction",
+			"advisor.syncBacklog": "1",
+		});
+		settings.setModelRole("advisor", advisorRoleSelector);
+		vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: false });
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			advisorTools: [],
+			advisorConfigs: [{ name: "compaction-policy-advisor", model: advisorRoleSelector }],
+			advisorStreamFn: (model, context, options) => {
+				const selector = `${model.provider}/${model.id}`;
+				requestedAdvisorModels.push(selector);
+				if (selector === advisorPrimarySelector && advisorPrimaryAttempts++ === 0) {
+					advisorMock.push({
+						throw: "Devin stream error failed_precondition: Your daily usage quota has been exhausted. Your quota will reset after 1s.",
+					});
+				} else if (selector === advisorPrimarySelector) {
+					advisorMock.push({ content: ["Advisor primary restored"] });
+				} else if (selector === advisorFallbackSelector) {
+					advisorMock.push({ content: ["Advisor recovered"] });
+				} else {
+					throw new Error(`Unexpected advisor model requested: ${selector}`);
+				}
+				return advisorMock.stream(model, context, options);
+			},
+		});
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_succeeded") fallbackSucceeded.resolve();
+		});
+
+		session.setAdvisorEnabled(true);
+		await session.prompt("Complete one primary turn");
+		await session.waitForIdle();
+		await fallbackSucceeded.promise;
+		expect(requestedAdvisorModels).toEqual([advisorPrimarySelector, advisorFallbackSelector]);
+
+		// The compaction-scoped state machine is main-session-only: an advisor
+		// keeps the cooldown clock, so its primary returns with no compaction.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2_000);
+		await session.prompt("Complete another primary turn after the advisor cooldown");
+		await session.waitForIdle();
+		expect(requestedAdvisorModels).toEqual([advisorPrimarySelector, advisorFallbackSelector, advisorPrimarySelector]);
+		expect(session.getAdvisorAgent()?.state.model).toMatchObject({
+			provider: advisorPrimary.provider,
+			id: advisorPrimary.id,
+		});
 	});
 });

@@ -152,7 +152,6 @@ type ProjectSettingsDiscovery = {
 	quarantineInvalid: boolean;
 	/** Project-level settings items in discovery order, disabled providers' items included. */
 	items: SettingsCapabilityItem[];
-	nativeModelRoles: unknown;
 	fileSettings: RawSettings;
 	configExists: boolean;
 	warningsSeen: Set<string>;
@@ -1305,6 +1304,7 @@ export class Settings {
 
 	#captureProjectMutation(key: string, baseValue: unknown): void {
 		if (!this.#persist) return;
+		if (this.#modifiedProjectPathMutations.has(key)) return;
 		const projectConfigPath = path.join(getProjectAgentDir(this.#cwd), "config.yml");
 		this.#modifiedProjectPathMutations.set(key, {
 			generation: this.#readYamlGeneration(projectConfigPath),
@@ -2820,22 +2820,12 @@ export class Settings {
 		let projectItems: SettingsCapabilityItem[] = [];
 		let rejectedWarnings: string[] | undefined;
 		let warningsSeen = this.#projectSettingsWarningsSeen;
-		const nativeResolved = path.resolve(projectConfigPath);
+		// The native file is read separately to preserve write baselines and model roles.
 		try {
 			const result = await loadCapability(settingsCapability.id, {
 				cwd: discoveryCwd,
 				includeDisabledProviders: true,
 			});
-			// `loadCapability` aggregates warnings across every level, but this
-			// method only merges project items — user-level parse failures belong
-			// to the global layer and would misattribute here. Warnings embed
-			// their source file's absolute path, so keep only warnings rooted at
-			// the discovery cwd (a bare substring would over-match relative
-			// scopes such as `cwd: "."` and sibling dir prefixes). Remember what
-			// was surfaced so reloads stay quiet while new failures still log.
-			// Level attribution below the path layer (e.g. a user-scoped dir
-			// mounted inside the project) needs warning metadata from the
-			// providers, which `LoadResult.warnings` does not carry.
 			const cwdRoot = discoveryCwd.endsWith(path.sep) ? discoveryCwd : discoveryCwd + path.sep;
 			const projectWarnings = (result.warnings ?? []).filter(warning => warning.includes(cwdRoot));
 			const newWarnings = projectWarnings.filter(warning => !this.#projectSettingsWarningsSeen.has(warning));
@@ -2863,12 +2853,10 @@ export class Settings {
 			cwd,
 			quarantineInvalid,
 			items: projectItems,
-			nativeModelRoles: getByPath(nativeProject, ["modelRoles"]),
 			fileSettings: structuredClone(nativeProject),
 			configExists:
 				nativeLoaded?.kind === "loaded" ||
 				this.#quarantinedYamlTargets.has(projectConfigPath) ||
-				projectItems.some(item => path.resolve(item.path) === nativeResolved) ||
 				Object.keys(nativeProject).length > 0,
 			warningsSeen,
 		};

@@ -302,27 +302,6 @@
 
 ### Fixed
 
-- Fixed `/settings` leaving the project-effective appearance after adopting a theme or status-line edit while previewing another scope.
-- Fixed `/settings` keeping the previous scope's theme after Alt+S onto an unloadable Dark/Light mapping.
-- Fixed `/settings` leaving a hovered theme after canceling an unloadable Dark/Light Theme submenu.
-- Fixed `/settings` previewing project glyphs and color-blind colors while browsing a different scope.
-- Fixed `/settings` dropping custom status-line segment options when closing the overlay.
-- Fixed `/settings` leaving a stale live theme or status preview after adopting a search-mode appearance submenu edit.
-- Fixed project saves leaving live browser and computer tools on the rejected local value after adopting a newer disk edit.
-- Fixed project-cleared provider request limits leaking `null` tombstones through `Settings.get()` and `omp config get --json`.
-- Fixed project saves leaving the live advisor status-line indicator stale after adopting an `advisor.enabled` disk edit.
-- Fixed conversation-flow setting signals reapplying queue modes onto unrelated Settings clones.
-- Fixed `SettingsManager.create()` missing a loaded instance when `cwd` or `agentDir` is relative.
-- Fixed persisted queue-mode changes restoring unrelated live-only conversation modes.
-- Fixed shadowed global queue-mode writes resetting the live session back to the project override.
-- Fixed `/settings` leaving a scoped theme preview after close when the effective theme name cannot load.
-- Fixed `/settings` trapping Tab and Alt+S after an adopted disk edit hid an open text editor.
-- Fixed project saves leaving already-rendered OSC 8 links on a rejected `tui.hyperlinks` value.
-- Fixed `/settings` discarding an in-progress global editor after adopting a project disk edit.
-- Fixed `/settings` discarding in-progress editors after adopting an unrelated disk edit.
-- Fixed `/settings` keeping a stale multi-select submenu after adopting a newer disk edit.
-- Fixed `/settings` resetting an open multi-select cursor after an ordinary project save.
-- Fixed project inherit treating the native `.omp/config.yml` as a non-native source when cwd is relative.
 - Fixed `/settings` silently writing project-shadowed edits to the global profile by adding explicit project/global scopes and project override inheritance. ([#8208](https://github.com/can1357/oh-my-pi/issues/8208))
 - Fixed `/settings` project-scope record edits copying inherited keys, inheriting only a subset of migrated aliases, skipping the initial appearance preview, and re-persisting queue-mode choices globally.
 - Fixed `/settings` rendering unsanitized repository names in the project-scope title.
@@ -377,6 +356,7 @@
 - Child-process RPC tests now run with hermetic `OMP_RUN_DIR`, `HOME`, and `PI_CODING_AGENT_DIR`, and `--no-session` launches no longer publish an attach socket that could never be resumed, so running the suite leaves no dead `.json`/`.sock` sidecars in `~/.omp/run`
 - Session attach endpoints now honor `OMP_RUN_DIR` for publication and discovery, matching RPC clients, so sessions kept in a custom run directory can be resumed, attached, and refreshed from the directory they publish in
 - Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
+- Fixed repeated project settings edits being discarded when another process changes a different setting before the save.
 - configured task agents retry model discovery and resolve extension-provided models before starting; unavailable selectors report a clear error instead of “no model selected”.
 
 ## [18.18.6] - 2026-11-09

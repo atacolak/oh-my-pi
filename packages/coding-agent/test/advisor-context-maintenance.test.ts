@@ -62,7 +62,11 @@ describe("AgentSession advisor context maintenance", () => {
 		await tempDir.remove();
 	});
 
-	function createHarness(contextPromotionTarget?: string, contextPromotionEnabled = false): MaintenanceHarness {
+	function createHarness(
+		contextPromotionTarget?: string,
+		contextPromotionEnabled = false,
+		options?: { disableModelFallback?: boolean },
+	): MaintenanceHarness {
 		const primaryMock = createMockModel({
 			provider: "anthropic",
 			responses: [{ content: ["primary complete"] }],
@@ -93,6 +97,7 @@ describe("AgentSession advisor context maintenance", () => {
 			modelRegistry,
 			advisorTools: [],
 			advisorStreamFn: advisorMock.stream,
+			disableModelFallback: options?.disableModelFallback,
 		});
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		const advisor = session.getAdvisorAgent();
@@ -310,6 +315,36 @@ describe("AgentSession advisor context maintenance", () => {
 		expect(messagesOnlyTokens).toBeLessThan(threshold);
 		expect(messagesOnlyTokens + fixedPrefixTokens).toBeGreaterThan(threshold);
 		expect(JSON.stringify(advisor.state.messages)).not.toContain("small stored advisor message");
+	});
+
+	it("keeps the advisor on its own model when the session disables model fallback", async () => {
+		const promotion = {
+			...createMockModel({
+				id: "disabled-promotion-target",
+				provider: "anthropic",
+				contextWindow: CONTEXT_WINDOW + 1,
+			}),
+			toolSchemasInContext: false,
+		};
+		const { advisor, advisorMock, modelRegistry, settings } = createHarness(
+			`${promotion.provider}/${promotion.id}`,
+			true,
+			{ disableModelFallback: true },
+		);
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([advisor.state.model, promotion]);
+		vi.spyOn(modelRegistry, "getApiKey").mockResolvedValue("test-key");
+		const seed: AgentMessage = { role: "user", content: "stored advisor message", timestamp: 1 };
+		advisor.state.messages.push(seed);
+		const storedTokens = advisor.tokenizer.countMessage(seed, { excludeEncryptedReasoning: true });
+		const schemaTokens = estimateToolSchemaTokens(advisor.state.tools, advisor.tokenizer);
+		const threshold =
+			storedTokens + advisor.tokenizer.countTokens(advisor.state.systemPrompt) + Math.floor(schemaTokens / 2);
+		cfgCompactionThresholdTokens.set(settings, threshold);
+
+		await session.prompt("update without promotion");
+
+		expect(advisor.state.model.id).toBe(advisorMock.id);
+		expect(advisorMock.calls).toHaveLength(1);
 	});
 
 	it("re-evaluates maintenance after promoting to a model that defers tool schemas", async () => {

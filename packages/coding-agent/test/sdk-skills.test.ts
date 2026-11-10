@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { parseAgentFields } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { getActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import type { Skill } from "@oh-my-pi/pi-coding-agent/sdk";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -11,11 +12,18 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import type { SkillLoadPolicy } from "../src/extensibility/skill-load-policy";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
 import { cfgAutolearnEnabled } from "@oh-my-pi/pi-coding-agent/autolearn/settings";
 import { cfgSkillsCustomDirectories } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
+
+async function readSessionSkill(session: AgentSession, name: string) {
+	const read = session.getToolByName("read");
+	if (!read) throw new Error("read tool is unavailable");
+	return read.execute(`read-${name}`, { path: `skill://${name}` });
+}
 
 function createIsolatedSkillsSettings(extensions: string[] = []): Settings {
 	return Settings.isolated({
@@ -123,6 +131,179 @@ Loaded via symbolic link.
 			if (!session.isDisposed) await session.dispose();
 		}
 		removeTempHome();
+	});
+
+	it("profile skills merge eager autoloads while closing prompt and URI catalogs across rediscovery", async () => {
+		for (const name of ["on-demand-skill", "off-skill"]) {
+			await Bun.write(
+				path.join(tempDir, ".omp", "skills", name, "SKILL.md"),
+				`---\nname: ${name}\ndescription: ${name} procedures\n---\n${name} full instructions\n`,
+			);
+		}
+		const profile = parseAgentFields({
+			name: "scoped",
+			description: "scoped skills",
+			autoloadSkills: ["symlinked-skill", "test-skill"],
+			skills: { eager: ["test-skill"], discoverable: ["on-demand-skill", "late-allowed"] },
+		});
+		if (!profile) throw new Error("profile did not parse");
+		const { session } = await createSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(tempDir),
+			modelRegistry: sharedModelRegistry,
+			settings: createIsolatedSkillsSettings(),
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read"],
+			autoloadSkills: profile.autoloadSkills,
+			skillLoadPolicy: profile.skills,
+		});
+		expect(session.skills.map(skill => skill.name).sort()).toEqual([
+			"on-demand-skill",
+			"symlinked-skill",
+			"test-skill",
+		]);
+		expect(
+			session.messages.filter(
+				message => message.role === "custom" && JSON.stringify(message.content).includes("This is a test skill."),
+			),
+		).toHaveLength(1);
+		// Full-body startup injection is observed below, independently of catalog descriptions.
+		const injected = JSON.stringify(session.messages);
+		expect(injected).toContain("This is a test skill.");
+		expect(injected).toContain("Loaded via symbolic link.");
+		expect(injected).not.toContain("on-demand-skill full instructions");
+		expect(session.systemPrompt.join("\n")).toContain("on-demand-skill");
+		expect(session.systemPrompt.join("\n")).not.toContain("off-skill");
+		expect(JSON.stringify((await readSessionSkill(session, "on-demand-skill")).content)).toContain(
+			"on-demand-skill full instructions",
+		);
+		await expect(readSessionSkill(session, "off-skill")).rejects.toThrow(/Unknown skill/);
+		for (const name of ["late-allowed", "late-off"]) {
+			await Bun.write(
+				path.join(tempDir, ".omp", "skills", name, "SKILL.md"),
+				`---\nname: ${name}\ndescription: late procedure\n---\n${name} body\n`,
+			);
+		}
+		await session.refreshSkills();
+		expect(session.skills.map(skill => skill.name)).toContain("late-allowed");
+		expect(session.skills.map(skill => skill.name)).not.toContain("late-off");
+		expect(getActiveSkills().map(skill => skill.name)).not.toContain("late-off");
+		await expect(readSessionSkill(session, "late-off")).rejects.toThrow(/Unknown skill/);
+		expect(session.systemPrompt.join("\n")).not.toContain("late-off");
+	});
+
+	it("extension startup and first-turn evidence keep the resolved skill policy after the profile changes", async () => {
+		const profilePath = path.join(tempDir, "profile.json");
+		const original = { eager: ["test-skill"], discoverable: [] };
+		await Bun.write(profilePath, JSON.stringify({ skills: original }));
+		const observed: Array<SkillLoadPolicy | undefined> = [];
+		const { session } = await createSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(tempDir),
+			modelRegistry: sharedModelRegistry,
+			settings: createIsolatedSkillsSettings(),
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read"],
+			skillLoadPolicy: original,
+			extensions: [
+				api => {
+					api.on("session_start", (_event, ctx) => {
+						observed.push(ctx.getSkillLoadPolicy?.());
+					});
+					api.on("before_agent_start", (_event, ctx) => {
+						observed.push(ctx.getSkillLoadPolicy?.());
+					});
+				},
+			],
+		});
+		const runner = session.extensionRunner;
+		if (!runner) throw new Error("extension runner is unavailable");
+		await runner.emit({ type: "session_start" });
+		await Bun.write(profilePath, JSON.stringify({ skills: { eager: [], discoverable: ["symlinked-skill"] } }));
+		original.eager.length = 0;
+		observed[0]?.eager.push("symlinked-skill");
+		await runner.emitBeforeAgentStart("work", undefined, session.systemPrompt);
+		expect(observed[1]).toEqual({ eager: ["test-skill"], discoverable: [] });
+		await expect(readSessionSkill(session, "symlinked-skill")).rejects.toThrow(/Unknown skill/);
+		expect(JSON.stringify((await readSessionSkill(session, "test-skill")).content)).toContain(
+			"This is a test skill.",
+		);
+	});
+
+	it("explicit empty discoverable skills allow only eager and empty eager allows no skill URI", async () => {
+		for (const eager of [["test-skill"], []]) {
+			const { session } = await createSession({
+				cwd: tempDir,
+				agentDir: tempDir,
+				sessionManager: SessionManager.inMemory(tempDir),
+				modelRegistry: sharedModelRegistry,
+				settings: createIsolatedSkillsSettings(),
+				enableMCP: false,
+				enableLsp: false,
+				toolNames: ["read"],
+				skillLoadPolicy: { eager, discoverable: [] },
+			});
+			expect(session.skills.map(skill => skill.name)).toEqual(eager);
+			await session.refreshSkills();
+			expect(session.skills.map(skill => skill.name)).toEqual(eager);
+			await expect(readSessionSkill(session, "symlinked-skill")).rejects.toThrow(/Unknown skill/);
+			await session.dispose();
+		}
+	});
+
+	it("reopening a parked transcript preserves restricted skills without duplicating eager bodies", async () => {
+		const options = {
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry: sharedModelRegistry,
+			settings: createIsolatedSkillsSettings(),
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read"],
+			skillLoadPolicy: { eager: ["test-skill"], discoverable: [] },
+		};
+		const { session: original } = await createSession({
+			...options,
+			sessionManager: SessionManager.create(tempDir, path.join(tempDir, "sessions")),
+		});
+		const file = original.sessionFile;
+		if (!file) throw new Error("session did not persist");
+		await original.dispose();
+		for (let round = 0; round < 2; round++) {
+			const { session } = await createSession({ ...options, sessionManager: await SessionManager.open(file) });
+			expect(
+				session.messages.filter(
+					message =>
+						message.role === "custom" && JSON.stringify(message.content).includes("This is a test skill."),
+				),
+			).toHaveLength(1);
+			expect(session.skills.map(skill => skill.name)).toEqual(["test-skill"]);
+			await expect(readSessionSkill(session, "symlinked-skill")).rejects.toThrow(/Unknown skill/);
+			await session.dispose();
+		}
+	});
+
+	it("omitted discoverable preserves legacy full catalog even with structured eager skills", async () => {
+		const profile = parseAgentFields({ name: "legacy", description: "legacy", skills: { eager: ["test-skill"] } });
+		const { session } = await createSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(tempDir),
+			modelRegistry: sharedModelRegistry,
+			settings: createIsolatedSkillsSettings(),
+			enableMCP: false,
+			enableLsp: false,
+			toolNames: ["read"],
+			skillLoadPolicy: profile?.skills,
+		});
+		expect(session.skills.map(skill => skill.name)).toContain("symlinked-skill");
+		expect(JSON.stringify((await readSessionSkill(session, "symlinked-skill")).content)).toContain(
+			"Loaded via symbolic link.",
+		);
 	});
 
 	it("should discover skills by default and expose them on session.skills", async () => {

@@ -111,6 +111,7 @@ import {
 	type TaskEffort,
 } from "@oh-my-pi/pi-tui/thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
+import { isMCPToolName } from "../tools/builtin-names";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../irc/messaging";
 import { LIST_STATUS_ORDER } from "@oh-my-pi/pi-tui/tools/irc";
@@ -136,6 +137,7 @@ import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
+import { mcpLoadForNamedProfile } from "./tool-load-spec";
 import type { WorkPoolYieldItem } from "./workpool-yield";
 import {
 	type AgentDefinition,
@@ -4552,6 +4554,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	const childDepth = parentDepth + 1;
 	const restrictToolNames = options.restrictToolNames === true || preparedSession !== undefined;
 	const atMaxDepth = maxRecursionDepth >= 0 && childDepth >= maxRecursionDepth;
+	// A named profile is closed-world: omitting `mcps:` names no server, so the
+	// child never inherits the parent's MCP surface.
+	const mcpLoad = mcpLoadForNamedProfile(agent.mcpLoad);
 
 	// Add tools if specified. Unstructured runs never get `yield`, even when
 	// the frontmatter lists it.
@@ -4921,8 +4926,26 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				}
 			}
 
-			const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
+			const enableMCP = (!restrictToolNames || mcpLoad.names.length > 0) && (options.enableMCP ?? true);
 			const mcpManager = enableMCP ? options.mcpManager : undefined;
+			if (mcpLoad.declared) {
+				const allowed = new Set(mcpLoad.names);
+				const parentMcp = mcpManager?.getTools() ?? [];
+				if (toolNames) {
+					toolNames = toolNames.filter(name => {
+						const tool = parentMcp.find(candidate => candidate.name === name);
+						if (!tool?.mcpServerName) return !isMCPToolName(name);
+						return allowed.has(tool.mcpServerName);
+					});
+					if (allowed.size > 0) {
+						for (const tool of parentMcp) {
+							if (tool.mcpServerName && allowed.has(tool.mcpServerName) && !toolNames.includes(tool.name)) {
+								toolNames.push(tool.name);
+							}
+						}
+					}
+				}
+			}
 
 			// Derive subagent-scoped telemetry from the parent's config so the
 			// child loop's spans nest under the parent's active execute_tool span
@@ -4999,6 +5022,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
 					toolNames,
+					toolLoad: agent.toolLoad,
+					mcpLoad,
+
 					outputSchema,
 					outputSchemaMode: options.outputSchemaMode,
 					restrictToolNames,
@@ -5032,6 +5058,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					agentId: id,
 					agentDisplayName: agent.name,
 					agentName: agent.name,
+					...(agent.rules !== undefined ? { declaredRules: agent.rules } : {}),
 					enableLsp: lspEnabled,
 					enableIrc: options.enableIrc,
 					skipPythonPreflight,
@@ -5128,6 +5155,14 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				throw err;
 			}
 			mcpFollower?.bind(session);
+			const applyLoadPolicy =
+				agent.mcpLoad?.declared === true ||
+				(agent.toolLoad !== undefined &&
+					(agent.toolLoad.eager.length > 0 || agent.toolLoad.discoverable.length > 0));
+			if (applyLoadPolicy) {
+				session.setAgentLoadPolicy(agent.toolLoad, agent.mcpLoad);
+				await awaitAbortable(session.setActiveToolsByName(session.getEnabledToolNames()));
+			}
 			// The SDK records a new session's initial model as the default role.
 			// Pin the child's own chain so a parent default sharing that model
 			// cannot steal its fallback routing. Resumed history keeps its role.

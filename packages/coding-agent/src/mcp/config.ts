@@ -10,7 +10,11 @@ import type { EffectiveExtensionRoots, SourceMeta } from "../capability/types";
 import type { MCPServer } from "../discovery";
 import { loadCapability } from "../discovery";
 import { readMCPConfigFile } from "./config-writer";
+import { lookupMcpOAuthCredentialForServer } from "./oauth-credentials";
+import type { AuthStorage } from "../session/auth-storage";
 import type { MCPConfigFile, MCPServerConfig } from "./types";
+import { DEFAULT_COLAB_HUB_SERVERS, hubDiscoveredServers, resolveHubCatalogNames } from "./hub";
+import { createSourceMeta } from "../discovery/helpers";
 
 /** Options for loading MCP configs */
 export interface LoadMCPConfigsOptions {
@@ -22,6 +26,12 @@ export interface LoadMCPConfigsOptions {
 	filterBrowser?: boolean;
 	/** Session-local extension roots for post-startup rediscovery (explicit + mode + configured). */
 	extensionRoots?: EffectiveExtensionRoots;
+	/** OAuth store used to fetch a live hub catalog after login. */
+	authStorage?: AuthStorage | null;
+	/** Override hub catalog cache path (tests). */
+	hubCatalogCachePath?: string;
+	/** Override hub catalog HTTP fetch (tests). */
+	fetchHubCatalog?: (hubUrl: string, bearer?: string) => Promise<string[]>;
 }
 
 /** Result of loading MCP configs */
@@ -177,6 +187,30 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 		const browserResult = filterBrowserMCPServers(configs, sources);
 		configs = browserResult.configs;
 		sources = browserResult.sources;
+	}
+
+	if (userConfig.hubs) {
+		for (const hub of Object.values(userConfig.hubs)) {
+			if (!hub?.url) continue;
+			try {
+				const lookup = lookupMcpOAuthCredentialForServer(options?.authStorage, undefined, hub.url);
+				const names = await resolveHubCatalogNames(hub.url, {
+					bearer: lookup?.credential.access,
+					cachePath: options?.hubCatalogCachePath,
+					fetchCatalog: options?.fetchHubCatalog,
+					defaults: DEFAULT_COLAB_HUB_SERVERS,
+				});
+				const discovered = hubDiscoveredServers(hub.url, names);
+				const source = createSourceMeta("omp", userPath, "user", "mcphub");
+				for (const [name, config] of Object.entries(discovered)) {
+					if (configs[name]) continue;
+					configs[name] = config;
+					sources[name] = source;
+				}
+			} catch (error) {
+				logger.warn("Ignoring MCP hub entry", { error: String(error) });
+			}
+		}
 	}
 
 	return { configs, exaApiKeys, sources };

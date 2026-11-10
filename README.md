@@ -11,7 +11,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR(s):** Status: fork-local (the idle-recap gate landed upstream as [#16978](https://github.com/can1357/oh-my-pi/pull/16978))
-> - **Upstream base:** [OMP 18.18.5 (`1891f380`)](https://github.com/can1357/oh-my-pi/tree/1891f380b296aeda26971abd81b89ef3247eea06)
+> - **Upstream base:** [OMP 18.18.6 (`9058ab9d`)](https://github.com/can1357/oh-my-pi/tree/9058ab9d229663e229e2867824ba6df6f21e9e59)
 >
 > Not stacked on other capabilities; merged into `runtime` independently.
 

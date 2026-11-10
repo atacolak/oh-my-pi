@@ -27,7 +27,7 @@ The params object **is** a single op — the discriminator and its fields live a
 | `block` | `task` or `phase` | `reason` | Marks actionable target tasks `blocked`; completed/abandoned tasks are left closed. Whitespace in `reason` is collapsed to one line. |
 | `unblock` | `task` or `phase` | None | Returns blocked target tasks to `pending` and clears their blocker notes. |
 | `rm` | `task` or `phase` or neither | None | Removes the target task, clears the phase's task list, or clears all task lists. |
-| `append` | `items` | `phase` (defaults to the active/next task's phase, then the last phase, then `Tasks`), `kind` (`"continuing" \| "passive"`) | Appends new `pending` tasks to the selected phase; creates the phase if missing. An explicit `kind` sets the phase's kind whether the phase is created or found. |
+| `append` | `items` | `phase` (defaults to the active/next continuing task's phase, then the last phase, then `Tasks`), `kind` (`"continuing" \| "passive"`) | Appends new `pending` tasks to the selected phase; creates the phase if missing. An explicit `kind` sets the phase's kind whether the phase is created or found. |
 | `view` | None | None | Echoes the current list. A `view` call is read-only: no normalization, no state write. |
 
 ### Fields
@@ -44,7 +44,7 @@ The params object **is** a single op — the discriminator and its fields live a
 
 For `init`, an absent or empty phase name becomes `Tasks`; duplicate phase names are rejected after this default applies.
 
-For `append`, an omitted `phase` selects the in-progress task's phase, otherwise the first pending task's phase. If no task is actionable (including when all tasks are blocked), it uses the last phase; if no phases exist, it creates `Tasks`. An explicit phase overrides this selection, but an explicit empty string is rejected. Omitting `op` as well as `phase` remains ambiguous when a list exists and is not inferred as `append`.
+For `append`, an omitted `phase` selects the in-progress continuing task's phase, otherwise the first pending continuing task's phase. If no continuing task is actionable (including when all continuing tasks are blocked), it uses the last phase, even if passive; if no phases exist, it creates `Tasks`. An explicit phase overrides this selection, but an explicit empty string is rejected. Omitting `op` as well as `phase` remains ambiguous when a list exists and is not inferred as `append`.
 
 ## Outputs
 

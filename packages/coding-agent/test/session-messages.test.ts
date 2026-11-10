@@ -3,6 +3,7 @@ import { invalidateMessageCache } from "@oh-my-pi/pi-agent-core/compaction/messa
 import { type AgentMessage, filterProviderReplayMessages } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@oh-my-pi/pi-ai";
 import { inferCopilotInitiator } from "@oh-my-pi/pi-ai/providers/github-copilot-headers";
+import { MEMORY_RECALL_CONTEXT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/memory-backend/recall-entry";
 import {
 	convertToLlm,
 	SKILL_PROMPT_MESSAGE_TYPE,
@@ -465,5 +466,82 @@ describe("wrapSteeringForModel", () => {
 		expect(wrapped[1]).not.toBe(second);
 		expect(getUserText(wrapped[0])).toContain("first steer");
 		expect(getUserText(wrapped[1])).toContain("second steer");
+	});
+});
+
+describe("scoped hidden recall replay", () => {
+	it("recomputes cached history on scope changes and filters newly appended foreign recall", () => {
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "conversation stays", timestamp: 1 },
+			{
+				role: "custom",
+				customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+				content: "source recall",
+				details: { backend: "hindsight", scope: "source" },
+				display: false,
+				timestamp: 2,
+			},
+			{
+				role: "custom",
+				customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+				content: "destination recall",
+				details: { backend: "hindsight", scope: "destination" },
+				display: false,
+				timestamp: 3,
+			},
+		];
+		expect(JSON.stringify(convertToLlm(messages, "source"))).toContain("source recall");
+		const destination = JSON.stringify(convertToLlm(messages, "destination"));
+		expect(destination).not.toContain("source recall");
+		expect(destination).toContain("destination recall");
+		expect(destination).toContain("conversation stays");
+		messages.push({
+			role: "custom",
+			customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+			content: "later foreign recall",
+			details: { backend: "hindsight", scope: "source" },
+			display: false,
+			timestamp: 4,
+		});
+		const appended = JSON.stringify(convertToLlm(messages, "destination"));
+		expect(appended).not.toContain("later foreign recall");
+		expect(appended).toContain("destination recall");
+		const restoredSource = JSON.stringify(convertToLlm(messages, "source"));
+		expect(restoredSource).toContain("later foreign recall");
+		expect(restoredSource).not.toContain("destination recall");
+	});
+
+	it("withdraws marked Hindsight recall when inactive without suppressing another backend or raw history", () => {
+		const messages: AgentMessage[] = [
+			{
+				role: "custom",
+				customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+				content: "hindsight recall",
+				details: { backend: "hindsight", scope: "old" },
+				display: false,
+				timestamp: 1,
+			},
+			{
+				role: "custom",
+				customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+				content: "other backend recall",
+				details: { backend: "mnemopi", scope: "other" },
+				display: false,
+				timestamp: 2,
+			},
+			{
+				role: "custom",
+				customType: MEMORY_RECALL_CONTEXT_MESSAGE_TYPE,
+				content: "legacy unscoped recall",
+				display: false,
+				timestamp: 3,
+			},
+		];
+		const inactive = JSON.stringify(convertToLlm(messages, null));
+		expect(inactive).not.toContain("hindsight recall");
+		expect(inactive).toContain("other backend recall");
+		expect(inactive).not.toContain("legacy unscoped recall");
+		expect(JSON.stringify(convertToLlm(messages, "current"))).not.toContain("legacy unscoped recall");
+		expect(JSON.stringify(convertToLlm(messages))).toContain("hindsight recall");
 	});
 });

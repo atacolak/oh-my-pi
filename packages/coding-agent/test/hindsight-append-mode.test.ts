@@ -43,12 +43,19 @@ const makeConfig = (overrides: Partial<HindsightConfig> = {}): HindsightConfig =
 	retainContext: "omp",
 	retainUpdateMode: "replace",
 	retainStrategy: null,
-	recallBudget: "mid",
+	recallBudget: "default",
 	recallMaxTokens: 1024,
 	recallTypes: ["world", "experience"],
 	recallContextTurns: 1,
 	recallMaxQueryChars: 800,
 	recallPromptPreamble: "preamble",
+	recallPreferObservations: true,
+	recallPrune: true,
+	recallDedup: true,
+	recallCadence: "boundary",
+	decisionModelUrl: null,
+	decisionModelApiKey: null,
+	decisionModelThreshold: 0.25,
 	debug: false,
 	requestTimeoutMs: 30_000,
 	reflectTimeoutMs: 30_000,
@@ -114,20 +121,22 @@ function resetBoundaryEntry(id: string, parentId: string, timestamp: string): Se
 	};
 }
 
+// Retained tool items land in a durable outbox under the agent dir; keep it in a temp dir.
+let agentDirTemp: TempDir;
+let previousAgentDir: string;
+beforeEach(() => {
+	previousAgentDir = getAgentDir();
+	agentDirTemp = TempDir.createSync("@hindsight-append-mode-");
+	setAgentDir(agentDirTemp.path());
+});
+afterEach(async () => {
+	setAgentDir(previousAgentDir);
+	await agentDirTemp.remove();
+});
+
 describe("Hindsight append-mode session retention", () => {
-	let agentDir: TempDir;
-	let originalAgentDir: string;
-
-	beforeEach(() => {
-		originalAgentDir = getAgentDir();
-		agentDir = TempDir.createSync("@hindsight-append-mode-");
-		setAgentDir(agentDir.path());
-	});
-
 	afterEach(() => {
 		vi.restoreAllMocks();
-		setAgentDir(originalAgentDir);
-		agentDir.removeSync();
 	});
 
 	it("keeps default replace behavior: no update_mode and a full transcript on later retains", async () => {
@@ -519,6 +528,54 @@ describe("Hindsight append-mode session retention", () => {
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).content)).toContain("replacement three has enough text");
 		expect(String(firstItem(bodies[0]).content)).not.toContain("abandoned five has enough text");
+	});
+
+	it("caps a diverged resumed history on close at cadence plus overlap instead of uploading the entire branch", async () => {
+		const bodies = captureBodies();
+		const original = Array.from({ length: 12 }, (_, i) =>
+			userEntry(
+				`u${i + 1}`,
+				i === 0 ? null : `u${i}`,
+				`original history ${i + 1} has substantive text`,
+				SESSION_START,
+			),
+		);
+		let branch = original;
+		const state = new HindsightSessionState({
+			sessionId: "bounded-diverged-close",
+			client: new HindsightApi({ baseUrl: "http://hindsight.local" }),
+			bankId: "personal",
+			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 2, retainOverlapTurns: 1 }),
+			closeRetainBaselineTurns: 12,
+			session: {
+				sessionId: "bounded-diverged-close",
+				sessionManager: {
+					getHeader: () => ({
+						type: "session",
+						id: "bounded-diverged-close",
+						timestamp: SESSION_START,
+						cwd: "/tmp",
+					}),
+					getEntries: () => branch,
+					getBranch: () => branch,
+				},
+				getHindsightSessionState: () => state,
+			} as object as AgentSession,
+			banksSet: new Set(["personal"]),
+		});
+		branch = [
+			...original.slice(0, 11),
+			userEntry("replacement", "u11", "replacement branch tail has substantive text", SESSION_START),
+		];
+		await state.drainOnClose();
+		expect(bodies).toHaveLength(1);
+		const content = String(firstItem(bodies[0]).content);
+		expect(content).toContain("original history 10");
+		expect(content).toContain("original history 11");
+		expect(content).toContain("replacement branch tail");
+		expect(content).not.toContain("original history 9");
+		expect(content).not.toContain("original history 12");
+		state.dispose();
 	});
 
 	it("does not duplicate last-turn documents when close races an in-flight forced retain", async () => {
@@ -963,6 +1020,8 @@ describe("Hindsight append-mode session retention", () => {
 		];
 		const state = new HindsightSessionState({
 			sessionId: "sess-lastturn-done",
+			loadedMessageCount: 0,
+			closeRetainBaselineTurns: 0,
 			client,
 			bankId: "personal",
 			config: makeConfig({ retainMode: "last-turn", retainEveryNTurns: 5, retainOverlapTurns: 0 }),
@@ -985,6 +1044,9 @@ describe("Hindsight append-mode session retention", () => {
 		await state.maybeRetainOnAgentEnd();
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).document_id)).toMatch(/^sess-lastturn-done-\d+$/);
+
+		await state.flushPendingSessionRetain();
+		expect(bodies).toHaveLength(1);
 
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(1);
@@ -1047,6 +1109,9 @@ describe("Hindsight append-mode session retention", () => {
 		expect(String(firstItem(bodies[1]).content)).not.toContain("turn one has enough text");
 		expect(String(firstItem(bodies[1]).content)).not.toContain("turn five has enough text");
 		expect(firstItem(bodies[1])).not.toHaveProperty("update_mode");
+
+		await state.drainOnClose();
+		expect(bodies).toHaveLength(2);
 	});
 
 	it("force-rebuilds even when a cadence retain is still in flight", async () => {
@@ -1610,7 +1675,7 @@ describe("Hindsight append-mode session retention", () => {
 			banksSet: new Set(["personal"]),
 		});
 
-		await state.enqueueRetain("call-drain", [{ content: "user asked me to remember the deploy token rotation" }]);
+		await state.enqueueRetain("call-1607", [{ content: "user asked me to remember the deploy token rotation" }]);
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(1);
 		expect(String(firstItem(bodies[0]).content)).toContain("deploy token rotation");
@@ -1647,7 +1712,7 @@ describe("Hindsight append-mode session retention", () => {
 			closeRetainBaselineTurns: 0,
 		});
 
-		await state.enqueueRetain("call-drain", [{ content: "user asked me to remember the deploy token rotation" }]);
+		await state.enqueueRetain("call-1644", [{ content: "user asked me to remember the deploy token rotation" }]);
 		await state.drainOnClose();
 		expect(bodies).toHaveLength(2);
 		expect(String(firstItem(bodies[0]).content)).toContain("deploy token rotation");

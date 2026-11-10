@@ -137,8 +137,6 @@ export interface SessionToolsHost {
 	model(): Model | undefined;
 	memoryBackendSession(): MemoryBackendStartOptions["session"];
 	clearInheritedProviderPromptCacheKey(): void;
-	clearMemoryPromotionSnapshot(): void;
-	captureMemoryPromotionSnapshot(prompt: string[]): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
@@ -206,6 +204,8 @@ interface SessionToolsOptions {
 
 interface SystemPromptPreparation {
 	systemPrompt: string[];
+	/** Hidden model-visible context to deliver with the turn ({@link MemoryPromptPreparation.contextEntry}). */
+	contextEntry?: MemoryPromptPreparation["contextEntry"];
 	/** Memory backend note to deliver with the turn ({@link MemoryPromptPreparation.notice}). */
 	memoryNotice?: MemoryPromptPreparation["notice"];
 	/** Publish staged state at validated delivery; false declines the prepared turn without mutation. */
@@ -1707,7 +1707,6 @@ export class SessionTools {
 					this.#host.clearInheritedProviderPromptCacheKey();
 				}
 				this.#baseSystemPrompt = rebuiltSystemPrompt;
-				this.#host.clearMemoryPromotionSnapshot();
 				this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
 				invalidateToolSchemaMetadata(this.#host.agent.state.tools);
 				this.#lastAppliedToolSignature = rebuiltSignature;
@@ -2633,7 +2632,6 @@ export class SessionTools {
 				this.#baseSystemPrompt = built.systemPrompt;
 				this.#promptSurface = candidate;
 				this.#setBasePromptXdevNames(built.xdevCatalogNames);
-				this.#host.clearMemoryPromotionSnapshot();
 				if (!samePromptBlocks(previousBaseSystemPrompt, this.#baseSystemPrompt)) {
 					this.#host.clearInheritedProviderPromptCacheKey();
 				}
@@ -2681,7 +2679,6 @@ export class SessionTools {
 				if (this.#host.isDisposed() || isCurrent?.() === false) return false;
 				if (this.#baseSystemPrompt !== previousBaseSystemPrompt) return true;
 				this.#promptSurface = candidate;
-				this.#host.clearMemoryPromotionSnapshot();
 				this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
 				invalidateToolSchemaMetadata(this.#host.agent.state.tools);
 				this.#promptModelKey = this.#currentPromptModelKey();
@@ -2691,7 +2688,7 @@ export class SessionTools {
 		};
 	}
 
-	/** Stages memory prompt injection; the owning turn commits it together with extension policy. */
+	/** Stages memory context; the owning turn commits it together with extension policy. */
 	async buildSystemPromptForAgentStart(
 		promptText: string,
 		isCurrent: () => boolean,
@@ -2703,42 +2700,14 @@ export class SessionTools {
 		try {
 			const memory = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText, signal);
 			if (!isCurrent() || !memory) return { systemPrompt: this.#baseSystemPrompt };
-			const injected = memory.context;
-			if (!injected) {
-				return {
-					systemPrompt: this.#baseSystemPrompt,
-					memoryNotice: memory.notice,
-					commit: () => isCurrent() && memory.commit(),
-				};
-			}
-
-			let refreshed: SystemPromptPreparation | undefined;
-			try {
-				refreshed = await this.runToolRegistryMutation(() => this.#prepareBaseSystemPrompt(isCurrent));
-			} catch (refreshErr) {
-				logger.debug("Memory backend prompt refresh after beforeAgentStartPrompt failed", {
-					backend: backend.id,
-					error: String(refreshErr),
-				});
-			}
-			if (!isCurrent()) return { systemPrompt: this.#baseSystemPrompt };
-
-			const preparedBase = refreshed?.systemPrompt ?? this.#baseSystemPrompt;
-			const stablePrompt = [...preparedBase, injected];
+			// Recall rides the turn as a hidden entry. It never joins the system prompt:
+			// those bytes are the provider prefix-cache key, and a per-session recall that
+			// changes them invalidates every cached prefix for the transcript.
 			return {
-				systemPrompt: stablePrompt,
+				systemPrompt: this.#baseSystemPrompt,
+				contextEntry: memory.contextEntry,
 				memoryNotice: memory.notice,
-				commit: () => {
-					if (!isCurrent() || !memory.commit()) return false;
-					refreshed?.commit?.();
-					// A handler may have refreshed tools or policy. Promote the recall onto
-					// that winning base, never replace it with the preparation's snapshot.
-					const currentBase = this.#baseSystemPrompt;
-					this.#host.captureMemoryPromotionSnapshot(currentBase);
-					this.#baseSystemPrompt = currentBase === preparedBase ? stablePrompt : [...currentBase, injected];
-					this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
-					return true;
-				},
+				commit: () => isCurrent() && memory.commit(),
 			};
 		} catch (err) {
 			logger.debug("Memory backend beforeAgentStartPrompt failed", {

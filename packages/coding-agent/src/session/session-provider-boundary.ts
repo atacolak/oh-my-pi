@@ -50,6 +50,8 @@ export interface SessionProviderBoundaryHost {
 	localProtocolOptions(): LocalProtocolOptions;
 	transformContext(messages: AgentMessage[], signal?: AbortSignal): AgentMessage[] | Promise<AgentMessage[]>;
 	convertToLlm(messages: AgentMessage[]): Message[] | Promise<Message[]>;
+	/** Current Hindsight scope; null withdraws its context when the backend is inactive. */
+	memoryRecallScope?(): string | null;
 	onPayload: SimpleStreamOptions["onPayload"] | undefined;
 	onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
@@ -214,7 +216,7 @@ export class SessionProviderBoundary {
 
 	/** Converts side-request messages through the session's secret boundary. */
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[] {
-		const converted = convertToLlm(messages);
+		const converted = convertToLlm(messages, this.#host.memoryRecallScope?.());
 		const obfuscator = this.#host.obfuscator();
 		return obfuscator ? obfuscateMessages(obfuscator, converted) : converted;
 	}

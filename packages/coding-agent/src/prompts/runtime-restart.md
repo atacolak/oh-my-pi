@@ -1,0 +1,1 @@
+a graceful restart of this conversation was requested. finish the current step and save a concise checkpoint of the outcome, unfinished work and next action. call `upgrade_runtime` with request `{{requestId}}` to acknowledge, then finish this turn. do not cancel running work for this request; the owner waits for session-owned tools and background jobs to settle before restarting.

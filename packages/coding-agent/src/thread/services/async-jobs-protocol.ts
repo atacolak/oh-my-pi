@@ -112,7 +112,11 @@ export interface WireRunContext {
 export type WireJobRun = (ctx: WireRunContext) => Promise<string | AsyncJobRunResult>;
 
 /** A worker delivery sink as main calls it. */
-export type WireDeliverySink = (jobId: string, text: string, job?: AsyncJobWire) => void | Promise<void>;
+export type WireDeliverySink = (
+	jobId: string,
+	text: string,
+	job?: AsyncJobWire,
+) => boolean | void | Promise<boolean | void>;
 
 /** Remote-object protocol of kind {@link ASYNC_JOB_MANAGER_KIND}; sync methods are served synchronously on main. */
 export type AsyncJobManagerProtocol = {

@@ -86,6 +86,34 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 
 	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
 	{
+		name: "get_refresh_preflight",
+		doc: "Observe refresh hazards and bounded mounted tools without restarting or starting a broker.",
+		result: "RefreshPreflight",
+	},
+	{
+		name: "upgrade_runtime",
+		doc: "Restart the session owner onto the current runtime generation, now or when idle.",
+		params: {
+			"whenIdle?": "boolean",
+			"force?": "boolean",
+			"refresh?": doc(
+				"boolean",
+				"Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.",
+			),
+			"graceful?": doc(
+				"boolean",
+				"Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.",
+			),
+			"compactBeforeRestart?": doc("boolean", "Compact before teardown; failure preserves the running owner."),
+			"expectedSessionId?": doc("string", "Full selected session id; supply together with expectedSessionFile."),
+			"expectedSessionFile?": doc(
+				"string",
+				"Canonical absolute transcript path; supply together with expectedSessionId.",
+			),
+		},
+		result: "UpgradeRuntimeResult",
+	},
+	{
 		name: "set_fast_mode",
 		doc: "Enable or disable fast mode for the session.",
 		params: { enabled: "boolean" },
@@ -251,7 +279,7 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{
 		name: "compact",
 		doc: "Compact the conversation.",
-		params: { "customInstructions?": "string" },
+		params: { "customInstructions?": "string", "mode?": "CompactMode" },
 		result: "CompactionResult",
 	},
 	{ name: "set_auto_compaction", doc: "Enable or disable auto-compaction.", params: { enabled: "boolean" } },
@@ -381,6 +409,26 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		doc: "Remove one stored credential; fails when it is no longer stored. `remainingSource` names auth that still applies.",
 		params: { providerId: "string", credentialId: "number.integer" },
 		result: { "remainingSource?": "string" },
+	},
+	{
+		name: "get_mcp_status",
+		doc: "List configured, disabled and plugin MCP servers with their live connection state, sorted by name.",
+		result: { servers: "McpServerStatusEntry[]" },
+		unwrap: "servers",
+	},
+	{
+		name: "set_mcp_enabled",
+		doc: "Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.",
+		params: { name: "string", enabled: "boolean" },
+		result: { server: "McpServerStatusEntry" },
+		unwrap: "server",
+	},
+	{
+		name: "mcp_reauth",
+		doc: "Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.",
+		params: { name: "string" },
+		result: { server: "McpServerStatusEntry", status: "McpReauthStatus" },
+		timeoutMs: 900_000,
 	},
 
 	{

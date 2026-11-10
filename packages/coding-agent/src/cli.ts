@@ -40,6 +40,7 @@ import {
 	LSP_MUX_WORKER_ARG,
 	MNEMOPI_EMBED_SERVER_WORKER_ARG,
 	PARENT_WATCHDOG_WORKER_ARG,
+	SESSION_OWNER_WORKER_ARG,
 	STATS_ACTIVITY_WORKER_ARG,
 	SUBAGENT_WORKER_ARG,
 	TERMINAL_OUTPUT_WORKER_ARG,
@@ -47,6 +48,11 @@ import {
 } from "./cli/worker-selectors";
 import type * as JsProcessEntry from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
+import {
+	RESTART_RECEIVER_PROBE_ARG,
+	RESTART_RECEIVER_PROTOCOL,
+	type RestartReceiverProbe,
+} from "./launch/restart-receiver-probe";
 import { startParentWatchdog } from "./subprocess/parent-watchdog";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
@@ -318,6 +324,11 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 		await startDaemonBrokerFromEnvironment();
 		return true;
 	}
+	if (arg === SESSION_OWNER_WORKER_ARG) {
+		const { runSessionOwner } = await import("./launch/session-owner");
+		await runSessionOwner(process.argv.slice(process.argv.indexOf(SESSION_OWNER_WORKER_ARG) + 1));
+		return true;
+	}
 	if (arg === LSP_MUX_WORKER_ARG) {
 		const { startLspMuxFromEnvironment } = await import("./lsp/mux/server");
 		await startLspMuxFromEnvironment();
@@ -540,6 +551,19 @@ export async function runCli(argv: string[]): Promise<void> {
 			process.stderr.write(`Error: unknown worker selector: ${resolvedArgv[0]}\n`);
 			process.exitCode = 1;
 		}
+		return;
+	}
+
+	if (resolvedArgv[0] === "--version" && resolvedArgv[1] === RESTART_RECEIVER_PROBE_ARG) {
+		const nonce = resolvedArgv[2];
+		if (!nonce || resolvedArgv.length !== 3) throw new TypeError("Restart receiver probe requires one nonce");
+		const probe: RestartReceiverProbe = {
+			type: "restart_receiver",
+			protocol: RESTART_RECEIVER_PROTOCOL,
+			nonce,
+			version: VERSION,
+		};
+		process.stdout.write(`${JSON.stringify(probe)}\n`);
 		return;
 	}
 

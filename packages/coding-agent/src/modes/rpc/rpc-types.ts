@@ -19,9 +19,12 @@ import type {
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { RuntimeGenerationInfo } from "../../launch/runtime-generation";
 import type { SessionLeaseReport } from "../../session/session-storage";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
+import type { McpReauthStatus, McpServerStatusEntry } from "./rpc-mcp";
+import type { CompactMode } from "../../session/compact-modes";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
@@ -63,6 +66,18 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_refresh_preflight" }
+	| {
+			id?: string;
+			type: "upgrade_runtime";
+			whenIdle?: boolean;
+			force?: boolean;
+			refresh?: boolean;
+			graceful?: boolean;
+			compactBeforeRestart?: boolean;
+			expectedSessionId?: string;
+			expectedSessionFile?: string;
+	  }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
 	| {
@@ -111,7 +126,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_interrupt_mode"; mode: "immediate" | "wait" }
 
 	// Compaction
-	| { id?: string; type: "compact"; customInstructions?: string }
+	| { id?: string; type: "compact"; mode?: CompactMode; customInstructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
 	// Cache warming
@@ -150,6 +165,11 @@ export type RpcCommand =
 	| { id?: string; type: "get_logout_accounts"; providerId: string }
 	| { id?: string; type: "logout"; providerId: string; credentialId: number }
 
+	// MCP control
+	| { id?: string; type: "get_mcp_status" }
+	| { id?: string; type: "set_mcp_enabled"; name: string; enabled: boolean }
+	| { id?: string; type: "mcp_reauth"; name: string }
+
 	// Word prediction (composer ghost text); `cursor` is a UTF-16 offset into `text`
 	| { id?: string; type: "predict_word"; text: string; cursor: number }
 	| {
@@ -170,9 +190,28 @@ export type RpcCommand =
 // RPC State
 // ============================================================================
 
+/** Owner-reported execution scope; no credentials or provider configuration. */
+export interface RpcSessionExecution {
+	profile: string | null;
+	cwd: string;
+	memory: { backend: "hindsight"; scoping: string; scopeTags: string[] | null } | null;
+}
+
+/** Bounded live configuration evidence; absence on older owners means unavailable, not no warnings. */
+export interface RpcSessionDiagnostics {
+	version: 1;
+	observedAt: number;
+	model: { provider: string; id: string } | null;
+	thinkingLevel: ThinkingLevel | null;
+	configWarnings: string[];
+	warningsTruncated: boolean;
+	execution?: RpcSessionExecution;
+}
+
 export interface RpcSessionState {
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
+	sessionDiagnostics?: RpcSessionDiagnostics;
 	isStreaming: boolean;
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
@@ -212,6 +251,8 @@ export interface RpcSessionState {
 	/** For session dump / export (plain-text parity with /dump). */
 	systemPrompt?: string[];
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
+	/** Runtime generation layout of this process, when the entrypoint is generation-managed. */
+	generation?: RuntimeGenerationInfo;
 	/** Current context window usage. */
 	contextUsage?: ContextUsage;
 	/** Current goal-mode state; `null` when the session has no goal. */
@@ -373,6 +414,46 @@ export interface RpcAbortAndRestoreQueueResult {
 	truncated?: true;
 }
 
+/** Bounded owner-observed work. Null counts mean unavailable, never idle. */
+export interface RpcRefreshPreflight {
+	sessionId: string;
+	sessionFile: string | null;
+	/** Actual reopened owner evidence; null when ownership or the canonical journal cannot be established. */
+	restartReceipt?: RpcRuntimeRestartReceipt | null;
+	ephemeralWork: {
+		streaming: boolean;
+		admittedSubmission: boolean;
+		compacting: boolean;
+		inFlightTools: number | null;
+		taskSubagents: number | null;
+		backgroundJobs: number | null;
+		/** Services owned by this session; descendants are covered only by their task/job observations. */
+		services: number | null;
+		servicesUninspected: boolean;
+		hasEphemeralWork: boolean | null;
+	};
+	primaryPromptTools: { names: string[]; total: number; truncated: boolean };
+	/** Full exact-session refresh is separate from the legacy generation-only upgrade. */
+	refreshModes: { graceful: boolean; force: boolean };
+}
+
+export interface RpcRuntimeRestartReceipt {
+	sessionId: string;
+	sessionFile: string;
+	bootId: string;
+	importedGeneration: string | null;
+	basePromptDigest: string;
+}
+
+/** `upgrade_runtime` outcome: whether the owner is moving, is already current, or when it will move. */
+export interface RpcUpgradeRuntimeResult {
+	upgraded: boolean;
+	scheduled: boolean;
+	running?: string;
+	current?: string;
+	reason?: "already_current" | "not_generation_managed" | "scheduled_on_idle" | "checkpoint_requested";
+}
+
 export interface RpcReadyFrame {
 	type: "ready";
 	protocolVersion: 1;
@@ -463,6 +544,14 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "get_refresh_preflight"; success: true; data: RpcRefreshPreflight }
+	| {
+			id?: string;
+			type: "response";
+			command: "upgrade_runtime";
+			success: true;
+			data: RpcUpgradeRuntimeResult;
+	  }
 	| {
 			id?: string;
 			type: "response";
@@ -578,6 +667,29 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_steering_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_follow_up_mode"; success: true }
 	| { id?: string; type: "response"; command: "set_interrupt_mode"; success: true }
+
+	// MCP control
+	| {
+			id?: string;
+			type: "response";
+			command: "get_mcp_status";
+			success: true;
+			data: { servers: McpServerStatusEntry[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_mcp_enabled";
+			success: true;
+			data: { server: McpServerStatusEntry };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp_reauth";
+			success: true;
+			data: { server: McpServerStatusEntry; status: McpReauthStatus };
+	  }
 
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: CompactionResult }

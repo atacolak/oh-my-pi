@@ -350,6 +350,8 @@
 - Fixed `/settings` shadowed global edits reapplying live session state when the effective value did not change.
 - Fixed project inherit of `task.isolation.enabled` leaving a leftover `task.isolation.mode` alias after the isolation split.
 ## [18.18.0] - 2026-11-07
+
+## [18.18.0] - 2026-11-07
 - configured task agents retry model discovery and resolve extension-provided models before starting; unavailable selectors report a clear error instead of “no model selected”.
 
 ## [18.18.6] - 2026-11-09

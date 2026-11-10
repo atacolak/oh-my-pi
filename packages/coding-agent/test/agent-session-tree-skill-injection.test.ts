@@ -7,7 +7,7 @@
  * never the expanded skill body. An agent/autoload injection is not a user turn:
  * the leaf lands ON it so the skill stays on the active branch.
  */
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
@@ -16,7 +16,16 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { SessionMemory } from "@oh-my-pi/pi-coding-agent/session/session-memory";
+import { isolateHindsightEnv, type RestoreHindsightEnv } from "./helpers/hindsight-env";
 import { assistantMsg, createTestSession, userMsg } from "./utilities";
+
+let restoreHindsightEnv: RestoreHindsightEnv = () => {};
+beforeEach(() => {
+	restoreHindsightEnv = isolateHindsightEnv();
+});
+afterEach(() => {
+	restoreHindsightEnv();
+});
 
 const BODY = "<skill>huge expanded skill body</skill>";
 
@@ -181,7 +190,7 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 						id: askCallId,
 						name: "ask",
 						arguments: {
-							html: '<form><label>Which deploy target?<input name="deploy_target"></label></form>',
+							html: '<form><label>which deploy target?<select name="deploy_target"><option selected>staging</option><option>production</option></select></label></form>',
 						},
 					},
 				],
@@ -204,7 +213,7 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 				toolCallId: askCallId,
 				toolName: "ask",
 				content: [{ type: "text", text: 'User answers:\n{"deploy_target":"staging"}' }],
-				details: { answers: [{ name: "deploy_target", question: "Which deploy target?", answer: "staging" }] },
+				details: { answers: [{ name: "deploy_target", question: "which deploy target?", answer: "staging" }] },
 				isError: false,
 				timestamp: Date.now(),
 			});
@@ -216,7 +225,7 @@ describe("AgentSession delayed Hindsight baseline after tree navigation", () => 
 				reanswerAskResult: {
 					content: [{ type: "text", text: 'User answers:\n{"deploy_target":"production"}' }],
 					details: {
-						answers: [{ name: "deploy_target", question: "Which deploy target?", answer: "production" }],
+						answers: [{ name: "deploy_target", question: "which deploy target?", answer: "production" }],
 					},
 				},
 			});
@@ -479,6 +488,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 1,
 				"hindsight.retainOverlapTurns": 0,
 			},
@@ -576,6 +586,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 5,
 				"hindsight.retainOverlapTurns": 0,
 			},
@@ -693,6 +704,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 1,
 				"hindsight.retainOverlapTurns": 0,
 			},
@@ -752,6 +764,7 @@ describe("AgentSession Hindsight leave-path retain", () => {
 			settingsOverrides: {
 				"memory.backend": "hindsight",
 				"hindsight.apiUrl": "http://localhost:8888",
+				"hindsight.retainMode": "full-session",
 				"hindsight.retainEveryNTurns": 5,
 				"hindsight.retainOverlapTurns": 0,
 			},

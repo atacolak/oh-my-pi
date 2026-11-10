@@ -21,6 +21,7 @@ import type {
 	ListMemoriesResponse,
 	ListMentalModelsOptions,
 	MemoryItemInput,
+	HindsightMemoryUnit,
 	MentalModelHistoryEntry,
 	MentalModelListResponse,
 	MentalModelSummary,
@@ -135,6 +136,10 @@ export class RemoteHindsightClient implements HindsightClientApi {
 
 	getMentalModelHistory(bankId: string, mentalModelId: string): Promise<MentalModelHistoryEntry[]> {
 		return this.#remote.call("getMentalModelHistory", bankId, mentalModelId);
+	}
+
+	getMemory(bankId: string, memoryId: string): Promise<HindsightMemoryUnit | null> {
+		return this.#remote.call("getMemory", bankId, memoryId);
 	}
 
 	getKnowledgeBaseTree(bankId: string, options?: HindsightRequestOptions): Promise<KnowledgeTreeResponse> {

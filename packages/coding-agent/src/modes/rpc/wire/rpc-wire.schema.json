@@ -142,6 +142,28 @@
 				"clientOmit": []
 			},
 			{
+				"name": "get_refresh_preflight",
+				"doc": "Observe refresh hazards and bounded mounted tools without restarting or starting a broker.",
+				"params": null,
+				"result": "RefreshPreflight",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "upgrade_runtime",
+				"doc": "Restart the session owner onto the current runtime generation, now or when idle.",
+				"params": "UpgradeRuntimeParams",
+				"result": "UpgradeRuntimeResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "set_fast_mode",
 				"doc": "Enable or disable fast mode for the session.",
 				"params": "SetFastModeParams",
@@ -767,6 +789,39 @@
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "get_mcp_status",
+				"doc": "List configured, disabled and plugin MCP servers with their live connection state, sorted by name.",
+				"params": null,
+				"result": "GetMcpStatusResult",
+				"nullable": false,
+				"unwrap": "servers",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "set_mcp_enabled",
+				"doc": "Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.",
+				"params": "SetMcpEnabledParams",
+				"result": "SetMcpEnabledResult",
+				"nullable": false,
+				"unwrap": "server",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "mcp_reauth",
+				"doc": "Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.",
+				"params": "McpReauthParams",
+				"result": "McpReauthResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": 900000,
 				"completion": null,
 				"clientOmit": []
 			},
@@ -2283,6 +2338,14 @@
 			],
 			"type": "string"
 		},
+		"CompactMode": {
+			"enum": [
+				"soft",
+				"remote",
+				"snapcompact"
+			],
+			"type": "string"
+		},
 		"MessageUpdates": {
 			"enum": [
 				"full",
@@ -2638,6 +2701,388 @@
 			],
 			"description": "Provider-neutral state of an account past its usage limit, discriminated by `stage`."
 		},
+		"RuntimeGenerationState": {
+			"type": "object",
+			"properties": {
+				"running": {
+					"type": "string",
+					"description": "Generation directory the process was born in."
+				},
+				"behind": {
+					"type": "boolean",
+					"description": "The running generation is no longer the one `current` selects."
+				},
+				"current": {
+					"type": "string",
+					"description": "Generation `generations/current` points at, when readable."
+				}
+			},
+			"required": [
+				"running",
+				"behind"
+			],
+			"description": "Runtime generation layout of the process serving the session."
+		},
+		"UpgradeRuntimeResult": {
+			"type": "object",
+			"properties": {
+				"upgraded": {
+					"type": "boolean",
+					"description": "The owner is restarting onto `current` now."
+				},
+				"scheduled": {
+					"type": "boolean",
+					"description": "An idle-triggered upgrade is armed.",
+					"default": false
+				},
+				"running": {
+					"type": "string",
+					"description": "Generation the owner runs now."
+				},
+				"current": {
+					"type": "string",
+					"description": "Generation `generations/current` selects, when readable."
+				},
+				"reason": {
+					"enum": [
+						"already_current",
+						"not_generation_managed",
+						"scheduled_on_idle",
+						"checkpoint_requested"
+					],
+					"type": "string",
+					"description": "Why no upgrade is running now."
+				}
+			},
+			"required": [
+				"upgraded"
+			],
+			"description": "Outcome of `upgrade_runtime`."
+		},
+		"RefreshEphemeralWork": {
+			"type": "object",
+			"properties": {
+				"streaming": {
+					"type": "boolean"
+				},
+				"admittedSubmission": {
+					"type": "boolean"
+				},
+				"compacting": {
+					"type": "boolean"
+				},
+				"inFlightTools": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"taskSubagents": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"backgroundJobs": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"services": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"description": "Services owned by this session; null means unavailable."
+				},
+				"hasEphemeralWork": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"description": "Unknown inventory is never reported as idle."
+				},
+				"servicesUninspected": {
+					"type": "boolean",
+					"description": "Detached broker services are not inspected by this observation.",
+					"default": true
+				}
+			},
+			"required": [
+				"streaming",
+				"admittedSubmission",
+				"compacting",
+				"inFlightTools",
+				"taskSubagents",
+				"backgroundJobs",
+				"services",
+				"hasEphemeralWork"
+			]
+		},
+		"RefreshPrimaryPromptTools": {
+			"type": "object",
+			"properties": {
+				"names": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"total": {
+					"type": "integer"
+				},
+				"truncated": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"names",
+				"total",
+				"truncated"
+			]
+		},
+		"RefreshModes": {
+			"type": "object",
+			"properties": {
+				"graceful": {
+					"type": "boolean"
+				},
+				"force": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"graceful",
+				"force"
+			]
+		},
+		"RuntimeRestartReceipt": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"type": "string"
+				},
+				"bootId": {
+					"type": "string"
+				},
+				"importedGeneration": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"basePromptDigest": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"sessionId",
+				"sessionFile",
+				"bootId",
+				"importedGeneration",
+				"basePromptDigest"
+			]
+		},
+		"RefreshPreflight": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"ephemeralWork": {
+					"$ref": "#/$defs/RefreshEphemeralWork"
+				},
+				"primaryPromptTools": {
+					"$ref": "#/$defs/RefreshPrimaryPromptTools"
+				},
+				"refreshModes": {
+					"$ref": "#/$defs/RefreshModes"
+				},
+				"restartReceipt": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/RuntimeRestartReceipt"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"sessionId",
+				"sessionFile",
+				"ephemeralWork",
+				"primaryPromptTools",
+				"refreshModes"
+			]
+		},
+		"SessionDiagnosticModel": {
+			"type": "object",
+			"properties": {
+				"provider": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"provider",
+				"id"
+			]
+		},
+		"SessionExecutionMemory": {
+			"type": "object",
+			"properties": {
+				"backend": {
+					"const": "hindsight"
+				},
+				"scoping": {
+					"type": "string"
+				},
+				"scopeTags": {
+					"anyOf": [
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"backend",
+				"scoping",
+				"scopeTags"
+			]
+		},
+		"SessionExecution": {
+			"type": "object",
+			"properties": {
+				"profile": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"cwd": {
+					"type": "string"
+				},
+				"memory": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SessionExecutionMemory"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"profile",
+				"cwd",
+				"memory"
+			]
+		},
+		"SessionDiagnostics": {
+			"type": "object",
+			"properties": {
+				"version": {
+					"type": "integer"
+				},
+				"observedAt": {
+					"type": "number"
+				},
+				"model": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SessionDiagnosticModel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"thinkingLevel": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ThinkingLevel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"configWarnings": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"warningsTruncated": {
+					"type": "boolean"
+				},
+				"execution": {
+					"$ref": "#/$defs/SessionExecution"
+				}
+			},
+			"required": [
+				"version",
+				"observedAt",
+				"model",
+				"thinkingLevel",
+				"configWarnings",
+				"warningsTruncated"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
@@ -2649,6 +3094,10 @@
 				},
 				"thinkingLevel": {
 					"$ref": "#/$defs/ThinkingLevel"
+				},
+				"sessionDiagnostics": {
+					"$ref": "#/$defs/SessionDiagnostics",
+					"description": "Live configuration evidence; absent means warning readiness is unknown."
 				},
 				"isStreaming": {
 					"type": "boolean",
@@ -2768,6 +3217,10 @@
 				},
 				"contextUsage": {
 					"$ref": "#/$defs/ContextUsage"
+				},
+				"generation": {
+					"$ref": "#/$defs/RuntimeGenerationState",
+					"description": "Runtime generation of this process; absent when the entrypoint is not generation-managed."
 				},
 				"goal": {
 					"anyOf": [
@@ -3649,6 +4102,78 @@
 				"active"
 			],
 			"description": "A stored credential `logout` can remove; `active` marks credentials the session may be using."
+		},
+		"McpServerScope": {
+			"enum": [
+				"project",
+				"user",
+				"plugin"
+			],
+			"type": "string"
+		},
+		"McpServerTransport": {
+			"enum": [
+				"stdio",
+				"http",
+				"sse"
+			],
+			"type": "string"
+		},
+		"McpServerStatusState": {
+			"enum": [
+				"connected",
+				"connecting",
+				"disconnected",
+				"error",
+				"auth_required"
+			],
+			"type": "string"
+		},
+		"McpReauthStatus": {
+			"enum": [
+				"authorized",
+				"no_auth_needed"
+			],
+			"type": "string"
+		},
+		"McpServerStatusEntry": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"scope": {
+					"$ref": "#/$defs/McpServerScope"
+				},
+				"transport": {
+					"$ref": "#/$defs/McpServerTransport"
+				},
+				"enabled": {
+					"type": "boolean"
+				},
+				"status": {
+					"$ref": "#/$defs/McpServerStatusState"
+				},
+				"toolCount": {
+					"type": "integer"
+				},
+				"authRequired": {
+					"type": "boolean"
+				},
+				"lastError": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"name",
+				"scope",
+				"transport",
+				"enabled",
+				"status",
+				"toolCount",
+				"authRequired"
+			],
+			"description": "One MCP server: its definition's provenance plus the live connection state."
 		},
 		"HandoffResult": {
 			"type": "object",
@@ -6278,6 +6803,37 @@
 				"sessionDir"
 			]
 		},
+		"UpgradeRuntimeParams": {
+			"type": "object",
+			"properties": {
+				"whenIdle": {
+					"type": "boolean"
+				},
+				"force": {
+					"type": "boolean"
+				},
+				"refresh": {
+					"type": "boolean",
+					"description": "Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported."
+				},
+				"graceful": {
+					"type": "boolean",
+					"description": "Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported."
+				},
+				"compactBeforeRestart": {
+					"type": "boolean",
+					"description": "Compact before teardown; failure preserves the running owner."
+				},
+				"expectedSessionId": {
+					"type": "string",
+					"description": "Full selected session id; supply together with expectedSessionFile."
+				},
+				"expectedSessionFile": {
+					"type": "string",
+					"description": "Canonical absolute transcript path; supply together with expectedSessionId."
+				}
+			}
+		},
 		"SetFastModeParams": {
 			"type": "object",
 			"properties": {
@@ -6778,6 +7334,9 @@
 			"properties": {
 				"customInstructions": {
 					"type": "string"
+				},
+				"mode": {
+					"$ref": "#/$defs/CompactMode"
 				}
 			}
 		},
@@ -7121,6 +7680,72 @@
 					"type": "string"
 				}
 			}
+		},
+		"GetMcpStatusResult": {
+			"type": "object",
+			"properties": {
+				"servers": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/McpServerStatusEntry"
+					}
+				}
+			},
+			"required": [
+				"servers"
+			]
+		},
+		"SetMcpEnabledParams": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"enabled": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"name",
+				"enabled"
+			]
+		},
+		"SetMcpEnabledResult": {
+			"type": "object",
+			"properties": {
+				"server": {
+					"$ref": "#/$defs/McpServerStatusEntry"
+				}
+			},
+			"required": [
+				"server"
+			]
+		},
+		"McpReauthParams": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"name"
+			]
+		},
+		"McpReauthResult": {
+			"type": "object",
+			"properties": {
+				"server": {
+					"$ref": "#/$defs/McpServerStatusEntry"
+				},
+				"status": {
+					"$ref": "#/$defs/McpReauthStatus"
+				}
+			},
+			"required": [
+				"server",
+				"status"
+			]
 		},
 		"PredictWordParams": {
 			"type": "object",

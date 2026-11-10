@@ -301,7 +301,7 @@ const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
 const UNKNOWN_SKILL_REDISCOVERY_INTERVAL_MS = 2_000;
 
 /** Equal digests mean equal prompt blocks. */
-function systemPromptDigest(blocks: readonly string[]): string {
+export function systemPromptDigest(blocks: readonly string[]): string {
 	let hash = BigInt(blocks.length);
 	for (const block of blocks) hash = Bun.hash.wyhash(block, hash);
 	return hash.toString(16);

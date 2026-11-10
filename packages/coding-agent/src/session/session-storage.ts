@@ -24,8 +24,6 @@ import {
 	serializeTitleSlot,
 } from "./session-title-slot";
 
-/** Shared base flags for the held transcript descriptor; callers add `O_APPEND` or `O_TRUNC`. */
-const SESSION_WRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_CREAT;
 const utf8Decoder = new TextDecoder("utf-8");
 
 /**
@@ -101,6 +99,8 @@ export interface SessionStorageWriter {
 export interface SessionStorageWriteOptions {
 	/** Current UTF-8 byte length, or `null` when the target must not exist. */
 	expectedSize?: number | null;
+	/** File-backed publishes require this existing journal identity; missing or unreadable targets refuse. */
+	expectedSessionId?: string;
 }
 
 /**
@@ -240,14 +240,31 @@ export interface SessionStorage {
 	 * Optional because only backends with a process-owned lock can tell that
 	 * another process writes a session.
 	 */
-	claimSession?(sessionId: string, sessionPath: string): (() => void) | null;
+	claimSession?(sessionId: string, sessionPath: string): SessionOwnershipClaim | null;
+	/**
+	 * Strict {@link claimSession} for an owner path about to adopt
+	 * `sessionPath`: returns an idempotent reservation sharing this process's
+	 * holder count, or throws {@link SessionReservationBusyError} /
+	 * {@link SessionReservationUnavailableError}. Never downgrades an
+	 * indeterminate ownership state to permission to write. Optional for the
+	 * same reason as {@link claimSession}.
+	 */
+	reserveSession?(sessionId: string, sessionPath: string): SessionReservation;
 	/**
 	 * Atomically delete a session and its artifacts only when `shouldDelete`
 	 * accepts the current session content. Optional because backends without a
 	 * cross-process conditional-delete primitive must skip opportunistic GC.
 	 */
 	deleteSessionWithArtifactsIf?(sessionPath: string, shouldDelete: (content: string) => boolean): Promise<boolean>;
-	openWriter(path: string, options?: { flags?: "a" | "w"; onError?: (err: Error) => void }): SessionStorageWriter;
+	openWriter(
+		path: string,
+		options?: {
+			flags?: "a" | "w";
+			onError?: (err: Error) => void;
+			/** File-backed writers require this existing journal identity before appending. */
+			expectedSessionId?: string;
+		},
+	): SessionStorageWriter;
 	/**
 	 * Wait for every backing write scheduled by this storage to become durably
 	 * visible. Sync backends (file, memory) return immediately because their
@@ -302,6 +319,7 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 	#closed = false;
 	#error: Error | undefined;
 	#onError: ((err: Error) => void) | undefined;
+	#expectedSessionId: string | undefined;
 
 	constructor(
 		fpath: string,
@@ -309,21 +327,25 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 			flags?: "a" | "w";
 			onError?: (err: Error) => void;
 			publishLock?: (append: () => void, landed: () => boolean) => void;
+			expectedSessionId?: string;
 		},
 	) {
 		this.#fpath = fpath;
 		this.#publishLock = options?.publishLock;
 		this.#onError = options?.onError;
+		this.#expectedSessionId = options?.expectedSessionId;
 		const flags = options?.flags ?? "a";
 		// Ensure parent directory exists
 		const dir = path.dirname(fpath);
-		if (!fs.existsSync(dir)) {
+		if (this.#expectedSessionId === undefined && !fs.existsSync(dir)) {
 			fs.mkdirSync(dir, { recursive: true });
 		}
 		// Open file once, keep fd for lifetime
 		this.#fd = fs.openSync(
 			fpath,
-			SESSION_WRITE_FLAGS | (flags === "w" ? fs.constants.O_TRUNC : fs.constants.O_APPEND),
+			fs.constants.O_WRONLY |
+				(this.#expectedSessionId === undefined ? fs.constants.O_CREAT : 0) |
+				(flags === "w" ? fs.constants.O_TRUNC : fs.constants.O_APPEND),
 		);
 		// Register for cleanup if abandoned without close()
 		writerRegistry.register(this, this.#fd, this);
@@ -348,11 +370,22 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 	 * identity check and the append rollback point.
 	 */
 	#reopenIfReplaced(): number {
+		if (this.#expectedSessionId !== undefined && readSessionHeaderIdSync(this.#fpath) !== this.#expectedSessionId) {
+			throw new SessionReservationUnavailableError(
+				this.#expectedSessionId,
+				"the existing journal disappeared or changed identity before append",
+			);
+		}
 		const held = this.#heldFile();
 		const live = statPathByHandle(this.#fpath);
 		if (!live) return fs.fstatSync(this.#fd).size;
 		if (live.ino === held.ino && live.dev === held.dev) return Number(live.size);
-		const nextFd = fs.openSync(this.#fpath, SESSION_WRITE_FLAGS | fs.constants.O_APPEND);
+		const nextFd = fs.openSync(
+			this.#fpath,
+			fs.constants.O_WRONLY |
+				(this.#expectedSessionId === undefined ? fs.constants.O_CREAT : 0) |
+				fs.constants.O_APPEND,
+		);
 		writerRegistry.unregister(this);
 		try {
 			fs.closeSync(this.#fd);
@@ -375,7 +408,7 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 	#holdsLivePath(): boolean {
 		const held = this.#heldFile();
 		const live = statPathByHandle(this.#fpath);
-		if (!live) return true;
+		if (!live) return this.#expectedSessionId === undefined;
 		return live.ino === held.ino && live.dev === held.dev;
 	}
 
@@ -538,7 +571,19 @@ function publishLockPid(content: string): number | undefined {
  * session and only ever contend with other processes. The OS reclaims a lease
  * when its process exits, so a crashed owner never blocks a later claim.
  */
-const sessionLeases = new Map<string, { lease: FileLockHandle; holders: number }>();
+const sessionLeases = new Map<string, SessionLeaseEntry>();
+
+interface SessionLeaseEntry {
+	lease: FileLockHandle;
+	holders: number;
+}
+
+/** Drop one holder of `entry`, releasing the OS lease with the last one. */
+function releaseSessionLeaseHolder(sessionId: string, entry: SessionLeaseEntry): void {
+	if (--entry.holders > 0) return;
+	if (sessionLeases.get(sessionId) === entry) sessionLeases.delete(sessionId);
+	entry.lease.release();
+}
 
 const TEST_SESSION_OWNERS_DIR_ENV = "PI_TEST_SESSION_OWNERS_DIR";
 
@@ -572,7 +617,7 @@ const SESSION_HEADER_PREFIX_BYTES = 64 * 1024;
  * synchronously from a bounded prefix (past the title slot), or `undefined`
  * when there is no readable file or no header in that prefix.
  */
-function readSessionHeaderIdSync(sessionPath: string): string | undefined {
+export function readSessionHeaderIdSync(sessionPath: string): string | undefined {
 	let prefix: string;
 	try {
 		const fd = fs.openSync(sessionPath, "r");
@@ -626,6 +671,50 @@ function sessionLeasePath(sessionId: string, createDir: boolean): string {
 		}
 	}
 	return path.join(dir, name);
+}
+
+/**
+ * Another live process holds the session's ownership lease, so a strict
+ * reservation cannot be taken. The caller must not write that session.
+ */
+export class SessionReservationBusyError extends Error {
+	readonly sessionId: string;
+
+	constructor(sessionId: string) {
+		super(`Session "${sessionId}" is owned by another process.`);
+		this.name = "SessionReservationBusyError";
+		this.sessionId = sessionId;
+	}
+}
+
+/**
+ * Strict ownership could not be established: the lease probe or acquisition
+ * failed, or the journal at the path does not identify this session. A caller
+ * must treat this as a refusal; it is never a licence to write.
+ */
+export class SessionReservationUnavailableError extends Error {
+	readonly sessionId: string;
+
+	constructor(sessionId: string, reason: string, options?: { cause?: unknown }) {
+		super(`Cannot reserve session "${sessionId}": ${reason}.`, options);
+		this.name = "SessionReservationUnavailableError";
+		this.sessionId = sessionId;
+	}
+}
+
+/** A legacy release callback, with optional evidence that its own OS lease is live. */
+export interface SessionOwnershipClaim {
+	(): void;
+	readonly active?: boolean;
+}
+
+/** A strict ownership reservation of one session, held until its idempotent `release`. */
+export interface SessionReservation {
+	readonly sessionId: string;
+	readonly sessionPath: string;
+	/** Whether this exact reservation is still live; absent means authority is unknown. */
+	readonly active?: boolean;
+	release(): void;
 }
 
 /**
@@ -717,7 +806,15 @@ async function writeLinesToFile(target: string, lines: readonly string[]): Promi
 }
 
 export class FileSessionStorage implements SessionStorage {
-	#assertExpectedSize(fpath: string, expectedSize: number | null | undefined): void {
+	#assertWritePreconditions(fpath: string, options: SessionStorageWriteOptions | undefined): void {
+		const expectedSessionId = options?.expectedSessionId;
+		if (expectedSessionId !== undefined && readSessionHeaderIdSync(fpath) !== expectedSessionId) {
+			throw new SessionReservationUnavailableError(
+				expectedSessionId,
+				"the existing journal disappeared or changed identity before rewrite",
+			);
+		}
+		const expectedSize = options?.expectedSize;
 		if (expectedSize === undefined) return;
 		let actualSize: number | null;
 		try {
@@ -1031,7 +1128,7 @@ export class FileSessionStorage implements SessionStorage {
 		// append between the size check and the rename.
 		try {
 			this.#withPublishLock(target, () => {
-				this.#assertExpectedSize(target, options?.expectedSize);
+				this.#assertWritePreconditions(target, options);
 				try {
 					this.renameSync(tempPath, target);
 				} catch (err) {
@@ -1169,7 +1266,7 @@ export class FileSessionStorage implements SessionStorage {
 			// its EPERM fallback): a cooperating appender or rewrite cannot
 			// interleave, and appenders re-open a replaced path before writing.
 			this.#withPublishLock(target, () => {
-				this.#assertExpectedSize(target, options?.expectedSize);
+				this.#assertWritePreconditions(target, options);
 				try {
 					this.renameSync(tempPath, target);
 					return;
@@ -1292,7 +1389,10 @@ export class FileSessionStorage implements SessionStorage {
 		return Promise.resolve();
 	}
 
-	openWriter(fpath: string, options?: { flags?: "a" | "w"; onError?: (err: Error) => void }): SessionStorageWriter {
+	openWriter(
+		fpath: string,
+		options?: { flags?: "a" | "w"; onError?: (err: Error) => void; expectedSessionId?: string },
+	): SessionStorageWriter {
 		const lockPath = this.#publishLockPath(fpath);
 		const gatePath = this.#osGatePath(lockPath);
 		return new FileSessionStorageWriter(fpath, {
@@ -1328,7 +1428,7 @@ export class FileSessionStorage implements SessionStorage {
 	 * Never throws: a lock that cannot be taken for another reason counts as
 	 * owned, so it never moves a session off its file.
 	 */
-	claimSession(sessionId: string, sessionPath: string): (() => void) | null {
+	claimSession(sessionId: string, sessionPath: string): SessionOwnershipClaim | null {
 		const onDisk = readSessionHeaderIdSync(sessionPath);
 		if (onDisk !== undefined && onDisk !== sessionId) return null;
 		let held = sessionLeases.get(sessionId);
@@ -1347,12 +1447,64 @@ export class FileSessionStorage implements SessionStorage {
 		const claim = held;
 		claim.holders++;
 		let released = false;
-		return () => {
+		const release: SessionOwnershipClaim = () => {
 			if (released) return;
 			released = true;
-			if (--claim.holders > 0) return;
-			sessionLeases.delete(sessionId);
-			claim.lease.release();
+			releaseSessionLeaseHolder(sessionId, claim);
+		};
+		Object.defineProperty(release, "active", {
+			get: () => !released && sessionLeases.get(sessionId) === claim,
+		});
+		return release;
+	}
+
+	/**
+	 * Take this session's ownership lease for a strict owner path that is about
+	 * to adopt `sessionPath` as its own transcript. Unlike {@link claimSession},
+	 * an ownership state this process cannot establish is a refusal, never a
+	 * licence to write: a lease it cannot take is a typed error. The holder
+	 * count is the same one {@link claimSession} uses, so the manager's claim for
+	 * this session adopts the reservation instead of locking against it.
+	 */
+	reserveSession(sessionId: string, sessionPath: string): SessionReservation {
+		const onDisk = readSessionHeaderIdSync(sessionPath);
+		if (onDisk !== undefined && onDisk !== sessionId) {
+			throw new SessionReservationUnavailableError(sessionId, `${sessionPath} holds session "${onDisk}"`);
+		}
+		if (onDisk === undefined && this.existsSync(sessionPath)) {
+			throw new SessionReservationUnavailableError(
+				sessionId,
+				`the journal at ${sessionPath} does not identify a session`,
+			);
+		}
+		let held = sessionLeases.get(sessionId);
+		if (!held) {
+			let lease: FileLockHandle | null;
+			try {
+				lease = tryAcquireSessionLease(sessionId);
+			} catch (error) {
+				throw new SessionReservationUnavailableError(sessionId, "the ownership lease could not be taken", {
+					cause: error,
+				});
+			}
+			if (!lease) throw new SessionReservationBusyError(sessionId);
+			held = { lease, holders: 0 };
+			sessionLeases.set(sessionId, held);
+		}
+		const entry = held;
+		entry.holders++;
+		let released = false;
+		return {
+			sessionId,
+			sessionPath,
+			get active() {
+				return !released && sessionLeases.get(sessionId) === entry;
+			},
+			release: () => {
+				if (released) return;
+				released = true;
+				releaseSessionLeaseHolder(sessionId, entry);
+			},
 		};
 	}
 

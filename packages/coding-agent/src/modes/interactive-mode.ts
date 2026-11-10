@@ -77,6 +77,8 @@ import {
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
 import { restartArgv } from "../cli/flag-tables";
+import { SESSION_OWNER_WORKER_ARG } from "../cli/worker-selectors";
+import { matchesSessionPath, type SessionRestartTarget } from "../launch/session-attach";
 import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
@@ -116,6 +118,8 @@ import type { GoalModeState } from "../goals/state";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
 import { copyLocalArtifacts, resolveLocalRoot } from "../internal-urls";
 import { hasNativeJudge } from "../judgment";
+import { resolveUpgradedCliEntryCmd } from "../launch/runtime-generation";
+import { SESSION_OWNER_CONTEXT_ENV, sessionOwnerContext } from "../launch/session-owner";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -165,6 +169,7 @@ import { formatQueueShorthand } from "@oh-my-pi/pi-tui/prompt/queue-input";
 import { isTranscriptEntry, type SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
 import { loadPinnedSessionIds } from "../session/session-pins";
+import { readSessionHeaderIdSync } from "../session/session-storage";
 import {
 	canAutoCreateWorktree,
 	planWorktreeExit,
@@ -178,7 +183,9 @@ import { buildStaticInlineHint } from "../slash-commands/builtin-completions";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
 import { type DictationTarget, MicCursor, type SttCallbacks, STTController, type SttState } from "../stt";
 import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
-import { resolveCliEntryCmd } from "../subprocess/worker-client";
+import { attestCliRestartReceiver, resolveCliEntryCmd, validateCliEntryCmd } from "../subprocess/worker-client";
+import type { ModelRuntimeUpgrade, RuntimeRestartOptions } from "./rpc/model-runtime-upgrade";
+import { getRpcRefreshPreflight, isGracefulRestartSettled } from "./rpc/rpc-refresh-preflight";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
@@ -323,6 +330,7 @@ import { getAssistantMessageLinkTargets } from "@oh-my-pi/pi-tui/prompt/interact
 import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { MAGIC_KEYWORDS } from "./magic-keywords";
 import { sharedComposerCache } from "@oh-my-pi/pi-tui/prompt/composer-cache";
+import { DialogFirstResponder } from "./rpc/dialog-first-responder";
 import { BtwController } from "./controllers/btw-controller";
 import { CleanseCommandController } from "./controllers/cleanse-command-controller";
 import { CommandController } from "./controllers/command-controller";
@@ -364,7 +372,12 @@ import {
 	type SessionObserverChangeKind,
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
-import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
+import {
+	createSessionDetach,
+	createSessionTeardown,
+	type SessionDetach,
+	type SessionTeardown,
+} from "./session-teardown";
 import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { clearMermaidCache } from "@oh-my-pi/pi-tui/theme/mermaid-cache";
@@ -400,6 +413,8 @@ import type {
 } from "./types";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { ConversationPosition } from "./utils/conversation-position";
+import type { RpcSessionSocket } from "./rpc/rpc-socket";
+import type { ServedSessionSocket } from "./rpc/rpc-command-surface";
 import { materializeImageChipLinks, UiHelpers } from "./utils/ui-helpers";
 
 import {
@@ -1798,6 +1813,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#autocompleteProviderFactories: AutocompleteProviderFactory[] = [];
 	#cleanupUnsubscribe?: () => void;
 	#signalTeardown?: SessionTeardown;
+	#detachSession?: SessionDetach;
+	#hangupUnsubscribe?: () => void;
 	readonly #version: string;
 	/** Header components below the config warnings + welcome (the startup changelog), retained so a live config-warning change can rebuild the header (#10048). */
 	#headerAfter: readonly Component[] = [];
@@ -1862,6 +1879,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planReviewAnnotationStateBySubmission = new WeakMap<SubmittedUserInput, string>();
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
+	/** Races TUI dialogs against attached socket clients; owned for this mode's lifetime. */
+	readonly dialogFirstResponder = new DialogFirstResponder();
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
 	readonly #codexResetFireworksController: CodexResetFireworksController;
@@ -2086,6 +2105,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#subagentSessionCosts = new WeakMap<object, AgentCostSnapshot>();
 	#subagentCostHydratedRoot?: string;
 	#mcpStatusOrder: string[] = [];
+	#servedSessionSocket: ServedSessionSocket | undefined;
 	#mcpPendingServers = new Set<string>();
 	#mcpConnectedServers = new Set<string>();
 	#mcpFailedServers = new Map<string, { error: string; sourcePath?: string }>();
@@ -2466,9 +2486,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Before first paint, so hints the user already learned never flash on.
 		await logger.time("InteractiveMode.init:hintUsage", () => hintUsage.load());
 
-		// Route SIGINT/SIGTERM/SIGHUP/uncaughtException through the same teardown
-		// the TUI Ctrl+C keypress path performs: persist the in-progress editor
-		// draft for `--resume`, then dispose the session (which emits the extension
+		// Route SIGINT/SIGTERM/uncaughtException through the same teardown the TUI
+		// Ctrl+C keypress path performs: persist the in-progress editor draft for
+		// `--resume`, then dispose the session (which emits the extension
 		// `session_shutdown` event, cancels the owned async job manager, disposes
 		// eval kernels, releases owned browser tabs, and closes the session
 		// manager). Without this callback a real kernel signal would drop the
@@ -2476,6 +2496,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// and orphan background bash/task processes (issue #4080). The registered
 		// callback and `shutdown()` share one promise-memoized teardown, so a
 		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
+		//
+		// SIGHUP is different once the session is published on an attach endpoint:
+		// the terminal went away, not the session. The hangup handler below claims
+		// it and detaches only the view; this disposal callback stays armed for the
+		// real quit (SIGINT/SIGTERM) and is the fallback when detach fails.
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
 			beginDispose: () => {
@@ -2500,12 +2525,24 @@ export class InteractiveMode implements InteractiveModeContext {
 				});
 			},
 		});
-		// Forward the postmortem reason (SIGTERM/SIGHUP/uncaughtException/…) so the
-		// persisted `session_exit` diagnostic carries the real trigger. Postmortem
-		// runs callbacks in REVERSE registration order — this callback (registered
-		// after the AgentSession constructor's `agent-session:<id>` recorder) runs
-		// FIRST and its dispose() would otherwise persist the generic "dispose".
+		// Forward the postmortem reason (SIGTERM/uncaughtException/…, or a SIGHUP
+		// whose detach failed) so the persisted `session_exit` diagnostic carries
+		// the real trigger. Postmortem runs callbacks in REVERSE registration
+		// order — this callback (registered after the AgentSession constructor's
+		// `agent-session:<id>` recorder) runs FIRST and its dispose() would
+		// otherwise persist the generic "dispose".
 		this.#cleanupUnsubscribe = postmortem.register("session-teardown", reason => this.#signalTeardown!(reason));
+
+		// Claim SIGHUP while this process is a live attach endpoint: closing the
+		// terminal detaches the view, it does not dispose the session or cancel
+		// its background jobs. The handler is unregistered by `stop()`, so the
+		// next real exit runs the disposal above.
+		this.#detachSession = createSessionDetach({
+			getDraftText: () => this.#inputController.getDraftText(),
+			saveDraft: text => this.sessionManager.saveDraft(text),
+			stopView: () => this.#teardownView(true),
+		});
+		this.#hangupUnsubscribe = postmortem.registerHangupHandler(this.#detachSession);
 
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
@@ -8220,15 +8257,87 @@ export class InteractiveMode implements InteractiveModeContext {
 		return "deny";
 	}
 
+	/**
+	 * Publish this terminal session's command surface on its attach endpoint.
+	 * The session owns the listener: a client disconnect detaches only that
+	 * client, never the session or a running turn. `owner` carries the broker
+	 * generation of the PTY this publication belongs to, which enables the
+	 * transport-local `terminal_refresh` request for an attaching mirror.
+	 */
+	async attachSessionSocket(
+		socket: RpcSessionSocket | undefined,
+		owner?: { generation: string },
+		modelRuntimeUpgrade?: ModelRuntimeUpgrade,
+	): Promise<void> {
+		if (!socket || this.#servedSessionSocket) return;
+		const { serveInteractiveSessionSocket } = await import("./rpc/rpc-command-surface");
+		const generation = owner?.generation ?? sessionOwnerContext()?.id;
+		this.#servedSessionSocket = await serveInteractiveSessionSocket({
+			session: this.session,
+			socket,
+			subagentEventBus: this.#subagentEventBus,
+			firstResponder: this.dialogFirstResponder,
+			mcpManager: this.mcpManager,
+			isShuttingDown: () => this.#isShuttingDown,
+			upgradeRuntime: (target, canRestart, options) => void this.restart(target, canRestart, options),
+			modelRuntimeUpgrade,
+			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
+		});
+	}
+
+	/**
+	 * Reinitialize this session's terminal I/O for a newly attached mirror:
+	 * restart the renderer, re-enable its modes and probes, and force a full
+	 * repaint from the live component tree. The session, its socket, the draft,
+	 * pending dialogs and any running turn stay exactly as they are; only the
+	 * renderer restarts, so no dispose/teardown path is reachable from here.
+	 */
+	refreshTerminalAttachment(): void {
+		this.ui.stop();
+		this.ui.start();
+		this.ui.requestRender(true, { clearScrollback: true });
+	}
+
+	/**
+	 * Detach this TUI when the terminal hangs up: persist the draft for
+	 * `--resume`, stop the renderer and its input handling, and keep the
+	 * session, its background jobs, and its attach endpoint serving. Registered
+	 * as the process's SIGHUP handler in `init()`; an explicit quit still runs
+	 * {@link shutdown}.
+	 */
+	async detachForHangup(): Promise<void> {
+		await this.#detachSession?.();
+	}
+
 	stop(): void {
+		void this.#servedSessionSocket?.close();
+		this.#servedSessionSocket = undefined;
+		this.#hangupUnsubscribe?.();
+		this.#hangupUnsubscribe = undefined;
+		this.#detachSession = undefined;
+		this.#teardownView();
+		this.#cleanupUnsubscribe?.();
+	}
+
+	/**
+	 * Release this mode's TUI-side resources: renderer, input listeners,
+	 * view-owned controllers and timers, session-event subscriptions used only
+	 * to paint, and process-global UI hooks. Shared by a real close (`stop()`)
+	 * and the SIGHUP detach, which deliberately keeps the session, its
+	 * background jobs, the attach endpoint, and any dialog an attached client
+	 * can still answer alive.
+	 */
+	#teardownView(keepPendingDialogs = false): void {
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
 		this.#appearanceRefreshRequest = undefined;
-		// Settle any pending approval prompt as dismissed (deny). The
-		// controller stays aborted: approvals still queued behind the approval
-		// mutex deny on arrival instead of prompting a torn-down UI. `init`
-		// installs a fresh one.
-		this.#dialogLifetime.abort();
+		// A real close settles pending dialogs as dismissed (deny). A hangup
+		// detach keeps the lifetime armed: the prompt stays in the live component
+		// tree, an attached socket client can still answer it, and a reattached
+		// mirror repaints it instead of denying on detach.
+		if (!keepPendingDialogs) {
+			this.#dialogLifetime.abort();
+		}
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
 		void this.#recorder?.stop();
@@ -8278,11 +8387,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.unsubscribe) {
 			this.unsubscribe();
 		}
-		if (this.#cleanupUnsubscribe) {
-			this.#cleanupUnsubscribe();
-		}
 		// Clear the process-global consent handler so it doesn't outlive this
-		// InteractiveMode instance (e.g. test harnesses, headless re-init).
+		// InteractiveMode instance (e.g. test harnesses, headless re-init). A
+		// detached process has no UI to host these dialogs, so it clears them
+		// too; the session itself is untouched.
 		setAutoQaConsentHandler(null, null);
 		setCfgApprovalHost(null);
 		setWordPredictionHost(undefined);
@@ -8398,8 +8506,113 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * exec. On Windows (no exec semantics) or on exec failure, falls back to
 	 * spawning the replacement and lingering only to forward its exit code.
 	 */
-	async restart(): Promise<void> {
+	async restart(
+		expectedTarget?: SessionRestartTarget,
+		canRestart?: () => boolean,
+		options: RuntimeRestartOptions = {},
+	): Promise<void> {
 		if (this.#isShuttingDown) return;
+		const target = expectedTarget && {
+			sessionId: expectedTarget.sessionId,
+			sessionFile: expectedTarget.sessionFile,
+		};
+		const entry = resolveUpgradedCliEntryCmd(resolveCliEntryCmd());
+		try {
+			validateCliEntryCmd(entry.cmd);
+		} catch (error) {
+			// A refusal must not clear admitted input or dispose the running owner.
+			this.showWarning(`Restart receiver refused: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		const persistedFile = this.sessionManager.requiresSessionFile()
+			? this.sessionManager.getSessionFile()
+			: undefined;
+		if (target && target.sessionId !== this.sessionManager.getSessionId()) {
+			this.showWarning("Restart target refused: the full session id does not match the current conversation");
+			return;
+		}
+		if (
+			target &&
+			(!persistedFile ||
+				!(await matchesSessionPath(persistedFile, target.sessionFile)) ||
+				target.sessionId !== this.sessionManager.getSessionId() ||
+				persistedFile !== this.sessionManager.getSessionFile())
+		) {
+			this.showWarning("Restart target refused: the canonical transcript does not match the current conversation");
+			return;
+		}
+		// Canonical path observation may yield while another restart begins.
+		if (this.#isShuttingDown) return;
+		if (persistedFile && readSessionHeaderIdSync(persistedFile) !== this.sessionManager.getSessionId()) {
+			this.showWarning("Restart session refused: the journal no longer identifies the current session");
+			return;
+		}
+		if (persistedFile && !this.sessionManager.hasSessionOwnership()) {
+			this.showWarning("Restart ownership refused: this session manager does not own the journal");
+			return;
+		}
+		const owner = sessionOwnerContext();
+		if (target && !owner) {
+			this.showWarning("Restart receiver refused: exact restart requires the brokered owner route");
+			return;
+		}
+		const selectedSessionId = this.sessionManager.getSessionId();
+		const selectedSessionFile = this.sessionManager.getSessionFile();
+		try {
+			await attestCliRestartReceiver(entry.cmd);
+		} catch (error) {
+			this.showWarning(`Restart receiver refused: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		// Revalidate after every preparation phase; the final admission check has no await before closing.
+		for (const prepare of options.graceful || options.compactBeforeRestart ? [true, false] : [false]) {
+			const pathStillMatches =
+				!target || (persistedFile !== undefined && (await matchesSessionPath(persistedFile, target.sessionFile)));
+			if (this.#isShuttingDown) return;
+			const currentOwner = sessionOwnerContext();
+			if (
+				!pathStillMatches ||
+				this.sessionManager.getSessionId() !== selectedSessionId ||
+				this.sessionManager.getSessionFile() !== selectedSessionFile ||
+				currentOwner?.id !== owner?.id ||
+				currentOwner?.name !== owner?.name ||
+				currentOwner?.projectDir !== owner?.projectDir
+			) {
+				this.showWarning("Restart target refused: the selected conversation changed during restart preparation");
+				return;
+			}
+			if (
+				persistedFile &&
+				(readSessionHeaderIdSync(persistedFile) !== selectedSessionId || !this.sessionManager.hasSessionOwnership())
+			) {
+				this.showWarning("Restart ownership refused: the selected journal changed during restart preparation");
+				return;
+			}
+			try {
+				if (canRestart && !canRestart()) {
+					this.showWarning("Restart deferred: the request was cancelled or the conversation is no longer settled");
+					return;
+				}
+			} catch (error) {
+				this.showWarning(`Restart admission refused: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+			if (options.graceful && (!canRestart || !isGracefulRestartSettled(getRpcRefreshPreflight(this.session)))) {
+				this.showWarning("Restart deferred: session-owned work is active or its state is unknown");
+				return;
+			}
+			if (prepare) {
+				try {
+					if (options.compactBeforeRestart) await this.session.compact();
+					await this.sessionManager.flush();
+				} catch (error) {
+					this.showWarning(
+						`Restart preparation refused: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return;
+				}
+			}
+		}
 		this.#beginClose();
 		try {
 			await this.#teardown();
@@ -8408,32 +8621,56 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		const sessionFile = this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined;
+		// An exact caller selection is pinned before teardown, never rediscovered after it.
+		const sessionFile =
+			target?.sessionFile ??
+			(this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined);
 		// Pass the profile explicitly: native exec does not inherit Bun's process.env updates.
 		const activeProfile = getActiveProfile();
-		const cmd = [
-			...resolveCliEntryCmd(),
+		const launchArgv = process.argv.slice(2);
+		if (launchArgv[0] === SESSION_OWNER_WORKER_ARG) launchArgv.shift();
+		const cmd = [...entry.cmd];
+		if (owner) cmd.push(SESSION_OWNER_WORKER_ARG);
+		cmd.push(
 			...restartArgv(
-				process.argv.slice(2),
+				launchArgv,
 				sessionFile ? path.resolve(sessionFile) : undefined,
 				activeProfile ? { "--profile": true } : undefined,
 			),
-		];
+		);
 		if (activeProfile) cmd.push("--profile", activeProfile);
+		// Re-enter the owner route across execReplace: native exec inherits the
+		// real process environment, not the JS process.env mutations that
+		// consumed the launch context, so the context rides the command line.
+		// A configured running-entry override must name the entry actually
+		// executed, including the upgraded generation.
+		const carriedEnv: [string, string][] = [];
+		if (owner) carriedEnv.push([SESSION_OWNER_CONTEXT_ENV, JSON.stringify({ ...owner, restartTarget: target })]);
+		const runningEntryOverride = process.env.OMP_RUNNING_GENERATION_ENTRY?.trim();
+		if (entry.upgraded && runningEntryOverride && entry.entry) {
+			carriedEnv.push(["OMP_RUNNING_GENERATION_ENTRY", entry.entry]);
+		}
+		const replaceCmd =
+			carriedEnv.length > 0 && process.platform !== "win32"
+				? ["env", ...carriedEnv.map(([key, value]) => `${key}=${value}`), ...cmd]
+				: cmd;
 		await postmortem.cleanup();
 		await postmortem.drainStdout();
 		if (process.platform !== "win32") {
 			try {
-				execReplace(cmd); // never returns on success
+				execReplace(replaceCmd); // never returns on success
 			} catch (err) {
 				process.stderr.write(`${chalk.red(`Restart exec failed: ${err instanceof Error ? err.message : err}`)}\n`);
 			}
 		}
 		try {
-			const child = Bun.spawn(cmd, {
+			const child = Bun.spawn(replaceCmd, {
 				stdin: "inherit",
 				stdout: "inherit",
 				stderr: "inherit",
+				...(carriedEnv.length > 0 && process.platform === "win32"
+					? { env: { ...process.env, ...Object.fromEntries(carriedEnv) } }
+					: {}),
 			});
 			await postmortem.quit(await child.exited);
 		} catch (err) {

@@ -1987,6 +1987,27 @@ func (v *CacheWarmingMode) UnmarshalJSON(data []byte) error {
 	return unknownValue("CacheWarmingMode", s)
 }
 
+type CompactMode string
+
+const (
+	CompactModeSoft        CompactMode = "soft"
+	CompactModeRemote      CompactMode = "remote"
+	CompactModeSnapcompact CompactMode = "snapcompact"
+)
+
+func (v *CompactMode) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "CompactMode")
+	if err != nil {
+		return err
+	}
+	switch value := CompactMode(s); value {
+	case CompactModeSoft, CompactModeRemote, CompactModeSnapcompact:
+		*v = value
+		return nil
+	}
+	return unknownValue("CompactMode", s)
+}
+
 // `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches.
 type MessageUpdates string
 
@@ -2556,20 +2577,344 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+// Runtime generation layout of the process serving the session.
+type RuntimeGenerationState struct {
+	// Generation directory the process was born in.
+	Running string `json:"running"`
+	// The running generation is no longer the one `current` selects.
+	Behind bool `json:"behind"`
+	// Generation `generations/current` points at, when readable.
+	Current *string `json:"current,omitempty"`
+}
+
+func (v *RuntimeGenerationState) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RuntimeGenerationState", v.decodeFrom)
+}
+
+func (v *RuntimeGenerationState) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RuntimeGenerationState
+	d := fieldDecoder{raw: raw, owner: "RuntimeGenerationState"}
+	d.required("running", &out.Running)
+	d.required("behind", &out.Behind)
+	d.optional("current", &out.Current)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Outcome of `upgrade_runtime`.
+type UpgradeRuntimeResult struct {
+	// The owner is restarting onto `current` now.
+	Upgraded bool `json:"upgraded"`
+	// An idle-triggered upgrade is armed.
+	Scheduled bool `json:"scheduled"`
+	// Generation the owner runs now.
+	Running *string `json:"running,omitempty"`
+	// Generation `generations/current` selects, when readable.
+	Current *string `json:"current,omitempty"`
+	// Why no upgrade is running now.
+	Reason *UpgradeRuntimeResultReason `json:"reason,omitempty"`
+}
+
+func (v *UpgradeRuntimeResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "UpgradeRuntimeResult", v.decodeFrom)
+}
+
+func (v *UpgradeRuntimeResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out UpgradeRuntimeResult
+	d := fieldDecoder{raw: raw, owner: "UpgradeRuntimeResult"}
+	d.required("upgraded", &out.Upgraded)
+	d.defaulted("scheduled", &out.Scheduled, `false`)
+	d.optional("running", &out.Running)
+	d.optional("current", &out.Current)
+	d.optional("reason", &out.Reason)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type UpgradeRuntimeResultReason string
+
+const (
+	UpgradeRuntimeResultReasonAlreadyCurrent       UpgradeRuntimeResultReason = "already_current"
+	UpgradeRuntimeResultReasonNotGenerationManaged UpgradeRuntimeResultReason = "not_generation_managed"
+	UpgradeRuntimeResultReasonScheduledOnIdle      UpgradeRuntimeResultReason = "scheduled_on_idle"
+	UpgradeRuntimeResultReasonCheckpointRequested  UpgradeRuntimeResultReason = "checkpoint_requested"
+)
+
+func (v *UpgradeRuntimeResultReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "UpgradeRuntimeResultReason")
+	if err != nil {
+		return err
+	}
+	switch value := UpgradeRuntimeResultReason(s); value {
+	case UpgradeRuntimeResultReasonAlreadyCurrent, UpgradeRuntimeResultReasonNotGenerationManaged, UpgradeRuntimeResultReasonScheduledOnIdle, UpgradeRuntimeResultReasonCheckpointRequested:
+		*v = value
+		return nil
+	}
+	return unknownValue("UpgradeRuntimeResultReason", s)
+}
+
+type RefreshEphemeralWork struct {
+	Streaming          bool   `json:"streaming"`
+	AdmittedSubmission bool   `json:"admittedSubmission"`
+	Compacting         bool   `json:"compacting"`
+	InFlightTools      *int64 `json:"inFlightTools"`
+	TaskSubagents      *int64 `json:"taskSubagents"`
+	BackgroundJobs     *int64 `json:"backgroundJobs"`
+	// Services owned by this session; null means unavailable.
+	Services *int64 `json:"services"`
+	// Unknown inventory is never reported as idle.
+	HasEphemeralWork *bool `json:"hasEphemeralWork"`
+	// Detached broker services are not inspected by this observation.
+	ServicesUninspected bool `json:"servicesUninspected"`
+}
+
+func (v *RefreshEphemeralWork) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshEphemeralWork", v.decodeFrom)
+}
+
+func (v *RefreshEphemeralWork) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshEphemeralWork
+	d := fieldDecoder{raw: raw, owner: "RefreshEphemeralWork"}
+	d.required("streaming", &out.Streaming)
+	d.required("admittedSubmission", &out.AdmittedSubmission)
+	d.required("compacting", &out.Compacting)
+	d.nullable("inFlightTools", &out.InFlightTools)
+	d.nullable("taskSubagents", &out.TaskSubagents)
+	d.nullable("backgroundJobs", &out.BackgroundJobs)
+	d.nullable("services", &out.Services)
+	d.nullable("hasEphemeralWork", &out.HasEphemeralWork)
+	d.defaulted("servicesUninspected", &out.ServicesUninspected, `true`)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RefreshPrimaryPromptTools struct {
+	Names     []string `json:"names"`
+	Total     int64    `json:"total"`
+	Truncated bool     `json:"truncated"`
+}
+
+func (v *RefreshPrimaryPromptTools) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshPrimaryPromptTools", v.decodeFrom)
+}
+
+func (v *RefreshPrimaryPromptTools) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshPrimaryPromptTools
+	d := fieldDecoder{raw: raw, owner: "RefreshPrimaryPromptTools"}
+	d.required("names", &out.Names)
+	d.required("total", &out.Total)
+	d.required("truncated", &out.Truncated)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RefreshModes struct {
+	Graceful bool `json:"graceful"`
+	Force    bool `json:"force"`
+}
+
+func (v *RefreshModes) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshModes", v.decodeFrom)
+}
+
+func (v *RefreshModes) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshModes
+	d := fieldDecoder{raw: raw, owner: "RefreshModes"}
+	d.required("graceful", &out.Graceful)
+	d.required("force", &out.Force)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RuntimeRestartReceipt struct {
+	SessionID          string  `json:"sessionId"`
+	SessionFile        string  `json:"sessionFile"`
+	BootID             string  `json:"bootId"`
+	ImportedGeneration *string `json:"importedGeneration"`
+	BasePromptDigest   string  `json:"basePromptDigest"`
+}
+
+func (v *RuntimeRestartReceipt) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RuntimeRestartReceipt", v.decodeFrom)
+}
+
+func (v *RuntimeRestartReceipt) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RuntimeRestartReceipt
+	d := fieldDecoder{raw: raw, owner: "RuntimeRestartReceipt"}
+	d.required("sessionId", &out.SessionID)
+	d.required("sessionFile", &out.SessionFile)
+	d.required("bootId", &out.BootID)
+	d.nullable("importedGeneration", &out.ImportedGeneration)
+	d.required("basePromptDigest", &out.BasePromptDigest)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RefreshPreflight struct {
+	SessionID          string                    `json:"sessionId"`
+	SessionFile        *string                   `json:"sessionFile"`
+	EphemeralWork      RefreshEphemeralWork      `json:"ephemeralWork"`
+	PrimaryPromptTools RefreshPrimaryPromptTools `json:"primaryPromptTools"`
+	RefreshModes       RefreshModes              `json:"refreshModes"`
+	RestartReceipt     *RuntimeRestartReceipt    `json:"restartReceipt,omitempty"`
+}
+
+func (v *RefreshPreflight) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RefreshPreflight", v.decodeFrom)
+}
+
+func (v *RefreshPreflight) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RefreshPreflight
+	d := fieldDecoder{raw: raw, owner: "RefreshPreflight"}
+	d.required("sessionId", &out.SessionID)
+	d.nullable("sessionFile", &out.SessionFile)
+	d.required("ephemeralWork", &out.EphemeralWork)
+	d.required("primaryPromptTools", &out.PrimaryPromptTools)
+	d.required("refreshModes", &out.RefreshModes)
+	d.optional("restartReceipt", &out.RestartReceipt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SessionDiagnosticModel struct {
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+}
+
+func (v *SessionDiagnosticModel) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionDiagnosticModel", v.decodeFrom)
+}
+
+func (v *SessionDiagnosticModel) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionDiagnosticModel
+	d := fieldDecoder{raw: raw, owner: "SessionDiagnosticModel"}
+	d.required("provider", &out.Provider)
+	d.required("id", &out.ID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SessionExecutionMemory struct {
+	Scoping   string   `json:"scoping"`
+	ScopeTags []string `json:"scopeTags"`
+}
+
+func (v *SessionExecutionMemory) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionExecutionMemory", v.decodeFrom)
+}
+
+func (v *SessionExecutionMemory) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionExecutionMemory
+	d := fieldDecoder{raw: raw, owner: "SessionExecutionMemory"}
+	d.constant("backend", "hindsight")
+	d.required("scoping", &out.Scoping)
+	d.nullable("scopeTags", &out.ScopeTags)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v SessionExecutionMemory) MarshalJSON() ([]byte, error) {
+	type plain SessionExecutionMemory
+	return encodeObject(plain(v), `"backend":"hindsight"`, nil)
+}
+
+type SessionExecution struct {
+	Profile *string                 `json:"profile"`
+	Cwd     string                  `json:"cwd"`
+	Memory  *SessionExecutionMemory `json:"memory"`
+}
+
+func (v *SessionExecution) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionExecution", v.decodeFrom)
+}
+
+func (v *SessionExecution) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionExecution
+	d := fieldDecoder{raw: raw, owner: "SessionExecution"}
+	d.nullable("profile", &out.Profile)
+	d.required("cwd", &out.Cwd)
+	d.nullable("memory", &out.Memory)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SessionDiagnostics struct {
+	Version           int64                   `json:"version"`
+	ObservedAt        float64                 `json:"observedAt"`
+	Model             *SessionDiagnosticModel `json:"model"`
+	ThinkingLevel     *ThinkingLevel          `json:"thinkingLevel"`
+	ConfigWarnings    []string                `json:"configWarnings"`
+	WarningsTruncated bool                    `json:"warningsTruncated"`
+	Execution         *SessionExecution       `json:"execution,omitempty"`
+}
+
+func (v *SessionDiagnostics) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionDiagnostics", v.decodeFrom)
+}
+
+func (v *SessionDiagnostics) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionDiagnostics
+	d := fieldDecoder{raw: raw, owner: "SessionDiagnostics"}
+	d.required("version", &out.Version)
+	d.required("observedAt", &out.ObservedAt)
+	d.nullable("model", &out.Model)
+	d.nullable("thinkingLevel", &out.ThinkingLevel)
+	d.required("configWarnings", &out.ConfigWarnings)
+	d.required("warningsTruncated", &out.WarningsTruncated)
+	d.optional("execution", &out.Execution)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
-	SessionID             string         `json:"sessionId"`
-	Model                 *ModelInfo     `json:"model,omitempty"`
-	ThinkingLevel         *ThinkingLevel `json:"thinkingLevel,omitempty"`
-	IsStreaming           bool           `json:"isStreaming"`
-	IsCompacting          bool           `json:"isCompacting"`
-	SteeringMode          QueueMode      `json:"steeringMode"`
-	FollowUpMode          QueueMode      `json:"followUpMode"`
-	InterruptMode         InterruptMode  `json:"interruptMode"`
-	SessionFile           *string        `json:"sessionFile,omitempty"`
-	SessionName           *string        `json:"sessionName,omitempty"`
-	AutoCompactionEnabled bool           `json:"autoCompactionEnabled"`
-	FastModeEnabled       bool           `json:"fastModeEnabled"`
-	FastModeActive        bool           `json:"fastModeActive"`
+	SessionID     string         `json:"sessionId"`
+	Model         *ModelInfo     `json:"model,omitempty"`
+	ThinkingLevel *ThinkingLevel `json:"thinkingLevel,omitempty"`
+	// Live configuration evidence; absent means warning readiness is unknown.
+	SessionDiagnostics    *SessionDiagnostics `json:"sessionDiagnostics,omitempty"`
+	IsStreaming           bool                `json:"isStreaming"`
+	IsCompacting          bool                `json:"isCompacting"`
+	SteeringMode          QueueMode           `json:"steeringMode"`
+	FollowUpMode          QueueMode           `json:"followUpMode"`
+	InterruptMode         InterruptMode       `json:"interruptMode"`
+	SessionFile           *string             `json:"sessionFile,omitempty"`
+	SessionName           *string             `json:"sessionName,omitempty"`
+	AutoCompactionEnabled bool                `json:"autoCompactionEnabled"`
+	FastModeEnabled       bool                `json:"fastModeEnabled"`
+	FastModeActive        bool                `json:"fastModeActive"`
 	// `/slow` applies to the active model.
 	SlowModeSupported bool `json:"slowModeSupported"`
 	// `/slow` is on for the active model; always `false` when `slowModeSupported` is `false`.
@@ -2591,6 +2936,8 @@ type SessionState struct {
 	SystemPrompt []string         `json:"systemPrompt"`
 	DumpTools    []ToolDescriptor `json:"dumpTools"`
 	ContextUsage *ContextUsage    `json:"contextUsage,omitempty"`
+	// Runtime generation of this process; absent when the entrypoint is not generation-managed.
+	Generation *RuntimeGenerationState `json:"generation,omitempty"`
 	// Current goal mode; null when the session has no goal.
 	Goal *GoalModeState `json:"goal"`
 }
@@ -2605,6 +2952,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.required("sessionId", &out.SessionID)
 	d.optional("model", &out.Model)
 	d.optional("thinkingLevel", &out.ThinkingLevel)
+	d.optional("sessionDiagnostics", &out.SessionDiagnostics)
 	d.defaulted("isStreaming", &out.IsStreaming, `false`)
 	d.defaulted("isCompacting", &out.IsCompacting, `false`)
 	d.defaulted("steeringMode", &out.SteeringMode, `"one-at-a-time"`)
@@ -2630,6 +2978,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.defaulted("systemPrompt", &out.SystemPrompt, `[]`)
 	d.defaulted("dumpTools", &out.DumpTools, `[]`)
 	d.optional("contextUsage", &out.ContextUsage)
+	d.optional("generation", &out.Generation)
 	d.defaulted("goal", &out.Goal, `null`)
 	if d.err != nil {
 		return d.err
@@ -3507,6 +3856,125 @@ func (v *LogoutAccountType) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	return unknownValue("LogoutAccountType", s)
+}
+
+type McpServerScope string
+
+const (
+	McpServerScopeProject McpServerScope = "project"
+	McpServerScopeUser    McpServerScope = "user"
+	McpServerScopePlugin  McpServerScope = "plugin"
+)
+
+func (v *McpServerScope) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpServerScope")
+	if err != nil {
+		return err
+	}
+	switch value := McpServerScope(s); value {
+	case McpServerScopeProject, McpServerScopeUser, McpServerScopePlugin:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpServerScope", s)
+}
+
+type McpServerTransport string
+
+const (
+	McpServerTransportStdio McpServerTransport = "stdio"
+	McpServerTransportHTTP  McpServerTransport = "http"
+	McpServerTransportSse   McpServerTransport = "sse"
+)
+
+func (v *McpServerTransport) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpServerTransport")
+	if err != nil {
+		return err
+	}
+	switch value := McpServerTransport(s); value {
+	case McpServerTransportStdio, McpServerTransportHTTP, McpServerTransportSse:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpServerTransport", s)
+}
+
+type McpServerStatusState string
+
+const (
+	McpServerStatusStateConnected    McpServerStatusState = "connected"
+	McpServerStatusStateConnecting   McpServerStatusState = "connecting"
+	McpServerStatusStateDisconnected McpServerStatusState = "disconnected"
+	McpServerStatusStateError        McpServerStatusState = "error"
+	McpServerStatusStateAuthRequired McpServerStatusState = "auth_required"
+)
+
+func (v *McpServerStatusState) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpServerStatusState")
+	if err != nil {
+		return err
+	}
+	switch value := McpServerStatusState(s); value {
+	case McpServerStatusStateConnected, McpServerStatusStateConnecting, McpServerStatusStateDisconnected, McpServerStatusStateError, McpServerStatusStateAuthRequired:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpServerStatusState", s)
+}
+
+type McpReauthStatus string
+
+const (
+	McpReauthStatusAuthorized   McpReauthStatus = "authorized"
+	McpReauthStatusNoAuthNeeded McpReauthStatus = "no_auth_needed"
+)
+
+func (v *McpReauthStatus) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "McpReauthStatus")
+	if err != nil {
+		return err
+	}
+	switch value := McpReauthStatus(s); value {
+	case McpReauthStatusAuthorized, McpReauthStatusNoAuthNeeded:
+		*v = value
+		return nil
+	}
+	return unknownValue("McpReauthStatus", s)
+}
+
+// One MCP server: its definition's provenance plus the live connection state.
+type McpServerStatusEntry struct {
+	Name         string               `json:"name"`
+	Scope        McpServerScope       `json:"scope"`
+	Transport    McpServerTransport   `json:"transport"`
+	Enabled      bool                 `json:"enabled"`
+	Status       McpServerStatusState `json:"status"`
+	ToolCount    int64                `json:"toolCount"`
+	AuthRequired bool                 `json:"authRequired"`
+	LastError    *string              `json:"lastError,omitempty"`
+}
+
+func (v *McpServerStatusEntry) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "McpServerStatusEntry", v.decodeFrom)
+}
+
+func (v *McpServerStatusEntry) decodeFrom(raw map[string]json.RawMessage) error {
+	var out McpServerStatusEntry
+	d := fieldDecoder{raw: raw, owner: "McpServerStatusEntry"}
+	d.required("name", &out.Name)
+	d.required("scope", &out.Scope)
+	d.required("transport", &out.Transport)
+	d.required("enabled", &out.Enabled)
+	d.required("status", &out.Status)
+	d.required("toolCount", &out.ToolCount)
+	d.required("authRequired", &out.AuthRequired)
+	d.optional("lastError", &out.LastError)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
 }
 
 type HandoffResult struct {
@@ -7699,6 +8167,65 @@ func (v *LogoutResult) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type GetMcpStatusResult struct {
+	Servers []McpServerStatusEntry `json:"servers"`
+}
+
+func (v *GetMcpStatusResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "GetMcpStatusResult", v.decodeFrom)
+}
+
+func (v *GetMcpStatusResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out GetMcpStatusResult
+	d := fieldDecoder{raw: raw, owner: "GetMcpStatusResult"}
+	d.required("servers", &out.Servers)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SetMcpEnabledResult struct {
+	Server McpServerStatusEntry `json:"server"`
+}
+
+func (v *SetMcpEnabledResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SetMcpEnabledResult", v.decodeFrom)
+}
+
+func (v *SetMcpEnabledResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SetMcpEnabledResult
+	d := fieldDecoder{raw: raw, owner: "SetMcpEnabledResult"}
+	d.required("server", &out.Server)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type McpReauthResult struct {
+	Server McpServerStatusEntry `json:"server"`
+	Status McpReauthStatus      `json:"status"`
+}
+
+func (v *McpReauthResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "McpReauthResult", v.decodeFrom)
+}
+
+func (v *McpReauthResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out McpReauthResult
+	d := fieldDecoder{raw: raw, owner: "McpReauthResult"}
+	d.required("server", &out.Server)
+	d.required("status", &out.Status)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type PredictWordResult struct {
 	Suffix *string `json:"suffix"`
 }
@@ -7907,6 +8434,36 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	var out SessionState
 	err := c.call(ctx, "get_state", nil, 0, &out)
+	return out, err
+}
+
+// GetRefreshPreflight sends "get_refresh_preflight": Observe refresh hazards and bounded mounted tools without restarting or starting a broker.
+func (c Commands) GetRefreshPreflight(ctx context.Context) (RefreshPreflight, error) {
+	var out RefreshPreflight
+	err := c.call(ctx, "get_refresh_preflight", nil, 0, &out)
+	return out, err
+}
+
+// UpgradeRuntimeCommand holds the parameters of "upgrade_runtime".
+type UpgradeRuntimeCommand struct {
+	WhenIdle *bool `json:"whenIdle,omitempty"`
+	Force    *bool `json:"force,omitempty"`
+	// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	Refresh *bool `json:"refresh,omitempty"`
+	// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	Graceful *bool `json:"graceful,omitempty"`
+	// Compact before teardown; failure preserves the running owner.
+	CompactBeforeRestart *bool `json:"compactBeforeRestart,omitempty"`
+	// Full selected session id; supply together with expectedSessionFile.
+	ExpectedSessionID *string `json:"expectedSessionId,omitempty"`
+	// Canonical absolute transcript path; supply together with expectedSessionId.
+	ExpectedSessionFile *string `json:"expectedSessionFile,omitempty"`
+}
+
+// UpgradeRuntime sends "upgrade_runtime": Restart the session owner onto the current runtime generation, now or when idle.
+func (c Commands) UpgradeRuntime(ctx context.Context, p UpgradeRuntimeCommand) (UpgradeRuntimeResult, error) {
+	var out UpgradeRuntimeResult
+	err := c.call(ctx, "upgrade_runtime", p, 0, &out)
 	return out, err
 }
 
@@ -8234,7 +8791,8 @@ func (c Commands) SetInterruptMode(ctx context.Context, p SetInterruptModeComman
 
 // CompactCommand holds the parameters of "compact".
 type CompactCommand struct {
-	CustomInstructions *string `json:"customInstructions,omitempty"`
+	CustomInstructions *string      `json:"customInstructions,omitempty"`
+	Mode               *CompactMode `json:"mode,omitempty"`
 }
 
 // Compact sends "compact": Compact the conversation.
@@ -8497,6 +9055,38 @@ type LogoutCommand struct {
 func (c Commands) Logout(ctx context.Context, p LogoutCommand) (LogoutResult, error) {
 	var out LogoutResult
 	err := c.call(ctx, "logout", p, 0, &out)
+	return out, err
+}
+
+// GetMcpStatus sends "get_mcp_status": List configured, disabled and plugin MCP servers with their live connection state, sorted by name.
+func (c Commands) GetMcpStatus(ctx context.Context) ([]McpServerStatusEntry, error) {
+	var out GetMcpStatusResult
+	err := c.call(ctx, "get_mcp_status", nil, 0, &out)
+	return out.Servers, err
+}
+
+// SetMcpEnabledCommand holds the parameters of "set_mcp_enabled".
+type SetMcpEnabledCommand struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+// SetMcpEnabled sends "set_mcp_enabled": Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.
+func (c Commands) SetMcpEnabled(ctx context.Context, p SetMcpEnabledCommand) (McpServerStatusEntry, error) {
+	var out SetMcpEnabledResult
+	err := c.call(ctx, "set_mcp_enabled", p, 0, &out)
+	return out.Server, err
+}
+
+// McpReauthCommand holds the parameters of "mcp_reauth".
+type McpReauthCommand struct {
+	Name string `json:"name"`
+}
+
+// McpReauth sends "mcp_reauth": Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.
+func (c Commands) McpReauth(ctx context.Context, p McpReauthCommand) (McpReauthResult, error) {
+	var out McpReauthResult
+	err := c.call(ctx, "mcp_reauth", p, 900*time.Second, &out)
 	return out, err
 }
 

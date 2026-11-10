@@ -193,8 +193,12 @@ export interface AsyncJobProcess {
 	readonly streams?: PipeStreams;
 }
 
-/** Delivery callback for a settled job's result text. */
-export type AsyncJobDeliverySink = (jobId: string, text: string, job?: AsyncJob) => void | Promise<void>;
+/** a false acknowledgement skips delivery without establishing result consumption. */
+export type AsyncJobDeliverySink = (
+	jobId: string,
+	text: string,
+	job?: AsyncJob,
+) => boolean | void | Promise<boolean | void>;
 
 export interface AsyncJobManagerOptions {
 	/**
@@ -241,6 +245,8 @@ interface AsyncJobDelivery {
 	lastError?: string;
 	ownerId?: string;
 	promise?: Promise<void>;
+	/** Exact incarnation whose delivery is in progress, even after retention eviction or id reuse. */
+	job?: AsyncJob;
 	/**
 	 * Job-body metadata a sink needs to render the delivered result,
 	 * snapshotted at enqueue time. `#deliverDelivery` falls back to
@@ -362,7 +368,7 @@ export interface AsyncJobManagerApi {
 	/** Mark settled job results as recovered by a foreground snapshot. */
 	consumeJobResults(jobIds: string[]): number;
 	/** True once a result was auto-delivered or recovered by a foreground snapshot. */
-	isJobResultConsumed(jobId: string): boolean;
+	isJobResultConsumed(jobId: string, incarnation?: AsyncJob): boolean;
 	/** Cancel running jobs (scoped by `filter`), aborting each with `reason`. */
 	cancelAll(filter?: AsyncJobFilter, reason?: unknown): void;
 	/** Evict settled jobs matching the filter now; returns how many. */
@@ -375,7 +381,7 @@ export interface AsyncJobManagerApi {
 	/** Cancel every job owned by `ownerId`, then wait until `deadlineAt`. */
 	cancelAndReapOwnerJobs(ownerId: string, deadlineAt: number): Promise<AsyncJobReapResult>;
 	drainDeliveries(options?: { timeoutMs?: number; filter?: AsyncJobFilter }): Promise<boolean>;
-	isDeliverySuppressed(jobId: string): boolean;
+	isDeliverySuppressed(jobId: string, incarnation?: AsyncJob): boolean;
 	/** True while a settled job's completion is queued or in flight — its push is on the way. */
 	isDeliveryPending(jobId: string): boolean;
 	/** True when a foreground snapshot consumed this job's result while its push was still queued. */
@@ -413,7 +419,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 	 */
 	readonly #supersededDeliveries = new Set<string>();
 	readonly #watchedJobs = new Set<string>();
-	readonly #consumedJobResults = new Set<string>();
+	#consumedJobResults = new WeakSet<AsyncJob>();
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
 	readonly #releasedForegroundJobs = new Set<string>();
 	#nextAutoId = 1;
@@ -441,6 +447,19 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		return () => {
 			this.#settleListeners.delete(listener);
 		};
+	}
+
+	#notifyJobSettled(id: string): void {
+		for (const listener of this.#settleListeners) {
+			try {
+				listener();
+			} catch (error) {
+				logger.warn("Async job settle listener failed", {
+					jobId: id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 	}
 
 	#filterJobs(jobs: Iterable<AsyncJob>, filter?: AsyncJobFilter): AsyncJob[] {
@@ -580,18 +599,10 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 					this.#enqueueDelivery(id, errorText);
 				}
 			}
+			// Observers capture the settled incarnation before an immediate retention eviction.
+			this.#notifyJobSettled(id);
 			if (this.#releasedForegroundJobs.has(id)) this.#discardForegroundJob(id);
 			else this.#scheduleEviction(id);
-			for (const listener of this.#settleListeners) {
-				try {
-					listener();
-				} catch (error) {
-					logger.warn("Async job settle listener failed", {
-						jobId: id,
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-			}
 		})();
 
 		this.#jobs.set(id, job);
@@ -629,6 +640,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		this.#jobs.set(id, job);
 		this.#recordAgentReply(job);
 		this.#enqueueDelivery(id, result.text);
+		this.#notifyJobSettled(id);
 		this.#scheduleEviction(id);
 		return id;
 	}
@@ -749,10 +761,10 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 			removed += 1;
 			const job = this.#jobs.get(jobId);
 			if (!job || (job.status !== "completed" && job.status !== "failed")) continue;
-			if (this.isDeliverySuppressed(jobId) || this.#consumedJobResults.has(jobId)) continue;
+			if (this.isDeliverySuppressed(jobId) || this.isJobResultConsumed(jobId)) continue;
 			const queued =
-				this.#deliveries.some(delivery => delivery.jobId === jobId) ||
-				this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId);
+				this.#deliveries.some(delivery => delivery.jobId === jobId && delivery.job === job) ||
+				this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId && delivery.job === job);
 			if (!queued) {
 				this.#enqueueDelivery(jobId, job.status === "completed" ? (job.resultText ?? "") : (job.errorText ?? ""));
 			}
@@ -772,7 +784,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		this.#deliveries.splice(
 			0,
 			this.#deliveries.length,
-			...this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId)),
+			...this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId, delivery.job)),
 		);
 		this.#notifyDeliveryQueueChanged();
 		return before - this.#deliveries.length;
@@ -803,8 +815,9 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 	}
 
 	/** True once a result was auto-delivered or recovered by a foreground snapshot. */
-	isJobResultConsumed(jobId: string): boolean {
-		return this.#consumedJobResults.has(jobId);
+	isJobResultConsumed(jobId: string, incarnation?: AsyncJob): boolean {
+		const job = incarnation ?? this.#jobs.get(jobId);
+		return job?.id === jobId && this.#consumedJobResults.has(job);
 	}
 
 	/**
@@ -1009,7 +1022,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		this.#suppressedDeliveries.clear();
 		this.#supersededDeliveries.clear();
 		this.#watchedJobs.clear();
-		this.#consumedJobResults.clear();
+		this.#consumedJobResults = new WeakSet<AsyncJob>();
 		this.#releasedForegroundJobs.clear();
 		this.#deliverySinks.clear();
 		this.widgets?.dispose();
@@ -1017,11 +1030,12 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		return jobsSettled && drained;
 	}
 
-	#consumeJobResult(jobId: string): boolean {
-		const job = this.#jobs.get(jobId);
-		if (!job || job.status === "running" || this.#consumedJobResults.has(jobId)) return false;
+	#consumeJobResult(jobId: string, incarnation?: AsyncJob): boolean {
+		const job = incarnation ?? this.#jobs.get(jobId);
+		if (!job || job.id !== jobId || job.status === "running" || this.#consumedJobResults.has(job)) return false;
 		if (job.resultText === undefined && job.errorText === undefined) return false;
-		this.#consumedJobResults.add(jobId);
+		this.#consumedJobResults.add(job);
+		if (this.#jobs.get(jobId) !== job) return true;
 		// The result reached its consumer (sink delivery or foreground snapshot):
 		// the row no longer needs to outlive the full retention window. Re-arm the
 		// eviction timer with the short consumed grace — but only when no delivery
@@ -1058,7 +1072,6 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		const id = this.#resolveJobId(preferredId);
 		this.#suppressedDeliveries.delete(id);
 		this.#supersededDeliveries.delete(id);
-		this.#consumedJobResults.delete(id);
 		this.#releasedForegroundJobs.delete(id);
 		return id;
 	}
@@ -1186,7 +1199,6 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		this.#suppressedDeliveries.delete(jobId);
 		this.#supersededDeliveries.delete(jobId);
 		this.#watchedJobs.delete(jobId);
-		this.#consumedJobResults.delete(jobId);
 		const job = this.#jobs.get(jobId);
 		if (job) this.#runRetainedArtifactsCleanup(job);
 		this.widgets?.forget(jobId);
@@ -1239,13 +1251,17 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 
 	#filterDeliveries(filter?: AsyncJobFilter): AsyncJobDelivery[] {
 		return this.#deliveries.filter(
-			delivery => (!filter || delivery.ownerId === filter.ownerId) && !this.isDeliverySuppressed(delivery.jobId),
+			delivery =>
+				(!filter || delivery.ownerId === filter.ownerId) &&
+				!this.isDeliverySuppressed(delivery.jobId, delivery.job),
 		);
 	}
 
 	#filterInFlightDeliveries(filter?: AsyncJobFilter): AsyncJobDelivery[] {
 		return this.#inFlightDeliveries.filter(
-			delivery => (!filter || delivery.ownerId === filter.ownerId) && !this.isDeliverySuppressed(delivery.jobId),
+			delivery =>
+				(!filter || delivery.ownerId === filter.ownerId) &&
+				!this.isDeliverySuppressed(delivery.jobId, delivery.job),
 		);
 	}
 
@@ -1254,7 +1270,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 			let selected: AsyncJobDelivery | undefined;
 			for (const delivery of this.#deliveries) {
 				if (delivery.ownerId !== filter.ownerId) continue;
-				if (this.isDeliverySuppressed(delivery.jobId)) continue;
+				if (this.isDeliverySuppressed(delivery.jobId, delivery.job)) continue;
 				if (!selected || delivery.nextAttemptAt < selected.nextAttemptAt) {
 					selected = delivery;
 				}
@@ -1277,13 +1293,18 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 			if (index === -1) continue;
 			this.#deliveries.splice(index, 1);
 			this.#notifyDeliveryQueueChanged();
-			if (this.isDeliverySuppressed(selected.jobId)) continue;
+			if (this.isDeliverySuppressed(selected.jobId, selected.job)) continue;
 
 			return this.#waitForDeliveryPromise(this.#deliverDelivery(selected), deadline);
 		}
 	}
 
-	isDeliverySuppressed(jobId: string): boolean {
+	isDeliverySuppressed(jobId: string, incarnation?: AsyncJob): boolean {
+		if (incarnation) {
+			if (incarnation.id !== jobId || this.#consumedJobResults.has(incarnation)) return true;
+			const current = this.#jobs.get(jobId);
+			if (current && current !== incarnation) return false;
+		}
 		return this.#suppressedDeliveries.has(jobId) || this.#watchedJobs.has(jobId);
 	}
 
@@ -1327,6 +1348,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 			attempt: 0,
 			nextAttemptAt: Date.now(),
 			ownerId: job?.ownerId,
+			job,
 			jobSnapshot: job
 				? {
 						type: job.type,
@@ -1365,7 +1387,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 	async #runDeliveryLoop(): Promise<void> {
 		while (this.#deliveries.length > 0) {
 			const delivery = this.#deliveries[0];
-			if (this.isDeliverySuppressed(delivery.jobId)) {
+			if (this.isDeliverySuppressed(delivery.jobId, delivery.job)) {
 				this.#deliveries.shift();
 				continue;
 			}
@@ -1377,7 +1399,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 			if (this.#deliveries[0] !== delivery) {
 				continue;
 			}
-			if (this.isDeliverySuppressed(delivery.jobId)) {
+			if (this.isDeliverySuppressed(delivery.jobId, delivery.job)) {
 				this.#deliveries.shift();
 				continue;
 			}
@@ -1402,6 +1424,7 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 
 	#deliverDelivery(delivery: AsyncJobDelivery): Promise<void> {
 		const sink = this.#resolveDeliverySink(delivery.ownerId);
+		const job = delivery.job ?? this.#jobs.get(delivery.jobId) ?? this.#reconstructEvictedJob(delivery);
 		if (!sink) {
 			// Dead-letter: owned delivery with no live sink (session disposed or
 			// parked), or unowned delivery with no default sink. Drop it — the
@@ -1418,23 +1441,18 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 			this.#inFlightDeliveries.push(delivery);
 			let delivered = false;
 			try {
-				await sink(
-					delivery.jobId,
-					delivery.text,
-					this.#jobs.get(delivery.jobId) ?? this.#reconstructEvictedJob(delivery),
-				);
-				delivered = true;
+				delivered = (await sink(delivery.jobId, delivery.text, job)) !== false;
 				// A foreground snapshot may have consumed this result while the
 				// sink receipt was parked. The receipt has now settled, so the
 				// suppression tombstone no longer needs the full retention window.
-				if (this.#consumedJobResults.has(delivery.jobId) && this.#jobs.has(delivery.jobId)) {
+				if (job && this.#consumedJobResults.has(job) && this.#jobs.get(delivery.jobId) === job) {
 					this.#scheduleEviction(delivery.jobId, this.#consumedResultEvictionMs);
 				}
 			} catch (error) {
 				delivery.attempt += 1;
 				delivery.lastError = error instanceof Error ? error.message : String(error);
 				delivery.nextAttemptAt = Date.now() + this.#getRetryDelay(delivery.attempt);
-				if (!this.isDeliverySuppressed(delivery.jobId) && this.#jobs.has(delivery.jobId)) {
+				if (job && !this.isDeliverySuppressed(delivery.jobId, job) && this.#jobs.get(delivery.jobId) === job) {
 					this.#queueDelivery(delivery);
 				}
 				logger.warn("Async job completion delivery failed", {
@@ -1450,8 +1468,8 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 			}
 			// A normally delivered result is consumed only after the attempt left
 			// #inFlightDeliveries, so it can arm the short eviction grace.
-			if (delivered && !this.#consumedJobResults.has(delivery.jobId)) {
-				this.#consumeJobResult(delivery.jobId);
+			if (delivered && job && !this.#consumedJobResults.has(job)) {
+				this.#consumeJobResult(delivery.jobId, job);
 			}
 		})();
 		delivery.promise = promise;

@@ -2732,6 +2732,27 @@ impl CacheWarmingMode {
 	}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CompactMode {
+	#[serde(rename = "soft")]
+	Soft,
+	#[serde(rename = "remote")]
+	Remote,
+	#[serde(rename = "snapcompact")]
+	Snapcompact,
+}
+
+impl CompactMode {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Soft => "soft",
+			Self::Remote => "remote",
+			Self::Snapcompact => "snapcompact",
+		}
+	}
+}
+
 /// `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MessageUpdates {
@@ -3116,6 +3137,143 @@ impl<'de> Deserialize<'de> for UsageLimitState {
 	}
 }
 
+/// Runtime generation layout of the process serving the session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeGenerationState {
+	/// Generation directory the process was born in.
+	pub running: String,
+	/// The running generation is no longer the one `current` selects.
+	pub behind: bool,
+	/// Generation `generations/current` points at, when readable.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub current: Option<String>,
+}
+
+/// Outcome of `upgrade_runtime`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpgradeRuntimeResult {
+	/// The owner is restarting onto `current` now.
+	pub upgraded: bool,
+	/// An idle-triggered upgrade is armed.
+	#[serde(default = "default_upgrade_runtime_result_scheduled")]
+	pub scheduled: bool,
+	/// Generation the owner runs now.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub running: Option<String>,
+	/// Generation `generations/current` selects, when readable.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub current: Option<String>,
+	/// Why no upgrade is running now.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<UpgradeRuntimeResultReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshEphemeralWork {
+	pub streaming: bool,
+	#[serde(rename = "admittedSubmission")]
+	pub admitted_submission: bool,
+	pub compacting: bool,
+	#[serde(rename = "inFlightTools", deserialize_with = "Deserialize::deserialize")]
+	pub in_flight_tools: Option<i64>,
+	#[serde(rename = "taskSubagents", deserialize_with = "Deserialize::deserialize")]
+	pub task_subagents: Option<i64>,
+	#[serde(rename = "backgroundJobs", deserialize_with = "Deserialize::deserialize")]
+	pub background_jobs: Option<i64>,
+	/// Services owned by this session; null means unavailable.
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub services: Option<i64>,
+	/// Unknown inventory is never reported as idle.
+	#[serde(rename = "hasEphemeralWork", deserialize_with = "Deserialize::deserialize")]
+	pub has_ephemeral_work: Option<bool>,
+	/// Detached broker services are not inspected by this observation.
+	#[serde(rename = "servicesUninspected", default = "default_refresh_ephemeral_work_services_uninspected")]
+	pub services_uninspected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshPrimaryPromptTools {
+	pub names: Vec<String>,
+	pub total: i64,
+	pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshModes {
+	pub graceful: bool,
+	pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeRestartReceipt {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(rename = "sessionFile")]
+	pub session_file: String,
+	#[serde(rename = "bootId")]
+	pub boot_id: String,
+	#[serde(rename = "importedGeneration", deserialize_with = "Deserialize::deserialize")]
+	pub imported_generation: Option<String>,
+	#[serde(rename = "basePromptDigest")]
+	pub base_prompt_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefreshPreflight {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(rename = "sessionFile", deserialize_with = "Deserialize::deserialize")]
+	pub session_file: Option<String>,
+	#[serde(rename = "ephemeralWork")]
+	pub ephemeral_work: RefreshEphemeralWork,
+	#[serde(rename = "primaryPromptTools")]
+	pub primary_prompt_tools: RefreshPrimaryPromptTools,
+	#[serde(rename = "refreshModes")]
+	pub refresh_modes: RefreshModes,
+	#[serde(rename = "restartReceipt", default, skip_serializing_if = "Option::is_none")]
+	pub restart_receipt: Option<RuntimeRestartReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionDiagnosticModel {
+	pub provider: String,
+	pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionExecutionMemory {
+	pub backend: LitHindsight,
+	pub scoping: String,
+	#[serde(rename = "scopeTags", deserialize_with = "Deserialize::deserialize")]
+	pub scope_tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionExecution {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub profile: Option<String>,
+	pub cwd: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub memory: Option<SessionExecutionMemory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionDiagnostics {
+	pub version: i64,
+	#[serde(rename = "observedAt")]
+	pub observed_at: f64,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub model: Option<SessionDiagnosticModel>,
+	#[serde(rename = "thinkingLevel", deserialize_with = "Deserialize::deserialize")]
+	pub thinking_level: Option<ThinkingLevel>,
+	#[serde(rename = "configWarnings")]
+	pub config_warnings: Vec<String>,
+	#[serde(rename = "warningsTruncated")]
+	pub warnings_truncated: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub execution: Option<SessionExecution>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
@@ -3124,6 +3282,9 @@ pub struct SessionState {
 	pub model: Option<ModelInfo>,
 	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
 	pub thinking_level: Option<ThinkingLevel>,
+	/// Live configuration evidence; absent means warning readiness is unknown.
+	#[serde(rename = "sessionDiagnostics", default, skip_serializing_if = "Option::is_none")]
+	pub session_diagnostics: Option<SessionDiagnostics>,
 	#[serde(rename = "isStreaming", default = "default_session_state_is_streaming")]
 	pub is_streaming: bool,
 	#[serde(rename = "isCompacting", default = "default_session_state_is_compacting")]
@@ -3179,6 +3340,9 @@ pub struct SessionState {
 	pub dump_tools: Vec<ToolDescriptor>,
 	#[serde(rename = "contextUsage", default, skip_serializing_if = "Option::is_none")]
 	pub context_usage: Option<ContextUsage>,
+	/// Runtime generation of this process; absent when the entrypoint is not generation-managed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub generation: Option<RuntimeGenerationState>,
 	/// Current goal mode; null when the session has no goal.
 	#[serde(default = "default_session_state_goal")]
 	pub goal: Option<GoalModeState>,
@@ -3591,6 +3755,109 @@ pub struct LogoutAccount {
 	pub detail: String,
 	pub r#type: LogoutAccountType,
 	pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum McpServerScope {
+	#[serde(rename = "project")]
+	Project,
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "plugin")]
+	Plugin,
+}
+
+impl McpServerScope {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Project => "project",
+			Self::User => "user",
+			Self::Plugin => "plugin",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum McpServerTransport {
+	#[serde(rename = "stdio")]
+	Stdio,
+	#[serde(rename = "http")]
+	Http,
+	#[serde(rename = "sse")]
+	Sse,
+}
+
+impl McpServerTransport {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Stdio => "stdio",
+			Self::Http => "http",
+			Self::Sse => "sse",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum McpServerStatusState {
+	#[serde(rename = "connected")]
+	Connected,
+	#[serde(rename = "connecting")]
+	Connecting,
+	#[serde(rename = "disconnected")]
+	Disconnected,
+	#[serde(rename = "error")]
+	Error,
+	#[serde(rename = "auth_required")]
+	AuthRequired,
+}
+
+impl McpServerStatusState {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Connected => "connected",
+			Self::Connecting => "connecting",
+			Self::Disconnected => "disconnected",
+			Self::Error => "error",
+			Self::AuthRequired => "auth_required",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum McpReauthStatus {
+	#[serde(rename = "authorized")]
+	Authorized,
+	#[serde(rename = "no_auth_needed")]
+	NoAuthNeeded,
+}
+
+impl McpReauthStatus {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Authorized => "authorized",
+			Self::NoAuthNeeded => "no_auth_needed",
+		}
+	}
+}
+
+/// One MCP server: its definition's provenance plus the live connection state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServerStatusEntry {
+	pub name: String,
+	pub scope: McpServerScope,
+	pub transport: McpServerTransport,
+	pub enabled: bool,
+	pub status: McpServerStatusState,
+	#[serde(rename = "toolCount")]
+	pub tool_count: i64,
+	#[serde(rename = "authRequired")]
+	pub auth_required: bool,
+	#[serde(rename = "lastError", default, skip_serializing_if = "Option::is_none")]
+	pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5308,6 +5575,29 @@ pub struct OpenSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpgradeRuntimeParams {
+	#[serde(rename = "whenIdle", default, skip_serializing_if = "Option::is_none")]
+	pub when_idle: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub force: Option<bool>,
+	/// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub refresh: Option<bool>,
+	/// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub graceful: Option<bool>,
+	/// Compact before teardown; failure preserves the running owner.
+	#[serde(rename = "compactBeforeRestart", default, skip_serializing_if = "Option::is_none")]
+	pub compact_before_restart: Option<bool>,
+	/// Full selected session id; supply together with expectedSessionFile.
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	/// Canonical absolute transcript path; supply together with expectedSessionId.
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetFastModeParams {
 	pub enabled: bool,
 }
@@ -5536,6 +5826,8 @@ pub struct SetInterruptModeParams {
 pub struct CompactParams {
 	#[serde(rename = "customInstructions", default, skip_serializing_if = "Option::is_none")]
 	pub custom_instructions: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub mode: Option<CompactMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5705,6 +5997,33 @@ pub struct LogoutParams {
 pub struct LogoutResult {
 	#[serde(rename = "remainingSource", default, skip_serializing_if = "Option::is_none")]
 	pub remaining_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetMcpStatusResult {
+	pub servers: Vec<McpServerStatusEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetMcpEnabledParams {
+	pub name: String,
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetMcpEnabledResult {
+	pub server: McpServerStatusEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpReauthParams {
+	pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpReauthResult {
+	pub server: McpServerStatusEntry,
+	pub status: McpReauthStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5981,6 +6300,51 @@ impl<'de> Deserialize<'de> for LitCompleted {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum UpgradeRuntimeResultReason {
+	#[serde(rename = "already_current")]
+	AlreadyCurrent,
+	#[serde(rename = "not_generation_managed")]
+	NotGenerationManaged,
+	#[serde(rename = "scheduled_on_idle")]
+	ScheduledOnIdle,
+	#[serde(rename = "checkpoint_requested")]
+	CheckpointRequested,
+}
+
+impl UpgradeRuntimeResultReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::AlreadyCurrent => "already_current",
+			Self::NotGenerationManaged => "not_generation_managed",
+			Self::ScheduledOnIdle => "scheduled_on_idle",
+			Self::CheckpointRequested => "checkpoint_requested",
+		}
+	}
+}
+
+/// The constant `"hindsight"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitHindsight;
+
+impl Serialize for LitHindsight {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("hindsight")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitHindsight {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("hindsight") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"hindsight\", got {value}")))
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LogoutAccountType {
 	#[serde(rename = "api_key")]
 	ApiKey,
@@ -6084,6 +6448,14 @@ impl HostUriResultContentType {
 
 fn default_queued_messages_state_live_steered() -> i64 {
 	serde_json::from_str("0").expect("valid wire default")
+}
+
+fn default_upgrade_runtime_result_scheduled() -> bool {
+	serde_json::from_str("false").expect("valid wire default")
+}
+
+fn default_refresh_ephemeral_work_services_uninspected() -> bool {
+	serde_json::from_str("true").expect("valid wire default")
 }
 
 fn default_session_state_is_streaming() -> bool {
@@ -6397,6 +6769,54 @@ impl Command for GetStateCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SessionState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Observe refresh hazards and bounded mounted tools without restarting or starting a broker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetRefreshPreflightCommand {}
+
+impl Command for GetRefreshPreflightCommand {
+	const NAME: &'static str = "get_refresh_preflight";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = RefreshPreflight;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<RefreshPreflight>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Restart the session owner onto the current runtime generation, now or when idle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UpgradeRuntimeCommand {
+	#[serde(rename = "whenIdle", default, skip_serializing_if = "Option::is_none")]
+	pub when_idle: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub force: Option<bool>,
+	/// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub refresh: Option<bool>,
+	/// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub graceful: Option<bool>,
+	/// Compact before teardown; failure preserves the running owner.
+	#[serde(rename = "compactBeforeRestart", default, skip_serializing_if = "Option::is_none")]
+	pub compact_before_restart: Option<bool>,
+	/// Full selected session id; supply together with expectedSessionFile.
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	/// Canonical absolute transcript path; supply together with expectedSessionId.
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
+}
+
+impl Command for UpgradeRuntimeCommand {
+	const NAME: &'static str = "upgrade_runtime";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = UpgradeRuntimeResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<UpgradeRuntimeResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 
@@ -6922,6 +7342,8 @@ impl Command for SetInterruptModeCommand {
 pub struct CompactCommand {
 	#[serde(rename = "customInstructions", default, skip_serializing_if = "Option::is_none")]
 	pub custom_instructions: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub mode: Option<CompactMode>,
 }
 
 impl Command for CompactCommand {
@@ -7355,6 +7777,53 @@ impl Command for LogoutCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<LogoutResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// List configured, disabled and plugin MCP servers with their live connection state, sorted by name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetMcpStatusCommand {}
+
+impl Command for GetMcpStatusCommand {
+	const NAME: &'static str = "get_mcp_status";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = Vec<McpServerStatusEntry>;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<GetMcpStatusResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.servers)
+	}
+}
+
+/// Enable or disable an MCP server, persist the choice and apply it to the live session; returns its new state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetMcpEnabledCommand {
+	pub name: String,
+	pub enabled: bool,
+}
+
+impl Command for SetMcpEnabledCommand {
+	const NAME: &'static str = "set_mcp_enabled";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = McpServerStatusEntry;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<SetMcpEnabledResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.server)
+	}
+}
+
+/// Reauthorize an MCP server's OAuth credentials; the flow arrives as `open_url` and `input` UI requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpReauthCommand {
+	pub name: String,
+}
+
+impl Command for McpReauthCommand {
+	const NAME: &'static str = "mcp_reauth";
+	const TIMEOUT_MS: Option<u64> = Some(900000);
+	type Output = McpReauthResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<McpReauthResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

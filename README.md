@@ -2,6 +2,7 @@
 > ## `runtime` — Ata's daily OMP
 >
 > daily composition of 16 certified local capabilities on upstream omp 18.18.6.
+> same-generation refresh: `cap/agent-flag` checkpoint `9dcec22cce0388702ba38d34aaae5496ca7aa2d6` adds configured-model discovery and post-extension resolution; the other 15 capability checkpoints are unchanged.
 >
 > - **upstream base:** [omp 18.18.6 (`9058ab9d`)](https://github.com/can1357/oh-my-pi/tree/9058ab9d229663e229e2867824ba6df6f21e9e59)
 > - **Capabilities:**

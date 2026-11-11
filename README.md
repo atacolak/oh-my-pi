@@ -5,7 +5,7 @@
 >
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
 > - **Upstream PR:** [#9969](https://github.com/can1357/oh-my-pi/pull/9969) — discover nested project roots lazily
-> - **upstream base:** [omp 18.18.6 (`9058ab9d22`)](https://github.com/can1357/oh-my-pi/tree/9058ab9d229663e229e2867824ba6df6f21e9e59)
+> - **upstream base:** [omp 18.18.8 (`679691a781`)](https://github.com/can1357/oh-my-pi/tree/679691a78141de0dd6ba1b7a5d5c1b1d7d967a63)
 >
 > PR head `fix/nested-lsp-roots` stays independently reviewable without this banner.
 
@@ -55,7 +55,7 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 curl -fsSL https://omp.sh/install | sh
 ```
 
-Without a usable bun (or with `--binary`), the install scripts fetch the prebuilt binary from `build.stencil.so` and check its SHA-256 before installing it. Pin a release with `curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v<version>` (PowerShell: `-Binary -Ref v<version>`).
+The install scripts fetch the prebuilt binary from `build.stencil.so` and check its SHA-256 before installing it; pass `--source` (PowerShell: `-Source`) to install the package with bun instead. Pin a release with `curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v<version>` (PowerShell: `-Binary -Ref v<version>`).
 
 > **Alpine / musl:** the prebuilt musl binary links `libstdc++`/`libgcc` dynamically, which stock Alpine does not ship. Install them first: `apk add libstdc++ libgcc`.
 

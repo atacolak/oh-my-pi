@@ -5,6 +5,7 @@
 ### Fixed
 
 - `Agent` now defaults `followUpMode` to `all`, so every follow-up queued at a yield boundary is delivered in the same next turn instead of one per turn. Pass `followUpMode: "one-at-a-time"` to keep the previous behavior.
+
 ## [18.18.8] - 2026-11-11
 
 - Fixed a cursor tool result transform failure being swallowed silently — it is now logged as a warning ([#18654](https://github.com/can1357/oh-my-pi/pull/18654) by [@yuzu-octopus](https://github.com/yuzu-octopus))

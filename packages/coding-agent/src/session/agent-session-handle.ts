@@ -24,7 +24,6 @@ import type { Skill } from "../extensibility/skills";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionStateApi } from "../hindsight/state";
 import type { MnemopiSessionStateApi } from "../mnemopi/state";
-import type { ApprovalGrantStore } from "../tools/approval-cache";
 import type { TokenRateMeter } from "../utils/token-rate";
 import type { AgentDefinition } from "../task/types";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";

@@ -7142,9 +7142,7 @@ describe("lsp regressions", () => {
 				path.resolve(primaryRoot),
 				path.resolve(additionalRoot),
 			]);
-			expect(notify.mock.calls[0]?.[1]).toEqual([
-				{ filePath: additionalFile, type: FileChangeType.Deleted },
-			]);
+			expect(notify.mock.calls[0]?.[1]).toEqual([{ filePath: additionalFile, type: FileChangeType.Deleted }]);
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

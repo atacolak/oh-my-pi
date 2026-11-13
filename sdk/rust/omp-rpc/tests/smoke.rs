@@ -128,9 +128,8 @@ fn smoke_real_server() {
 				name:  "Smoke".into(),
 				kind:  None,
 				tasks: vec![TodoItem {
-					content: "blocked task".into(),
-					status:  TodoStatus::Blocked,
-					blocker: Some("waiting".into()),
+					content: "active task".into(),
+					status:  TodoStatus::InProgress,
 					details: None,
 					notes:   None,
 				}],
@@ -148,7 +147,7 @@ fn smoke_real_server() {
 				.collect::<Vec<_>>())
 			.collect::<Vec<_>>()
 	);
-	assert_eq!(phases[0].tasks[0].status, TodoStatus::Blocked);
+	assert_eq!(phases[0].tasks[0].status, TodoStatus::InProgress);
 
 	let filter = client
 		.call(&SetEventFilterCommand { events: None })

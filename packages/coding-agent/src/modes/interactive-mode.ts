@@ -256,7 +256,9 @@ import { getSessionAccentAnsi, getSessionAccentHex } from "@oh-my-pi/pi-tui/them
 import { messageHasDisplayableThinking } from "@oh-my-pi/pi-tui/chat/thinking-display";
 import type { TokenRateMeter } from "../utils/token-rate";
 import {
+	type BlockedKind,
 	disposeProgramStatus,
+	holdBlockedStatus,
 	initProgramStatus,
 	resendProgramStatus,
 	setProgramStatusEnabled,
@@ -358,11 +360,7 @@ import {
 	getRunningSubagentBadgeAgentIds,
 	getRunningSubagentBadgeRegistry,
 } from "@oh-my-pi/pi-tui/overlays/running-subagent-badge";
-import {
-	type ObservableSession,
-	type SessionObserverChangeKind,
-	SessionObserverRegistry,
-} from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
+import { type ObservableSession, SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
 import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
@@ -1477,10 +1475,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
 	todoPhases: TodoPhase[] = [];
 	/**
-	 * Session that owns the plan currently in {@link todoPhases}. Subagent
-	 * reconciliation persists to this session, not blindly to `viewSession`,
-	 * which flips to the destination before `reloadTodos` refreshes during
-	 * focus attach.
+	 * Session that owns the plan currently in {@link todoPhases}. HUD
+	 * visibility (dismissal and reveal entries) persists to this session, not
+	 * blindly to `viewSession`, which flips to the destination before
+	 * `reloadTodos` refreshes during focus attach.
 	 */
 	#todoPhasesOwner?: AgentViewSession;
 	#todoHudHidden = false;
@@ -1731,6 +1729,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastLeftTapTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
+	/**
+	 * Cancellation scope of the current `shutdown()`/`restart()` close attempt.
+	 * Every prompt the close shows before teardown (the extension
+	 * `session_before_shutdown` gate, `worktree.onExit` confirmations) runs
+	 * under it; another close request, a signal teardown, or `stop()` aborts it.
+	 */
+	#closeAttempt: AbortController | undefined;
 	/**
 	 * Set once a graceful {@link shutdown} teardown threw. The teardown is
 	 * promise-memoized (and the session manager latches its disk error), so
@@ -2073,7 +2078,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	/** Repaints the subagent HUD so live-preview elapsed markers advance between progress events. */
 	#subagentPreviewTickTimer?: NodeJS.Timeout;
-	#observerUiSyncNeedsTodoReconcile = false;
 	/** Active subagent descriptions the todo HUD last rendered with (joined); see #flushObserverUiSync. */
 	#todoHudSubagentKey: string | undefined;
 	#runningSubagentCount = 0;
@@ -2478,6 +2482,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
 			beginDispose: () => {
+				this.#closeAttempt?.abort();
 				this.session.beginDispose();
 				this.statusLine.dispose();
 			},
@@ -2667,8 +2672,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 		this.syncRunningSubagentBadge();
-		this.#observerRegistry.onChange(kind => {
-			this.#scheduleObserverUiSync(kind);
+		this.#observerRegistry.onChange(() => {
+			this.#scheduleObserverUiSync();
 		});
 		// `/pause` stops the live-preview tick (the fullscreen pause screen covers
 		// the HUD); resuming repaints so elapsed markers catch up immediately.
@@ -3359,7 +3364,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.planModeEnabled || this.planModePaused) return;
 		if (!this.goalModeEnabled || this.goalModePaused) return;
 		if (this.#goalSuppressNextContinuation) return;
-		if (this.#goalOpenWorkAllBlocked()) return;
 		if (this.#pendingSubmittedInput) return;
 		if (this.editor.getText().trim().length > 0) return;
 		if ((this.editor.pendingImages?.length ?? 0) > 0) return;
@@ -3385,7 +3389,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				if ((this.editor.pendingImages?.length ?? 0) > 0) return;
 				const latestState = this.session.getGoalModeState();
 				if (!latestState?.enabled || latestState.goal.status !== "active") return;
-				if (this.#goalOpenWorkAllBlocked()) return;
 				this.#pendingGoalContinuationTurns++;
 				this.onInputCallback(
 					this.startPendingSubmission({
@@ -3398,18 +3401,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.syncIdleMaintenanceView();
 			}
 		}, 800);
-	}
-
-	/** A blocked-only todo list has no work the agent can advance without another turn. */
-	#goalOpenWorkAllBlocked(): boolean {
-		const phases = this.session.getTodoPhases();
-		if (nextActionableTask(phases)) return false;
-		for (const phase of phases) {
-			for (const task of phase.tasks) {
-				if (task.status === "blocked") return true;
-			}
-		}
-		return false;
 	}
 
 	#cancelGoalContinuation(): void {
@@ -3538,13 +3529,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		// child process that Esc can no longer reach.
 		this.#abortLoopCondition();
 		this.#loopConditionAbort = controller;
+		const sessionId = this.sessionManager.getSessionId();
 		let verdict: LoopConditionVerdict;
 		try {
 			verdict = await evaluateLoopCondition(condition, {
 				cwd: this.sessionManager.getCwd(),
 				timeoutMs: cfgLoopConditionTimeoutMs.get(settings),
 				signal: controller.signal,
-				sessionId: this.sessionManager.getSessionId(),
+				sessionId,
+				isSessionCurrent: () => this.sessionManager.getSessionId() === sessionId,
 			});
 		} finally {
 			if (this.#loopConditionAbort === controller) this.#loopConditionAbort = undefined;
@@ -4849,7 +4842,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#agentRegistryUnsubscribe = registry.onChange(() => {
 				// Restoring a roster emits one event per agent. Rebuild the badge and
 				// lists once per burst through the observer scheduler.
-				this.#scheduleObserverUiSync("progress");
+				this.#scheduleObserverUiSync();
 			});
 		}
 		const agentIds = getRunningSubagentBadgeAgentIds(registry);
@@ -5068,6 +5061,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		for (const [id, component] of livePendingTools) {
 			this.pendingTools.set(id, component);
 		}
+		this.#eventController.reconcileReadGroupAfterRebuild();
 		// During the pre-streaming window — after `startPendingSubmission` has
 		// optimistically rendered the user's message but before the user
 		// `message_start` event lands it in `session` entries — any rebuild
@@ -5106,8 +5100,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
 			case "abandoned":
 				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) + marker;
-			case "blocked":
-				return theme.fg("warning", `${prefix}${checkbox.unchecked} ${todo.content} (blocked)`) + marker;
 			default:
 				if (matched) return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
 				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
@@ -5124,59 +5116,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (candidate) out.push(candidate);
 		}
 		return out;
-	}
-
-	/**
-	 * Auto-complete any open todo (pending/in_progress/blocked) whose content
-	 * matches a subagent that has finished successfully. Fires on every observer
-	 * `onChange` so the visual state stays in sync with subagent lifecycle
-	 * without requiring the agent to issue a follow-up `todo`. A todo `block`ed
-	 * while waiting on a detached subagent is included: that subagent completing
-	 * is exactly the unblock signal, and blocked todos are excluded from the stop
-	 * reminder, so leaving it blocked would strand it silently. Failed and aborted
-	 * subagents are intentionally NOT auto-completed — those stay open so the user
-	 * (or the next agent turn) can decide what to do.
-	 *
-	 * Idempotent: only flips open tasks, never re-touches completed ones.
-	 */
-	#reconcileTodosWithSubagents(): void {
-		const completedDescs: string[] = [];
-		for (const session of this.#observerRegistry.getSessions()) {
-			if (session.kind !== "subagent") continue;
-			if (session.status !== "completed") continue;
-			const candidate =
-				session.description?.trim() || session.progress?.description?.trim() || session.label?.trim();
-			if (candidate) completedDescs.push(candidate);
-		}
-		if (completedDescs.length === 0) return;
-
-		let mutated = false;
-		const next: TodoPhase[] = this.todoPhases.map(phase => ({
-			name: phase.name,
-			...(phase.kind !== undefined ? { kind: phase.kind } : {}),
-			tasks: phase.tasks.map(task => {
-				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") {
-					return task;
-				}
-				if (!todoMatchesAnyDescription(task.content, completedDescs)) return task;
-				mutated = true;
-				// Drop any blocker note along with the blocked status — the wait the
-				// note described is over.
-				return { content: task.content, status: "completed" as const };
-			}),
-		}));
-		if (!mutated) return;
-		// Persist into the session that owns the snapshot we derived `next` from,
-		// not `viewSession`: the two diverge mid focus-attach, and writing to the
-		// destination there would clobber its canonical plan. Leaving the owner
-		// bound (rather than routing through `setTodos`, which rebinds it to
-		// `viewSession`) keeps a follow-up reconcile in the same window correct.
-		const owner = this.#todoPhasesOwner ?? this.session;
-		owner.commitTodoPhases(next);
-		this.todoPhases = next;
-		this.#syncTodoHudState(owner);
-		this.#renderTodoList();
-		this.ui.requestRender();
 	}
 
 	#cancelTodoAutoClearTimer(): void {
@@ -5278,10 +5217,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return active ?? nonEmpty[nonEmpty.length - 1];
 	}
 
-	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
-		if (kind !== "progress") {
-			this.#observerUiSyncNeedsTodoReconcile = true;
-		}
+	#scheduleObserverUiSync(): void {
 		if (this.#observerUiSyncTimer) return;
 		this.#observerUiSyncTimer = setTimeout(() => {
 			this.#observerUiSyncTimer = undefined;
@@ -5292,26 +5228,15 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#flushObserverUiSync(): void {
 		const badgeChanged = this.syncRunningSubagentBadge({ requestRender: false });
-		let todoChanged = false;
-		if (
-			this.#observerUiSyncNeedsTodoReconcile ||
-			this.#getActiveSubagentDescriptions().join("\n") !== this.#todoHudSubagentKey
-		) {
-			if (this.#observerUiSyncNeedsTodoReconcile) {
-				this.#observerUiSyncNeedsTodoReconcile = false;
-				this.#reconcileTodosWithSubagents();
-				this.#syncTodoHudState(this.#todoPhasesOwner ?? this.session);
-			}
-			// Progress-only ticks (10 Hz while subagents run) cannot change the
-			// todo phases or their persisted visibility — re-syncing would also
-			// re-arm the auto-clear timer so it could never fire. The HUD and
-			// transcript todo cards still need repainting when the active
-			// descriptions change, even if the HUD itself is hidden.
-			this.#renderTodoList();
-			todoChanged = true;
-		}
+		// Observer changes never touch the todo phases or their persisted
+		// visibility: a finished subagent's description is not a `todo done`, so
+		// only the pending-todo highlight reads them. Repaint the HUD and
+		// transcript todo cards when the active descriptions change, even if the
+		// HUD is hidden; re-syncing HUD state here would re-arm the auto-clear timer.
+		const descriptionsChanged = this.#getActiveSubagentDescriptions().join("\n") !== this.#todoHudSubagentKey;
+		if (descriptionsChanged) this.#renderTodoList();
 		const hudChanged = this.#renderSubagentList();
-		if (badgeChanged || todoChanged || hudChanged) this.ui.requestRender();
+		if (badgeChanged || descriptionsChanged || hudChanged) this.ui.requestRender();
 	}
 
 	#cancelObserverUiSyncTimer(): void {
@@ -5319,7 +5244,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			clearTimeout(this.#observerUiSyncTimer);
 			this.#observerUiSyncTimer = undefined;
 		}
-		this.#observerUiSyncNeedsTodoReconcile = false;
 		this.#cancelSubagentPreviewTick();
 	}
 
@@ -5454,12 +5378,10 @@ export class InteractiveMode implements InteractiveModeContext {
 					? "success del"
 					: todo.status === "abandoned"
 						? "error del"
-						: todo.status === "blocked"
-							? "warning"
-							: todo.status === "in_progress" || isMatched(todo)
-								? "accent"
-								: "dim";
-			const label: TspSpan[] = [span(todo.status === "blocked" ? `${todo.content} (blocked)` : todo.content, token)];
+						: todo.status === "in_progress" || isMatched(todo)
+							? "accent"
+							: "dim";
+			const label: TspSpan[] = [span(todo.content, token)];
 			const notes = todo.notes?.length ?? 0;
 			if (notes > 0) label.push(span(` +${notes}`, "dim em"));
 			return { id, label, icon: done ? "check" : "circle" };
@@ -5517,7 +5439,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					: phase.name,
 			collapsed: phase.tasks.every(isClosedTodo) || undefined,
 			items: phase.tasks.map((todo, taskIndex): TspChecklistItem => {
-				const note = todo.blocker ?? todo.notes?.at(-1);
+				const note = todo.notes?.at(-1);
 				return {
 					id: `${phaseIndex}.${taskIndex}`,
 					text: todo.content,
@@ -5526,11 +5448,9 @@ export class InteractiveMode implements InteractiveModeContext {
 							? "done"
 							: todo.status === "abandoned"
 								? "dropped"
-								: todo.status === "blocked"
-									? "blocked"
-									: todo.status === "in_progress" || isMatched(todo)
-										? "active"
-										: "pending",
+								: todo.status === "in_progress" || isMatched(todo)
+									? "active"
+									: "pending",
 					note,
 				};
 			}),
@@ -7982,7 +7902,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			() => requestDelivered.resolve(),
 			() => requestDelivered.resolve(),
 		);
-		const choice = await choicePromise;
+		// The plan waits on the user's approval, after the turn that proposed it has ended.
+		const release = holdBlockedStatus({ state: "blocked", kind: "permission", msg: `Review plan: ${details.title}` });
+		const choice = await choicePromise.finally(release);
 		if (this.#pendingPlanReview === pending) this.#pendingPlanReview = undefined;
 		const remote = pending.remote;
 		const closePlanReview = (): void => {
@@ -8152,7 +8074,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #promptAutoQaConsent(): Promise<boolean | null> {
 		const pool = InteractiveMode.#AUTOQA_CONSENT_PROMPTS;
 		const [headline, body] = pool[Math.floor(Math.random() * pool.length)];
-		const choice = await this.#extensionUiController.showCollabAwareSelector(`${headline}\n${body}`, ["Yes", "No"]);
+		const choice = await this.#extensionUiController.showCollabAwareSelector(
+			`${headline}\n${body}`,
+			["Yes", "No"],
+			undefined,
+			{ kind: "permission" },
+		);
 		return choice === "Yes";
 	}
 
@@ -8192,6 +8119,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					timedOut = true;
 				},
 			},
+			{ kind: "permission" },
 		);
 		if (timedOut) return "timeout";
 		if (choice === CFG_APPROVE_SESSION) return "session";
@@ -8200,6 +8128,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
+		this.#closeAttempt?.abort();
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
 		this.#appearanceRefreshRequest = undefined;
@@ -8290,8 +8219,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	async shutdown(): Promise<void> {
-		if (this.#isShuttingDown) return;
+	/**
+	 * Close the session and quit. `cancellable: false` is for closes nobody may
+	 * refuse (fatal workspace states, `ctx.shutdown()`); operator quits are
+	 * cancellable and first ask extensions through `session_before_shutdown`.
+	 */
+	async shutdown(options?: { cancellable?: boolean }): Promise<void> {
+		if (this.#isShuttingDown) {
+			// Another close request ends the pending attempt's prompts; that
+			// attempt keeps ownership of teardown and can no longer be cancelled.
+			this.#closeAttempt?.abort();
+			return;
+		}
 		// The previous graceful teardown failed AT the memoized session.dispose()
 		// (the session is already disposing), so it re-rejects identically forever
 		// and the process can never close (#12238: a corrupted session file makes
@@ -8302,8 +8241,19 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.#quitHostOwned(130);
 			return;
 		}
-		this.#beginClose();
-		const worktreePlan = await this.#planOwnedWorktreeExit();
+		const signal = this.#beginClose();
+		// Reversible decisions first: nothing has been stopped yet, so a refusal
+		// leaves the session exactly as it was.
+		if (options?.cancellable !== false && !(await this.session.confirmClose(signal))) {
+			this.#abandonClose();
+			this.showStatus("Session close cancelled");
+			// The refusal covers only this quit, not a pending `ctx.shutdown()`.
+			if (this.shutdownRequested) void this.checkShutdownRequested();
+			return;
+		}
+		// A signal teardown or stop() took over while extensions were asked.
+		if (this.session.isDisposed || this.#dialogLifetime.signal.aborted) return;
+		const worktreePlan = await this.#planOwnedWorktreeExit(signal);
 		try {
 			await this.#teardown();
 		} catch (error) {
@@ -8327,7 +8277,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#handleTeardownError(action: "close" | "restart", error: unknown): void {
-		this.#isShuttingDown = false;
+		this.#abandonClose();
 		const detail = error instanceof Error ? error.message : String(error);
 		// Arm the escape hatch only once dispose() has begun: its promise is
 		// memoized, so a retry can only re-fail. A failure BEFORE dispose (a
@@ -8346,7 +8296,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * to remove after teardown. Stops the agent turn and live commands first so the
 	 * prompts describe a worktree nothing is still writing to. Never throws.
 	 */
-	async #planOwnedWorktreeExit(): Promise<WorktreeExitPlan[]> {
+	async #planOwnedWorktreeExit(signal: AbortSignal): Promise<WorktreeExitPlan[]> {
 		const policy = cfgWorktreeOnExit.get(this.settings);
 		if (policy === "keep" || this.#ownedWorktrees.length === 0) return [];
 		this.#abortLoopCondition();
@@ -8360,7 +8310,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return planWorktreeExit(
 			this.#ownedWorktrees,
 			policy,
-			(title, message) => this.showHookConfirm(title, message),
+			(title, message) => this.showHookConfirm(title, message, { signal }),
 			message => this.showWarning(message),
 		);
 	}
@@ -8439,9 +8389,17 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * any await: worktree exit planning, live commands, and BTW history writes can
 	 * all stall, and the user must see a reason for the pause.
 	 */
-	#beginClose(): void {
+	#beginClose(): AbortSignal {
 		this.#isShuttingDown = true;
+		this.#closeAttempt = new AbortController();
 		this.showStatus("Closing session…");
+		return this.#closeAttempt.signal;
+	}
+
+	/** Return to a usable session after a close attempt was refused or failed. */
+	#abandonClose(): void {
+		this.#isShuttingDown = false;
+		this.#closeAttempt = undefined;
 	}
 
 	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
@@ -8543,7 +8501,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		) {
 			return;
 		}
-		await this.shutdown();
+		await this.shutdown({ cancellable: false });
 	}
 
 	// Extension UI integration
@@ -9974,7 +9932,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		title: string,
 		options: ExtensionUISelectItem[],
 		dialogOptions?: InteractiveSelectorDialogOptions,
-		extra?: { slider?: HookSelectorSlider },
+		extra?: { slider?: HookSelectorSlider; kind?: BlockedKind },
 	): Promise<string | undefined> {
 		return this.#extensionUiController.showHookSelector(title, options, dialogOptions, extra);
 	}

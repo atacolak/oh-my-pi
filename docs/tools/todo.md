@@ -24,8 +24,6 @@ The params object **is** a single op — the discriminator and its fields live a
 | `start` | `task` | None | Marks one task `in_progress`; any other `in_progress` task in a continuing phase is demoted to `pending`. |
 | `done` | `task` or `phase` or neither | None | Marks the target task, phase, or all tasks `completed`. |
 | `drop` | `task` or `phase` or neither | None | Marks the target task, phase, or all tasks `abandoned`. |
-| `block` | `task` or `phase` | `reason` | Marks actionable target tasks `blocked`; completed/abandoned tasks are left closed. Whitespace in `reason` is collapsed to one line. |
-| `unblock` | `task` or `phase` | None | Returns blocked target tasks to `pending` and clears their blocker notes. |
 | `rm` | `task` or `phase` or neither | None | Removes the target task, clears the phase's task list, or clears all task lists. |
 | `append` | `items` | `phase` (defaults to the active/next continuing task's phase, then the last phase, then `Tasks`), `kind` (`"continuing" \| "passive"`) | Appends new `pending` tasks to the selected phase; creates the phase if missing. An explicit `kind` sets the phase's kind whether the phase is created or found. |
 | `view` | None | None | Echoes the current list. A `view` call is read-only: no normalization, no state write. |
@@ -34,17 +32,16 @@ The params object **is** a single op — the discriminator and its fields live a
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `op` | `"init" \| "start" \| "done" \| "rm" \| "drop" \| "block" \| "unblock" \| "append" \| "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
+| `op` | `"init" \| "start" \| "done" \| "rm" \| "drop" \| "append" \| "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
 | `list` | `{ phase: string; kind?: "continuing" \| "passive"; items: string[] }[]` | For `init` (unless a flat `items` list is given) | Full replacement payload. Each phase's `items` has `minItems: 1`; an explicit `list: []` clears all phases. |
 | `kind` | `"continuing" \| "passive"` | No; accepted by flat `init`, each `init.list` phase, and `append` | Omission means continuing. Passive phases remain stored and visible but do not participate in next-action selection, automatic `in_progress` normalization, stop reminders, or mid-run nudges. |
-| `task` | `string` | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm` | Exact task content match. |
-| `phase` | `string` | For phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for `append` and flat `init` | Exact phase name match. `append` creates a named phase if missing; omitted names use the selection rules below. Flat `init` defaults to `Tasks`. |
+| `task` | `string` | For `start`; for task-targeted `done`/`drop`/`rm` | Exact task content match. |
+| `phase` | `string` | For phase-targeted `done`/`drop`/`rm`; optional for `append` and flat `init` | Exact phase name match. `append` creates a named phase if missing; omitted names use the selection rules below. Flat `init` defaults to `Tasks`. |
 | `items` | `string[]` | For `append`; or as a flat `init` payload | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
-| `reason` | `string` | No | Optional blocker note for `block`; normalized to a single trimmed line. |
 
 For `init`, an absent or empty phase name becomes `Tasks`; duplicate phase names are rejected after this default applies.
 
-For `append`, an omitted `phase` selects the in-progress continuing task's phase, otherwise the first pending continuing task's phase. If no continuing task is actionable (including when all continuing tasks are blocked), it uses the last phase, even if passive; if no phases exist, it creates `Tasks`. An explicit phase overrides this selection, but an explicit empty string is rejected. Omitting `op` as well as `phase` remains ambiguous when a list exists and is not inferred as `append`.
+For `append`, an omitted `phase` selects the in-progress continuing task's phase, otherwise the first pending continuing task's phase. If no continuing task is actionable, it uses the last phase, even if passive; if no phases exist, it creates `Tasks`. An explicit phase overrides this selection, but an explicit empty string is rejected. Omitting `op` as well as `phase` remains ambiguous when a list exists and is not inferred as `append`.
 
 ## Outputs
 
@@ -63,7 +60,7 @@ The tool returns a single-shot `AgentToolResult`:
 `TodoPhase` / `TodoItem` state model:
 
 - `TodoPhase`: `{ name: string, tasks: TodoItem[], kind?: "continuing" | "passive" }`
-- `TodoItem`: `{ content: string, status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked", blocker?: string }`
+- `TodoItem`: `{ content: string, status: "pending" | "in_progress" | "completed" | "abandoned" }`
 
 The TUI renderer (`todoToolRenderer`) merges call and result into one transcript block and renders phases as a tree. Collapsed transcript previews cap tree items at `PREVIEW_LIMITS.COLLAPSED_ITEMS` (`8`).
 
@@ -76,15 +73,12 @@ The TUI renderer (`todoToolRenderer`) merges call and result into one transcript
    - `initPhases(...)` rebuilds the list from scratch.
    - `start` resolves a task by exact `content`, demotes every other `in_progress` task in a continuing phase to `pending`, then marks the target `in_progress`. Starting a task in a passive phase changes only that task.
    - `done` / `drop` use `getTaskTargets(...)` to target one task, one phase, or every task.
-   - `block` requires a task or phase target. It marks only `pending`, `in_progress`, or already-`blocked` targets as blocked, preserving completed/abandoned tasks; a repeated block can replace or clear the note.
-   - `unblock` requires a task or phase target and changes only blocked targets to `pending`.
    - `rm` removes one task, clears one phase's `tasks`, or clears all phases' task arrays.
    - `appendItems(...)` resolves or creates the target phase and pushes new `pending` tasks unless the same task content already exists anywhere.
 5. Missing task/phase references and op-specific failures are recorded in an `errors` array; any error discards the op's mutations at the end.
 6. After a successful mutation, `normalizeInProgressTask(...)` enforces the single-active-task invariant across **continuing** phases (see [Phase continuation modes](#phase-continuation-modes)):
    - if multiple tasks are `in_progress`, only the first stays active and the rest become `pending`;
    - if none are `in_progress`, the first `pending` task in phase/task order is auto-promoted to `in_progress`;
-   - blocked tasks are skipped, so a list may have no active task when all open work is blocked.
    - tasks in passive phases are never promoted, never demoted, and never count as an existing `in_progress` task; a passive phase may therefore hold zero or several `in_progress` tasks.
 7. `execute(...)` stores the updated phases with `session.setTodoPhases?.(...)` only when the op produced no errors and was not a `view`; a failed op is discarded. `storage` is `"session"` when `session.getSessionFile()` exists, else `"memory"`.
 8. `getCompletionTransitions(...)` compares the previous and updated phases (skipped for failed or `view` calls); newly completed tasks are returned in `details.completedTasks`.
@@ -100,7 +94,7 @@ A phase is `continuing` (the default) or `passive`. Core selects the behavior by
 | Behavior | continuing / omitted | passive |
 | --- | --- | --- |
 | stored, transcript/model/TUI visible, compaction/resume/recycle durable | Yes | Yes |
-| explicit `start`/`done`/`drop`/`block`/`unblock`/`rm` | Yes | Yes |
+| explicit `start`/`done`/`drop`/`rm` | Yes | Yes |
 | next-action selection and automatic promotion/demotion | Yes | No |
 | stop-time completion reminder and mid-run Todo nudge | Yes | No |
 
@@ -108,13 +102,12 @@ Passive phases are excluded from automatic continuation only, not from explicit 
 
 ### State transitions
 
-| Current status | `start`                                                              | `done`                          | `drop`                          | `block`                        | `unblock`               | `rm`    | `append`                     |
-| -------------- | -------------------------------------------------------------------- | ------------------------------- | ------------------------------- | ------------------------------ | ----------------------- | ------- | ---------------------------- |
-| `pending`      | `in_progress` on target                                              | `completed`                     | `abandoned`                     | `blocked`                      | No change               | Removed | New tasks enter as `pending` |
-| `in_progress`  | Target stays `in_progress`; non-target active tasks become `pending` | `completed`                     | `abandoned`                     | `blocked`                      | No change               | Removed | No status change             |
-| `blocked`      | Can be set to `in_progress` if targeted                              | `completed`                     | `abandoned`                     | Stays blocked; note may change | `pending`, note cleared | Removed | No status change             |
-| `completed`    | Can be set back to `in_progress` if targeted                         | Stays `completed`               | Becomes `abandoned` if targeted | No change                      | No change               | Removed | No status change             |
-| `abandoned`    | Can be set back to `in_progress` if targeted                         | Becomes `completed` if targeted | Stays `abandoned`               | No change                      | No change               | Removed | No status change             |
+| Current status | `start`                                                              | `done`                          | `drop`                          | `rm`    | `append`                     |
+| -------------- | -------------------------------------------------------------------- | ------------------------------- | ------------------------------- | ------- | ---------------------------- |
+| `pending`      | `in_progress` on target                                              | `completed`                     | `abandoned`                     | Removed | New tasks enter as `pending` |
+| `in_progress`  | Target stays `in_progress`; non-target active tasks become `pending` | `completed`                     | `abandoned`                     | Removed | No status change             |
+| `completed`    | Can be set back to `in_progress` if targeted                         | Stays `completed`               | Becomes `abandoned` if targeted | Removed | No status change             |
+| `abandoned`    | Can be set back to `in_progress` if targeted                         | Becomes `completed` if targeted | Stays `abandoned`               | Removed | No status change             |
 
 Normalization then re-applies the single-active-task rule after the op runs.
 
@@ -124,7 +117,6 @@ Normalization then re-applies the single-active-task rule after the op runs.
    - `task` set: affect one exact-content task.
    - else `phase` set: affect every task in that exact-name phase.
    - else: affect every task in every phase.
-- `block` and `unblock` use the same task-or-phase lookup but reject an omitted target.
 - `append` is the only op that creates a missing phase.
 - `init` discards previous phases entirely.
 
@@ -132,9 +124,9 @@ Normalization then re-applies the single-active-task rule after the op runs.
 
 The same file also exposes non-tool helpers used by `/todo`:
 
-- `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`, `[!]`). A blocked reason is preserved in a trailing `<!-- blocker: ... -->` comment.
+- `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`).
 - A **passive** phase serializes its heading with a trailing `<!-- kind: passive -->` comment; a continuing (or absent-kind) phase emits the bare heading it always emitted, so existing TODO files and `/todo edit` buffers round-trip byte-identically.
-- `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Todos` phase, also accepts `>` as `in_progress` and `~` as `abandoned`, restores blocked notes, and runs the same normalization step. It recovers a phase's kind from the trailing `<!-- kind: ... -->` comment; a comment that is not the kind marker is left literal, exactly as before.
+- `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Todos` phase, also accepts `>` as `in_progress` and `~` as `abandoned` and runs the same normalization step. It recovers a phase's kind from the trailing `<!-- kind: ... -->` comment; a comment that is not the kind marker is left literal, exactly as before.
 
 ## Side Effects
 
@@ -161,7 +153,7 @@ The same file also exposes non-tool helpers used by `/todo`:
 - Flat `init.items` and `append.items`: the shared schema allows any array length, but op-specific execution rejects missing/empty lists.
 - Renderer collapsed preview: `PREVIEW_LIMITS.COLLAPSED_ITEMS = 8` (`packages/tui/src/render/render-utils.ts`).
 - Execution-time repair: an omitted `op` is inferred only for the unambiguous payloads described above; the schema itself still requires `op`.
-- HUD auto-hide delay: `tasks.todoClearDelay` default `60` seconds; `< 0` disables hiding, `0` hides immediately. Applies only when all tasks are closed; blocked or pending work keeps the HUD visible. Canonical state survives the display change and session resume.
+- HUD auto-hide delay: `tasks.todoClearDelay` default `60` seconds; `< 0` disables hiding, `0` hides immediately. Applies only when all tasks are closed; pending or in-progress work keeps the HUD visible. Canonical state survives the display change and session resume.
 - Tool execution mode: `concurrency = "exclusive"`, `strict = true`, `loadMode = "discoverable"`.
 
 ## Errors
@@ -175,15 +167,13 @@ The same file also exposes non-tool helpers used by `/todo`:
    - `Missing phase name`
    - `Phase "..." not found`
    - `Missing phase name for append operation` (an explicit empty `phase`, not an omitted one)
-   - `block requires a task or phase target`
-   - `unblock requires a task or phase target`
    - `Missing items for append operation`
    - `Task "..." already exists`
 - A `todo` call carries a single op; any error in it discards every mutation the op made.
 - Runtime-level tool failure is handled outside the tool body: `agent-session` injects a hidden reminder and the event controller warns the user that visible progress may be stale.
 - Idempotency is op-specific:
    - `init` is a full replacement; replaying the same payload yields the same state.
-   - `start`, `done`, `drop`, `block`, and `unblock` are effectively idempotent on an existing target state, though `start` also demotes another active task and a repeated `block` can update its reason.
+   - `start`, `done`, and `drop` are effectively idempotent on an existing target state, though `start` also demotes another active task.
    - Task-targeted `rm` is not idempotent: the second call errors because the task is gone. Phase-targeted `rm` only empties the phase, so repeating it succeeds; untargeted `rm` similarly clears task lists without removing phase objects.
    - `append` is not idempotent: duplicate task content is rejected with `Task "..." already exists`; the `append` op validates up front, so an op with any duplicate appends nothing.
 

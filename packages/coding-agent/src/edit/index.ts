@@ -34,7 +34,8 @@ import {
 	writethroughNoop,
 } from "../lsp";
 import { type FileDiagnosticsResult } from "@oh-my-pi/pi-tui/tools/lsp";
-import { FileChangeType, notifyWorkspaceWatchedFiles } from "../lsp/client";
+import { notifyWorkspaceWatchedFiles } from "../lsp/client";
+import { FileChangeType } from "../lsp/types";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { sessionWorkspaceDirectories } from "../session/session-workspace";

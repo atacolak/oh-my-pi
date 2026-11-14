@@ -5,6 +5,11 @@
 ### Fixed
 
 - Follow-up messages queued while the agent is working now all reach the model in the next turn: `followUpMode` defaults to `all` instead of `one-at-a-time`. Set `followUpMode` to `one-at-a-time` to deliver them one per turn again.
+## [18.20.2] - 2026-11-14
+
+### Added
+
+- Added the `antigravity-cli` provider for Google Antigravity over ACP, with managed binary installation, `/login antigravity-cli` Google sign-in, host tool execution, and retained conversations across tool steps and history changes.
 
 ## [18.20.1] - 2026-11-14
 

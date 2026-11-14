@@ -143,6 +143,12 @@
 - Fixed the public LSP factory ignoring `enableLsp=false`, so SDK advisor sessions that disable LSP no longer receive the tool.
 - Fixed language servers in nested projects (for example `python/pyproject.toml` under a monorepo root) staying inactive until omp was started inside that subdirectory; concrete file operations now discover the nearest matching root lazily without recursively scanning the workspace at startup ([#1648](https://github.com/can1357/oh-my-pi/issues/1648)).
 ## [18.18.0] - 2026-11-07
+## [18.20.2] - 2026-11-14
+
+### Added
+
+- Added the `antigravity-cli` provider for Google Antigravity over ACP, with managed binary installation, `/login antigravity-cli` Google sign-in, host tool execution, and retained conversations across tool steps and history changes.
+
 ## [18.20.1] - 2026-11-14
 
 ### Added

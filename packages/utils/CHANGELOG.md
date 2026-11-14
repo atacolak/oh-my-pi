@@ -28,6 +28,12 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+## [18.20.2] - 2026-11-14
+
+### Added
+
+- Added a profile-aware data directory for managed Antigravity CLI installations and isolated account state.
+
 ## [18.20.1] - 2026-11-14
 
 ### Added

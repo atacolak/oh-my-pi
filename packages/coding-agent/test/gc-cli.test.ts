@@ -1172,6 +1172,42 @@ describe("runGcCommand cold-session archive", () => {
 		expect(rows.map(row => row.session_id)).toEqual(["keep-me"]);
 	});
 
+	test("removes archived session episode rows even when history.db has no prompt history", async () => {
+		await writeSession(root, "project", "archive-me", "complete", { ageDays: 90 });
+		const dbPath = getHistoryDbPath(root);
+		await fs.mkdir(path.dirname(dbPath), { recursive: true });
+		const db = new Database(dbPath);
+		db.run(
+			"CREATE TABLE session_episodes (episode_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT, status TEXT)",
+		);
+		db.run(
+			"INSERT INTO session_episodes (episode_id, session_id, title, status) VALUES ('ep-old', 'archive-me', 'run', 'completed')",
+		);
+		db.run(
+			"INSERT INTO session_episodes (episode_id, session_id, title, status) VALUES ('ep-live', 'keep-me', 'run', 'running')",
+		);
+		db.close();
+
+		const result = await runGcCommand({
+			flags: {
+				agentDir: root,
+				archive: true,
+				coldArchiveAfterDays: 30,
+				retainNewestGlobal: 0,
+				retainNewestPerCwd: 0,
+				apply: true,
+			},
+		});
+
+		const check = new Database(dbPath);
+		const rows = check.query("SELECT episode_id FROM session_episodes").all() as Array<{ episode_id: string }>;
+		check.close();
+
+		expect(result.archive?.archived).toBe(1);
+		expect(result.archive?.errors).toEqual([]);
+		expect(rows.map(row => row.episode_id)).toEqual(["ep-live"]);
+	});
+
 	test("removes archived main and nested session rows from stats", async () => {
 		const session = await writeSession(root, "project", "archive-me", "complete", { ageDays: 90 });
 		const nestedSession = path.join(session.slice(0, -".jsonl".length), "nested.jsonl");

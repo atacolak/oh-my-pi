@@ -74,9 +74,7 @@ function deleteHistoryRows(db: Database, sessionIds: string[]): { deleted: numbe
 	// Recaps, titles and episodes are session-scoped side output with no life beyond their session.
 	using deleteRecapsStmt = hasRecaps ? db.prepare("DELETE FROM session_recaps WHERE session_id = ?") : undefined;
 	using deleteTitlesStmt = hasTitles ? db.prepare("DELETE FROM session_titles WHERE session_id = ?") : undefined;
-	using deleteEpisodesStmt = hasEpisodes
-		? db.prepare("DELETE FROM session_episodes WHERE session_id = ?")
-		: undefined;
+	using deleteEpisodesStmt = hasEpisodes ? db.prepare("DELETE FROM session_episodes WHERE session_id = ?") : undefined;
 	let deleted = 0;
 	const tx = db.transaction((ids: string[]) => {
 		for (const id of ids) {

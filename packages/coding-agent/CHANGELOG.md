@@ -65,6 +65,12 @@
 - Hindsight now resets retain cadence when `/tree` changes the post-clear document overlay, so a shorter pre-reset branch cannot inherit the source last retained turn.
 - Fixed Hindsight live retainStrategy refresh from adopting unrelated endpoint, token, or timeout settings that never rebuilt the client.
 - Hindsight session retain now waits for server-side processing before the local append cursor advances, so a failed retain retries the omitted delta instead of appending past it.
+## [18.20.2] - 2026-11-14
+
+### Added
+
+- Added the `antigravity-cli` provider for Google Antigravity over ACP, with managed binary installation, `/login antigravity-cli` Google sign-in, host tool execution, and retained conversations across tool steps and history changes.
+
 ## [18.20.1] - 2026-11-14
 
 ### Added

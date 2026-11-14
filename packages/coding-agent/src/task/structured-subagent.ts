@@ -827,6 +827,7 @@ function buildExecutorOptions(
 		compactionThresholdOverride: policy.compactionThresholdOverride,
 		oauthAccountPools: policy.oauthAccountPools,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
+		parentActiveProvider: session.getActiveModel?.()?.provider,
 		perCallModelGrants: policy.perCallModelGrants,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: policy.effort,
@@ -1139,6 +1140,8 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				result,
 				repoRoot: isolationContext.repoRoot,
 				mergeMode: policy.mergeMode,
+				recordFileChange: change => request.session.recordFileChange?.(change),
+				parentAgentId: request.session.getAgentId?.() ?? MAIN_AGENT_ID,
 			});
 			mergeSummary = outcome.summary;
 			changesApplied = outcome.changesApplied;

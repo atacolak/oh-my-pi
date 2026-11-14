@@ -28,6 +28,16 @@
 ### Fixed
 
 - Fixed `resolveEquivalentPath` skipping symlink workspace roots for not-yet-created files by realpath'ing the deepest existing ancestor.
+## [18.20.1] - 2026-11-14
+
+### Added
+
+- Added `mixHex` for blending two hexadecimal colors.
+
+### Fixed
+
+- Improved extraction of Cloud Code Assist quota reset information, including compound durations and reset timestamps, to provide more accurate retry guidance.
+
 ## [18.19.0] - 2026-11-12
 
 ### Added

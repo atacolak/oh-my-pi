@@ -134,6 +134,7 @@ import type {
 	SessionBeforeTreeEvent,
 	SessionBeforeTreeResult,
 	SessionBranchEvent,
+	SessionClearEvent,
 	SessionCompactEvent,
 	SessionCompactingEvent,
 	SessionCompactingResult,
@@ -1177,6 +1178,7 @@ export type {
 	SessionBeforeTreeEvent,
 	SessionBranchEvent,
 	SessionBranchReason,
+	SessionClearEvent,
 	SessionCompactEvent,
 	SessionCompactingEvent,
 	SessionEvent,
@@ -1898,6 +1900,7 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
 	): void;
 	on(event: "session_switch", handler: ExtensionHandler<SessionSwitchEvent>): void;
+	on(event: "session_clear", handler: ExtensionHandler<SessionClearEvent>): void;
 	on(
 		event: "session_before_branch",
 		handler: ExtensionHandler<SessionBeforeBranchEvent, SessionBeforeBranchResult>,

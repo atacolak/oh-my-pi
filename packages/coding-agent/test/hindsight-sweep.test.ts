@@ -8,11 +8,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
-import {
-	GEAR_SWEEP_CAPS,
-	MAX_SWEEP_COLLECTIONS,
-	resolveSweepCollections,
-} from "@oh-my-pi/pi-coding-agent/hindsight/sweep";
+import { MAX_SWEEP_COLLECTIONS, resolveSweepCollections } from "@oh-my-pi/pi-coding-agent/hindsight/sweep";
 
 type ScopeConfig = Pick<HindsightConfig, "recallTypes" | "recallPreferObservations">;
 

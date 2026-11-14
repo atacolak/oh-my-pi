@@ -9,6 +9,12 @@
 ### Fixed
 
 - Models that no role owns now use the configured default retry fallback chain when that chain still has a candidate.
+## [18.20.2] - 2026-11-14
+
+### Added
+
+- Added the `antigravity-cli` provider for Google Antigravity over ACP, with managed binary installation, `/login antigravity-cli` Google sign-in, host tool execution, and retained conversations across tool steps and history changes.
+
 ## [18.20.1] - 2026-11-14
 
 ### Added

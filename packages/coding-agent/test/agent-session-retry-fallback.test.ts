@@ -47,6 +47,7 @@ import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/se
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { __resetDirsFromEnvForTests, setAgentDir, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { fixedAdvisorTools } from "./helpers/agent-session-setup";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 import { restoreEnvValue } from "./helpers/settings-test-state";
 
@@ -9867,7 +9868,7 @@ describe("AgentSession retry fallback", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: fixedAdvisorTools(),
 			advisorConfigs: [{ name: "compaction-policy-advisor", model: advisorRoleSelector }],
 			advisorStreamFn: (model, context, options) => {
 				const selector = `${model.provider}/${model.id}`;

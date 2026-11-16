@@ -5545,7 +5545,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setMcpServerInstructionsSource: source => {
 				hostMcpServerInstructions = source;
 			},
-			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
+			disconnectOwnedMcpManager: owningMcpManager ? () => owningMcpManager.disconnectAll() : undefined,
 			reloadOwnedMcpServers,
 			ttsrManager,
 			obfuscator,

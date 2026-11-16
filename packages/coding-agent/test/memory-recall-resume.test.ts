@@ -575,7 +575,7 @@ describe("Mnemopi automatic recall across sessions sharing a bank", () => {
 		};
 		const live = startProcess(dir, newSession(dir), FILTERED, { automaticRecallJudge: judgeChain(counted) });
 		const preparation = await live.beforeAgentStartPrompt(PROMPT);
-		expect(preparation?.context).toBeUndefined();
+		expect(preparation?.contextEntry).toBeUndefined();
 		expect(preparation?.commit()).toBe(true);
 		expect(live.hasRecalledForFirstTurn).toBe(true);
 		expect(live.session.emitNotice).toHaveBeenCalledTimes(1);
@@ -618,7 +618,7 @@ describe("Mnemopi automatic recall across sessions sharing a bank", () => {
 		expect(judged).toContain(shown);
 		expect(judged.some(text => text.includes(CURATED))).toBe(false);
 		for (const text of judged) expect(visible).toContain(text);
-		expect(preparation?.context).toContain(shown);
+		expect(preparation?.contextEntry?.content).toContain(shown);
 	});
 
 	it("judges and carries every recalled memory into compaction, past the injection budget", async () => {
@@ -676,7 +676,7 @@ describe("Mnemopi automatic recall across sessions sharing a bank", () => {
 		controller.abort();
 		release.resolve();
 		const result = await preparation;
-		expect(result?.context).toBeUndefined();
+		expect(result?.contextEntry).toBeUndefined();
 		result?.commit();
 		expect(recallEntryCount(live.session.sessionManager)).toBe(0);
 		expect(live.lastRecallSnippet).toBeUndefined();

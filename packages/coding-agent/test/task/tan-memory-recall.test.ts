@@ -73,6 +73,7 @@ it("sends the parent's recalled memories once from a /tan clone instead of recal
 		"mnemopi.noEmbeddings": true,
 		"mnemopi.llmMode": "none",
 		"mnemopi.autoRetain": false,
+		"mnemopi.recallRelevance": "off",
 	});
 	try {
 		const { session: parent } = await sdk.createAgentSession({

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [18.22.0] - 2026-11-16
+
+### Fixed
+
+- Fixed slow streaming of Gemma tool calls with large arguments.
+
 ## [18.21.0] - 2026-11-16
 
 ### Added

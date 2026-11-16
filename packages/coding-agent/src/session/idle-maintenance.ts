@@ -26,7 +26,7 @@ import {
 	cfgCompactionIdleThresholdTokens,
 	cfgCompactionIdleTimeoutSeconds,
 } from "./context-settings";
-import { isSessionSettled, type SessionSettleHost, waitForSessionSettlement } from "./session-settle";
+import { isSessionSettled, type SessionSettleState } from "./session-settle";
 
 /** Probes the owner of the session supplies. Both are re-read whenever work could start. */
 export interface IdleMaintenanceOptions {
@@ -39,7 +39,7 @@ export interface IdleMaintenanceOptions {
 }
 
 /** The session surface idle maintenance reads and drives. */
-export type IdleMaintenanceSession = SessionSettleHost &
+export type IdleMaintenanceSession = SessionSettleState &
 	Pick<
 		AgentSession,
 		| "settings"
@@ -49,7 +49,7 @@ export type IdleMaintenanceSession = SessionSettleHost &
 		| "model"
 		| "messages"
 		| "subscribe"
-		| "waitForIdle"
+		| "waitForRunEnd"
 		| "waitForAdmittedSubmissions"
 		| "getContextUsage"
 		| "getTodoPhases"
@@ -148,6 +148,7 @@ export class IdleMaintenance {
 	#observe(event: AgentSessionEvent): void {
 		switch (event.type) {
 			case "agent_start":
+			case "agent_pause":
 			case "auto_compaction_start":
 			case "auto_compaction_end":
 				this.invalidate();
@@ -162,11 +163,7 @@ export class IdleMaintenance {
 				// quiet: the idle gate is exactly what starves a session whose next run is already
 				// admitted, and the captured id keeps the reply on the row it describes.
 				const completes =
-					generated &&
-					!recapped &&
-					event.isTerminal === true &&
-					episodeId !== null &&
-					cfgRecap.get(this.#session.settings).enabled;
+					generated && !recapped && episodeId !== null && cfgRecap.get(this.#session.settings).enabled;
 				this.#pending = {
 					// Nothing generated to recap, or already recapped: this stretch owes none,
 					// however its blockers change later.
@@ -200,27 +197,13 @@ export class IdleMaintenance {
 		return this.#options.isBlocked?.() === true || session.isCompacting || session.isSessionTransitioning;
 	}
 
-	/**
-	 * Nothing is live, admitted, queued or scheduled. Background work may still wake the session;
-	 * both recap and idle compaction additionally require {@link #isSettled}.
-	 */
-	#isQuiet(): boolean {
-		const session = this.#session;
-		return (
-			!session.isStreaming &&
-			!session.hasAdmittedSubmission &&
-			session.queuedMessageCount === 0 &&
-			this.#options.scheduledTurn?.() !== true
-		);
-	}
-
-	/** Quiet, and no background job or delivery can wake the session. */
+	/** No run is open, live, admitted, queued or scheduled. */
 	#isSettled(): boolean {
 		return isSessionSettled(this.#session, this.#options.scheduledTurn);
 	}
 
 	#recapWanted(): boolean {
-		return cfgRecap.get(this.#session.settings).enabled && !this.#isBlocked() && this.#isQuiet();
+		return cfgRecap.get(this.#session.settings).enabled && !this.#isBlocked() && this.#isSettled();
 	}
 
 	#contextTokens(): number {
@@ -229,7 +212,7 @@ export class IdleMaintenance {
 
 	/**
 	 * Restart the settling check for the current stretch, replacing any earlier one and the armed timers.
-	 * The check is launched off the caller's stack: the terminal `agent_end` is published while its own
+	 * The check is launched off the caller's stack: the run's `agent_end` is published while its own
 	 * prompt is still admitted, so it must wait for the authoritative barriers before judging the session.
 	 */
 	#schedule(): void {
@@ -244,20 +227,13 @@ export class IdleMaintenance {
 	async #armWhenQuiet(isCurrent: () => boolean): Promise<void> {
 		const session = this.#session;
 		for (;;) {
-			await session.waitForIdle();
+			await session.waitForRunEnd();
 			if (!isCurrent()) return;
 			if (!session.hasAdmittedSubmission) break;
 			await session.waitForAdmittedSubmissions();
 			if (!isCurrent()) return;
 		}
-		if (this.#isBlocked() || !this.#isQuiet()) return;
-		// Both recap and compaction wait for settlement: a background job can still wake the session and
-		// invalidate what either would produce.
-		const settled = await waitForSessionSettlement(session, {
-			isCurrent,
-			scheduledTurn: this.#options.scheduledTurn,
-		});
-		if (!settled || this.#isBlocked()) return;
+		if (this.#isBlocked() || !this.#isSettled()) return;
 		this.#armRecap();
 		this.#armCompaction();
 	}

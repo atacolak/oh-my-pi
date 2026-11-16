@@ -158,7 +158,7 @@ describe("idle maintenance episode recap", () => {
 		const host = createHost("episode:one");
 		maintenance = new IdleMaintenance(host.host, {});
 
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		host.emit({ type: "agent_end", messages: [assistantMessage()] });
 		await host.nextRecord(1);
 
 		expect(host.ephemeralCalls).toHaveLength(1);
@@ -169,7 +169,7 @@ describe("idle maintenance episode recap", () => {
 		const host = createHost("episode:one");
 		maintenance = new IdleMaintenance(host.host, {});
 
-		const event: AgentSessionEvent = { type: "agent_end", messages: [assistantMessage()], isTerminal: true };
+		const event: AgentSessionEvent = { type: "agent_end", messages: [assistantMessage()] };
 		host.emit(event);
 		host.emit(event);
 		await host.nextRecord(1);
@@ -184,10 +184,10 @@ describe("idle maintenance episode recap", () => {
 
 		// A failed attempt settles without closing its row; the retry reopens a new
 		// episode and only that one is a completed run.
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: false });
+		host.emit({ type: "agent_pause", messages: [assistantMessage()], yielded: false, awaiting: false });
 		host.setEpisode("episode:retry");
 		host.emit({ type: "agent_start" });
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		host.emit({ type: "agent_end", messages: [assistantMessage()] });
 		await host.nextRecord(1);
 
 		expect(host.records).toEqual([{ episodeId: "episode:retry", recap: "recap text" }]);
@@ -197,7 +197,7 @@ describe("idle maintenance episode recap", () => {
 		const host = createHost("episode:one");
 		maintenance = new IdleMaintenance(host.host, {});
 
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: false });
+		host.emit({ type: "agent_pause", messages: [assistantMessage()], yielded: false, awaiting: false });
 
 		expect(host.ephemeralCalls).toHaveLength(0);
 		expect(host.records).toHaveLength(0);
@@ -210,7 +210,7 @@ describe("idle maintenance episode recap", () => {
 		});
 		maintenance = new IdleMaintenance(host.host, {});
 
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		host.emit({ type: "agent_end", messages: [assistantMessage()] });
 		await host.nextRecord(1);
 
 		expect(host.ephemeralCalls).toEqual([
@@ -234,7 +234,7 @@ Earlier recaps in this chapter (already logged — do NOT repeat):
 		});
 		maintenance = new IdleMaintenance(host.host, {});
 
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		host.emit({ type: "agent_end", messages: [assistantMessage()] });
 		await host.nextRecord(1);
 
 		expect(host.chapterQueries).toEqual([{ focusTitle: "the row chapter", limit: 5 }]);
@@ -247,7 +247,7 @@ Earlier recaps in this chapter (already logged — do NOT repeat):
 		const host = createHost("episode:one", { goal: "An objective", priorRecaps: "- earlier" });
 		maintenance = new IdleMaintenance(host.host, {});
 
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		host.emit({ type: "agent_end", messages: [assistantMessage()] });
 		await host.nextRecord(1);
 
 		expect(host.chapterQueries).toEqual([{ focusTitle: "test session", limit: 5 }]);
@@ -257,7 +257,7 @@ Earlier recaps in this chapter (already logged — do NOT repeat):
 		const host = createHost("episode:one", { sessionName: undefined });
 		maintenance = new IdleMaintenance(host.host, {});
 
-		host.emit({ type: "agent_end", messages: [assistantMessage()], isTerminal: true });
+		host.emit({ type: "agent_end", messages: [assistantMessage()] });
 		await host.nextRecord(1);
 
 		expect(host.ephemeralCalls).toEqual([`${RECAP_INSTRUCTIONS}\n</system-reminder>`]);

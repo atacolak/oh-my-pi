@@ -779,8 +779,49 @@ class SessionDiagnostics:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class ModelRole:
+    id: str
+    name: str
+    selector: str
+    configured_value: str | None
+    chain: tuple[str, ...]
+    source: str
+    model: SessionDiagnosticModel | None
+    thinking_level: str | None
+    explicit_thinking_level: bool
+    matched_pattern_index: int | None
+    truncated: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ModelRoleCapabilities:
+    role_selection: bool
+    session_only_model: bool
+    preserve_thinking: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ModelRolesState:
+    version: int
+    capabilities: ModelRoleCapabilities
+    roles: tuple[ModelRole, ...]
+    truncated: bool
+    current_role: str | None
+    last_selected_role: str | None
+    resolved_primary: SessionDiagnosticModel | None
+    role_matches_current_model: bool
+    current: SessionDiagnosticModel | None
+    thinking_level: str | None
+    session_id: str
+    session_file: str | None
+    boot_id: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
+    current_role: str | None = None
+    last_selected_role: str | None = None
     model: ModelInfo | None = None
     thinking_level: ThinkingLevel | None = None
     session_diagnostics: SessionDiagnostics | None = None
@@ -2303,10 +2344,57 @@ def parse_session_diagnostics(value: object, path: str = "SessionDiagnostics") -
     )
 
 
+def parse_model_role(value: object, path: str = "ModelRole") -> ModelRole:
+    payload = expect_object(value, path)
+    return ModelRole(
+        id=required(payload, "id", decode_str, path),
+        name=required(payload, "name", decode_str, path),
+        selector=required(payload, "selector", decode_str, path),
+        configured_value=required(payload, "configuredValue", nullable(decode_str), path),
+        chain=required(payload, "chain", array(decode_str), path),
+        source=required(payload, "source", decode_str, path),
+        model=required(payload, "model", nullable(parse_session_diagnostic_model), path),
+        thinking_level=required(payload, "thinkingLevel", nullable(decode_str), path),
+        explicit_thinking_level=required(payload, "explicitThinkingLevel", decode_bool, path),
+        matched_pattern_index=required(payload, "matchedPatternIndex", nullable(decode_int), path),
+        truncated=required(payload, "truncated", decode_bool, path),
+    )
+
+
+def parse_model_role_capabilities(value: object, path: str = "ModelRoleCapabilities") -> ModelRoleCapabilities:
+    payload = expect_object(value, path)
+    return ModelRoleCapabilities(
+        role_selection=required(payload, "roleSelection", decode_bool, path),
+        session_only_model=required(payload, "sessionOnlyModel", decode_bool, path),
+        preserve_thinking=required(payload, "preserveThinking", decode_bool, path),
+    )
+
+
+def parse_model_roles_state(value: object, path: str = "ModelRolesState") -> ModelRolesState:
+    payload = expect_object(value, path)
+    return ModelRolesState(
+        version=required(payload, "version", decode_int, path),
+        capabilities=required(payload, "capabilities", parse_model_role_capabilities, path),
+        roles=required(payload, "roles", array(parse_model_role), path),
+        truncated=required(payload, "truncated", decode_bool, path),
+        current_role=required(payload, "currentRole", nullable(decode_str), path),
+        last_selected_role=required(payload, "lastSelectedRole", nullable(decode_str), path),
+        resolved_primary=required(payload, "resolvedPrimary", nullable(parse_session_diagnostic_model), path),
+        role_matches_current_model=required(payload, "roleMatchesCurrentModel", decode_bool, path),
+        current=required(payload, "current", nullable(parse_session_diagnostic_model), path),
+        thinking_level=required(payload, "thinkingLevel", nullable(decode_str), path),
+        session_id=required(payload, "sessionId", decode_str, path),
+        session_file=required(payload, "sessionFile", nullable(decode_str), path),
+        boot_id=required(payload, "bootId", decode_str, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
         session_id=required(payload, "sessionId", decode_str, path),
+        current_role=defaulted(payload, "currentRole", nullable(decode_str), path, None),
+        last_selected_role=defaulted(payload, "lastSelectedRole", nullable(decode_str), path, None),
         model=optional(payload, "model", parse_model_info, path),
         thinking_level=optional(payload, "thinkingLevel", _decode_thinking_level, path),
         session_diagnostics=optional(payload, "sessionDiagnostics", parse_session_diagnostics, path),
@@ -3847,12 +3935,41 @@ class WireClient:
         params: dict[str, object] = {}
         return required(expect_object(self._command("dictation_stop", params, timeout=600), "dictation_stop"), "text", decode_str, "dictation_stop")
 
-    def set_model(self, provider: str, model_id: str) -> ModelInfo:
+    def set_model(self, provider: str, model_id: str, *, session_only: bool | None = None, preserve_thinking: bool | None = None, expected_session_id: str | None = None, expected_session_file: str | None = None, expected_boot_id: str | None = None) -> ModelInfo:
         """Select a model by provider and id."""
         params: dict[str, object] = {}
         params["provider"] = provider
         params["modelId"] = model_id
+        if session_only is not None:
+            params["sessionOnly"] = session_only
+        if preserve_thinking is not None:
+            params["preserveThinking"] = preserve_thinking
+        if expected_session_id is not None:
+            params["expectedSessionId"] = expected_session_id
+        if expected_session_file is not None:
+            params["expectedSessionFile"] = expected_session_file
+        if expected_boot_id is not None:
+            params["expectedBootId"] = expected_boot_id
         return parse_model_info(self._command("set_model", params), "set_model")
+
+    def get_model_roles(self) -> ModelRolesState:
+        """Read loaded native roles, resolved models and the session's selected role."""
+        params: dict[str, object] = {}
+        return parse_model_roles_state(self._command("get_model_roles", params), "get_model_roles")
+
+    def set_model_role(self, role: str, *, preserve_thinking: bool | None = None, expected_session_id: str | None = None, expected_session_file: str | None = None, expected_boot_id: str | None = None) -> ModelRolesState:
+        """Select a native model role for this idle session without changing shared settings."""
+        params: dict[str, object] = {}
+        params["role"] = role
+        if preserve_thinking is not None:
+            params["preserveThinking"] = preserve_thinking
+        if expected_session_id is not None:
+            params["expectedSessionId"] = expected_session_id
+        if expected_session_file is not None:
+            params["expectedSessionFile"] = expected_session_file
+        if expected_boot_id is not None:
+            params["expectedBootId"] = expected_boot_id
+        return parse_model_roles_state(self._command("set_model_role", params), "set_model_role")
 
     def cycle_model(self) -> ModelCycleResult | None:
         """Cycle to the next model."""
@@ -4463,6 +4580,9 @@ __all__ = [
     "ModelCost",
     "ModelCycleResult",
     "ModelInfo",
+    "ModelRole",
+    "ModelRoleCapabilities",
+    "ModelRolesState",
     "NavigateTreeResult",
     "NegotiateProtocolResult",
     "NoticeEvent",
@@ -4661,6 +4781,9 @@ __all__ = [
     "parse_model_cost",
     "parse_model_cycle_result",
     "parse_model_info",
+    "parse_model_role",
+    "parse_model_role_capabilities",
+    "parse_model_roles_state",
     "parse_navigate_tree_result",
     "parse_negotiate_protocol_result",
     "parse_notice_event",

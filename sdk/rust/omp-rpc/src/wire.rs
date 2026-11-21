@@ -3275,9 +3275,69 @@ pub struct SessionDiagnostics {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRole {
+	pub id: String,
+	pub name: String,
+	pub selector: String,
+	#[serde(rename = "configuredValue", deserialize_with = "Deserialize::deserialize")]
+	pub configured_value: Option<String>,
+	pub chain: Vec<String>,
+	pub source: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub model: Option<SessionDiagnosticModel>,
+	#[serde(rename = "thinkingLevel", deserialize_with = "Deserialize::deserialize")]
+	pub thinking_level: Option<String>,
+	#[serde(rename = "explicitThinkingLevel")]
+	pub explicit_thinking_level: bool,
+	#[serde(rename = "matchedPatternIndex", deserialize_with = "Deserialize::deserialize")]
+	pub matched_pattern_index: Option<i64>,
+	pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRoleCapabilities {
+	#[serde(rename = "roleSelection")]
+	pub role_selection: bool,
+	#[serde(rename = "sessionOnlyModel")]
+	pub session_only_model: bool,
+	#[serde(rename = "preserveThinking")]
+	pub preserve_thinking: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRolesState {
+	pub version: i64,
+	pub capabilities: ModelRoleCapabilities,
+	pub roles: Vec<ModelRole>,
+	pub truncated: bool,
+	#[serde(rename = "currentRole", deserialize_with = "Deserialize::deserialize")]
+	pub current_role: Option<String>,
+	#[serde(rename = "lastSelectedRole", deserialize_with = "Deserialize::deserialize")]
+	pub last_selected_role: Option<String>,
+	#[serde(rename = "resolvedPrimary", deserialize_with = "Deserialize::deserialize")]
+	pub resolved_primary: Option<SessionDiagnosticModel>,
+	#[serde(rename = "roleMatchesCurrentModel")]
+	pub role_matches_current_model: bool,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub current: Option<SessionDiagnosticModel>,
+	#[serde(rename = "thinkingLevel", deserialize_with = "Deserialize::deserialize")]
+	pub thinking_level: Option<String>,
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(rename = "sessionFile", deserialize_with = "Deserialize::deserialize")]
+	pub session_file: Option<String>,
+	#[serde(rename = "bootId")]
+	pub boot_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
+	#[serde(rename = "currentRole", default = "default_session_state_current_role")]
+	pub current_role: Option<String>,
+	#[serde(rename = "lastSelectedRole", default = "default_session_state_last_selected_role")]
+	pub last_selected_role: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub model: Option<ModelInfo>,
 	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
@@ -5790,6 +5850,29 @@ pub struct SetModelParams {
 	pub provider: String,
 	#[serde(rename = "modelId")]
 	pub model_id: String,
+	#[serde(rename = "sessionOnly", default, skip_serializing_if = "Option::is_none")]
+	pub session_only: Option<bool>,
+	#[serde(rename = "preserveThinking", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_thinking: Option<bool>,
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
+	#[serde(rename = "expectedBootId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_boot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetModelRoleParams {
+	pub role: String,
+	#[serde(rename = "preserveThinking", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_thinking: Option<bool>,
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
+	#[serde(rename = "expectedBootId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_boot_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6456,6 +6539,14 @@ fn default_upgrade_runtime_result_scheduled() -> bool {
 
 fn default_refresh_ephemeral_work_services_uninspected() -> bool {
 	serde_json::from_str("true").expect("valid wire default")
+}
+
+fn default_session_state_current_role() -> Option<String> {
+	serde_json::from_str("null").expect("valid wire default")
+}
+
+fn default_session_state_last_selected_role() -> Option<String> {
+	serde_json::from_str("null").expect("valid wire default")
 }
 
 fn default_session_state_is_streaming() -> bool {
@@ -7195,6 +7286,16 @@ pub struct SetModelCommand {
 	pub provider: String,
 	#[serde(rename = "modelId")]
 	pub model_id: String,
+	#[serde(rename = "sessionOnly", default, skip_serializing_if = "Option::is_none")]
+	pub session_only: Option<bool>,
+	#[serde(rename = "preserveThinking", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_thinking: Option<bool>,
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
+	#[serde(rename = "expectedBootId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_boot_id: Option<String>,
 }
 
 impl Command for SetModelCommand {
@@ -7204,6 +7305,44 @@ impl Command for SetModelCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<ModelInfo>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Read loaded native roles, resolved models and the session's selected role.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetModelRolesCommand {}
+
+impl Command for GetModelRolesCommand {
+	const NAME: &'static str = "get_model_roles";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ModelRolesState;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ModelRolesState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Select a native model role for this idle session without changing shared settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetModelRoleCommand {
+	pub role: String,
+	#[serde(rename = "preserveThinking", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_thinking: Option<bool>,
+	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_id: Option<String>,
+	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub expected_session_file: Option<String>,
+	#[serde(rename = "expectedBootId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_boot_id: Option<String>,
+}
+
+impl Command for SetModelRoleCommand {
+	const NAME: &'static str = "set_model_role";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ModelRolesState;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ModelRolesState>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

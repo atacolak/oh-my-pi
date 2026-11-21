@@ -589,8 +589,46 @@ export interface SessionDiagnostics {
 	execution?: SessionExecution;
 }
 
+export interface ModelRole {
+	id: string;
+	name: string;
+	selector: string;
+	configuredValue: string | null;
+	chain: string[];
+	source: string;
+	model: SessionDiagnosticModel | null;
+	thinkingLevel: string | null;
+	explicitThinkingLevel: boolean;
+	matchedPatternIndex: number | null;
+	truncated: boolean;
+}
+
+export interface ModelRoleCapabilities {
+	roleSelection: boolean;
+	sessionOnlyModel: boolean;
+	preserveThinking: boolean;
+}
+
+export interface ModelRolesState {
+	version: number;
+	capabilities: ModelRoleCapabilities;
+	roles: ModelRole[];
+	truncated: boolean;
+	currentRole: string | null;
+	lastSelectedRole: string | null;
+	resolvedPrimary: SessionDiagnosticModel | null;
+	roleMatchesCurrentModel: boolean;
+	current: SessionDiagnosticModel | null;
+	thinkingLevel: string | null;
+	sessionId: string;
+	sessionFile: string | null;
+	bootId: string;
+}
+
 export interface SessionState {
 	sessionId: string;
+	currentRole?: string | null;
+	lastSelectedRole?: string | null;
 	model?: ModelInfo;
 	thinkingLevel?: ThinkingLevel;
 	/** Live configuration evidence; absent means warning readiness is unknown. */
@@ -1872,6 +1910,19 @@ export interface DictationStopResult {
 export interface SetModelParams {
 	provider: string;
 	modelId: string;
+	sessionOnly?: boolean;
+	preserveThinking?: boolean;
+	expectedSessionId?: string;
+	expectedSessionFile?: string;
+	expectedBootId?: string;
+}
+
+export interface SetModelRoleParams {
+	role: string;
+	preserveThinking?: boolean;
+	expectedSessionId?: string;
+	expectedSessionFile?: string;
+	expectedBootId?: string;
 }
 
 export interface GetAvailableModelsResult {
@@ -2120,6 +2171,8 @@ export interface RpcWireCommands {
 	dictation_start: { params: DictationStartParams; result: undefined };
 	dictation_stop: { params: undefined; result: DictationStopResult };
 	set_model: { params: SetModelParams; result: ModelInfo };
+	get_model_roles: { params: undefined; result: ModelRolesState };
+	set_model_role: { params: SetModelRoleParams; result: ModelRolesState };
 	cycle_model: { params: undefined; result: ModelCycleResult | null };
 	get_available_models: { params: undefined; result: GetAvailableModelsResult };
 	set_thinking_level: { params: SetThinkingLevelParams; result: undefined };

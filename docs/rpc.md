@@ -193,6 +193,18 @@ Important edge behavior from runtime:
 - `{ id?, type: "cycle_model" }`
 - `{ id?, type: "get_available_models" }`
 
+- `{ id?, type: "get_model_roles" }`
+- `{ id?, type: "set_model_role", role: string, preserveThinking?: boolean, expectedSessionId?: string, expectedSessionFile?: string, expectedBootId?: string }`
+
+`get_model_roles` reads the loaded owner's native role settings, expanded ordered selectors, availability resolution, and journal-backed selected role. It does not refresh settings, start inference, or write configuration. Its `currentRole` remains the explicitly selected role through retry fallbacks and later role-chain edits; `resolvedPrimary` and `roleMatchesCurrentModel` separately show whether the current concrete model still matches the loaded role's primary. A direct session-only selection clears the selected role. The catalog is bounded and reports `truncated` for omitted roles or shortened selector fields.
+
+`set_model_role` resolves a known role through the same native resolver and records that role in the session journal. It changes only this session, leaving shared role chains untouched. Unknown or unavailable roles fail explicitly. A role's explicit thinking suffix wins; otherwise current thinking (including automatic thinking) is preserved unless `preserveThinking: false` is requested. It returns the same observed role state as `get_model_roles`.
+
+`set_model` also accepts optional `sessionOnly` and `preserveThinking` booleans plus the three expected-identity fields. `sessionOnly: true` records a native temporary model choice, so a concrete pick is not mistaken for a named role. `preserveThinking: true` keeps the current selector rather than adopting the target model's configured default effort. Requests using these options, and all `set_model_role` requests, require an idle owner and reject a mismatched supplied session, transcript, or boot identity. Identity is rechecked after asynchronous model discovery immediately before applying the model. Existing `set_model` requests without these options retain their original behavior. Check `get_model_roles.capabilities` before sending the new options to an older owner.
+
+`get_state` includes additive `currentRole` and `lastSelectedRole` fields from the same native journal evidence.
+
+
 `get_available_models` waits for background model discovery before returning. `set_model` also waits when the requested model is not already in the available catalog; it returns the selected `Model` or a `Model not found: <provider>/<modelId>` failure.
 
 ### Thinking

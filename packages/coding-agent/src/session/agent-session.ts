@@ -12825,6 +12825,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
+			/** Recheck a session-bound caller after asynchronous model metadata discovery. */
+			beforeApply?: () => void;
+			/** Recheck identity after provider reconciliation, before writing the session journal. */
+			beforeRecord?: () => void;
 		},
 	): Promise<{ switched: boolean }> {
 		return this.#models.setModel(model, role, options);
@@ -12834,7 +12838,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	setModelTemporary(
 		model: Model,
 		thinkingLevel?: ConfiguredThinkingLevel,
-		options?: { ephemeral?: boolean },
+		options?: { ephemeral?: boolean; beforeApply?: () => void; beforeRecord?: () => void },
 	): Promise<void> {
 		return this.#models.setModelTemporary(model, thinkingLevel, options);
 	}

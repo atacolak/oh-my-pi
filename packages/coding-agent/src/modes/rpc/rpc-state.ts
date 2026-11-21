@@ -5,6 +5,7 @@ import { redactMemorySecrets } from "../../memory-backend/redact";
 import type { AgentSession } from "../../session/agent-session";
 import { isSessionSettled } from "../../session/session-settle";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
+import { getRpcSelectedModelRole } from "./rpc-model-roles";
 import type { RpcSessionDiagnostics, RpcSessionExecution, RpcSessionState } from "./rpc-types";
 
 const MAX_DIAGNOSTIC_WARNINGS = 20;
@@ -58,6 +59,8 @@ export function getRpcSessionState(session: AgentSession, scheduledTurn?: () => 
 	const queuedMessages = session.getQueuedMessages();
 	return {
 		model: session.model,
+		currentRole: getRpcSelectedModelRole(session),
+		lastSelectedRole: getRpcSelectedModelRole(session),
 		thinkingLevel: session.thinkingLevel,
 		sessionDiagnostics: getRpcSessionDiagnostics(session),
 		isStreaming: session.isStreaming,

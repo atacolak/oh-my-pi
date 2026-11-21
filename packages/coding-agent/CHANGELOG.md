@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added native RPC model-role discovery and session-only selection, with persistent role identity and optional thinking preservation.
+
 - agent profiles can autoload `skills.eager` and limit on-demand skills with `skills.discoverable`; an empty list closes the catalog while omitting it keeps legacy discovery.
 - Added `--agent <name>` to start a root session from a discovered agent definition (user `~/.omp/agent/agents`, project `.omp/agents`, extension, or bundled). The agent's tools, thinking level, model, body, and autoload skills apply unless `--tools` / `--thinking` / `--model` / `--system-prompt` override them. Unknown names fail with a usage error listing available agents.
 - Added `--agent-cwd <path>` to resolve a named root agent from a role-definition project while keeping `--cwd` as the execution directory, and added `hide: true` agent frontmatter so explicitly named automation roles remain root-launchable without appearing in ambient task or `/agents` rosters.

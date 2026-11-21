@@ -250,8 +250,33 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{
 		name: "set_model",
 		doc: "Select a model by provider and id.",
-		params: { provider: "string", modelId: "string" },
+		params: {
+			provider: "string",
+			modelId: "string",
+			"sessionOnly?": "boolean",
+			"preserveThinking?": "boolean",
+			"expectedSessionId?": "string",
+			"expectedSessionFile?": "string",
+			"expectedBootId?": "string",
+		},
 		result: "ModelInfo",
+	},
+	{
+		name: "get_model_roles",
+		doc: "Read loaded native roles, resolved models and the session's selected role.",
+		result: "ModelRolesState",
+	},
+	{
+		name: "set_model_role",
+		doc: "Select a native model role for this idle session without changing shared settings.",
+		params: {
+			role: "string",
+			"preserveThinking?": "boolean",
+			"expectedSessionId?": "string",
+			"expectedSessionFile?": "string",
+			"expectedBootId?": "string",
+		},
+		result: "ModelRolesState",
 	},
 	{ name: "cycle_model", doc: "Cycle to the next model.", result: "ModelCycleResult", nullable: true },
 	{

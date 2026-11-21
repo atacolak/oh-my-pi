@@ -419,6 +419,28 @@
 				"clientOmit": []
 			},
 			{
+				"name": "get_model_roles",
+				"doc": "Read loaded native roles, resolved models and the session's selected role.",
+				"params": null,
+				"result": "ModelRolesState",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "set_model_role",
+				"doc": "Select a native model role for this idle session without changing shared settings.",
+				"params": "SetModelRoleParams",
+				"result": "ModelRolesState",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "cycle_model",
 				"doc": "Cycle to the next model.",
 				"params": null,
@@ -3083,11 +3105,238 @@
 				"warningsTruncated"
 			]
 		},
+		"ModelRole": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"selector": {
+					"type": "string"
+				},
+				"configuredValue": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"chain": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"source": {
+					"type": "string"
+				},
+				"model": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SessionDiagnosticModel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"thinkingLevel": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"explicitThinkingLevel": {
+					"type": "boolean"
+				},
+				"matchedPatternIndex": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"truncated": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"id",
+				"name",
+				"selector",
+				"configuredValue",
+				"chain",
+				"source",
+				"model",
+				"thinkingLevel",
+				"explicitThinkingLevel",
+				"matchedPatternIndex",
+				"truncated"
+			]
+		},
+		"ModelRoleCapabilities": {
+			"type": "object",
+			"properties": {
+				"roleSelection": {
+					"type": "boolean"
+				},
+				"sessionOnlyModel": {
+					"type": "boolean"
+				},
+				"preserveThinking": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"roleSelection",
+				"sessionOnlyModel",
+				"preserveThinking"
+			]
+		},
+		"ModelRolesState": {
+			"type": "object",
+			"properties": {
+				"version": {
+					"type": "integer"
+				},
+				"capabilities": {
+					"$ref": "#/$defs/ModelRoleCapabilities"
+				},
+				"roles": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/ModelRole"
+					}
+				},
+				"truncated": {
+					"type": "boolean"
+				},
+				"currentRole": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"lastSelectedRole": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"resolvedPrimary": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SessionDiagnosticModel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"roleMatchesCurrentModel": {
+					"type": "boolean"
+				},
+				"current": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/SessionDiagnosticModel"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"thinkingLevel": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"bootId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"version",
+				"capabilities",
+				"roles",
+				"truncated",
+				"currentRole",
+				"lastSelectedRole",
+				"resolvedPrimary",
+				"roleMatchesCurrentModel",
+				"current",
+				"thinkingLevel",
+				"sessionId",
+				"sessionFile",
+				"bootId"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
 				"sessionId": {
 					"type": "string"
+				},
+				"currentRole": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"default": null
+				},
+				"lastSelectedRole": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"default": null
 				},
 				"model": {
 					"$ref": "#/$defs/ModelInfo"
@@ -7250,11 +7499,49 @@
 				},
 				"modelId": {
 					"type": "string"
+				},
+				"sessionOnly": {
+					"type": "boolean"
+				},
+				"preserveThinking": {
+					"type": "boolean"
+				},
+				"expectedSessionId": {
+					"type": "string"
+				},
+				"expectedSessionFile": {
+					"type": "string"
+				},
+				"expectedBootId": {
+					"type": "string"
 				}
 			},
 			"required": [
 				"provider",
 				"modelId"
+			]
+		},
+		"SetModelRoleParams": {
+			"type": "object",
+			"properties": {
+				"role": {
+					"type": "string"
+				},
+				"preserveThinking": {
+					"type": "boolean"
+				},
+				"expectedSessionId": {
+					"type": "string"
+				},
+				"expectedSessionFile": {
+					"type": "string"
+				},
+				"expectedBootId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"role"
 			]
 		},
 		"GetAvailableModelsResult": {

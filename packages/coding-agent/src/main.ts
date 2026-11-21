@@ -1683,6 +1683,8 @@ export async function buildSessionOptions(
 			settings: activeSettings,
 			preferences: modelMatchPreferences,
 		});
+		// A deferred role still owns its retry chain after extensions resolve an earlier candidate.
+		if (resolved.configuredRole) options.modelRole = resolved.configuredRole;
 		if (resolved.warning) warn(resolved.warning);
 		if (resolved.disabledProvider !== undefined) {
 			// Deferring a disabled pin to post-extension resolution would let it
@@ -1721,7 +1723,6 @@ export async function buildSessionOptions(
 			}
 		} else if (resolved.model) {
 			options.model = resolved.model;
-			if (resolved.configuredRole) options.modelRole = resolved.configuredRole;
 			options.rebindModelAfterDiscovery = true;
 			// The recorded role must carry the effort the session actually starts
 			// at, or the first cycle back into `default` overrides it.

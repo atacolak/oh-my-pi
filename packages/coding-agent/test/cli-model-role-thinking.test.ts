@@ -133,7 +133,10 @@ describe("--model role override thinking suffix", () => {
 			});
 		}
 
-		async function retryChainOf(options: CreateAgentSessionOptions) {
+		async function retryChainOf(
+			options: CreateAgentSessionOptions,
+			observeRole?: (role: string | undefined) => void,
+		) {
 			const { session } = await createAgentSession({
 				...options,
 				cwd: tempDir,
@@ -147,6 +150,7 @@ describe("--model role override thinking suffix", () => {
 				enableLsp: false,
 			});
 			try {
+				observeRole?.(session.sessionManager.getLastModelChangeRole());
 				const recovery = new TurnRecovery({
 					model: () => session.model,
 					thinkingLevel: () => undefined,
@@ -186,6 +190,24 @@ describe("--model role override thinking suffix", () => {
 				settings,
 			);
 			expect(await retryChainOf({ ...options, settings })).toEqual([leadFallback]);
+		});
+
+		test("a deferred ordered role selector keeps its retry role when resuming a prepared journal", async () => {
+			const settings = roleSettings();
+			settings.setModelRole("lead", `unavailable-provider/missing, ${lead}`);
+			const sessionManager = SessionManager.inMemory();
+			sessionManager.appendModelChange(lead, "default");
+			const options = await buildSessionOptions(
+				parseArgs(["--continue", "--model", "@lead"]),
+				[],
+				sessionManager,
+				modelRegistry,
+				settings,
+			);
+			expect(options.modelPattern).toBe("@lead");
+			const fallbacks = await retryChainOf({ ...options, settings }, role => expect(role).toBe("lead"));
+			expect(fallbacks).toContain(leadFallback);
+			expect(fallbacks).not.toContain("anthropic/claude-haiku-4-5");
 		});
 
 		test("resuming with an explicit model but no role keeps the recorded role", async () => {

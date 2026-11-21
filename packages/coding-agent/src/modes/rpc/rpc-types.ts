@@ -111,7 +111,16 @@ export type RpcCommand =
 	| { id?: string; type: "dictation_stop" }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string }
+	| ({
+			id?: string;
+			type: "set_model";
+			provider: string;
+			modelId: string;
+			sessionOnly?: boolean;
+			preserveThinking?: boolean;
+	  } & RpcModelControlTarget)
+	| { id?: string; type: "get_model_roles" }
+	| ({ id?: string; type: "set_model_role"; role: string; preserveThinking?: boolean } & RpcModelControlTarget)
 	| { id?: string; type: "cycle_model" }
 	| { id?: string; type: "get_available_models" }
 
@@ -208,7 +217,46 @@ export interface RpcSessionDiagnostics {
 	execution?: RpcSessionExecution;
 }
 
+export interface RpcModelControlTarget {
+	expectedSessionId?: string;
+	expectedSessionFile?: string;
+	expectedBootId?: string;
+}
+
+export interface RpcModelRole {
+	id: string;
+	name: string;
+	selector: string;
+	configuredValue: string | null;
+	chain: string[];
+	source: string;
+	model: { provider: string; id: string } | null;
+	thinkingLevel: string | null;
+	explicitThinkingLevel: boolean;
+	matchedPatternIndex: number | null;
+	truncated: boolean;
+}
+
+export interface RpcModelRolesState {
+	version: 1;
+	capabilities: { roleSelection: true; sessionOnlyModel: true; preserveThinking: true };
+	roles: RpcModelRole[];
+	truncated: boolean;
+	currentRole: string | null;
+	lastSelectedRole: string | null;
+	resolvedPrimary: { provider: string; id: string } | null;
+	roleMatchesCurrentModel: boolean;
+	current: { provider: string; id: string } | null;
+	thinkingLevel: string | null;
+	sessionId: string;
+	sessionFile: string | null;
+	bootId: string;
+}
+
 export interface RpcSessionState {
+	/** Last explicitly selected native role; retry fallbacks retain it, direct session picks clear it. */
+	currentRole?: string | null;
+	lastSelectedRole?: string | null;
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
 	sessionDiagnostics?: RpcSessionDiagnostics;
@@ -645,6 +693,8 @@ export type RpcResponse =
 			success: true;
 			data: { models: Model[] };
 	  }
+	| { id?: string; type: "response"; command: "get_model_roles"; success: true; data: RpcModelRolesState }
+	| { id?: string; type: "response"; command: "set_model_role"; success: true; data: RpcModelRolesState }
 
 	// Thinking
 	| { id?: string; type: "response"; command: "set_thinking_level"; success: true }

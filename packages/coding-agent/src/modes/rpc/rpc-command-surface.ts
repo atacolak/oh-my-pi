@@ -91,6 +91,13 @@ import type { RpcSessionSocket, RpcSessionSocketSurface } from "./rpc-socket";
 import { RpcSessionSettleWatcher, watchedScheduledTurnProbe } from "./rpc-session-settle";
 import { getRpcSessionState } from "./rpc-state";
 import {
+	getRpcModelRoles,
+	RpcModelControlError,
+	rpcModelTargetGuard,
+	setRpcDirectModel,
+	setRpcModelRole,
+} from "./rpc-model-roles";
+import {
 	GracefulRestartResults,
 	getRpcRefreshPreflight,
 	getRpcRuntimeRestartReceipt,
@@ -2197,13 +2204,42 @@ export class RpcCommandSurface {
 			// Model
 			// =================================================================
 
-			case "set_model": {
-				const model = await findRpcModel(session, command.provider, command.modelId);
-				if (!model) {
-					return rpcError(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+			case "get_model_roles":
+				return rpcSuccess(id, "get_model_roles", getRpcModelRoles(session));
+
+			case "set_model_role":
+				try {
+					return rpcSuccess(
+						id,
+						"set_model_role",
+						await setRpcModelRole(session, command, host?.scheduledTurnPending),
+					);
+				} catch (error) {
+					if (!(error instanceof RpcModelControlError)) throw error;
+					return rpcError(id, "set_model_role", error.message, error.code);
 				}
-				await session.setModel(model);
-				return rpcSuccess(id, "set_model", model);
+
+			case "set_model": {
+				try {
+					const guarded =
+						command.sessionOnly !== undefined ||
+						command.preserveThinking !== undefined ||
+						command.expectedSessionId !== undefined ||
+						command.expectedSessionFile !== undefined ||
+						command.expectedBootId !== undefined;
+					const guard = guarded ? rpcModelTargetGuard(session, command, host?.scheduledTurnPending) : undefined;
+					const model = await findRpcModel(session, command.provider, command.modelId);
+					guard?.();
+					if (!model) {
+						return rpcError(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
+					}
+					if (guarded) await setRpcDirectModel(session, model, command, host?.scheduledTurnPending);
+					else await session.setModel(model);
+					return rpcSuccess(id, "set_model", model);
+				} catch (error) {
+					if (!(error instanceof RpcModelControlError)) throw error;
+					return rpcError(id, "set_model", error.message, error.code);
+				}
 			}
 
 			case "cycle_model": {

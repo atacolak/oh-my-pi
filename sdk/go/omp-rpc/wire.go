@@ -2899,10 +2899,117 @@ func (v *SessionDiagnostics) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type ModelRole struct {
+	ID                    string                  `json:"id"`
+	Name                  string                  `json:"name"`
+	Selector              string                  `json:"selector"`
+	ConfiguredValue       *string                 `json:"configuredValue"`
+	Chain                 []string                `json:"chain"`
+	Source                string                  `json:"source"`
+	Model                 *SessionDiagnosticModel `json:"model"`
+	ThinkingLevel         *string                 `json:"thinkingLevel"`
+	ExplicitThinkingLevel bool                    `json:"explicitThinkingLevel"`
+	MatchedPatternIndex   *int64                  `json:"matchedPatternIndex"`
+	Truncated             bool                    `json:"truncated"`
+}
+
+func (v *ModelRole) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ModelRole", v.decodeFrom)
+}
+
+func (v *ModelRole) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ModelRole
+	d := fieldDecoder{raw: raw, owner: "ModelRole"}
+	d.required("id", &out.ID)
+	d.required("name", &out.Name)
+	d.required("selector", &out.Selector)
+	d.nullable("configuredValue", &out.ConfiguredValue)
+	d.required("chain", &out.Chain)
+	d.required("source", &out.Source)
+	d.nullable("model", &out.Model)
+	d.nullable("thinkingLevel", &out.ThinkingLevel)
+	d.required("explicitThinkingLevel", &out.ExplicitThinkingLevel)
+	d.nullable("matchedPatternIndex", &out.MatchedPatternIndex)
+	d.required("truncated", &out.Truncated)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ModelRoleCapabilities struct {
+	RoleSelection    bool `json:"roleSelection"`
+	SessionOnlyModel bool `json:"sessionOnlyModel"`
+	PreserveThinking bool `json:"preserveThinking"`
+}
+
+func (v *ModelRoleCapabilities) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ModelRoleCapabilities", v.decodeFrom)
+}
+
+func (v *ModelRoleCapabilities) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ModelRoleCapabilities
+	d := fieldDecoder{raw: raw, owner: "ModelRoleCapabilities"}
+	d.required("roleSelection", &out.RoleSelection)
+	d.required("sessionOnlyModel", &out.SessionOnlyModel)
+	d.required("preserveThinking", &out.PreserveThinking)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ModelRolesState struct {
+	Version                 int64                   `json:"version"`
+	Capabilities            ModelRoleCapabilities   `json:"capabilities"`
+	Roles                   []ModelRole             `json:"roles"`
+	Truncated               bool                    `json:"truncated"`
+	CurrentRole             *string                 `json:"currentRole"`
+	LastSelectedRole        *string                 `json:"lastSelectedRole"`
+	ResolvedPrimary         *SessionDiagnosticModel `json:"resolvedPrimary"`
+	RoleMatchesCurrentModel bool                    `json:"roleMatchesCurrentModel"`
+	Current                 *SessionDiagnosticModel `json:"current"`
+	ThinkingLevel           *string                 `json:"thinkingLevel"`
+	SessionID               string                  `json:"sessionId"`
+	SessionFile             *string                 `json:"sessionFile"`
+	BootID                  string                  `json:"bootId"`
+}
+
+func (v *ModelRolesState) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ModelRolesState", v.decodeFrom)
+}
+
+func (v *ModelRolesState) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ModelRolesState
+	d := fieldDecoder{raw: raw, owner: "ModelRolesState"}
+	d.required("version", &out.Version)
+	d.required("capabilities", &out.Capabilities)
+	d.required("roles", &out.Roles)
+	d.required("truncated", &out.Truncated)
+	d.nullable("currentRole", &out.CurrentRole)
+	d.nullable("lastSelectedRole", &out.LastSelectedRole)
+	d.nullable("resolvedPrimary", &out.ResolvedPrimary)
+	d.required("roleMatchesCurrentModel", &out.RoleMatchesCurrentModel)
+	d.nullable("current", &out.Current)
+	d.nullable("thinkingLevel", &out.ThinkingLevel)
+	d.required("sessionId", &out.SessionID)
+	d.nullable("sessionFile", &out.SessionFile)
+	d.required("bootId", &out.BootID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
-	SessionID     string         `json:"sessionId"`
-	Model         *ModelInfo     `json:"model,omitempty"`
-	ThinkingLevel *ThinkingLevel `json:"thinkingLevel,omitempty"`
+	SessionID        string         `json:"sessionId"`
+	CurrentRole      *string        `json:"currentRole"`
+	LastSelectedRole *string        `json:"lastSelectedRole"`
+	Model            *ModelInfo     `json:"model,omitempty"`
+	ThinkingLevel    *ThinkingLevel `json:"thinkingLevel,omitempty"`
 	// Live configuration evidence; absent means warning readiness is unknown.
 	SessionDiagnostics    *SessionDiagnostics `json:"sessionDiagnostics,omitempty"`
 	IsStreaming           bool                `json:"isStreaming"`
@@ -2950,6 +3057,8 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	var out SessionState
 	d := fieldDecoder{raw: raw, owner: "SessionState"}
 	d.required("sessionId", &out.SessionID)
+	d.defaulted("currentRole", &out.CurrentRole, `null`)
+	d.defaulted("lastSelectedRole", &out.LastSelectedRole, `null`)
 	d.optional("model", &out.Model)
 	d.optional("thinkingLevel", &out.ThinkingLevel)
 	d.optional("sessionDiagnostics", &out.SessionDiagnostics)
@@ -8710,14 +8819,42 @@ func (c Commands) DictationStop(ctx context.Context) (string, error) {
 
 // SetModelCommand holds the parameters of "set_model".
 type SetModelCommand struct {
-	Provider string `json:"provider"`
-	ModelID  string `json:"modelId"`
+	Provider            string  `json:"provider"`
+	ModelID             string  `json:"modelId"`
+	SessionOnly         *bool   `json:"sessionOnly,omitempty"`
+	PreserveThinking    *bool   `json:"preserveThinking,omitempty"`
+	ExpectedSessionID   *string `json:"expectedSessionId,omitempty"`
+	ExpectedSessionFile *string `json:"expectedSessionFile,omitempty"`
+	ExpectedBootID      *string `json:"expectedBootId,omitempty"`
 }
 
 // SetModel sends "set_model": Select a model by provider and id.
 func (c Commands) SetModel(ctx context.Context, p SetModelCommand) (ModelInfo, error) {
 	var out ModelInfo
 	err := c.call(ctx, "set_model", p, 0, &out)
+	return out, err
+}
+
+// GetModelRoles sends "get_model_roles": Read loaded native roles, resolved models and the session's selected role.
+func (c Commands) GetModelRoles(ctx context.Context) (ModelRolesState, error) {
+	var out ModelRolesState
+	err := c.call(ctx, "get_model_roles", nil, 0, &out)
+	return out, err
+}
+
+// SetModelRoleCommand holds the parameters of "set_model_role".
+type SetModelRoleCommand struct {
+	Role                string  `json:"role"`
+	PreserveThinking    *bool   `json:"preserveThinking,omitempty"`
+	ExpectedSessionID   *string `json:"expectedSessionId,omitempty"`
+	ExpectedSessionFile *string `json:"expectedSessionFile,omitempty"`
+	ExpectedBootID      *string `json:"expectedBootId,omitempty"`
+}
+
+// SetModelRole sends "set_model_role": Select a native model role for this idle session without changing shared settings.
+func (c Commands) SetModelRole(ctx context.Context, p SetModelRoleCommand) (ModelRolesState, error) {
+	var out ModelRolesState
+	err := c.call(ctx, "set_model_role", p, 0, &out)
 	return out, err
 }
 

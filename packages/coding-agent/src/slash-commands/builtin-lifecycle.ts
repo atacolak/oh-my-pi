@@ -731,7 +731,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					sessionManager: manager,
 					output: text => {
 						if (ctx.sessionManager === manager && manager.getSessionId() === sessionId)
-							ctx.showStatus(text, { dim: false });
+							ctx.showStatus(text);
 					},
 				});
 			} catch (error) {

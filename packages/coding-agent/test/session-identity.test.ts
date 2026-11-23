@@ -11,6 +11,8 @@ import { runNamedSessionAttach } from "@oh-my-pi/pi-coding-agent/launch/named-se
 import * as sessionAttachOwner from "@oh-my-pi/pi-coding-agent/launch/session-attach";
 import * as attachRunOwner from "@oh-my-pi/pi-coding-agent/launch/session-attach-run";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
@@ -211,7 +213,8 @@ describe("native session identity catalog", () => {
 		}
 	});
 
-	it("shows TUI name and clear acknowledgments immediately and explains conflicts without changing the name", async () => {
+	it("renders muted TUI name and clear acknowledgments and explains conflicts without changing the name", async () => {
+		await initTheme();
 		const created = await create(undefined, "lead");
 		await create("taken");
 		const { session, auth } = await createSdkOwner(created.manager);
@@ -228,23 +231,27 @@ describe("native session identity catalog", () => {
 				},
 				addToHistory: () => {},
 			},
-			showStatus: text => {
-				notices.push(text);
-			},
 			showError: text => {
 				errors.push(text);
 			},
 		});
+		const helpers = new UiHelpers(ctx);
+		ctx.showStatus = (text, options) => {
+			notices.push(text);
+			helpers.showStatus(text, options);
+		};
 		try {
 			await executeBuiltinSlashCommand(draft, { ctx });
 			expect(draft).toBe("");
 			expect(notices.at(-1)).toContain("FirstName");
+			expect(ctx.chatContainer.render(120).join("\n")).toContain(theme.fg("dim", "Name: FirstName"));
 			expect((await resolveSessionIdentity("firstname")).sessionId).toBe(created.id);
 			await executeBuiltinSlashCommand("/name TaKeN", { ctx });
 			expect(errors.at(-1)).toContain("already claimed");
 			expect((await resolveSessionIdentity("FIRSTNAME")).sessionId).toBe(created.id);
 			await executeBuiltinSlashCommand("/name clear", { ctx });
 			expect(notices.at(-1)).toContain("Name cleared: FirstName");
+			expect(ctx.chatContainer.render(120).join("\n")).toContain(theme.fg("dim", notices.at(-1)!));
 			expect((await resolveSessionIdentity(created.id)).actorHandle).toBeNull();
 		} finally {
 			await session.dispose();

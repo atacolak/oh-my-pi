@@ -25,6 +25,7 @@
 
 ### Fixed
 
+- Attaching by UUID works with older running sessions that omit the newer profile-binding diagnostic.
 - runtime upgrades wait for admitted input, stay bound to the selected conversation and refuse missing transcript targets.
 - restart refuses unavailable or incompatible receivers, mismatched journals and missing ownership before closing the current conversation.
 - Attached socket clients can answer HTML `ask` forms field by field while the terminal shows the complete form; the first submitted form cancels the other presentation

@@ -456,7 +456,11 @@ describe("CLI --attach exact live owner", () => {
 			let disappearBeforeState = false;
 			let rebindBeforeState = false;
 			let changeIdentityBeforeFinalProbe = false;
-			let execution = { profile: "lead" as string | null, profileBinding: "lead" as string | null, cwd: project };
+			let execution: { profile?: string | null; profileBinding?: string | null; cwd: string } = {
+				profile: "lead",
+				profileBinding: "lead",
+				cwd: project,
+			};
 			let stateCalls = 0;
 			const publication = path.join(runDir, `${sessionId}.json`);
 			const metadata = {
@@ -533,6 +537,16 @@ describe("CLI --attach exact live owner", () => {
 			expect(await withTimeout(named.child.exited, 8_000, "named attach Ctrl-C did not detach")).toBe(0);
 			expect(web.closed).toBe(false);
 			expect((await probeSessionAttach(sessionId, { endpointDir: runDir, sessionPath })).status).toBe("live");
+
+			// Older owners attest the active profile but omit the newer profileBinding diagnostic.
+			execution = { profile: "lead", cwd: project };
+			const legacy = new CliViewer(homeDir, agentDir, project, sessionId, true);
+			viewers.push(legacy);
+			await legacy.waitForText("OWNER-REFRESH");
+			legacy.terminal.write("\u0003");
+			expect(await withTimeout(legacy.child.exited, 8_000, "legacy attach Ctrl-C did not detach")).toBe(0);
+			expect(web.closed).toBe(false);
+			execution = { profile: "lead", profileBinding: "lead", cwd: project };
 			stateCalls = 0;
 			changeIdentityBeforeFinalProbe = true;
 			const raced = new CliViewer(homeDir, agentDir, project, "worker", true);
@@ -545,6 +559,8 @@ describe("CLI --attach exact live owner", () => {
 			}
 			for (const invalid of [
 				{ ...execution, profile: "other" },
+				{ profile: "other", cwd: project },
+				{ ...execution, profile: undefined },
 				{ ...execution, profileBinding: null },
 				{ ...execution, cwd: tempDir.path() },
 			]) {

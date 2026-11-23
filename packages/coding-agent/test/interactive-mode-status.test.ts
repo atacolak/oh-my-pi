@@ -6,6 +6,7 @@ import type { InteractiveModeContext, RenderSessionContextOptions } from "@oh-my
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { buildSessionContext, type SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { type Component, Container } from "@oh-my-pi/pi-tui";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 
 function renderLastLine(container: Container, width = 120): string {
 	const last = container.children[container.children.length - 1];
@@ -17,9 +18,12 @@ function renderContainer(container: Container, width = 120): string {
 	return container.render(width).join("\n");
 }
 
-function createInitialRenderHarness(): { ctx: InteractiveModeContext; helpers: UiHelpers } {
+function createInitialRenderHarness(chatContainer = new Container()): {
+	ctx: InteractiveModeContext;
+	helpers: UiHelpers;
+} {
 	const ctx = {
-		chatContainer: new Container(),
+		chatContainer,
 		pendingShellContainer: new Container(),
 		pendingMessagesContainer: new Container(),
 		updatePendingMessagesDisplay: vi.fn(),
@@ -100,6 +104,20 @@ describe("InteractiveMode.showStatus", () => {
 		expect(ctx.chatContainer.children).toHaveLength(1);
 		expect(renderLastLine(ctx.chatContainer)).toContain("STATUS_TWO");
 		expect(renderLastLine(ctx.chatContainer)).not.toContain("STATUS_ONE");
+	});
+
+	test("shows a later acknowledgment after the previous status entered immutable terminal history", () => {
+		const transcript = new TranscriptContainer();
+		const { helpers } = createInitialRenderHarness(transcript);
+		helpers.showStatus("STATUS_ONE");
+		const batch = transcript.peekFlushBatch(120);
+		if (!batch) throw new Error("Expected the first status to enter terminal history");
+		expect(batch.rows.join("\n")).toContain("STATUS_ONE");
+		transcript.acknowledgeFinalizedBatch(batch.id);
+
+		helpers.showStatus("STATUS_TWO");
+		expect(transcript.renderViewport(120, 30, { tick: 1, now: 0 }).join("\n")).toContain("STATUS_TWO");
+		expect(batch.rows.join("\n")).not.toContain("STATUS_TWO");
 	});
 
 	test("a repeated identical status swaps in a fresh notice so native terminals re-toast it", () => {

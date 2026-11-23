@@ -2,6 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { BUILTIN_SLASH_COMMANDS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 
 describe("declarative subcommand completion", () => {
+	it("does not offer destructive clear for bare /name, but completes an explicitly typed clear action", async () => {
+		const name = BUILTIN_SLASH_COMMANDS.find(command => command.name === "name");
+		expect(await name?.getArgumentCompletions?.("")).toBeNull();
+		expect((await name?.getArgumentCompletions?.("cl"))?.map(item => item.value.trim())).toEqual(["clear"]);
+	});
+
 	it("gives the selected dropdown item the same ghost text as the closed-dropdown hint", async () => {
 		const changelog = BUILTIN_SLASH_COMMANDS.find(command => command.name === "changelog");
 		const items = await changelog?.getArgumentCompletions?.("la");

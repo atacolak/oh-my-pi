@@ -406,7 +406,7 @@ export function listSessionIdentityProjection(sessionsRoot: string): SessionIden
 function assertUniqueProjectedHandles(sessionsRoot: string, rows: readonly SessionIdentityProjection[]): void {
 	const owners = new Map<string, string>();
 	for (const row of rows) {
-		const handle = row.actorHandle;
+		const handle = row.actorHandle?.toLowerCase();
 		if (!handle) continue;
 		const existing = owners.get(handle);
 		if (existing !== undefined && existing !== row.sessionId) {

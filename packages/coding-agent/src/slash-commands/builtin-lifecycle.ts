@@ -39,6 +39,38 @@ function formatFreshSessionResult(result: FreshSessionResult): string {
 	return `Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`;
 }
 
+async function handleNameCommand(
+	args: string,
+	runtime: Pick<SlashCommandRuntime, "sessionManager" | "output" | "signal">,
+): Promise<SlashCommandResult> {
+	const name = args.trim();
+	if (/\s/.test(name)) {
+		await runtime.output("Usage: /name [name|clear]");
+		return commandConsumed({ failed: true });
+	}
+	const previous = runtime.sessionManager.getSessionIdentityMetadata()?.actorHandle;
+	if (!name) {
+		await runtime.output(
+			previous ? `Name: ${previous}` : "This conversation has no name. Use /name <name> to set one.",
+		);
+		return commandConsumed();
+	}
+	runtime.signal?.throwIfAborted();
+	const identity = await assignSessionIdentity(runtime.sessionManager, {
+		actorHandle: name.toLowerCase() === "clear" ? null : name,
+	});
+	await runtime.output(
+		identity.actorHandle === null
+			? previous
+				? `Name cleared: ${previous}. The conversation is still available by UUID.`
+				: "This conversation already has no name."
+			: previous && previous !== identity.actorHandle
+				? `Name changed: ${previous} → ${identity.actorHandle}`
+				: `Name: ${identity.actorHandle}`,
+	);
+	return commandConsumed();
+}
+
 export const shutdownHandlerTui = (
 	_command: ParsedSlashCommand,
 	runtime: TuiSlashCommandRuntime,
@@ -680,28 +712,37 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	{
 		name: "name",
 		icon: "pencil",
-		description: "Bind or change this conversation's durable actor name",
-		inlineHint: "actor [name]",
+		description: "Show, set or clear this conversation's attach name",
 		allowArgs: true,
-		subcommands: [{ name: "actor", description: "Show, bind or change the actor name", usage: "[name]" }],
-		handle: async (command, runtime) => {
-			const [kind, name, ...extra] = command.args.trim().split(/\s+/);
-			if (kind !== "actor" || extra.length > 0) {
-				return usage("Usage: /name actor [name]", runtime);
+		subcommands: [{ name: "clear", description: "Remove the name, keeping the conversation and UUID" }],
+		subcommandOptional: true,
+		getTuiAutocompleteDescription: runtime => {
+			const name = runtime.ctx.sessionManager.getSessionIdentityMetadata()?.actorHandle;
+			return name ? `Name: ${name}` : "Name: not set";
+		},
+		handle: (command, runtime) => handleNameCommand(command.args, runtime),
+		handleTui: async (command, runtime) => {
+			clearSubmittedText(runtime);
+			const ctx = runtime.ctx;
+			const manager = ctx.sessionManager;
+			const sessionId = manager.getSessionId();
+			try {
+				await handleNameCommand(command.args, {
+					sessionManager: manager,
+					output: text => {
+						if (ctx.sessionManager === manager && manager.getSessionId() === sessionId)
+							ctx.showStatus(text, { dim: false });
+					},
+				});
+			} catch (error) {
+				if (ctx.sessionManager === manager && manager.getSessionId() === sessionId)
+					ctx.showError(`Name not changed: ${errorMessage(error)}`);
 			}
-			if (!name) {
-				const handle = runtime.sessionManager.getSessionIdentityMetadata()?.actorHandle;
-				await runtime.output(handle ? `Actor name: ${handle}` : "This conversation has no actor name.");
-				return commandConsumed();
-			}
-			runtime.signal?.throwIfAborted();
-			const identity = await assignSessionIdentity(runtime.sessionManager, { actorHandle: name });
-			await runtime.output(`Actor name: ${identity.actorHandle}`);
-			return commandConsumed();
 		},
 	},
 	{
 		name: "rename",
+		aliases: ["title"],
 		icon: "pencil",
 		description: "Rename the current session (omit title to generate)",
 		inlineHint: "[title]",

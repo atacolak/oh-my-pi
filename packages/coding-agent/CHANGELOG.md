@@ -362,7 +362,7 @@
 ### Fixed
 
 - Native session names match case-insensitively and refuse case-only duplicate claims, including sleeping sessions.
-- Naming and clearing show visible confirmation, and rejected name changes explain the conflict.
+- Naming and clearing show muted status confirmations instead of looking like part of the assistant's reply; rejected name changes explain the conflict.
 - Attaching by UUID works with older running sessions that omit the newer profile-binding diagnostic.
 - runtime upgrades wait for admitted input, stay bound to the selected conversation and refuse missing transcript targets.
 - restart refuses unavailable or incompatible receivers, mismatched journals and missing ownership before closing the current conversation.

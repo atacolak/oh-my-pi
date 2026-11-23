@@ -373,9 +373,12 @@ export async function verifyResolvedSessionOwner(
 	const diagnostics = probe.state.sessionDiagnostics;
 	const execution = isRecord(diagnostics) ? diagnostics.execution : undefined;
 	if (!isRecord(execution)) throw new Error("Live session execution binding is unavailable");
+	// Older owners report the active profile without a separate journal-binding diagnostic.
+	// An omitted diagnostic is not an explicit unbound profile; the active profile must still match.
+	const profile = session.rootAgent ?? null;
 	if (
-		(execution.profile ?? null) !== (session.rootAgent ?? null) ||
-		(execution.profileBinding ?? null) !== (session.rootAgent ?? null)
+		execution.profile !== profile ||
+		(Object.hasOwn(execution, "profileBinding") && execution.profileBinding !== profile)
 	)
 		throw new Error("Live session profile does not match its journal binding");
 	const generation = isRecord(probe.state.generation) ? probe.state.generation.running : undefined;

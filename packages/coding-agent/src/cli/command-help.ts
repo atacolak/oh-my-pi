@@ -6,6 +6,10 @@ export const acpHelp = {
 
 export const agentsHelp = { description: "Manage bundled task agents" } satisfies CommandMetadata;
 
+export const sockHelp = {
+	description: "Discover, inspect, attach and control native sessions by name, UUID or verified owner PID",
+} satisfies CommandMetadata;
+
 export const anonymizeHelp = {
 	description:
 		"Write a shareable copy of a session and its subagents: turn contents redacted, metadata kept, paths and literals replaced by consistent mock tokens",

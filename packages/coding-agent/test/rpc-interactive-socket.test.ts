@@ -26,6 +26,12 @@ import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storag
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { closeSessionIndex } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { NativeSessionService } from "@oh-my-pi/pi-coding-agent/session/session-service";
+import * as sessionBoot from "@oh-my-pi/pi-coding-agent/launch/session-boot";
+import {
+	resolveSessionIdentity,
+	SessionIdentityNotFoundError,
+} from "@oh-my-pi/pi-coding-agent/session/session-identity";
 import {
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,
@@ -38,6 +44,7 @@ import { IpcConnection } from "@oh-my-pi/pi-natives";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { getProjectDir, setProjectDir, Snowflake, withTimeout } from "@oh-my-pi/pi-utils";
 import * as utils from "@oh-my-pi/pi-utils";
+import * as dirs from "@oh-my-pi/pi-utils/dirs";
 
 type Frame = Record<string, unknown> & { type?: string };
 
@@ -119,6 +126,7 @@ async function createInteractiveFixture(
 	subagentEventBus?: EventBus,
 	reasoning = false,
 	fallbackChains?: Record<string, string[]>,
+	persistentJournal = false,
 ): Promise<InteractiveFixture> {
 	const dir = path.join(os.tmpdir(), `omp-interactive-socket-${Snowflake.next()}`);
 	fs.mkdirSync(dir, { recursive: true });
@@ -129,7 +137,10 @@ async function createInteractiveFixture(
 		"compaction.enabled": false,
 		...(fallbackChains ? { "retry.fallbackChains": fallbackChains } : {}),
 	});
-	const sessionManager = SessionManager.inMemory(dir);
+	const sessionManager = persistentJournal
+		? SessionManager.create(dir, path.join(dir, "sessions"))
+		: SessionManager.inMemory(dir);
+	if (persistentJournal) await sessionManager.ensureOnDisk();
 	const agent = new Agent({
 		getApiKey: () => "test-key",
 		initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
@@ -147,6 +158,7 @@ async function createInteractiveFixture(
 			hasProvider: () => true,
 			getAll: () => [model],
 			getProviderModels: (provider: string) => (provider === model.provider ? [model] : []),
+			getAvailable: () => [model],
 		} as never,
 		toolRegistry: new Map(),
 	});
@@ -245,6 +257,109 @@ describe("an interactive session's published endpoint", () => {
 		closeSessionIndex();
 		closeModelCache();
 	});
+
+	it("returns a structured unsupported-command refusal over the native socket without starting inference", async () => {
+		fixture = await createInteractiveFixture([]);
+		const peer = await SocketPeer.connect(fixture.endpoint);
+		try {
+			await peer.next(frame => frame.type === "ready");
+			peer.send({ id: "unsupported", type: "future_native_operation" });
+			const response = await frameOf(peer, "unsupported");
+			expect(response.success).toBe(false);
+			expect(response.command).toBe("future_native_operation");
+			expect(response.code).toBe("unsupported_command");
+			expect(String(response.error)).toContain("future_native_operation");
+			expect(fixture.session.isStreaming).toBe(false);
+			expect(fixture.mock.calls).toHaveLength(0);
+		} finally {
+			peer.close();
+		}
+	});
+
+	it("refuses an exact wake when the journal moves after the RPC target check", async () => {
+		fixture = await createInteractiveFixture([], undefined, false, undefined, true);
+		const sessionsRoot = path.join(fixture.dir, "sessions");
+		spyOn(dirs, "getSessionsDir").mockReturnValue(sessionsRoot);
+		const target = SessionManager.create(fixture.dir, sessionsRoot);
+		await target.ensureOnDisk();
+		const sessionId = target.getSessionId();
+		const sessionFile = target.getCanonicalSessionFile();
+		if (!sessionFile) throw new Error("Missing target journal");
+		await target.close();
+		const originalWake = NativeSessionService.prototype.wake;
+		spyOn(NativeSessionService.prototype, "wake").mockImplementationOnce(
+			async function (this: NativeSessionService, selector, expected) {
+				await fs.promises.rename(sessionFile, path.join(sessionsRoot, `moved-${sessionId}.jsonl`));
+				return originalWake.call(this, selector, expected);
+			},
+		);
+		const ensureOwner = spyOn(sessionBoot, "ensureSessionOwner");
+		const peer = await SocketPeer.connect(fixture.endpoint);
+		try {
+			await peer.next(frame => frame.type === "ready");
+			peer.send({
+				id: "wake-moved",
+				type: "wake_session",
+				expectedSessionId: sessionId,
+				expectedSessionFile: sessionFile,
+			});
+			const response = await frameOf(peer, "wake-moved");
+			expect(response.success).toBe(false);
+			expect(String(response.error)).toContain("journal changed");
+			expect(ensureOwner).not.toHaveBeenCalled();
+		} finally {
+			peer.close();
+		}
+	});
+
+	it("changes live identity through the existing socket and refuses stale or conflicting claims without inference", async () => {
+		fixture = await createInteractiveFixture([], undefined, false, undefined, true);
+		const session = fixture.session;
+		const sessionsRoot = path.join(fixture.dir, "sessions");
+		spyOn(dirs, "getSessionsDir").mockReturnValue(sessionsRoot);
+		const sessionFile = session.sessionManager.getCanonicalSessionFile();
+		if (!sessionFile) throw new Error("Missing fixture journal");
+		const other = SessionManager.create(fixture.dir, sessionsRoot);
+		await other.ensureOnDisk();
+		other.appendSessionIdentityMetadata({ version: 1, actorHandle: "taken" });
+		await other.flush();
+		const peer = await SocketPeer.connect(fixture.endpoint);
+		try {
+			await peer.next(frame => frame.type === "ready");
+			const command = {
+				type: "set_session_identity",
+				expectedSessionId: session.sessionId,
+				expectedSessionFile: sessionFile,
+				patch: { actorHandle: "live.rpc", assignments: [{ kind: "project", target: "fixture" }] },
+			};
+			peer.send({ ...command, id: "identity" });
+			expect(await frameOf(peer, "identity")).toMatchObject({
+				success: true,
+				data: { sessionId: session.sessionId, sessionFile, actorHandle: "live.rpc" },
+			});
+			expect(await resolveSessionIdentity("live.rpc")).toMatchObject({
+				sessionId: session.sessionId,
+				sessionFile,
+				assignments: [{ kind: "project", target: "fixture" }],
+			});
+			const before = await Bun.file(sessionFile).text();
+			for (const [id, change] of [
+				["stale", { expectedSessionId: "other-session" }],
+				["copied", { expectedSessionFile: path.join(fixture.dir, "copy.jsonl") }],
+				["conflict", { patch: { actorHandle: "taken" } }],
+				["unknown", { patch: { actor_handle: "misspelled" } }],
+			] as const) {
+				peer.send({ ...command, ...change, id });
+				expect(await frameOf(peer, id)).toMatchObject({ success: false });
+				expect(await Bun.file(sessionFile).text()).toBe(before);
+			}
+			expect(fixture.mock.calls).toHaveLength(0);
+			expect(peer.closed).toBe(false);
+		} finally {
+			peer.close();
+			await other.close();
+		}
+	}, 30_000);
 
 	it("publishes bounded redacted warnings and refreshes effective thinking through the live owner", async () => {
 		fixture = await createInteractiveFixture([], undefined, true, { default: ["fixture/missing"] });

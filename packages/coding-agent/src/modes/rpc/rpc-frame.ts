@@ -1,6 +1,8 @@
+import type { AgentEvent } from "@oh-my-pi/pi-agent-core";
+import type { AgentSessionEvent } from "../../session/agent-session-events";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@oh-my-pi/pi-utils/type-guards";
-import type { RpcChunkFrame } from "./rpc-types";
+import type { RpcChunkFrame, RpcResponse } from "./rpc-types";
 
 /** Maximum UTF-8 size of one newline-delimited RPC frame, including the newline. */
 export const MAX_RPC_FRAME_BYTES = 1024 * 1024;
@@ -10,6 +12,65 @@ export const MAX_RPC_REASSEMBLED_BYTES = 64 * 1024 * 1024;
 const RPC_CHUNK_PAYLOAD_BYTES = 256 * 1024;
 
 export type RpcProtocolVersion = 1 | 2;
+
+const agentEventTypes = new Set<AgentEvent["type"]>([
+	"agent_start",
+	"agent_end",
+	"turn_start",
+	"turn_end",
+	"message_start",
+	"message_update",
+	"message_end",
+	"tool_execution_start",
+	"tool_execution_update",
+	"tool_stream_update",
+	"tool_execution_end",
+]);
+
+const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
+	...agentEventTypes,
+	"auto_compaction_start",
+	"auto_compaction_end",
+	"manual_compaction_start",
+	"manual_compaction_end",
+	"auto_retry_start",
+	"auto_retry_end",
+	"cache_warming_start",
+	"cache_warming_end",
+	"retry_fallback_applied",
+	"retry_fallback_succeeded",
+	"ttsr_triggered",
+	"todo_reminder",
+	"todo_auto_clear",
+	"irc_message",
+	"agent_mail",
+	"notice",
+	"thinking_level_changed",
+	"model_changed",
+	"goal_updated",
+	"queue_update",
+]);
+
+/** Narrow a parsed wire envelope; command correlation and payload decoding belong to its caller. */
+export function isRpcResponse(value: unknown): value is RpcResponse {
+	if (!isRecord(value)) return false;
+	if (value.type !== "response" || typeof value.command !== "string" || typeof value.success !== "boolean")
+		return false;
+	if (value.id !== undefined && typeof value.id !== "string") return false;
+	if (value.code !== undefined && typeof value.code !== "string") return false;
+	return value.success || typeof value.error === "string";
+}
+
+export function isAgentEvent(value: unknown): value is AgentEvent {
+	if (!isRecord(value) || typeof value.type !== "string") return false;
+	return agentEventTypes.has(value.type as AgentEvent["type"]);
+}
+
+/** Select session event kinds from a shared transport that also carries responses and protocol frames. */
+export function isAgentSessionEvent(value: unknown): value is AgentSessionEvent {
+	if (!isRecord(value) || typeof value.type !== "string") return false;
+	return sessionEventTypes.has(value.type as AgentSessionEvent["type"]);
+}
 
 /** Stands in for a `message_update`'s shared snapshot while its frame skeleton serializes. */
 const SHARED_MESSAGE_PLACEHOLDER = `\u0000omp-rpc-shared-message-${crypto.randomUUID()}\u0000`;

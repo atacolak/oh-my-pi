@@ -399,6 +399,20 @@ import {
 import { IdleMaintenance, type IdleMaintenanceOptions } from "./idle-maintenance";
 import { IrcBridge, type IrcBridgeHost } from "./irc-bridge";
 import {
+	type AgentMailDiscoveryResult,
+	type AgentMailEndpointIdentity,
+	type AgentMailEnvelope,
+	type AgentMailIncarnation,
+	type AgentMailReadResult,
+	type AgentMailReceipt,
+	type AgentMailSendParams,
+	type AgentMailSendResult,
+	type AgentMailVerification,
+	SessionMail,
+	type SessionMailHost,
+} from "./session-mail";
+import { readRuntimeBootIdentity } from "../launch/runtime-generation";
+import {
 	buildLaunchCompletionBatchMessage,
 	isLaunchCompletionOwner,
 	LAUNCH_COMPLETION_MESSAGE_TYPE,
@@ -502,6 +516,8 @@ import {
 	type PersistedSessionInit,
 	type SessionManager,
 } from "./session-manager";
+import { readSessionHeader } from "./session-loader";
+import { loadQueuedMessages, persistQueuedMessages } from "./queued-message-persist";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
@@ -565,6 +581,13 @@ import { cfgSteeringMode } from "../modes/settings";
 import { cfgDisabledProviders, cfgModelRoles } from "../config/model-settings";
 import { cfgEvalJs, cfgEvalPy, cfgEvalToolsEnabled, cfgEvalWorkpoolFreshAgents } from "../eval/settings";
 import { cfgExtensions, type SkillsSettings } from "../extensibility/settings";
+import {
+	cfgHindsightAutoRecall,
+	cfgHindsightAutoRetain,
+	cfgHindsightRecallBudget,
+	cfgHindsightRecallMaxTokens,
+	cfgHindsightRetainEveryNTurns,
+} from "../hindsight/settings";
 import {
 	cfgImagesAutoResize,
 	cfgMagicKeyword,
@@ -1222,6 +1245,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#asyncDeliveryEpoch = 0;
 
 	readonly #irc: IrcBridge;
+	readonly #mail: SessionMail;
 	#ircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
@@ -1237,6 +1261,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#openTurnObservation: TurnObservation | undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
+	readonly #rootAgentName: string | undefined;
 	/** Registry recording this agent blocked on the user while a {@link waitForUser} dialog is open. */
 	readonly #agentRegistry: AgentRegistryApi | undefined;
 	#agentKind: "main" | "sub" = "main";
@@ -1427,6 +1452,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	};
 	/** Transitions requested from outside and not yet released (queued, running, or awaiting nested ones). */
 	#queuedSessionTransitions = 0;
+	/** Holders keeping this transcript's identity; see {@link pinTranscript}. */
+	#transcriptPinHolders = 0;
+	readonly #identityMutationLifecycle: Disposable;
 	/** Each using declaration disposes one depth, so nested transitions reuse this token. */
 	readonly #sessionTransitionScope: Disposable = {
 		[Symbol.dispose]: () => {
@@ -2159,6 +2187,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
+		this.#rootAgentName = config.rootAgentName;
 		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
 		this.#reseedTokenRate();
 		this.agent.setQueuedMessageGrouping(
@@ -2166,6 +2195,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				isHiddenUserCompanion(previous) && (isHiddenUserCompanion(next) || isUserQueuedMessage(next)),
 		);
 		this.sessionManager = config.sessionManager;
+		this.#identityMutationLifecycle = this.sessionManager.bindIdentityMutationLifecycle(() => {
+			if (this.#isDisposed || this.isSessionTransitioning)
+				throw new Error("Cannot mutate session identity during a transcript transition or disposal");
+		});
 		// Only a recorded approval may turn a draft file into an execution reference.
 		for (const entry of this.sessionManager.getBranch().reverse()) {
 			if (entry.type !== "mode_change") continue;
@@ -2202,6 +2235,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			settings: this.settings,
 			extensionRunner: () => this.#extensionRunner,
 			isStreaming: () => this.isStreaming,
+			isDisposed: () => this.#isDisposed,
 		};
 		this.#bash = new BashRunner(bashHost);
 		// Power assertions are taken per turn (see #beginInFlight); nothing acquired here.
@@ -2238,6 +2272,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			wakeForIrc: records => this.#wakeForIrc(records),
 		};
 		this.#irc = new IrcBridge(ircHost);
+		const mailHost: SessionMailHost = {
+			sessionManager: this.sessionManager,
+			isDisposed: () => this.#isDisposed,
+			isStreaming: () => this.isStreaming,
+			prompt: (text, options) => this.prompt(text, options),
+			identity: () => this.agentMailIdentity(),
+			incarnation: () => this.agentMailIncarnation(),
+			emitSessionEvent: event => void this.#emitSessionEvent(event),
+		};
+		this.#mail = new SessionMail(mailHost);
+		this.registerSessionChangeCallback(() => this.#mail.clearTransient());
 		const prewalkHost: PrewalkCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -2681,6 +2726,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			setActiveToolNames: config.setActiveToolNames,
 			baseSystemPrompt: this.agent.state.systemPrompt,
 			skills: config.skills,
+			skillLoadPolicy: config.skillLoadPolicy,
 			skillWarnings: config.skillWarnings,
 			skillsSettings: config.skillsSettings,
 			skillsReloadable: config.skillsReloadable,
@@ -2869,6 +2915,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#maintenance.resolveContextPromotionTarget(model, contextWindow, signal),
 			resolveCompactionModelCandidates: (model, availableModels) =>
 				this.#maintenance.resolveCompactionModelCandidates(model, availableModels),
+			modelFallbackDisabled: () => this.#disableModelFallback,
 			resolveRetryFallbackRole: (selector, model, roleHint) =>
 				this.#recovery.resolveRetryFallbackRole(selector, model, roleHint),
 			retryFallbackChainKeys: (selector, model, options) =>
@@ -3084,7 +3131,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
-		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
+		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => {
+			this.#emitQueueUpdateIfChanged();
+			this.#persistQueuedMessages();
+		});
+		this.#restoreQueuedMessages();
 		this.addDisposer(this.agent.onPauseChange(paused => this.#onAgentPauseChange(paused)));
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		cfgProviderAppendOnlyContext.listen(this, () => this.#syncAppendOnlyContext(this.model));
@@ -3158,6 +3209,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	refreshIdleMaintenance(): void {
 		this.#idleMaintenance?.refresh();
+	}
+
+	/** Real host input resets the native idle-retirement deadline, without scheduling a model turn. */
+	recordIdleActivity(): void {
+		this.#idleMaintenance?.recordActivity();
 	}
 
 	/**
@@ -3476,6 +3532,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Request preference from the live setting for the current model's API. */
 	get preferWebsockets(): boolean | undefined {
 		return resolveWebsocketPreference(this.settings, this.model);
+	}
+
+	/** Effective memory policy: environment > root agent memory > persisted settings. */
+	getAgentMemoryPolicy() {
+		return {
+			autoRetain: cfgHindsightAutoRetain.get(this.settings),
+			autoRecall: cfgHindsightAutoRecall.get(this.settings),
+			recallBudget: cfgHindsightRecallBudget.get(this.settings),
+			recallMaxTokens: cfgHindsightRecallMaxTokens.get(this.settings),
+			retainEveryNTurns: cfgHindsightRetainEveryNTurns.get(this.settings),
+		};
 	}
 
 	getHindsightSessionState(): HindsightSessionState | undefined {
@@ -6340,7 +6407,42 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	/**
+	 * Keep this transcript's identity while the returned token is held. A pinned session refuses a
+	 * transition that would start, fork, branch into, or switch to another transcript, so a named
+	 * viewer never admits input into a conversation other than the one it verified. The pin is taken
+	 * inside the transition queue, so a transition already in flight settles before it is granted.
+	 */
+	async pinTranscript(): Promise<Disposable> {
+		const queued = this.#enterSessionTransition(() => this.pinTranscript());
+		if (queued) return queued;
+		using _transition = this.#beginSessionTransition();
+		this.#transcriptPinHolders++;
+		let released = false;
+		return {
+			[Symbol.dispose]: () => {
+				if (released) return;
+				released = true;
+				this.#transcriptPinHolders--;
+			},
+		};
+	}
+
+	/** Whether a named viewer or this journal's exclusive identity protects the transcript. */
+	get isTranscriptPinned(): boolean {
+		const identity = this.sessionManager.getSessionIdentityMetadata();
+		return this.#transcriptPinHolders > 0 || Boolean(identity?.actorHandle || identity?.assignments?.length);
+	}
+
+	#assertTranscriptNotPinned(action: string): void {
+		if (!this.isTranscriptPinned) return;
+		const reason = this.#transcriptPinHolders > 0 ? "a named viewer" : "an exclusive session identity";
+		throw new Error(`Cannot ${action}: ${reason} pins this transcript`);
+	}
+
 	#beginSessionTransition(): Disposable {
+		if (this.sessionManager.isIdentityMutationInProgress)
+			throw new Error("Cannot change transcripts during a session identity mutation");
 		// Before anything awaits: a reload keeps the session id, so only the transition itself can supersede
 		// a pending idle check or an in-flight recap that belong to the transcript being replaced.
 		this.#idleMaintenance?.invalidate();
@@ -6480,7 +6582,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (this.#unsubscribeAgent) return; // Already connected
 		this.#disconnectedMessageCount = undefined;
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
-		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => this.#emitQueueUpdateIfChanged());
+		this.#unsubscribeQueueChange = this.agent.onQueueChange(() => {
+			this.#emitQueueUpdateIfChanged();
+			this.#persistQueuedMessages();
+		});
+		this.#restoreQueuedMessages();
 	}
 
 	#activeProviderSessionId(sessionId?: string): string {
@@ -6798,6 +6904,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
+		this.#mail.clearTransient();
 		// Stop cache warming before the drain windows below: an armed tick firing
 		// mid-dispose would issue a paid warm request and persist usage into the
 		// closing session writer.
@@ -6929,6 +7036,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// already durable, and close() (scheduled post-seal) still flushes and
 		// closes the writer.
 		this.sessionManager.seal();
+		this.#identityMutationLifecycle[Symbol.dispose]();
 		await this.sessionManager.close();
 
 		// Release retained conversation memory. dispose() is terminal, and every
@@ -7451,6 +7559,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#recovery.attempt;
 	}
 
+	/** Root agent profile mounted in this running session, if any. */
+	getAgentProfileName(): string | undefined {
+		return this.#rootAgentName;
+	}
+	/** Saved root binding for the currently selected transcript, if recorded. */
+	getAgentProfileBinding(): string | undefined {
+		return this.sessionManager.getHeader()?.rootAgent;
+	}
+
 	/** Names of tools currently exposed at the top level. */
 	getActiveToolNames(): string[] {
 		return this.#tools.getActiveToolNames();
@@ -7597,6 +7714,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const reloadable = this.#tools.skillsReloadable;
 		return {
 			skills: this.skills,
+			restrictSkillCatalog: this.#tools.restrictSkillCatalog,
 			refreshSkills: reloadable
 				? async () => {
 						await this.refreshSkills();
@@ -8044,6 +8162,25 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Current session file path, or undefined if sessions are disabled */
 	get sessionFile(): string | undefined {
 		return this.sessionManager.getSessionFile();
+	}
+
+	#persistQueuedMessages(): void {
+		const artifactsDir = this.sessionManager.getArtifactsDir();
+		if (!artifactsDir) return;
+		persistQueuedMessages(artifactsDir, this.sessionManager.getSessionId(), {
+			steering: this.agent.peekSteeringQueue(),
+			followUp: this.agent.peekFollowUpQueue(),
+		});
+	}
+
+	#restoreQueuedMessages(): void {
+		const artifactsDir = this.sessionManager.getArtifactsDir();
+		if (!artifactsDir) return;
+		if (this.agent.peekSteeringQueue().length > 0 || this.agent.peekFollowUpQueue().length > 0) return;
+		const snapshot = loadQueuedMessages(artifactsDir, this.sessionManager.getSessionId());
+		if (!snapshot) return;
+		if (snapshot.steering.length === 0 && snapshot.followUp.length === 0) return;
+		this.agent.replaceQueues(snapshot.steering, snapshot.followUp);
 	}
 
 	/** Current session ID */
@@ -8648,7 +8785,26 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * {@link PromptDroppedError} instead.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
-		return this.#admitSubmission(() => this.#prompt(text, options));
+		const targetGuard = options?.assertInputTarget;
+		if (targetGuard) {
+			// Capture the owner's existing epochs BEFORE deferred extensions or
+			// maintenance can yield. Later image/setup checks alone cannot fence
+			// input that has not reached #dispatchPrompt yet.
+			const promptGeneration = this.#promptGeneration;
+			const sessionGeneration = this.#sessionGeneration;
+			options = { ...options, assertInputTarget: () => {
+				if (this.#isDisposed || this.#sessionTransitionDepth > 0 ||
+					this.#promptGeneration !== promptGeneration || this.#sessionGeneration !== sessionGeneration) {
+					throw new PromptDroppedError("Targeted input was superseded before admission.");
+				}
+				targetGuard();
+			} };
+		}
+		options?.assertInputTarget?.();
+		return this.#admitSubmission(() => {
+			options?.assertInputTarget?.();
+			return this.#prompt(text, options);
+		});
 	}
 
 	/**
@@ -8758,8 +8914,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// Locally handled commands and failed dispatches release that claim.
 			const release = await this.#maintenance.waitForMaintenanceCleanup();
 			const outcome: PromptDispatchOutcome = { sessionClaimed: false };
-			if (!release) return await this.#dispatchPrompt(text, options, submittedAt, outcome, followUps);
+			if (!release) {
+				options?.assertInputTarget?.();
+				return await this.#dispatchPrompt(text, options, submittedAt, outcome, followUps);
+			}
 			try {
+				options?.assertInputTarget?.();
 				return await this.#dispatchPrompt(text, options, submittedAt, outcome, followUps);
 			} finally {
 				release(outcome.sessionClaimed);
@@ -8790,6 +8950,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		outcome: PromptDispatchOutcome,
 		followUps: PromptFollowUps | undefined,
 	): Promise<boolean> {
+		options?.assertInputTarget?.();
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		// Slash/custom-command handling below rewrites `text`; keep the original
 		// so a dropped prompt is handed back exactly as the user typed it.
@@ -8873,6 +9034,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				rawText: typedText,
 				onPromptQueued: options?.onPromptQueued,
 				onPromptAdmitted: onPromptQueuedAdmitted,
+				assertInputTarget: options?.assertInputTarget,
+				onPromptCommitted: options?.onPromptCommitted,
 				promptGeneration: queueGeneration,
 			});
 			outcome.sessionClaimed = queued;
@@ -8912,6 +9075,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const imageDescriptionNotice = normalizedImages?.length
 			? await this.#buildImageDescriptionNotice(normalizedImages)
 			: undefined;
+		options?.assertInputTarget?.();
 
 		// abort() bumps #promptGeneration and can land while normalization and the
 		// vision-description call above are still in flight. #promptWithMessage below
@@ -8951,6 +9115,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				},
 				onPromptAdmitted: onPromptQueuedAdmitted,
 				onPromptQueued: options?.onPromptQueued,
+				assertInputTarget: options?.assertInputTarget,
+				onPromptCommitted: options?.onPromptCommitted,
 			});
 			outcome.sessionClaimed = queued;
 			if (!queued) this.#reportDroppedPrompt(typedText, options, followUps);
@@ -9449,7 +9615,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		expandedText: string,
 		options?: Pick<
 			PromptOptions,
-			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted"
+			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted" |
+			"assertInputTarget" | "onPromptCommitted"
 		> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
@@ -9462,6 +9629,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
+		options?.assertInputTarget?.();
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
@@ -9485,6 +9653,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			if (this.#refuseOverCostCap()) return false;
 			// Flush any pending bash messages before the new prompt
 			await this.#bash.flushPending();
+			options?.assertInputTarget?.();
 			this.#eval.flushPending();
 			// This turn carries the assignment: IRC asides parked for it fold in ahead of the message.
 			this.#ircAwaitingAssignment = false;
@@ -9556,6 +9725,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			if (this.#promptGeneration !== generation) {
 				return false;
 			}
+			options?.assertInputTarget?.();
 
 			// Pending tool-roster and xd:// deltas accompany the next user-authored
 			// prompt, never an agent-initiated continuation. Reserve their pre-user
@@ -9595,6 +9765,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			const preparation = await logger.time("prompt:prepareAgentStart", () =>
 				this.#prepareAgentStart(message, expandedText, options?.images, generation, setupAbort.signal, "direct"),
 			);
+			options?.assertInputTarget?.();
 			const preparedMessages = preparation.commit();
 			if (!preparedMessages) return false;
 			messages.push(...preparedMessages);
@@ -9633,6 +9804,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			await logger.time("prompt:prePromptCompaction", () =>
 				this.#maintenance.runPrePromptCompactionIfNeeded(maintenanceMessages),
 			);
+			options?.assertInputTarget?.();
 			if (this.#promptGeneration !== generation) {
 				return false;
 			}
@@ -9641,6 +9813,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				if (this.#promptGeneration !== generation) {
 					return false;
 				}
+				options?.assertInputTarget?.();
 				// Synchronous from here to dispatch, so the arm and its plan nudge travel with this task.
 				const planMessage = this.#prewalk.applyAuto(decision);
 				if (planMessage) {
@@ -9711,15 +9884,23 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#planReferenceSent = true;
 			}
 			try {
-				const run = this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, () => {
-					// `agent.prompt` claims streaming synchronously before its
-					// first await: this callback fires exactly when THIS
-					// client-owned run goes live (never on a busy-retry that
-					// waits behind an autonomous run) — wake steers parked on
-					// the dispatch so they admit into the run they targeted.
+				const onClaimed = () => {
 					this.#wakeDispatchLiveWaiters();
 					options?.followUpBatch?.release();
-				});
+					options?.onPromptCommitted?.();
+				};
+				options?.assertInputTarget?.();
+				let run: Promise<void>;
+				if (options?.assertInputTarget) {
+					// Addressed input must never sit in an unfenced busy-retry
+					// loop across a conversation change. A race is a refusal;
+					// an already-running turn uses the normal queue path above.
+					if (this.agent.state.isStreaming) throw new AgentBusyError();
+					run = this.agent.prompt(messages, agentPromptOptions);
+					if (this.agent.state.isStreaming) onClaimed();
+				} else {
+					run = this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, onClaimed);
+				}
 				await run;
 			} finally {
 				this.#stats.setPendingSnapshot(undefined);
@@ -10128,6 +10309,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			onPromptAdmitted?: () => void;
 			/** Called synchronously with the messages pushed onto the queue. See {@link PromptOptions.onPromptQueued}. */
 			onPromptQueued?: (queued: readonly AgentMessage[]) => void;
+			assertInputTarget?: () => void;
+			onPromptCommitted?: () => void;
 			/**
 			 * `joinActiveTurn` admission: the caller treats "not admitted" as "keep
 			 * your content". A run that settled while normalization/vision
@@ -10189,6 +10372,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) {
 			return false;
 		}
+		options?.assertInputTarget?.();
 		// `joinActiveTurn` admission: after every await above, the run that was
 		// live at call time may have settled — or `abort()` may have started
 		// (its `#abortInProgress` flag is raised synchronously at entry, while
@@ -10207,6 +10391,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		if (mode === "aside") {
 			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
+			options?.assertInputTarget?.();
 			const records: AgentMessage[] = [...prependMessages, ...attachmentSourceNotices];
 			if (imageDescriptionNotice) records.push(imageDescriptionNotice);
 			const userMessage: AgentMessage = { role: "user", content, attribution, timestamp: timestamp ?? Date.now() };
@@ -10232,6 +10417,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			rawText,
 		);
 		options?.onPromptQueued?.(queued);
+		options?.onPromptCommitted?.();
 		options?.onPromptAdmitted?.();
 		// joinActiveTurn admission must never start an autonomous turn: the
 		// live run owns delivery, and an idle queue stays put until the host
@@ -12252,6 +12438,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const queued = this.#enterSessionTransition(() => this.newSession(options));
 		if (queued) return queued;
 		using _transition = this.#beginSessionTransition();
+		this.#assertTranscriptNotPinned("start a new session");
 		this.#assertVibeSessionTransitionAllowed("start a new session");
 		const previousSessionFile = this.sessionFile;
 
@@ -12409,6 +12596,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const queued = this.#enterSessionTransition(() => this.fork(entryId, options));
 		if (queued) return queued;
 		using _transition = this.#beginSessionTransition();
+		this.#assertTranscriptNotPinned("fork the session");
 		this.#assertVibeSessionTransitionAllowed("fork the session");
 		const requireIdleFor = entryId !== undefined || options?.requireIdle ? "fork the session" : undefined;
 		if (entryId !== undefined) {
@@ -12544,6 +12732,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Move the active session and artifacts after enforcing mode transition invariants. */
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
+		const queued = this.#enterSessionTransition(() => this.moveSession(newCwd, targetSessionDir));
+		if (queued) return queued;
+		using _transition = this.#beginSessionTransition();
+		this.#assertTranscriptNotPinned("move the session");
 		this.#assertVibeSessionTransitionAllowed("move the session");
 		await this.sessionManager.moveTo(newCwd, targetSessionDir);
 	}
@@ -13551,6 +13743,82 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#irc.isParentSteer(message);
 	}
 
+	// =========================================================================
+	// Agent Mail
+	// =========================================================================
+
+	/** This session's canonical mail identity: stable UUID plus the current mutable handle. */
+	agentMailIdentity(): AgentMailEndpointIdentity {
+		return {
+			sessionId: this.sessionManager.getSessionId(),
+			handle: this.sessionManager.getSessionIdentityMetadata()?.actorHandle ?? null,
+			model: this.model ? `${this.model.provider}/${this.model.id}` : null,
+		};
+	}
+
+	/** Exact native owner incarnation, independent of the installed generation. */
+	agentMailIncarnation(): AgentMailIncarnation {
+		const sessionFile = this.sessionManager.getCanonicalSessionFile();
+		if (!sessionFile || !this.sessionManager.hasSessionOwnership()) {
+			throw new Error("Agent mail requires an owned canonical session journal.");
+		}
+		return {
+			sessionId: this.sessionManager.getSessionId(),
+			sessionFile,
+			bootId: readRuntimeBootIdentity().bootId,
+		};
+	}
+
+	/**
+	 * Send one cross-session mail over the recipient's native socket. The
+	 * receipt settles on the recipient's observed admission, never on inference;
+	 * a transport failure after the send is `unknown` and is never resent.
+	 */
+	sendAgentMail(params: AgentMailSendParams, options?: { responseTimeoutMs?: number }): Promise<AgentMailSendResult> {
+		return this.#mail.send(params, options);
+	}
+
+	/** Bounded read of this session's admitted mail history from the current journal; newest last. */
+	readAgentMail(options: { threadId?: string; limit?: number } = {}): AgentMailReadResult {
+		return this.#mail.read(options);
+	}
+
+	/** Bounded peer discovery through the native authorities with live handshakes. */
+	discoverAgentMailSessions(options?: {
+		query?: string;
+		liveOnly?: boolean;
+		limit?: number;
+	}): Promise<AgentMailDiscoveryResult> {
+		return this.#mail.discover(options);
+	}
+
+	/**
+	 * Verify (and consume) one send capability presented by a recipient; reveals
+	 * only validity and this owner's identity, never the capability.
+	 */
+	verifyAgentMailSendCapability(claim: {
+		token: unknown;
+		envelope: unknown;
+		source: unknown;
+		target: unknown;
+	}): AgentMailVerification {
+		return this.#mail.verifySendCapability(claim);
+	}
+
+	/**
+	 * Receive one verified cross-session mail: admit it through the normal
+	 * input path, journal its provenance durably, and settle the receipt once
+	 * admission is observed — without awaiting inference.
+	 */
+	deliverAgentMail(claim: {
+		envelope: AgentMailEnvelope;
+		sender: AgentMailEndpointIdentity;
+		source: AgentMailIncarnation;
+		target: AgentMailIncarnation;
+	}): Promise<AgentMailReceipt> {
+		return this.#mail.receive(claim);
+	}
+
 	/** Waits for any in-flight IRC wake-turn relays. */
 	waitForIrcReplies(): Promise<void> {
 		return this.#irc.waitForReplies();
@@ -13968,9 +14236,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async reload(): Promise<void> {
 		const sessionFile = this.sessionFile;
 		if (!sessionFile) return;
+		const sessionId = this.sessionManager.getSessionId();
 		const switched = await this.switchSession(sessionFile);
+		if (switched && this.sessionManager.getSessionId() !== sessionId) {
+			throw new Error("Reload adopted a different transcript identity at the same path");
+		}
 		if (!switched) throw new Error("Session reload cancelled");
 	}
+	#assertResumeProfile(profile: string | undefined): void {
+		if (profile === this.#rootAgentName) return;
+		throw new Error(
+			"Cannot load this conversation into a different agent profile. Resume it from startup with omp --resume instead.",
+		);
+	}
+
 	/**
 	 * Switch to a different session file.
 	 * Aborts current operation, loads messages, restores model/thinking.
@@ -14016,6 +14295,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const switchingToDifferentSession = previousSessionFile
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
 			: true;
+		if (switchingToDifferentSession) {
+			this.#assertTranscriptNotPinned("switch sessions");
+			const header = await readSessionHeader(sessionPath);
+			if (header) this.#assertResumeProfile(header.rootAgent);
+		}
 		// Emit session_before_switch event (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
 			const result = (await this.#extensionRunner.emit({
@@ -14110,6 +14394,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// switch rolled back via restoreState); re-read it on the next model call either way.
 			this.#sessionInit = undefined;
 			await this.sessionManager.setSessionFile(sessionPath);
+			this.#assertResumeProfile(this.sessionManager.getHeader()?.rootAgent);
 			this.#bash.markSessionTransition(bashTransition);
 			const newCwd = this.sessionManager.getCwd();
 			const recordedCwd = this.sessionManager.getRecordedCwd() ?? previousSessionState.cwd;
@@ -14486,6 +14771,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		leafId: string | null,
 		options?: { copyArtifacts?: boolean; requireIdleFor?: string },
 	): Promise<boolean> {
+		this.#assertTranscriptNotPinned("branch into another transcript");
 		const previousSessionFile = this.sessionFile;
 		const requireIdleFor = options?.requireIdleFor;
 		if (requireIdleFor) this.#assertIdleForSnapshot(requireIdleFor);
@@ -14602,6 +14888,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 		if (queued) return queued;
 		using _transition = this.#beginSessionTransition();
+		this.#assertTranscriptNotPinned("branch /btw into another transcript");
 		const previousSessionFile = this.sessionFile;
 		if (!this.sessionManager.getSessionFile()) {
 			throw new Error("Cannot branch /btw: session is not persisted");

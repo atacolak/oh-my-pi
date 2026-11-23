@@ -18,6 +18,7 @@ import {
 	VALUELESS_FLAGS,
 } from "./cli/flag-tables";
 import type * as LaunchHelp from "./commands/launch-help";
+import type Sock from "./commands/sock";
 
 function loadLaunchHelp(): typeof LaunchHelp.launchHelp {
 	const module: typeof LaunchHelp = require("./commands/launch-help");
@@ -25,6 +26,14 @@ function loadLaunchHelp(): typeof LaunchHelp.launchHelp {
 }
 
 export const commands: CommandEntry[] = [
+	{
+		name: "sock",
+		load: () => {
+			const module: { default: typeof Sock } = require("./commands/sock");
+			return Promise.resolve(module.default);
+		},
+		help: commandHelp.sockHelp,
+	},
 	{
 		name: "launch",
 		load: () => import("./commands/launch").then(m => m.default),

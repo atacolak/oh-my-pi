@@ -77,6 +77,86 @@ describe("createSessionTeardown", () => {
 		expect(seen).toEqual([""]);
 	});
 
+	it.each(["new draft", ""])(
+		"refuses a changed draft before disposal and retries persistence of the final snapshot %j",
+		async current => {
+			let editorText = "old draft";
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const seen: string[] = [];
+			let beginCalls = 0;
+			let disposeCalls = 0;
+			const teardown = createSessionTeardown({
+				getDraftText: () => editorText,
+				beginDispose: () => {
+					beginCalls++;
+				},
+				saveDraft: async text => {
+					seen.push(text);
+					if (seen.length === 1) {
+						entered.resolve();
+						await release.promise;
+					} else if (seen.length === 2) {
+						throw new Error("final draft save failed");
+					}
+				},
+				disposeSession: async () => {
+					disposeCalls++;
+				},
+			});
+			const first = teardown(undefined, () => true);
+			await entered.promise;
+			editorText = current;
+			release.resolve();
+			expect(await first).toBe(false);
+			expect(beginCalls).toBe(0);
+			expect(disposeCalls).toBe(0);
+			let failure: unknown;
+			try {
+				await teardown(undefined, () => true);
+			} catch (error) {
+				failure = error;
+			}
+			expect(failure).toBeInstanceOf(Error);
+			expect(beginCalls).toBe(0);
+			expect(disposeCalls).toBe(0);
+			expect(await teardown(undefined, () => true)).toBe(true);
+			expect(seen).toEqual(["old draft", current, current]);
+			expect(beginCalls).toBe(1);
+			expect(disposeCalls).toBe(1);
+		},
+	);
+
+	it("a forced close racing cooperative draft persistence still disposes exactly once", async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let saves = 0;
+		let beginCalls = 0;
+		let disposeCalls = 0;
+		const teardown = createSessionTeardown({
+			getDraftText: () => "draft",
+			beginDispose: () => {
+				beginCalls++;
+			},
+			saveDraft: async () => {
+				if (++saves === 1) {
+					entered.resolve();
+					await release.promise;
+				}
+			},
+			disposeSession: async () => {
+				disposeCalls++;
+			},
+		});
+		const cooperative = teardown(undefined, () => true);
+		await entered.promise;
+		await teardown(postmortem.Reason.SIGTERM);
+		release.resolve();
+		await cooperative;
+		expect(beginCalls).toBe(1);
+		expect(disposeCalls).toBe(1);
+	});
+
 	it("memoizes: concurrent and repeat calls run the teardown exactly once", async () => {
 		let getDraftCalls = 0;
 		let saveDraftCalls = 0;

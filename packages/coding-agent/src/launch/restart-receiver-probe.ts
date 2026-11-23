@@ -8,4 +8,8 @@ export interface RestartReceiverProbe {
 	protocol: typeof RESTART_RECEIVER_PROTOCOL;
 	nonce: string;
 	version: string;
+	/** Exact import-time generation; absence means this receiver cannot attest a pin. */
+	generation?: string | null;
+	/** Journal-backed identity ownership and fenced metadata mutation are implemented. */
+	nativeSessionIdentity?: boolean;
 }

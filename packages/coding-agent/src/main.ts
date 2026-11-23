@@ -6,6 +6,7 @@
  */
 import * as fsSync from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { getModelPricingStatus } from "@oh-my-pi/pi-catalog/models";
@@ -28,6 +29,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "./capability";
 import {
 	type Args,
+	reportCliUsageError,
 	reportInvalidFlagValues,
 	reportUnrecognizedFlags,
 	validateGoalLaunch,
@@ -37,8 +39,10 @@ import {
 	validateToolNames,
 } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
+import { assertActorProfileBinding } from "./cli/flag-tables";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
+import { resolveLaunchAgent, rootAgentModelSelector, rootAgentToolNames } from "./cli/launch-agent";
 import { formatKeyHint, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { SessionPickerOptions } from "@oh-my-pi/pi-tui/apps/session-picker";
 import { fetchBuild } from "./cli/build-service";
@@ -52,6 +56,7 @@ import {
 	disabledProviderIds,
 	expandRoleAlias,
 	getModelMatchPreferences,
+	resolveAgentAdvisorSelection,
 	resolveCliModel,
 	resolveConfiguredModelPatterns,
 	resolveModelRoleValue,
@@ -78,8 +83,10 @@ import {
 	scheduleMarketplaceAutoUpdate,
 	type MarketplaceAutoUpdateOptions,
 } from "./extensibility/plugins/marketplace-auto-update";
+import { runNamedSessionAttach } from "./launch/named-session-attach";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import { sanitizeTerminalGeometry } from "./launch/protocol";
+import { readRuntimeBootIdentity } from "./launch/runtime-generation";
 import {
 	decideRpcSessionAttach,
 	matchesSessionPath,
@@ -93,7 +100,7 @@ import {
 	resolveStartupSessionGate,
 	type ResolvedSessionTarget,
 } from "./launch/session-attach-gate";
-import { runAttachOnly, runLiveSessionAttach } from "./launch/session-attach-run";
+import { runLiveSessionAttach } from "./launch/session-attach-run";
 import {
 	type BrokeredLaunchSelection,
 	ownerArgvForSession,
@@ -145,6 +152,7 @@ import {
 	persistForeignSession,
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
+import type { SessionHeader } from "./session/session-entries";
 import {
 	findSessionContinuation,
 	type PickerListing,
@@ -171,6 +179,7 @@ import {
 	resolvePromptInput,
 } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
+import type { AgentDefinition } from "./task/types";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
@@ -185,10 +194,11 @@ import { CliUsageError } from "./cli/usage-error";
 import { scheduleGcAutoCompress } from "./cli/gc-auto-compress";
 import { cfgGcAutoCompress } from "./cli/gc-settings";
 import { cfgGoalEnabled } from "./goals/settings";
+import { applyAgentMemoryPolicy } from "./hindsight/agent-memory-policy";
 import { cfgPlanDefaultOnStartup, cfgPlanEnabled } from "./plan-mode/settings";
 
 import { cfgAdvisorEnabled } from "./advisor/settings";
-import { cfgAsyncPrintWake, cfgToolsApprovalMode } from "./tools/settings";
+import { cfgAsyncPrintWake, cfgReadSummarizeEnabled, cfgToolsApprovalMode } from "./tools/settings";
 import { claimTerminal } from "./tools/browser/terminal-owner";
 import {
 	cfgAutocompleteMaxVisible,
@@ -232,7 +242,7 @@ import {
 	cfgSessionWorktreeScope,
 } from "./session/settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "./config/model-settings";
-import { cfgTaskAgentIdleTtlMs } from "./task/settings";
+import { cfgTaskAgentAdvisor, cfgTaskAgentIdleTtlMs } from "./task/settings";
 import { cfgSkillsIncludeSkills } from "./extensibility/settings";
 import { cfgWorkspaceAdditionalDirectories } from "./session/context-settings";
 
@@ -1333,20 +1343,28 @@ export async function createSessionManager(
 		ownerAttach?: SessionOwnerAttachSelection;
 	} = {},
 ): Promise<SessionManager | undefined> {
-	const selectedRestartTarget = sessionOwnerContext()?.restartTarget;
+	const ownerContext = sessionOwnerContext();
+	const wakeTarget = ownerContext?.wakeTarget;
+	const selectedRestartTarget = ownerContext?.restartTarget ?? wakeTarget;
 	const restartTarget = selectedRestartTarget && {
 		sessionId: selectedRestartTarget.sessionId,
 		sessionFile: selectedRestartTarget.sessionFile,
 	};
 	if (restartTarget) {
 		if (
-			!parsed.restore ||
+			(wakeTarget ? parsed.restore || parsed.agent !== (wakeTarget.profile ?? undefined) : !parsed.restore) ||
 			parsed.resume !== restartTarget.sessionFile ||
 			parsed.noSession ||
 			parsed.fork ||
 			!(await matchesSessionPath(restartTarget.sessionFile, restartTarget.sessionFile))
 		) {
 			throw new SessionResolutionError("Exact restart receiver refused a different or unavailable transcript");
+		}
+		if (
+			wakeTarget?.generation !== undefined &&
+			readRuntimeBootIdentity().importedGeneration !== wakeTarget.generation
+		) {
+			throw new SessionResolutionError("Exact actor receiver does not match its pinned generation");
 		}
 		const storage = new FileSessionStorage();
 		const reservation = storage.reserveSession(restartTarget.sessionId, restartTarget.sessionFile);
@@ -1357,6 +1375,19 @@ export async function createSessionManager(
 				suppressBreadcrumb: true,
 				ownershipPolicy: "require-owner",
 				ownershipReservation: reservation,
+				...(wakeTarget
+					? {
+							validateHeader: (header: SessionHeader | undefined) => {
+								if (header?.id !== wakeTarget.sessionId)
+									throw new SessionResolutionError("Exact actor session identity changed");
+								if (!header.cwd || normalizePathForComparison(header.cwd) !== normalizePathForComparison(cwd))
+									throw new SessionResolutionError("Exact actor working directory does not match its session");
+								assertActorProfileBinding(wakeTarget.profile, header.rootAgent);
+								if (wakeTarget.profileCwd !== undefined && header.rootAgentCwd !== wakeTarget.profileCwd)
+									throw new SessionResolutionError("Exact agent definition directory changed before wake");
+							},
+						}
+					: {}),
 			});
 			if (
 				manager.getSessionId() !== restartTarget.sessionId ||
@@ -1364,6 +1395,12 @@ export async function createSessionManager(
 				!(await matchesSessionPath(restartTarget.sessionFile, restartTarget.sessionFile))
 			) {
 				throw new SessionResolutionError("Exact restart receiver no longer identifies the selected conversation");
+			}
+			if (
+				wakeTarget !== undefined &&
+				(manager.getSessionIdentityMetadata()?.generation ?? undefined) !== wakeTarget.generation
+			) {
+				throw new SessionResolutionError("Exact actor journal generation changed before wake");
 			}
 			return manager;
 		} catch (error) {
@@ -1618,6 +1655,7 @@ export async function buildSessionOptions(
 		const forkCacheShapeChanged =
 			scopedModelOverride ||
 			parsed.model !== undefined ||
+			parsed.agent !== undefined ||
 			parsed.thinking !== undefined ||
 			parsed.systemPrompt !== undefined ||
 			parsed.systemPromptTemplate !== undefined ||
@@ -1628,6 +1666,33 @@ export async function buildSessionOptions(
 			options.providerPromptCacheKey = header.providerPromptCacheKey;
 			options.providerPromptCacheKeySource = "fork";
 		}
+	}
+
+	const persistedRootAgent = restoringSession || parsed.fork ? sessionManager?.getHeader()?.rootAgent : undefined;
+	// An explicit `--agent` on a resume is a deliberate profile switch, not a mistake: it
+	// is how an actor's `<agent>.md` is changed across a recycle. The new profile is
+	// recorded on the session below, so the following resume mounts the same one. Omitting
+	// `--agent` still resumes the persisted profile.
+	const switchedAgent = Boolean(parsed.agent && parsed.agent !== persistedRootAgent);
+	const launchAgentName = parsed.agent ?? persistedRootAgent;
+	const launchAgentCwd = path.resolve(
+		parsed.agentCwd ?? (!switchedAgent ? sessionManager?.getHeader()?.rootAgentCwd : undefined) ?? options.cwd ?? getProjectDir(),
+	);
+	let launchAgent: AgentDefinition | undefined;
+	try {
+		launchAgent = await resolveLaunchAgent(launchAgentName, launchAgentCwd);
+	} catch (error) {
+		if (persistedRootAgent && !parsed.agent) {
+			throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
+		}
+		throw error;
+	}
+	if (persistedRootAgent && !launchAgent) {
+		throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
+	}
+
+	if (launchAgent && (!restoringSession || switchedAgent)) {
+		await sessionManager?.setRootAgent(launchAgent.name, launchAgentCwd);
 	}
 
 	// Model from CLI
@@ -1702,6 +1767,33 @@ export async function buildSessionOptions(
 			});
 			if (!parsed.thinking && resolved.thinkingLevel) {
 				options.thinkingLevel = resolved.thinkingLevel;
+			}
+		}
+	} else if (launchAgent && !restoringSession) {
+		const agentModel = rootAgentModelSelector(launchAgent);
+		if (agentModel) {
+			const resolved = resolveCliModel({
+				cliModel: agentModel,
+				modelRegistry,
+				availableModels: modelRegistry.getAvailable(),
+				settings: activeSettings,
+				preferences: modelMatchPreferences,
+			});
+			if (resolved.warning) {
+				process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+			}
+			if (resolved.model) {
+				options.model = resolved.model;
+				activeSettings.overrideModelRoles({
+					default: resolved.selector ?? `${resolved.model.provider}/${resolved.model.id}`,
+				});
+				if (!parsed.thinking && resolved.thinkingLevel) {
+					options.thinkingLevel = resolved.thinkingLevel;
+				}
+			} else if (resolved.error && !agentModel.includes(":")) {
+				options.modelPattern = agentModel;
+			} else if (resolved.error) {
+				process.stderr.write(`${chalk.yellow(`Warning: ${resolved.error}`)}\n`);
 			}
 		}
 	} else if (scopedModels.length > 0 && !restoringSession) {
@@ -1835,6 +1927,8 @@ export async function buildSessionOptions(
 	// Thinking level
 	if (parsed.thinking) {
 		options.thinkingLevel = parsed.thinking;
+	} else if (launchAgent?.thinkingLevel && !restoringSession) {
+		options.thinkingLevel = launchAgent.thinkingLevel;
 	} else if (
 		scopedModels.length > 0 &&
 		scopedModels[0].explicitThinkingLevel === true &&
@@ -1856,9 +1950,22 @@ export async function buildSessionOptions(
 	// (handled by caller before createAgentSession)
 
 	// System prompt
-	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
-	if (resolvedSystemPromptTemplate !== undefined) {
-		options.systemPromptTemplate = resolvedSystemPromptTemplate;
+	// A resumed session restores `model` and `thinkingLevel` from its transcript, which is
+	// why those two keep their `!restoringSession` gates. The persona body, tool list,
+	// skills and spawns are NOT persisted, so gating them here left every `omp --resume
+	// --agent <name>` running the default OMP prompt with the default tool set and no role
+	// at all (`roleMounted: false` in `actor context`). Nothing is restored to conflict
+	// with, so the launch agent mounts exactly as it does on a first run.
+	if (launchAgent && parsed.systemPrompt === undefined && parsed.systemPromptTemplate === undefined) {
+		options.customSystemPrompt = launchAgent.systemPrompt;
+	} else {
+		applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
+		if (resolvedSystemPromptTemplate !== undefined) {
+			options.systemPromptTemplate = resolvedSystemPromptTemplate;
+		}
+	}
+	if (resolvedAppendPrompt && parsed.systemPrompt === undefined && launchAgent) {
+		options.appendSystemPrompt = resolvedAppendPrompt;
 	}
 	// Replan-driven title refresh resolves the override from this same field on
 	// `AgentSession`, so threading it through `CreateAgentSessionOptions` keeps
@@ -1867,12 +1974,58 @@ export async function buildSessionOptions(
 	if (titleSystemPrompt) {
 		options.titleSystemPrompt = titleSystemPrompt;
 	}
+	if (launchAgent) {
+		options.agentName = launchAgent.name;
+		options.rootAgentName = launchAgent.name;
+		options.agentDisplayName = launchAgent.name;
+		if (launchAgent.automationAuthor) {
+			options.automationAuthor = launchAgent.automationAuthor;
+		}
+		if (launchAgent.memory) {
+			options.agentMemory = launchAgent.memory;
+			applyAgentMemoryPolicy(activeSettings, launchAgent.memory);
+		}
+		if (launchAgent.idleSleepSeconds !== undefined) {
+			options.agentIdleSleepSeconds = launchAgent.idleSleepSeconds;
+		}
+		if (launchAgent.modelFallback === false) {
+			options.disableModelFallback = true;
+			options.disableServerSideFallback = true;
+		}
+
+		options.autoloadSkills = launchAgent.autoloadSkills;
+		options.skillLoadPolicy = launchAgent.skills;
+		if (launchAgent.spawns !== undefined) {
+			options.spawns = launchAgent.spawns === "*" ? "*" : launchAgent.spawns.join(",");
+		}
+		if (launchAgent.readSummarize === false) {
+			cfgReadSummarizeEnabled.override(activeSettings, false);
+		}
+		if (parsed.advisor === undefined) {
+			const advisorSelection = resolveAgentAdvisorSelection({
+				settingsOverride: cfgTaskAgentAdvisor.get(activeSettings)[launchAgent.name],
+				agentAdvisor: launchAgent.advisor,
+			});
+			if (advisorSelection) {
+				cfgAdvisorEnabled.override(activeSettings, true);
+				if (advisorSelection.model) {
+					activeSettings.overrideModelRoles({
+						...activeSettings.getModelRoles(),
+						advisor: advisorSelection.model,
+					});
+				}
+			}
+		}
+	}
 
 	// Tools
 	if (parsed.noTools) {
 		options.toolNames = parsed.tools && parsed.tools.length > 0 ? parsed.tools : [];
 	} else if (parsed.tools) {
 		options.toolNames = parsed.tools;
+	} else if (launchAgent) {
+		const tools = rootAgentToolNames(launchAgent);
+		if (tools) options.toolNames = tools;
 	}
 
 	if (parsed.noLsp) {
@@ -1957,7 +2110,7 @@ export async function runRootCommand(
 	deps: RunRootCommandDependencies = DEFAULT_RUN_ROOT_DEPENDENCIES,
 ): Promise<void> {
 	if (parsed.attach !== undefined) {
-		await runAttachOnly(parsed.attach);
+		await runNamedSessionAttach(parsed.attach);
 		return;
 	}
 	logger.startTiming();
@@ -2409,7 +2562,7 @@ export async function runRootCommand(
 				}
 				// Initial native owners need the same cold reservation as direct
 				// sessions. Exact restart receivers reserve their pinned target below.
-				if (!sessionOwnerContext()?.restartTarget) {
+				if (!sessionOwnerContext()?.restartTarget && !sessionOwnerContext()?.wakeTarget) {
 					const gate = await logger.time("resolveStartupSessionGate", resolveStartupSessionGate, {
 						cwd,
 						sessionDir: parsedArgs.sessionDir,
@@ -2696,16 +2849,22 @@ export async function runRootCommand(
 		}
 		const modelRuntimeUpgrade = isInteractive ? new ModelRuntimeUpgrade() : undefined;
 		const buildStartupSessionOptions = async (manager: SessionManager | undefined) => {
-			const options = await logger.time(
-				"buildSessionOptions",
-				buildSessionOptions,
-				parsedArgs,
-				scopedModels,
-				manager,
-				modelRegistry,
-				settingsInstance,
-				startupWarning,
-			);
+			let options: CreateAgentSessionOptions;
+			try {
+				options = await logger.time(
+					"buildSessionOptions",
+					buildSessionOptions,
+					parsedArgs,
+					scopedModels,
+					manager,
+					modelRegistry,
+					settingsInstance,
+					startupWarning,
+				);
+			} catch (error) {
+				if (reportCliUsageError(error)) process.exit(2);
+				throw error;
+			}
 			options.authStorage = authStorage;
 			options.modelRegistry = modelRegistry;
 			options.hasUI = isInteractive || mode === "rpc-ui";

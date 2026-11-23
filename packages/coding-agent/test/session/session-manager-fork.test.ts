@@ -713,6 +713,12 @@ describe("SessionManager.forkFrom", () => {
 		);
 		const repairedEntries = await loadHistory(repaired.getSessionFile()!);
 		expect(collectPendingToolCalls(repairedEntries)).toEqual([]);
+		expect(
+			repaired
+				.buildSessionContext()
+				.messages.filter(message => message.role === "toolResult")
+				.map(message => message.toolCallId),
+		).toContain("toolu_live");
 		const result = repairedEntries.find(
 			(entry): entry is SessionMessageEntry => entry.type === "message" && entry.message.role === "toolResult",
 		);

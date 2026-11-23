@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { IpcConnection, ipcEndpoint } from "@oh-my-pi/pi-natives";
@@ -198,6 +199,103 @@ export function decideRpcSessionAttach(probe: SessionAttachProbe): RpcSessionAtt
 	}
 }
 
+/**
+ * Resolve an unambiguous trailing hexadecimal session-id suffix through the
+ * owner's published sidecars. The live owner is still fenced by the attach probe.
+ */
+export async function resolveSessionHexSuffix(
+	suffix: string,
+	endpointDir?: string,
+): Promise<SessionRestartTarget | undefined> {
+	if (!/^[0-9a-f]+$/i.test(suffix)) throw new TypeError("Session suffix must contain only hexadecimal characters");
+	const dir = resolveSessionEndpointDir(endpointDir);
+	let matches: string[];
+	try {
+		const entries = await fs.readdir(dir, { withFileTypes: true });
+		matches = entries
+			.filter(entry => entry.isFile() && entry.name.endsWith(".json"))
+			.map(entry => entry.name.slice(0, -5))
+			.filter(id => id.toLowerCase().endsWith(suffix.toLowerCase()));
+	} catch (error) {
+		if (isEnoent(error)) return undefined;
+		throw error;
+	}
+	if (matches.length === 0) return undefined;
+	if (matches.length !== 1) throw new Error(`Session suffix "${suffix}" is ambiguous`);
+	const sessionId = matches[0]!;
+	assertSessionId(sessionId);
+	const publication = await readPublication(path.join(dir, `${sessionId}.json`), sessionId);
+	if (
+		publication.kind !== "published" ||
+		typeof publication.metadata?.sessionFile !== "string" ||
+		!path.isAbsolute(publication.metadata.sessionFile)
+	) {
+		throw new Error(`Session suffix "${suffix}" has no valid session publication`);
+	}
+	return { sessionId, sessionFile: publication.metadata.sessionFile };
+}
+
+/** One publication a live session owner wrote under the endpoint directory. */
+export interface SessionPublication {
+	/** Canonical session UUID; the endpoint and sidecar are named by it. */
+	sessionId: string;
+	/** Publishing owner process; `live` reports whether it is still alive. */
+	pid: number;
+	sessionFile: string | null;
+	cwd: string | null;
+	agent: string | null;
+	startedAt: number | null;
+	/** Truthful liveness from the publisher PID; no transcript-age guessing. */
+	live: boolean;
+	/** Broker coordinates declared by this publication; not proof of a live owner. */
+	terminal?: SessionAttachTerminal;
+}
+
+/**
+ * Every session publication currently visible under the shared run directory:
+ * the same sidecars the attach probe fences owners with, listed without
+ * probing each socket. Availability is the publisher PID's liveness only; a
+ * live PID with a wedged socket still refuses at connect time.
+ */
+export async function listSessionPublications(endpointDir?: string): Promise<SessionPublication[]> {
+	const dir = resolveSessionEndpointDir(endpointDir);
+	let entries: Dirent[];
+	try {
+		entries = await fs.readdir(dir, { withFileTypes: true });
+	} catch (error) {
+		if (isEnoent(error)) return [];
+		throw error;
+	}
+	const publications: SessionPublication[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+		const sessionId = entry.name.slice(0, -5);
+		const sidecar = path.join(dir, entry.name);
+		let decoded: unknown;
+		try {
+			decoded = JSON.parse(await fs.readFile(sidecar, "utf8"));
+		} catch {
+			continue;
+		}
+		if (!isRecord(decoded)) continue;
+		const pid = decoded.pid;
+		if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) continue;
+		if (decoded.sessionId !== sessionId) continue;
+		const terminal = terminalFromMetadata(parseMetadata(decoded, sessionId));
+		publications.push({
+			sessionId,
+			pid,
+			sessionFile: typeof decoded.sessionFile === "string" && decoded.sessionFile ? decoded.sessionFile : null,
+			cwd: typeof decoded.cwd === "string" && decoded.cwd ? decoded.cwd : null,
+			agent: typeof decoded.agent === "string" && decoded.agent ? decoded.agent : null,
+			startedAt: typeof decoded.startedAt === "number" && decoded.startedAt > 0 ? decoded.startedAt : null,
+			live: isPidAlive(pid),
+			...(terminal === undefined ? {} : { terminal }),
+		});
+	}
+	return publications;
+}
+
 export async function probeSessionAttach(
 	sessionId: string,
 	options: SessionAttachProbeOptions = {},
@@ -211,7 +309,7 @@ export async function probeSessionAttach(
 	const publication = await readPublication(sidecarPath, sessionId);
 	if (publication.kind === "unknown") return { status: "unknown", sessionId, reason: publication.reason };
 	if (publication.kind === "invalid") return { status: "unreachable", sessionId, endpoint };
-	if (options.sessionPath !== undefined && publication.kind === "absent") {
+	if (options.sessionPath !== undefined && (publication.kind === "absent" || publisherProvablyGone(publication))) {
 		return { status: "absent", sessionId, leaseHeld: isSessionLeaseHeld(sessionId) };
 	}
 	if (

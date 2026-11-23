@@ -630,6 +630,8 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 export interface SkillRediscoveryHost {
 	/** The holder's current skills. */
 	skills: readonly Skill[];
+	/** Closed profile catalogs must not resolve unknown names through MCP resources. */
+	restrictSkillCatalog?: boolean;
 	/** Rediscovers the holder's own skills in place and returns them; absent when the list is fixed. */
 	refreshSkills?: () => Promise<readonly Skill[]>;
 	/** Stores a re-pointed fixed list, so later reads and subagents spawned from the holder use it. */

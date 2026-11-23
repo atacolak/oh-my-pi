@@ -4,6 +4,18 @@ use serde_json::{Value, json};
 fn notification(frame: Value) -> Result<RpcNotification, serde_json::Error> {
 	serde_json::from_value(frame)
 }
+#[test]
+fn native_terminal_version_and_unknown_mail_outcome_are_checked() {
+	let raw = json!({"protocolVersion": 1, "projectDir": "/project", "name": "owner", "id": "boot"});
+	let terminal: NativeSessionTerminal = serde_json::from_value(raw.clone()).unwrap();
+	assert_eq!(serde_json::to_value(terminal).unwrap(), raw);
+	let mut unsupported = raw;
+	unsupported["protocolVersion"] = json!(2);
+	assert!(serde_json::from_value::<NativeSessionTerminal>(unsupported).is_err());
+	let result = AgentMailSendCommand::decode(Some(json!({"status": "unknown", "error": "receipt timed out"}))).unwrap();
+	assert!(matches!(result, AgentMailSendResult::Unknown(AgentMailUnknownResult { error }) if error == "receipt timed out"));
+}
+
 
 #[test]
 fn unknown_notification_keeps_raw_json() {

@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { parseAgentFields } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
+import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { resolveBuiltinToolPlan, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
+import { parseFrontmatter } from "@oh-my-pi/pi-utils";
 
 describe("parseAgentFields", () => {
 	test("rejects the reserved `main` and `sub` agent definition names", () => {
@@ -44,6 +46,10 @@ describe("parseAgentFields", () => {
 
 		expect(fields).toBeDefined();
 		expect(fields?.blocking).toBeUndefined();
+	});
+	test("parses hide from boolean frontmatter", () => {
+		expect(parseAgentFields({ name: "runtime-integrator", description: "desc", hide: true })?.hide).toBe(true);
+		expect(parseAgentFields({ name: "runtime-integrator", description: "desc", hide: false })?.hide).toBe(false);
 	});
 	test("parses legacy thinking key", () => {
 		const fields = parseAgentFields({
@@ -198,6 +204,28 @@ describe("parseAgentFields", () => {
 	test("returns undefined readSummarize when field absent", () => {
 		expect(parseAgentFields({ name: "scout", description: "desc" })?.readSummarize).toBeUndefined();
 	});
+	test("parses modelFallback from boolean and boolean-string frontmatter", () => {
+		expect(parseAgentFields({ name: "pinned", description: "desc", modelFallback: false })?.modelFallback).toBe(
+			false,
+		);
+		expect(parseAgentFields({ name: "pinned", description: "desc", modelFallback: "false" })?.modelFallback).toBe(
+			false,
+		);
+		expect(
+			parseAgentFields({ name: "pinned", description: "desc", modelFallback: "sometimes" })?.modelFallback,
+		).toBeUndefined();
+		expect(parseAgentFields({ name: "pinned", description: "desc" })?.modelFallback).toBeUndefined();
+	});
+
+	test("reads model-fallback from markdown frontmatter", () => {
+		const agent = parseAgent(
+			"pinned.md",
+			["---", "name: pinned", 'description: "desc"', "model-fallback: false", "---", "body"].join("\n"),
+			"project",
+		);
+		expect(agent.modelFallback).toBe(false);
+	});
+
 	test("parses prewalk from boolean frontmatter", () => {
 		expect(parseAgentFields({ name: "worker", description: "desc", prewalk: true })?.prewalk).toBe(true);
 		expect(parseAgentFields({ name: "worker", description: "desc", prewalk: false })?.prewalk).toBe(false);
@@ -235,5 +263,196 @@ describe("parseAgentFields", () => {
 		);
 		expect(parseAgentFields({ name: "worker", description: "desc", advisor: "  " })?.advisor).toBeUndefined();
 		expect(parseAgentFields({ name: "worker", description: "desc" })?.advisor).toBeUndefined();
+	});
+	test("parses descendant and scope automationAuthor policies", () => {
+		expect(
+			parseAgentFields({
+				name: "runtime-maintainer",
+				description: "desc",
+				spawns: "scout",
+				automationAuthor: {
+					allowedAgents: ["pr-maintainer", "capability-maintainer"],
+					jurisdiction: "descendants",
+				},
+			})?.automationAuthor,
+		).toEqual({
+			allowedAgents: ["pr-maintainer", "capability-maintainer"],
+			jurisdiction: "descendants",
+		});
+		expect(
+			parseAgentFields({
+				name: "automation-builder",
+				description: "desc",
+				automationAuthor: { allowedAgents: "*", jurisdiction: "scope" },
+			})?.automationAuthor,
+		).toEqual({ allowedAgents: "*", jurisdiction: "scope" });
+	});
+
+	test("keeps automationAuthor independent from spawns and drops invalid grants", () => {
+		const fields = parseAgentFields({
+			name: "runtime-maintainer",
+			description: "desc",
+			spawns: ["scout"],
+			automationAuthor: { allowedAgents: [], jurisdiction: "descendants" },
+		});
+		expect(fields?.spawns).toEqual(["scout"]);
+		expect(fields?.automationAuthor).toBeUndefined();
+		expect(
+			parseAgentFields({
+				name: "runtime-maintainer",
+				description: "desc",
+				automationAuthor: { allowedAgents: "*", jurisdiction: "universe" },
+			})?.automationAuthor,
+		).toBeUndefined();
+	});
+
+	test("parses kebab-case multi-word fields from raw frontmatter", () => {
+		const fields = parseAgentFields({
+			name: "pinned",
+			description: "desc",
+			"model-fallback": false,
+			"read-summarize": false,
+			"thinking-level": "high",
+			"autoload-skills": ["user-created-skill-a", "user-created-skill-b"],
+			"automation-author": {
+				jurisdiction: "descendants",
+				"allowed-agents": ["scout"],
+			},
+		});
+
+		expect(fields?.modelFallback).toBe(false);
+		expect(fields?.readSummarize).toBe(false);
+		expect(fields?.thinkingLevel).toBe(Effort.High);
+		expect(fields?.autoloadSkills).toEqual(["user-created-skill-a", "user-created-skill-b"]);
+		expect(fields?.automationAuthor).toEqual({ allowedAgents: ["scout"], jurisdiction: "descendants" });
+	});
+
+	test("prefers camelCase over a kebab-case spelling supplied on the same record", () => {
+		const fields = parseAgentFields({
+			name: "pinned",
+			description: "desc",
+			modelFallback: true,
+			"model-fallback": false,
+			readSummarize: true,
+			"read-summarize": false,
+			thinkingLevel: "low",
+			"thinking-level": "high",
+			autoloadSkills: ["camel"],
+			"autoload-skills": ["kebab"],
+			automationAuthor: { jurisdiction: "scope", allowedAgents: "*" },
+			"automation-author": { jurisdiction: "descendants", "allowed-agents": ["kebab"] },
+		});
+
+		expect(fields?.modelFallback).toBe(true);
+		expect(fields?.readSummarize).toBe(true);
+		expect(fields?.thinkingLevel).toBe(Effort.Low);
+		expect(fields?.autoloadSkills).toEqual(["camel"]);
+		expect(fields?.automationAuthor).toEqual({ allowedAgents: "*", jurisdiction: "scope" });
+	});
+
+	test("parses kebab-case fields from strict rawKeys frontmatter", () => {
+		const { frontmatter } = parseFrontmatter(
+			[
+				"---",
+				"name: pinned",
+				'description: "desc"',
+				"model-fallback: false",
+				"read-summarize: false",
+				"thinking-level: high",
+				"autoload-skills:",
+				"  - user-created-skill-a",
+				"automation-author:",
+				"  jurisdiction: descendants",
+				"  allowed-agents:",
+				"    - scout",
+				"---",
+				"body",
+			].join("\n"),
+			{ rawKeys: true },
+		);
+
+		expect(frontmatter["model-fallback"]).toBe(false);
+		const fields = parseAgentFields(frontmatter);
+		expect(fields?.modelFallback).toBe(false);
+		expect(fields?.readSummarize).toBe(false);
+		expect(fields?.thinkingLevel).toBe(Effort.High);
+		expect(fields?.autoloadSkills).toEqual(["user-created-skill-a"]);
+		expect(fields?.automationAuthor).toEqual({ allowedAgents: ["scout"], jurisdiction: "descendants" });
+	});
+
+	test("keeps an opaque output schema verbatim while reading kebab-case keys", () => {
+		const output = {
+			properties: { "foo-bar": { type: "string" } },
+			optionalProperties: { "cache-key": { type: "string" } },
+		};
+		const fields = parseAgentFields({
+			name: "schema-agent",
+			description: "desc",
+			"model-fallback": false,
+			output,
+		});
+
+		expect(fields?.modelFallback).toBe(false);
+		expect(fields?.output).toBe(output);
+		const schema = fields?.output as typeof output;
+		expect(Object.keys(schema.properties)).toEqual(["foo-bar"]);
+		expect(Object.keys(schema.optionalProperties)).toEqual(["cache-key"]);
+	});
+
+	test("parses a camelCase memory policy and keeps it on the agent definition", () => {
+		const fields = parseAgentFields({
+			name: "pr-maintainer",
+			description: "desc",
+			memory: { autoRetain: false, autoRecall: true },
+		});
+		expect(fields?.memory).toEqual({ autoRetain: false, autoRecall: true });
+
+		const agent = parseAgent(
+			"pr-maintainer.md",
+			["---", "name: pr-maintainer", 'description: "desc"', "memory: {autoRetain: false}", "---", "body"].join("\n"),
+			"project",
+		);
+		expect(agent.memory).toEqual({ autoRetain: false });
+	});
+
+	test("parses kebab-case memory keys whether normalizing or raw", () => {
+		const direct = parseAgentFields({
+			name: "pr-maintainer",
+			description: "desc",
+			memory: { "auto-retain": false, "auto-recall": false },
+		});
+		expect(direct?.memory).toEqual({ autoRetain: false, autoRecall: false });
+
+		const { frontmatter } = parseFrontmatter(
+			[
+				"---",
+				"name: pr-maintainer",
+				'description: "desc"',
+				"memory:",
+				"  auto-retain: false",
+				"  auto-recall: false",
+				"---",
+				"body",
+			].join("\n"),
+			{ rawKeys: true },
+		);
+		expect(frontmatter.memory).toEqual({ "auto-retain": false, "auto-recall": false });
+		expect(parseAgentFields(frontmatter)?.memory).toEqual({ autoRetain: false, autoRecall: false });
+	});
+
+	test("ignores malformed memory declarations and keeps only valid booleans", () => {
+		expect(
+			parseAgentFields({ name: "pr-maintainer", description: "desc", memory: "invalid" })?.memory,
+		).toBeUndefined();
+		expect(parseAgentFields({ name: "pr-maintainer", description: "desc", memory: {} })?.memory).toBeUndefined();
+		expect(parseAgentFields({ name: "pr-maintainer", description: "desc", memory: [] })?.memory).toBeUndefined();
+		expect(parseAgentFields({ name: "pr-maintainer", description: "desc" })?.memory).toBeUndefined();
+		expect(
+			parseAgentFields({
+				name: "pr-maintainer",
+				description: "desc",
+				memory: { autoRetain: "sometimes", autoRecall: false },
+			})?.memory,
+		).toEqual({ autoRecall: false });
 	});
 });

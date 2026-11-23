@@ -209,6 +209,36 @@ describe("probeSessionAttach", () => {
 		expect(decideSessionAttach(probe)).toEqual({ kind: "refuse", code: "owner-unreachable" });
 	});
 
+	it.each([false, true])("treats a dead publisher as absent while preserving held-lease refusal (%s)", async held => {
+		fixture = new AttachFixture();
+		const sessionId = sessionIdFor();
+		const sessionPath = fixture.writeSession(sessionId);
+		const child = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore" });
+		await child.exited;
+		fixture.writeSidecar(sessionId, {
+			...metadataFor(sessionId, TERMINAL),
+			pid: child.pid,
+			sessionFile: sessionPath,
+		});
+		const lease = held ? tryAcquireSessionLease(sessionId) : undefined;
+		if (held && !lease) throw new Error("fixture lease was not acquired");
+		const before = fixture.snapshot();
+		try {
+			const probe = await probeSessionAttach(sessionId, {
+				endpointDir: fixture.runDir,
+				sessionPath,
+				timeoutMs: 200,
+			});
+			expect(probe).toEqual({ status: "absent", sessionId, leaseHeld: held });
+			expect(decideSessionAttach(probe)).toEqual(
+				held ? { kind: "refuse", code: "owner-busy" } : { kind: "cold", sessionId },
+			);
+			expect(fixture.snapshot()).toEqual(before);
+		} finally {
+			lease?.release();
+		}
+	});
+
 	it("permits a cold open only when no publication exists and the lease is free", async () => {
 		fixture = new AttachFixture();
 		const sessionId = sessionIdFor();

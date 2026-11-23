@@ -106,8 +106,8 @@ describe("session owner context", () => {
 		expect(() => consumeSessionOwnerContext(env)).toThrow("no daemon name");
 	});
 
-	it("builds a persistent PTY spec that re-enters the CLI with the hidden selector", () => {
-		const spec = sessionOwnerSpec({
+	it("builds a persistent PTY spec that re-enters the CLI with the hidden selector", async () => {
+		const spec = await sessionOwnerSpec({
 			name: "mind-a",
 			projectDir: "/p",
 			argv: ["--resume", "sess-1"],

@@ -11,6 +11,8 @@ export interface TerminalBrokerFixture {
 	readonly client: DaemonBrokerClient;
 	readonly projectDir: string;
 	readonly runtimeDir: string;
+	/** Resolves when the native broker lifecycle finishes, without an external process probe. */
+	readonly stopped: Promise<void>;
 	connect(): Promise<DaemonBrokerClient>;
 }
 
@@ -47,7 +49,7 @@ export async function withTerminalBroker(body: (fixture: TerminalBrokerFixture) 
 	const client = await connect();
 	const broker = startBroker(projectDir, runtimeDir);
 	try {
-		await body({ client, projectDir, runtimeDir, connect });
+		await body({ client, projectDir, runtimeDir, connect, stopped: broker });
 	} finally {
 		for (const candidate of clients) {
 			try {

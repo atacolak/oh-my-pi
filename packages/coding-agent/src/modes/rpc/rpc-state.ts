@@ -12,12 +12,17 @@ const MAX_DIAGNOSTIC_WARNING_CHARS = 1024;
 
 /** Report live owner scope, never infer it from an actor name or a caller's settings. */
 export function getRpcSessionExecution(session: AgentSession): RpcSessionExecution {
-	const owner: AgentSession & { getAgentProfileName?: () => string | undefined } = session;
+	const owner: AgentSession & {
+		getAgentProfileName?: () => string | undefined;
+		getAgentProfileBinding?: () => string | undefined;
+	} = session;
 	const profile = owner.getAgentProfileName?.();
+	const profileBinding = owner.getAgentProfileBinding?.();
 	const memory = session.getHindsightSessionState();
 	const resolvedTags = memory && "resolvedTags" in memory ? memory.resolvedTags : undefined;
 	return {
 		profile: profile ?? null,
+		profileBinding: profileBinding ?? null,
 		cwd: session.sessionManager.getCwd(),
 		memory: memory
 			? {

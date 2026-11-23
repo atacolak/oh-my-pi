@@ -87,6 +87,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "session_control",
+				"doc": "Abort or compact only the exact observed session, canonical journal and owner boot.",
+				"params": "SessionControlParams",
+				"result": "SessionControlResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": 120000,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "abort_and_prompt",
 				"doc": "Abort the current run and submit a prompt; completed by its `prompt_result`.",
 				"params": "AbortAndPromptParams",
@@ -142,6 +153,61 @@
 				"clientOmit": []
 			},
 			{
+				"name": "list_sessions",
+				"doc": "Read a bounded page of native session metadata without waking or opening peer connections.",
+				"params": "ListSessionsParams",
+				"result": "NativeSessionList",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "resolve_session",
+				"doc": "Resolve one saved native session reference without creating or waking an owner.",
+				"params": "ResolveSessionParams",
+				"result": "NativeSessionInfo",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "wake_session",
+				"doc": "Explicitly revive the exact saved UUID/journal through the canonical owner lifecycle.",
+				"params": "WakeSessionParams",
+				"result": "NativeSessionWakeResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": 60000,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "agent_mail_send",
+				"doc": "Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried.",
+				"params": "AgentMailSendParams",
+				"result": "AgentMailSendResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": 60000,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "set_session_identity",
+				"doc": "Durably change this owner's actor handle or assignments without starting a turn; stale targets and conflicting claims refuse.",
+				"params": "SetSessionIdentityParams",
+				"result": "SessionIdentityRecord",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "get_refresh_preflight",
 				"doc": "Observe refresh hazards and bounded mounted tools without restarting or starting a broker.",
 				"params": null,
@@ -153,8 +219,19 @@
 				"clientOmit": []
 			},
 			{
+				"name": "exit_session",
+				"doc": "Schedule cooperative idle exit of this exact journal owner. All three expected fields are required and rechecked before teardown. Old servers reject this command. Scheduling is not proof of exit; force termination is unavailable. Uses the current connection only.",
+				"params": "ExitSessionParams",
+				"result": "ExitSessionResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "upgrade_runtime",
-				"doc": "Restart the session owner onto the current runtime generation, now or when idle.",
+				"doc": "Restart the session owner onto the current runtime generation, now or when idle. Exact-session lifecycle callers must echo all three expected owner fields from preflight; untargeted legacy upgrades provide no caller owner fence. This is not a shutdown, sleep, or kill action.",
 				"params": "UpgradeRuntimeParams",
 				"result": "UpgradeRuntimeResult",
 				"nullable": false,
@@ -876,6 +953,39 @@
 				"result": "GetBtwHistoryResult",
 				"nullable": false,
 				"unwrap": "records",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "agent_mail_deliver",
+				"doc": "Deliver one cross-session mail to this owner; the sender capability is verified first.",
+				"params": "AgentMailDeliverParams",
+				"result": "AgentMailReceipt",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "agent_mail_verify_send",
+				"doc": "Verify (and consume) one send capability for exactly this envelope; reveals only validity and owner identity.",
+				"params": "AgentMailVerifySendParams",
+				"result": "AgentMailVerification",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "agent_mail_read",
+				"doc": "Read this session's agent-mail inbox, bounded, newest last.",
+				"params": "AgentMailReadParams",
+				"result": "AgentMailReadResult",
+				"nullable": false,
+				"unwrap": null,
 				"timeoutMs": null,
 				"completion": null,
 				"clientOmit": []
@@ -2302,6 +2412,464 @@
 			],
 			"description": "Model descriptor: the client-relevant subset of the server's model record."
 		},
+		"NativeSessionTerminal": {
+			"type": "object",
+			"properties": {
+				"protocolVersion": {
+					"const": 1
+				},
+				"projectDir": {
+					"type": "string"
+				},
+				"name": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"protocolVersion",
+				"projectDir",
+				"name",
+				"id"
+			]
+		},
+		"NativeSessionInfo": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"handle": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"title": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"rootAgent": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"generation": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"assignments": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/SessionIdentityAssignment"
+					}
+				},
+				"cwd": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"sessionFile": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"pid": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"startedAt": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"model": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"availability": {
+					"enum": [
+						"live",
+						"offline",
+						"unavailable"
+					],
+					"type": "string"
+				},
+				"state": {
+					"enum": [
+						"working",
+						"idle",
+						"sleeping",
+						"unknown"
+					],
+					"type": "string"
+				},
+				"terminal": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/NativeSessionTerminal"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"rootAgentCwd": {
+					"type": "string"
+				},
+				"idleSleepSeconds": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"modifiedAt": {
+					"type": "number"
+				},
+				"owner": {
+					"$ref": "#/$defs/RuntimeRestartReceipt"
+				}
+			},
+			"required": [
+				"sessionId",
+				"handle",
+				"title",
+				"rootAgent",
+				"generation",
+				"assignments",
+				"cwd",
+				"sessionFile",
+				"pid",
+				"startedAt",
+				"model",
+				"availability",
+				"state",
+				"terminal"
+			]
+		},
+		"NativeSessionList": {
+			"type": "object",
+			"properties": {
+				"sessions": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/NativeSessionInfo"
+					}
+				},
+				"total": {
+					"type": "integer"
+				},
+				"truncated": {
+					"type": "boolean"
+				},
+				"nextOffset": {
+					"type": "integer"
+				},
+				"attachableSockets": {
+					"type": "integer"
+				},
+				"unverifiedSockets": {
+					"type": "integer"
+				},
+				"omittedUnnamed": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"sessions",
+				"total",
+				"truncated"
+			]
+		},
+		"NativeSessionWakeResult": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"handle": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"title": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"rootAgent": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"generation": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"assignments": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/SessionIdentityAssignment"
+					}
+				},
+				"cwd": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"sessionFile": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"pid": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"startedAt": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"model": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"availability": {
+					"enum": [
+						"live",
+						"offline",
+						"unavailable"
+					],
+					"type": "string"
+				},
+				"state": {
+					"enum": [
+						"working",
+						"idle",
+						"sleeping",
+						"unknown"
+					],
+					"type": "string"
+				},
+				"terminal": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/NativeSessionTerminal"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"revived": {
+					"type": "boolean"
+				},
+				"rootAgentCwd": {
+					"type": "string"
+				},
+				"idleSleepSeconds": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"modifiedAt": {
+					"type": "number"
+				},
+				"owner": {
+					"$ref": "#/$defs/RuntimeRestartReceipt"
+				}
+			},
+			"required": [
+				"sessionId",
+				"handle",
+				"title",
+				"rootAgent",
+				"generation",
+				"assignments",
+				"cwd",
+				"sessionFile",
+				"pid",
+				"startedAt",
+				"model",
+				"availability",
+				"state",
+				"terminal",
+				"revived"
+			]
+		},
+		"AgentMailAcceptedResult": {
+			"type": "object",
+			"properties": {
+				"status": {
+					"const": "accepted"
+				},
+				"receipt": {
+					"$ref": "#/$defs/AgentMailReceipt"
+				},
+				"target": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"status",
+				"receipt",
+				"target"
+			]
+		},
+		"AgentMailRefusedResult": {
+			"type": "object",
+			"properties": {
+				"status": {
+					"const": "refused"
+				},
+				"error": {
+					"type": "string"
+				},
+				"code": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"status",
+				"error"
+			]
+		},
+		"AgentMailUnknownResult": {
+			"type": "object",
+			"properties": {
+				"status": {
+					"const": "unknown"
+				},
+				"error": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"status",
+				"error"
+			]
+		},
+		"AgentMailSendResult": {
+			"anyOf": [
+				{
+					"$ref": "#/$defs/AgentMailAcceptedResult"
+				},
+				{
+					"$ref": "#/$defs/AgentMailRefusedResult"
+				},
+				{
+					"$ref": "#/$defs/AgentMailUnknownResult"
+				}
+			]
+		},
 		"QueueMode": {
 			"enum": [
 				"all",
@@ -2421,6 +2989,334 @@
 				"aborted"
 			],
 			"type": "string"
+		},
+		"SessionIdentityAssignment": {
+			"type": "object",
+			"properties": {
+				"kind": {
+					"type": "string"
+				},
+				"target": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"kind",
+				"target"
+			]
+		},
+		"SessionIdentityPatch": {
+			"type": "object",
+			"properties": {
+				"actorHandle": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"assignments": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/SessionIdentityAssignment"
+					}
+				},
+				"generation": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"idleSleepSeconds": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"description": "Actor override in seconds; zero disables, null inherits profile/config."
+				}
+			}
+		},
+		"SessionIdentityRecord": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"type": "string"
+				},
+				"cwd": {
+					"type": "string"
+				},
+				"actorHandle": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"assignments": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/SessionIdentityAssignment"
+					}
+				},
+				"rootAgent": {
+					"type": "string"
+				},
+				"generation": {
+					"type": "string"
+				},
+				"idleSleepSeconds": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"modifiedAt": {
+					"type": "number"
+				}
+			},
+			"required": [
+				"sessionId",
+				"sessionFile",
+				"cwd",
+				"actorHandle",
+				"assignments"
+			]
+		},
+		"AgentMailDelivery": {
+			"enum": [
+				"queue",
+				"steer"
+			],
+			"type": "string",
+			"description": "Recipient-side input path the sender chose: queue behind the run, or steer into it."
+		},
+		"AgentMailAdmission": {
+			"enum": [
+				"admitted",
+				"queued",
+				"steering"
+			],
+			"type": "string"
+		},
+		"AgentMailEndpointIdentity": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"handle": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"description": "Mutable actor handle at capture time; not a role, title or permission."
+				},
+				"model": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"description": "Provider/model string at capture time; distinct from any agent profile."
+				}
+			},
+			"required": [
+				"sessionId",
+				"handle",
+				"model"
+			],
+			"description": "Native addressability of one session end at mail time."
+		},
+		"AgentMailIncarnation": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"type": "string",
+					"description": "Owned canonical session journal."
+				},
+				"bootId": {
+					"type": "string",
+					"description": "Native per-boot owner identity; not a runtime generation."
+				}
+			},
+			"required": [
+				"sessionId",
+				"sessionFile",
+				"bootId"
+			],
+			"description": "Exact incarnation of one session owner; a change invalidates bound capabilities."
+		},
+		"AgentMailVerification": {
+			"type": "object",
+			"properties": {
+				"valid": {
+					"type": "boolean"
+				},
+				"reason": {
+					"type": "string",
+					"description": "Why the capability was refused; absent when valid."
+				},
+				"sender": {
+					"$ref": "#/$defs/AgentMailEndpointIdentity",
+					"description": "Owner-attested sender identity; present when valid."
+				},
+				"source": {
+					"$ref": "#/$defs/AgentMailIncarnation",
+					"description": "Source owner incarnation; present when valid."
+				},
+				"target": {
+					"$ref": "#/$defs/AgentMailIncarnation",
+					"description": "Exact recipient incarnation bound into the proof."
+				}
+			},
+			"required": [
+				"valid"
+			],
+			"description": "Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself."
+		},
+		"AgentMailReadResult": {
+			"type": "object",
+			"properties": {
+				"messages": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/AgentMailRecord"
+					}
+				},
+				"total": {
+					"type": "integer",
+					"description": "Admitted records matching the read filter."
+				},
+				"truncated": {
+					"type": "boolean",
+					"description": "True when `total` exceeds the returned messages."
+				}
+			},
+			"required": [
+				"messages",
+				"total",
+				"truncated"
+			],
+			"description": "Bounded inbox read derived from the current journal; newest last."
+		},
+		"AgentMailReceipt": {
+			"type": "object",
+			"properties": {
+				"messageId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				},
+				"admission": {
+					"$ref": "#/$defs/AgentMailAdmission"
+				},
+				"busy": {
+					"type": "boolean",
+					"description": "Whether a run was streaming on the recipient when the mail was admitted."
+				},
+				"recipient": {
+					"$ref": "#/$defs/AgentMailEndpointIdentity"
+				},
+				"target": {
+					"$ref": "#/$defs/AgentMailIncarnation"
+				}
+			},
+			"required": [
+				"messageId",
+				"threadId",
+				"admission",
+				"busy",
+				"recipient",
+				"target"
+			],
+			"description": "Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it."
+		},
+		"AgentMailRecord": {
+			"type": "object",
+			"properties": {
+				"messageId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				},
+				"sender": {
+					"$ref": "#/$defs/AgentMailEndpointIdentity"
+				},
+				"recipient": {
+					"$ref": "#/$defs/AgentMailEndpointIdentity"
+				},
+				"source": {
+					"$ref": "#/$defs/AgentMailIncarnation"
+				},
+				"target": {
+					"$ref": "#/$defs/AgentMailIncarnation"
+				},
+				"body": {
+					"type": "string"
+				},
+				"sentAt": {
+					"type": "integer"
+				},
+				"receivedAt": {
+					"type": "integer"
+				},
+				"delivery": {
+					"$ref": "#/$defs/AgentMailDelivery"
+				},
+				"admission": {
+					"$ref": "#/$defs/AgentMailAdmission"
+				},
+				"replyTo": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"messageId",
+				"threadId",
+				"sender",
+				"recipient",
+				"source",
+				"target",
+				"body",
+				"sentAt",
+				"receivedAt",
+				"delivery",
+				"admission"
+			],
+			"description": "One delivered mail record with full sender/recipient/thread provenance."
 		},
 		"TodoItem": {
 			"type": "object",
@@ -2877,7 +3773,8 @@
 					"type": "string"
 				},
 				"bootId": {
-					"type": "string"
+					"type": "string",
+					"description": "Loaded owner incarnation; echo as expectedBootId on exact-session restart, then require a different bootId in the reopened owner's receipt."
 				},
 				"importedGeneration": {
 					"anyOf": [
@@ -2899,6 +3796,21 @@
 				"bootId",
 				"importedGeneration",
 				"basePromptDigest"
+			]
+		},
+		"ExitSessionResult": {
+			"type": "object",
+			"properties": {
+				"scheduled": {
+					"type": "boolean"
+				},
+				"owner": {
+					"$ref": "#/$defs/RuntimeRestartReceipt"
+				}
+			},
+			"required": [
+				"scheduled",
+				"owner"
 			]
 		},
 		"RefreshPreflight": {
@@ -3009,6 +3921,16 @@
 					"anyOf": [
 						{
 							"$ref": "#/$defs/SessionExecutionMemory"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"profileBinding": {
+					"anyOf": [
+						{
+							"type": "string"
 						},
 						{
 							"type": "null"
@@ -4849,6 +5771,22 @@
 				"message"
 			]
 		},
+		"AgentMailEvent": {
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "agent_mail"
+				},
+				"mail": {
+					"$ref": "#/$defs/AgentMailRecord"
+				}
+			},
+			"required": [
+				"type",
+				"mail"
+			],
+			"description": "A cross-session mail record was accepted by this owner and admitted into its input path."
+		},
 		"NoticeEvent": {
 			"type": "object",
 			"properties": {
@@ -5039,6 +5977,9 @@
 				},
 				{
 					"$ref": "#/$defs/IrcMessageEvent"
+				},
+				{
+					"$ref": "#/$defs/AgentMailEvent"
 				},
 				{
 					"$ref": "#/$defs/NoticeEvent"
@@ -6750,6 +7691,58 @@
 				"message"
 			]
 		},
+		"SessionControlParams": {
+			"type": "object",
+			"properties": {
+				"action": {
+					"enum": [
+						"abort",
+						"compact"
+					],
+					"type": "string"
+				},
+				"expectedSessionId": {
+					"type": "string"
+				},
+				"expectedSessionFile": {
+					"type": "string"
+				},
+				"expectedBootId": {
+					"type": "string"
+				},
+				"mode": {
+					"$ref": "#/$defs/CompactMode"
+				}
+			},
+			"required": [
+				"action",
+				"expectedSessionId",
+				"expectedSessionFile",
+				"expectedBootId"
+			]
+		},
+		"SessionControlResult": {
+			"type": "object",
+			"properties": {
+				"action": {
+					"enum": [
+						"abort",
+						"compact"
+					],
+					"type": "string"
+				},
+				"owner": {
+					"$ref": "#/$defs/RuntimeRestartReceipt"
+				},
+				"compaction": {
+					"$ref": "#/$defs/CompactionResult"
+				}
+			},
+			"required": [
+				"action",
+				"owner"
+			]
+		},
 		"AbortAndPromptParams": {
 			"type": "object",
 			"properties": {
@@ -6793,6 +7786,111 @@
 				"sessionDir"
 			]
 		},
+		"ListSessionsParams": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string"
+				},
+				"limit": {
+					"type": "integer"
+				},
+				"offset": {
+					"type": "integer"
+				}
+			}
+		},
+		"ResolveSessionParams": {
+			"type": "object",
+			"properties": {
+				"reference": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"reference"
+			]
+		},
+		"WakeSessionParams": {
+			"type": "object",
+			"properties": {
+				"expectedSessionId": {
+					"type": "string"
+				},
+				"expectedSessionFile": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"expectedSessionId",
+				"expectedSessionFile"
+			]
+		},
+		"AgentMailSendParams": {
+			"type": "object",
+			"properties": {
+				"to": {
+					"type": "string"
+				},
+				"message": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				},
+				"replyTo": {
+					"type": "string"
+				},
+				"delivery": {
+					"$ref": "#/$defs/AgentMailDelivery"
+				}
+			},
+			"required": [
+				"to",
+				"message"
+			]
+		},
+		"SetSessionIdentityParams": {
+			"type": "object",
+			"properties": {
+				"expectedSessionId": {
+					"type": "string"
+				},
+				"expectedSessionFile": {
+					"type": "string"
+				},
+				"patch": {
+					"$ref": "#/$defs/SessionIdentityPatch"
+				}
+			},
+			"required": [
+				"expectedSessionId",
+				"expectedSessionFile",
+				"patch"
+			]
+		},
+		"ExitSessionParams": {
+			"type": "object",
+			"properties": {
+				"expectedSessionId": {
+					"type": "string"
+				},
+				"expectedSessionFile": {
+					"type": "string"
+				},
+				"expectedBootId": {
+					"type": "string"
+				},
+				"force": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"expectedSessionId",
+				"expectedSessionFile",
+				"expectedBootId"
+			]
+		},
 		"UpgradeRuntimeParams": {
 			"type": "object",
 			"properties": {
@@ -6804,11 +7902,11 @@
 				},
 				"refresh": {
 					"type": "boolean",
-					"description": "Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported."
+					"description": "Refresh policy and extensions even on the same generation; requires expectedSessionId, expectedSessionFile, and expectedBootId from preflight. Force is unsupported."
 				},
 				"graceful": {
 					"type": "boolean",
-					"description": "Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported."
+					"description": "Ask the model to checkpoint, then wait for all session-owned work. Requires all three expected owner fields; force is unsupported."
 				},
 				"compactBeforeRestart": {
 					"type": "boolean",
@@ -6816,11 +7914,15 @@
 				},
 				"expectedSessionId": {
 					"type": "string",
-					"description": "Full selected session id; supply together with expectedSessionFile."
+					"description": "Full selected session id; supply with expectedSessionFile and expectedBootId."
 				},
 				"expectedSessionFile": {
 					"type": "string",
-					"description": "Canonical absolute transcript path; supply together with expectedSessionId."
+					"description": "Canonical absolute transcript path; supply with expectedSessionId and expectedBootId."
+				},
+				"expectedBootId": {
+					"type": "string",
+					"description": "Owner incarnation from get_refresh_preflight.restartReceipt.bootId, not a generation SHA. Required with either expected session field and for refresh, graceful, or compactBeforeRestart. Rechecked before scheduling and execution."
 				}
 			}
 		},
@@ -7850,6 +8952,134 @@
 			"required": [
 				"records"
 			]
+		},
+		"AgentMailDeliverParams": {
+			"type": "object",
+			"properties": {
+				"recipientSessionId": {
+					"type": "string",
+					"description": "Exact session UUID the sender captured; a mismatch refuses delivery."
+				},
+				"recipientSessionFile": {
+					"type": "string"
+				},
+				"recipientBootId": {
+					"type": "string"
+				},
+				"messageId": {
+					"type": "string"
+				},
+				"message": {
+					"type": "string"
+				},
+				"delivery": {
+					"$ref": "#/$defs/AgentMailDelivery"
+				},
+				"sentAt": {
+					"type": "integer"
+				},
+				"senderSessionId": {
+					"type": "string",
+					"description": "Claimed source owner; verified through its own socket before admitting."
+				},
+				"senderSessionFile": {
+					"type": "string"
+				},
+				"senderBootId": {
+					"type": "string"
+				},
+				"capabilityToken": {
+					"type": "string",
+					"description": "Owner-issued single-use capability bound to exactly this envelope."
+				},
+				"threadId": {
+					"type": "string"
+				},
+				"replyTo": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"recipientSessionId",
+				"recipientSessionFile",
+				"recipientBootId",
+				"messageId",
+				"message",
+				"delivery",
+				"sentAt",
+				"senderSessionId",
+				"senderSessionFile",
+				"senderBootId",
+				"capabilityToken"
+			]
+		},
+		"AgentMailVerifySendParams": {
+			"type": "object",
+			"properties": {
+				"capabilityToken": {
+					"type": "string"
+				},
+				"recipientSessionId": {
+					"type": "string"
+				},
+				"recipientSessionFile": {
+					"type": "string"
+				},
+				"recipientBootId": {
+					"type": "string"
+				},
+				"messageId": {
+					"type": "string"
+				},
+				"message": {
+					"type": "string"
+				},
+				"delivery": {
+					"$ref": "#/$defs/AgentMailDelivery"
+				},
+				"sentAt": {
+					"type": "integer"
+				},
+				"senderSessionId": {
+					"type": "string"
+				},
+				"senderSessionFile": {
+					"type": "string"
+				},
+				"senderBootId": {
+					"type": "string"
+				},
+				"threadId": {
+					"type": "string"
+				},
+				"replyTo": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"capabilityToken",
+				"recipientSessionId",
+				"recipientSessionFile",
+				"recipientBootId",
+				"messageId",
+				"message",
+				"delivery",
+				"sentAt",
+				"senderSessionId",
+				"senderSessionFile",
+				"senderBootId"
+			]
+		},
+		"AgentMailReadParams": {
+			"type": "object",
+			"properties": {
+				"threadId": {
+					"type": "string"
+				},
+				"limit": {
+					"type": "integer"
+				}
+			}
 		}
 	}
 }

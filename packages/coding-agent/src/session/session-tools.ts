@@ -24,6 +24,7 @@ import {
 	type SkillWarning,
 	setActiveSkills,
 } from "../extensibility/skills";
+import { type SkillLoadPolicy, selectSkills } from "../extensibility/skill-load-policy";
 import { type LocalProtocolOptions } from "../internal-urls";
 import { stripXdUrlPrefix, XD_URL_PREFIX } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { deduplicateMCPToolsByName, resolveMCPToolAlias } from "../mcp/tool-bridge";
@@ -196,6 +197,7 @@ interface SessionToolsOptions {
 	setActiveToolNames?: (names: Iterable<string>) => void;
 	baseSystemPrompt: string[];
 	skills?: Skill[];
+	skillLoadPolicy?: SkillLoadPolicy;
 	skillWarnings?: SkillWarning[];
 	skillsSettings?: SkillsSettings;
 	skillsReloadable?: boolean;
@@ -529,6 +531,7 @@ export class SessionTools {
 	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
 	#reconcileSettingsGatedTools: SessionToolsOptions["reconcileSettingsGatedTools"];
 	#skills: Skill[];
+	readonly #skillLoadPolicy: SkillLoadPolicy | undefined;
 	#promptSkills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -590,7 +593,15 @@ export class SessionTools {
 			restoredReply && restoredPromptDigest
 				? { reply: restoredReply, promptDigest: restoredPromptDigest }
 				: undefined;
-		this.#skills = options.skills ?? [];
+		this.#skillLoadPolicy = options.skillLoadPolicy
+			? {
+					eager: [...options.skillLoadPolicy.eager],
+					...(options.skillLoadPolicy.discoverable !== undefined
+						? { discoverable: [...options.skillLoadPolicy.discoverable] }
+						: {}),
+				}
+			: undefined;
+		this.#skills = selectSkills(options.skills ?? [], this.#skillLoadPolicy);
 		this.#promptSkills = this.#skills;
 		this.#skillWarnings = options.skillWarnings ?? [];
 		this.#skillsSettings = options.skillsSettings;
@@ -668,6 +679,9 @@ export class SessionTools {
 		return this.#promptSkills;
 	}
 
+	get restrictSkillCatalog(): boolean {
+		return this.#skillLoadPolicy?.discoverable !== undefined;
+	}
 	/** Whether {@link refreshSkills} rediscovers the list; false when it was fixed at creation (a subagent's). */
 	get skillsReloadable(): boolean {
 		return this.#skillsReloadable;
@@ -675,7 +689,7 @@ export class SessionTools {
 
 	/** Stores a re-pointed fixed skill list (see `rediscoverSkills`) and refreshes prompt metadata. */
 	async replaceSkills(skills: readonly Skill[]): Promise<void> {
-		this.#skills = [...skills];
+		this.#skills = selectSkills([...skills], this.#skillLoadPolicy);
 		this.#promptSkills = this.#skills;
 		if (this.#host.agentKind() === "main") {
 			setActiveSkills(this.#skills);
@@ -744,6 +758,7 @@ export class SessionTools {
 			disabledExtensions: cfgDisabledExtensions.get(this.#host.settings),
 			extensionRoots: this.#host.effectiveExtensionRoots(),
 		});
+		discovered.skills = selectSkills(discovered.skills, this.#skillLoadPolicy);
 		return { discovered, skillsSettings };
 	}
 

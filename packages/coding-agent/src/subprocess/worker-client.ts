@@ -264,6 +264,8 @@ export async function attestCliRestartReceiver(
 			protocol: RESTART_RECEIVER_PROTOCOL,
 			nonce,
 			version: probe.version,
+			...(typeof probe.generation === "string" || probe.generation === null ? { generation: probe.generation } : {}),
+			...(probe.nativeSessionIdentity === true ? { nativeSessionIdentity: true } : {}),
 		};
 	} finally {
 		stopReading.abort();

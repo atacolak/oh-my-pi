@@ -9,6 +9,7 @@ import type { AgentEvent, AgentMessage, AgentToolResult, ThinkingLevel } from "@
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { isRecord, ptree, readJsonl, toError } from "@oh-my-pi/pi-utils";
+import { IpcConnection } from "@oh-my-pi/pi-natives";
 import type { LogoutAccount } from "@oh-my-pi/pi-tui/overlays/logout-account-selector";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { FileSink } from "bun";
@@ -18,7 +19,16 @@ import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { CompactMode } from "../../session/compact-modes";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { SessionLeaseReport } from "../../session/session-storage";
-import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
+import type { SessionIdentityPatch, SessionIdentityRecord } from "../../session/session-identity";
+import {
+	isAgentEvent,
+	isAgentSessionEvent,
+	isRpcResponse,
+	MAX_RPC_FRAME_BYTES,
+	MAX_RPC_REASSEMBLED_BYTES,
+	RpcFrameDecoder,
+	type RpcProtocolVersion,
+} from "./rpc-frame";
 import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
 import type { McpReauthStatus, McpServerStatusEntry } from "./rpc-mcp";
 import {
@@ -48,6 +58,8 @@ import type {
 	RpcNavigateTreeResult,
 	RpcOpenSessionResult,
 	RpcPromptResultFrame,
+	RpcExitSessionResult,
+	RpcRefreshPreflight,
 	RpcRemoveQueuedMessageResult,
 	RpcResponse,
 	RpcSessionSettledFrame,
@@ -61,11 +73,14 @@ import type {
 	RpcUpgradeRuntimeResult,
 } from "./rpc-types";
 
+export type RpcUpgradeRuntimeOptions = Omit<Extract<RpcCommand, { type: "upgrade_runtime" }>, "id" | "type">;
+export type RpcExitSessionOptions = Omit<Extract<RpcCommand, { type: "exit_session" }>, "id" | "type">;
+
 /** Distributive Omit that works with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
 /** RpcCommand without the id field (for internal send) */
-type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
+export type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 /** Process transport consumed by {@link RpcClient}. */
 export interface RpcAgentProcess {
@@ -76,6 +91,65 @@ export interface RpcAgentProcess {
 	peekStderr(): string;
 	kill(signal?: Parameters<ptree.ChildProcess["kill"]>[0], graceMs?: number): void;
 	exited: Promise<number>;
+}
+
+/** Options for attaching an {@link RpcClient} to a published native session socket. */
+export interface RpcSessionSocketConnectOptions extends RpcClientOptions {
+	/** Endpoint of the published socket (`<session run dir>/<sessionId>.sock`). */
+	endpoint: string;
+	/** Connect and ready-handshake timeout in milliseconds (default 4000). */
+	connectTimeoutMs?: number;
+}
+
+/**
+ * Native IPC adapter for {@link RpcAgentProcess}: a published session socket
+ * becomes the client's transport. `kill` and stream cancellation detach only
+ * this connection; the owning session, its endpoint and its process are never
+ * spawned, stopped or signalled from here.
+ */
+function ipcRpcAgentProcess(connection: IpcConnection): RpcAgentProcess {
+	const encoder = new TextEncoder();
+	const decoder = new TextDecoder();
+	const closed = Promise.withResolvers<number>();
+	const stdout = new ReadableStream<Uint8Array>({
+		start(controller) {
+			connection.start(
+				line => {
+					try {
+						controller.enqueue(encoder.encode(line.endsWith("\n") ? line : `${line}\n`));
+					} catch {
+						// The reader stopped first; stop() closes the connection.
+					}
+				},
+				reason => {
+					closed.resolve(0);
+					try {
+						if (reason === undefined) controller.close();
+						else controller.error(new Error(String(reason)));
+					} catch {
+						// Already errored by a prior frame; the exit is surfaced by stop().
+					}
+				},
+			);
+		},
+		cancel() {
+			connection.destroy();
+		},
+	});
+	return {
+		stdin: {
+			write(data) {
+				const text = typeof data === "string" ? data : decoder.decode(data);
+				connection.send(text.endsWith("\n") ? text.slice(0, -1) : text);
+			},
+		},
+		stdout,
+		peekStderr: () => "",
+		kill: () => {
+			connection.destroy();
+		},
+		exited: closed.promise,
+	};
 }
 
 export interface RpcClientOptions {
@@ -150,55 +224,6 @@ export function defineRpcClientTool<
 	return tool;
 }
 
-const agentEventTypes = new Set<AgentEvent["type"]>([
-	"agent_start",
-	"agent_end",
-	"turn_start",
-	"turn_end",
-	"message_start",
-	"message_update",
-	"message_end",
-	"tool_execution_start",
-	"tool_execution_update",
-	"tool_stream_update",
-	"tool_execution_end",
-]);
-
-const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
-	...agentEventTypes,
-	"auto_compaction_start",
-	"auto_compaction_end",
-	"manual_compaction_start",
-	"manual_compaction_end",
-	"auto_retry_start",
-	"auto_retry_end",
-	"cache_warming_start",
-	"cache_warming_end",
-	"retry_fallback_applied",
-	"retry_fallback_succeeded",
-	"ttsr_triggered",
-	"todo_reminder",
-	"todo_auto_clear",
-	"irc_message",
-	"notice",
-	"thinking_level_changed",
-	"model_changed",
-	"goal_updated",
-	"queue_update",
-]);
-
-function isRpcResponse(value: unknown): value is RpcResponse {
-	if (!isRecord(value)) return false;
-	if (value.type !== "response") return false;
-	if (typeof value.command !== "string") return false;
-	if (typeof value.success !== "boolean") return false;
-	if (value.id !== undefined && typeof value.id !== "string") return false;
-	if (value.success === false) {
-		return typeof value.error === "string";
-	}
-	return true;
-}
-
 function supportsRpcProtocolV2(value: Record<string, unknown>): boolean {
 	return (
 		value.type === "ready" &&
@@ -207,20 +232,6 @@ function supportsRpcProtocolV2(value: Record<string, unknown>): boolean {
 		value.maxFrameBytes === MAX_RPC_FRAME_BYTES &&
 		value.maxReassembledFrameBytes === MAX_RPC_REASSEMBLED_BYTES
 	);
-}
-
-function isAgentEvent(value: unknown): value is AgentEvent {
-	if (!isRecord(value)) return false;
-	const type = value.type;
-	if (typeof type !== "string") return false;
-	return agentEventTypes.has(type as AgentEvent["type"]);
-}
-
-function isAgentSessionEvent(value: unknown): value is AgentSessionEvent {
-	if (!isRecord(value)) return false;
-	const type = value.type;
-	if (typeof type !== "string") return false;
-	return sessionEventTypes.has(type as AgentSessionEvent["type"]);
 }
 
 function isRpcSubagentLifecycleFrame(value: unknown): value is RpcSubagentLifecycleFrame {
@@ -421,7 +432,15 @@ export class RpcClient {
 					},
 				);
 		this.#process = child;
+		await this.#adoptProcess(child);
+	}
 
+	/**
+	 * Wire an adopted transport into this client: await its `ready` frame,
+	 * negotiate protocol v2 when offered, and register any custom tools.
+	 * Shared by the spawned-process path and direct native-socket attachment.
+	 */
+	async #adoptProcess(child: RpcAgentProcess): Promise<void> {
 		// Wait for the "ready" signal or process exit
 		const { promise: readyPromise, resolve: readyResolve, reject: readyReject } = Promise.withResolvers<void>();
 		let readySettled = false;
@@ -547,7 +566,7 @@ export class RpcClient {
 				await this.setCustomTools(this.#customTools);
 			}
 		} catch (cause) {
-			// Startup failed after spawning the child. Reap it before returning
+			// Startup failed after adopting the transport. Reap it before returning
 			// so a retry cannot inherit a live worker or its session lock.
 			const error = toError(cause);
 			await reapAfterOutputFailure(error);
@@ -555,6 +574,40 @@ export class RpcClient {
 		} finally {
 			clearTimeout(readyTimeout);
 		}
+	}
+
+	/**
+	 * Attach directly to a published native session socket: the same client,
+	 * framing, negotiation, request ids and event subscriptions as a spawned
+	 * CLI agent. Stopping the returned client detaches only its own
+	 * connection; the owning session and its endpoint are never touched.
+	 */
+	static async connectSessionSocket(options: RpcSessionSocketConnectOptions): Promise<RpcClient> {
+		const { endpoint, connectTimeoutMs, ...clientOptions } = options;
+		const connection = await IpcConnection.connect(endpoint, {
+			framing: "lines",
+			timeoutMs: connectTimeoutMs ?? 4_000,
+		});
+		const client = new RpcClient(clientOptions);
+		const transport = ipcRpcAgentProcess(connection);
+		client.#process = transport;
+		try {
+			await client.#adoptProcess(transport);
+		} catch (error) {
+			connection.destroy();
+			throw error;
+		}
+		return client;
+	}
+
+	/** Send one command and await its response by id; the sanctioned request path for attached callers. */
+	send(command: RpcCommandBody, timeoutMs?: number): Promise<RpcResponse> {
+		return this.#send(command, timeoutMs);
+	}
+
+	/** Wait for this transport to close; observes the existing attachment without polling or stopping its owner. */
+	waitForDisconnect(): Promise<void> {
+		return this.#process ? this.#waitForExit(this.#process) : (this.#reaping ?? Promise.resolve());
 	}
 
 	/**
@@ -834,8 +887,8 @@ export class RpcClient {
 	/**
 	 * Get current session state.
 	 */
-	async getState(): Promise<RpcSessionState> {
-		const response = await this.#send({ type: "get_state" });
+	async getState(timeoutMs?: number): Promise<RpcSessionState> {
+		const response = await this.#send({ type: "get_state" }, timeoutMs);
 		const state = this.#getData<RpcSessionState>(response);
 		return {
 			...state,
@@ -851,17 +904,39 @@ export class RpcClient {
 		};
 	}
 
-	/**
-	 * Restart this session owner onto `generations/current` when it is behind.
-	 * `whenIdle` arms the upgrade until the session settles; `force` runs it even
-	 * while a turn is streaming.
-	 */
-	async upgradeRuntime(options: { whenIdle?: boolean; force?: boolean } = {}): Promise<RpcUpgradeRuntimeResult> {
+	/** Change this owner's durable identity; never opens another session or starts inference. */
+	async setSessionIdentity(
+		expected: { sessionId: string; sessionFile: string },
+		patch: SessionIdentityPatch,
+	): Promise<SessionIdentityRecord> {
 		const response = await this.#send({
-			type: "upgrade_runtime",
-			whenIdle: options.whenIdle,
-			force: options.force,
+			type: "set_session_identity",
+			expectedSessionId: expected.sessionId,
+			expectedSessionFile: expected.sessionFile,
+			patch,
 		});
+		return this.#getData(response);
+	}
+
+	/** Read this connection's owner identity and work state; does not restart or wake it. */
+	async getRefreshPreflight(timeoutMs?: number): Promise<RpcRefreshPreflight> {
+		const response = await this.#send({ type: "get_refresh_preflight" }, timeoutMs);
+		return this.#getData(response);
+	}
+
+	/**
+	 * Restart or refresh this owner through its existing connection.
+	 * Exact-target calls require the UUID, canonical journal, and bootId from preflight.
+	 * Legacy unfenced upgrades remain available; they are not exact-owner lifecycle control.
+	 */
+	async upgradeRuntime(options: RpcUpgradeRuntimeOptions = {}): Promise<RpcUpgradeRuntimeResult> {
+		const response = await this.#send({ ...options, type: "upgrade_runtime" });
+		return this.#getData(response);
+	}
+
+	/** Schedule cooperative idle exit on this connection; rejection never falls back to PID signalling. */
+	async exitSession(options: RpcExitSessionOptions): Promise<RpcExitSessionResult> {
+		const response = await this.#send({ ...options, type: "exit_session" });
 		return this.#getData(response);
 	}
 

@@ -166,6 +166,45 @@ describe("RPC session socket", () => {
 		return { socket, endpoint };
 	}
 
+	it("refuses idle retirement while an RPC viewer is attached", async () => {
+		const { socket, endpoint } = await publish(conn => ({
+			dispatch: () => conn.send({ type: "owner_alive" }),
+		}));
+		const peer = await SocketPeer.connect(endpoint);
+		try {
+			await peer.next(frame => frame.type === "ready");
+			expect(socket.prepareIdleRetirement()).toBeUndefined();
+			peer.send({ type: "get_state" });
+			expect(await peer.next(frame => frame.type === "owner_alive")).toMatchObject({ type: "owner_alive" });
+		} finally {
+			peer.close();
+		}
+	});
+
+	it("refuses new RPC viewers while retiring, then allows them after a canceled close", async () => {
+		const { socket, endpoint } = await publish();
+		const retirement = socket.prepareIdleRetirement();
+		if (!retirement) throw new Error("Detached socket refused retirement");
+		retirement[Symbol.dispose]();
+		const current = socket.prepareIdleRetirement();
+		if (!current) throw new Error("Detached socket refused renewed retirement");
+		retirement[Symbol.dispose](); // A stale release must not reopen the renewed fence.
+		const refused = await SocketPeer.connect(endpoint);
+		try {
+			await refused.closedByRemote();
+			expect(refused.seen).toEqual([]);
+		} finally {
+			current[Symbol.dispose]();
+			refused.close();
+		}
+		const resumed = await SocketPeer.connect(endpoint);
+		try {
+			expect(await resumed.next(frame => frame.type === "ready")).toMatchObject({ type: "ready" });
+		} finally {
+			resumed.close();
+		}
+	});
+
 	it.each([undefined, "a".repeat(40)])("publishes owner-only session metadata for generation %s", async generation => {
 		const generationProbe = spyOn(runtimeGeneration, "readRuntimeGeneration").mockReturnValue(
 			generation === undefined ? undefined : { running: generation, current: "b".repeat(40), behind: true },

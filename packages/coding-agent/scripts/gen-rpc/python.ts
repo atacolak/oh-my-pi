@@ -62,6 +62,7 @@ const PYTHON_BINDING: PythonBinding = {
 		"prompt",
 		"abort_and_prompt",
 		"set_todos",
+		"set_session_identity",
 		"set_host_tools",
 		"set_host_uri_schemes",
 		"get_messages",

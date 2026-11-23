@@ -311,6 +311,7 @@ export class InputController {
 
 	#enhancedPaste?: EnhancedPasteController;
 	#draftText: string | undefined;
+	#idleActivityListenerInstalled = false;
 	#focusedLeftTapListenerInstalled = false;
 	#focusedPasteListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
@@ -368,6 +369,13 @@ export class InputController {
 	setupKeyHandlers(): void {
 		this.#draftText ??= this.ctx.editor.getText();
 		this.ctx.editor.setActionKeys("app.interrupt", this.ctx.keybindings.getKeys("app.interrupt"));
+		if (!this.#idleActivityListenerInstalled) {
+			this.#idleActivityListenerInstalled = true;
+			this.ctx.ui.addInputListener(() => {
+				this.ctx.session.recordIdleActivity();
+				return undefined;
+			});
+		}
 		if (!this.#linkHintListenerInstalled) {
 			this.#linkHintListenerInstalled = true;
 			// First, so a tag letter typed in link-hint mode reaches no other listener or the editor.

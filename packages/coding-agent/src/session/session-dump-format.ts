@@ -74,6 +74,8 @@ export interface FormatSessionDumpTextOptions {
 	thinkingLevel?: ThinkingLevel | string | null;
 	tools?: readonly SessionDumpToolInfo[];
 	inlineToolDescriptors?: boolean;
+	/** Omit runtime configuration when rendering a read-only transcript without live model state. */
+	includeHeader?: boolean;
 }
 
 interface InventoryTool {
@@ -302,7 +304,7 @@ function appendMarkdownTranscript(lines: string[], messages: readonly AgentMessa
  */
 export function formatSessionDumpText(options: FormatSessionDumpTextOptions): string {
 	const inventoryTools = toInventoryTools(options.tools ?? []);
-	const lines = renderDumpHeader(options, inventoryTools);
+	const lines = options.includeHeader === false ? [] : renderDumpHeader(options, inventoryTools);
 	appendMarkdownTranscript(lines, options.messages);
 	return lines.join("\n").trim();
 }

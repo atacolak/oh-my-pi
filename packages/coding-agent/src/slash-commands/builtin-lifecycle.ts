@@ -11,6 +11,7 @@ import { continuesConversation } from "../modes/utils/conversation-position";
 import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
+import { assignSessionIdentity } from "../session/session-identity";
 import { resolveResumableSession, resolveResumeTarget } from "../session/session-listing";
 import { toggleSessionPin, unpinSession } from "../session/session-pins";
 import {
@@ -674,6 +675,29 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		handleTui: async (command, runtime) => {
 			clearSubmittedText(runtime);
 			await runtime.ctx.handleMemoryCommand(command.text);
+		},
+	},
+	{
+		name: "name",
+		icon: "pencil",
+		description: "Bind or change this conversation's durable actor name",
+		inlineHint: "actor [name]",
+		allowArgs: true,
+		subcommands: [{ name: "actor", description: "Show, bind or change the actor name", usage: "[name]" }],
+		handle: async (command, runtime) => {
+			const [kind, name, ...extra] = command.args.trim().split(/\s+/);
+			if (kind !== "actor" || extra.length > 0) {
+				return usage("Usage: /name actor [name]", runtime);
+			}
+			if (!name) {
+				const handle = runtime.sessionManager.getSessionIdentityMetadata()?.actorHandle;
+				await runtime.output(handle ? `Actor name: ${handle}` : "This conversation has no actor name.");
+				return commandConsumed();
+			}
+			runtime.signal?.throwIfAborted();
+			const identity = await assignSessionIdentity(runtime.sessionManager, { actorHandle: name });
+			await runtime.output(`Actor name: ${identity.actorHandle}`);
+			return commandConsumed();
 		},
 	},
 	{

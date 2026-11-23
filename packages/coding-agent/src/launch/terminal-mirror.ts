@@ -31,6 +31,9 @@ export interface TerminalMirrorSize {
 
 export type TerminalMirrorSignal = "SIGHUP" | "SIGTERM" | "SIGINT";
 
+/** Result reason for an owner that exited before the pre-admission verification completed. */
+export const UNVERIFIED_EXIT_REASON = "exited before the attachment was verified";
+
 /** A mirror only ever returns; the owner's lifetime is not this process's to end. */
 export interface TerminalMirrorResult {
 	/** True when the local terminal went away and only this mirror detached. */
@@ -167,6 +170,9 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 	const finish = Promise.withResolvers<TerminalMirrorResult>();
 	let finished = false;
 	let acceptingInput = options.inputAfterRefresh !== true;
+	// An exact-owner attach admits input only after the owner observation passes. An owner that
+	// exits before that check is not the verified owner, so its exit code is never a success here.
+	let verified = options.inputAfterRefresh !== true;
 	// Keep the visible screen and input admission atomic for an exact-owner attach.
 	// Unacknowledged output remains bounded by the broker's subscription byte limit.
 	const pendingOutput: DaemonTerminalOutputNotification[] = [];
@@ -220,25 +226,43 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 		});
 	};
 	const unsubscribe = options.client.subscribeTerminal(options.subscriptionId, handleFrame);
+	// A broker that drops without sending `terminal_exit` leaves no more frames to wait for; the
+	// mirror must settle instead of holding the caller open on a subscription nothing will feed.
+	const offDisconnect = options.client.onDisconnect?.(() => {
+		settle({ detached: false, exitCode: 1, reason: "broker connection closed" });
+	});
 
 	const settle = (result: TerminalMirrorResult): void => {
 		if (finished) return;
 		finished = true;
 		pendingOutput.length = 0;
+		offDisconnect?.();
 		unsubscribe();
 		releaseLocalTerminal();
 		finish.resolve(result);
 	};
 
 	const finishExit = (frame: DaemonTerminalExitNotification): void => {
-		options.client.close();
+		// Settle before closing: the owner's own exit is the authoritative result, and closing the
+		// connection first would let a local disconnect notification replace it.
+		if (!verified) {
+			settle({
+				detached: false,
+				exitCode: frame.exitCode === 0 ? 1 : frame.exitCode,
+				reason: UNVERIFIED_EXIT_REASON,
+			});
+			options.client.close();
+			return;
+		}
 		settle({ detached: false, exitCode: frame.exitCode, reason: frame.reason });
+		options.client.close();
 	};
 
 	let detachPromise: Promise<void> | undefined;
 	const detach = (): Promise<void> => {
 		if (finished) return Promise.resolve();
 		if (detachPromise) return detachPromise;
+		acceptingInput = false;
 		detachPromise = (async () => {
 			await options.client
 				.request({
@@ -248,8 +272,9 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 					id: options.id,
 				})
 				.catch(() => undefined);
-			options.client.close();
+			// Settle before closing: a local detach is the result here, not the connection drop.
 			settle({ detached: true });
+			options.client.close();
 		})();
 		return detachPromise;
 	};
@@ -273,7 +298,14 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 				.catch(() => undefined);
 		});
 		removeInput = input.onData(data => {
-			if (finished || !acceptingInput) return;
+			if (finished || detachPromise) return;
+			// Raw terminals deliver keyboard Ctrl-C as a byte, not a local SIGINT.
+			// Never forward it (or a coalesced chunk) into the shared owner's TUI.
+			if (data.includes("\u0003")) {
+				void detach();
+				return;
+			}
+			if (!acceptingInput) return;
 			void options.client.request({ op: "send", name: options.name, id: options.id, data }).catch(error => {
 				if (finished) return;
 				logger.warn("Terminal mirror input failed; detaching this mirror", {
@@ -298,16 +330,21 @@ export async function runTerminalMirror(options: TerminalMirrorOptions): Promise
 			});
 		}
 		for (const frame of options.initialFrames ?? []) handleFrame(frame);
-		if (finished) return finish.promise;
+		if (finished || detachPromise) return finish.promise;
 		if (options.refresh) {
+			// An owner that exits mid-verification settles this mirror; the refresh must not keep
+			// the caller waiting for a reply that can no longer arrive.
+			const refreshing = options.refresh();
+			void refreshing.catch(() => undefined);
 			try {
-				await options.refresh();
+				await Promise.race([refreshing, finish.promise]);
 			} catch (error) {
 				await detach();
 				throw error;
 			}
 		}
-		if (finished) return finish.promise;
+		if (finished || detachPromise) return finish.promise;
+		verified = true;
 		acceptingInput = true;
 		for (const frame of pendingOutput.splice(0)) handleFrame(frame);
 	} catch (error) {

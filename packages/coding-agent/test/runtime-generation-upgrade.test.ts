@@ -11,10 +11,12 @@ import { SESSION_OWNER_WORKER_ARG } from "@oh-my-pi/pi-coding-agent/cli/worker-s
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createDaemonBrokerClient } from "@oh-my-pi/pi-coding-agent/launch/client";
+import { readRuntimeBootIdentity } from "@oh-my-pi/pi-coding-agent/launch/runtime-generation";
 import {
 	consumeSessionOwnerContext,
 	resetSessionOwnerContextForTest,
 	SESSION_OWNER_CONTEXT_ENV,
+	SESSION_OWNER_WAKE_TARGET_ENV,
 	type SessionOwnerContext,
 } from "@oh-my-pi/pi-coding-agent/launch/session-owner";
 import type { SessionRestartTarget } from "@oh-my-pi/pi-coding-agent/launch/session-attach";
@@ -252,6 +254,112 @@ describe("upgrade_runtime", () => {
 		}
 	});
 
+	it.each(["boot", "missing-boot", "boot-only", "session", "file"] as const)(
+		"refuses a mismatched expected owner without invoking restart (%s)",
+		async mismatch => {
+			activateGeneration(temp.path(), GEN_A);
+			const manager = SessionManager.create(temp.path(), path.join(temp.path(), "fenced-sessions"));
+			manager.appendMessage({ role: "user", content: "owned conversation", timestamp: 1 });
+			await manager.ensureOnDisk();
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("expected journal");
+			const stub = stateSession();
+			Object.assign(stub.session, { sessionManager: manager, sessionId: manager.getSessionId(), sessionFile: file });
+			const upgrade = vi.fn();
+			const harness = createRpcSurfaceHarness({ session: stub.session, upgradeRuntime: upgrade });
+			try {
+				const response = await harness.handle({
+					type: "upgrade_runtime",
+					refresh: true,
+					...(mismatch === "boot-only"
+						? {}
+						: {
+								expectedSessionId: mismatch === "session" ? crypto.randomUUID() : manager.getSessionId(),
+								expectedSessionFile:
+									mismatch === "file"
+										? path.join(temp.path(), "other.jsonl")
+										: await fsPromises.realpath(file),
+							}),
+					...(mismatch === "missing-boot"
+						? {}
+						: {
+								expectedBootId: mismatch === "boot" ? crypto.randomUUID() : readRuntimeBootIdentity().bootId,
+							}),
+				});
+				expect(response).toMatchObject({
+					success: false,
+					code:
+						mismatch === "missing-boot"
+							? "owner_target_required"
+							: mismatch === "boot"
+								? "owner_target_mismatch"
+								: "session_target_mismatch",
+				});
+				await flushImmediate();
+				expect(upgrade).not.toHaveBeenCalled();
+			} finally {
+				harness.dispose();
+				await manager.close();
+			}
+		},
+	);
+
+	it.each(["idle", "admission", "idle-rebound", "admission-rebound"] as const)(
+		"refuses a replaced owner after the %s wait",
+		async boundary => {
+			const idle = boundary.startsWith("idle");
+			activateGeneration(temp.path(), GEN_A);
+			const manager = SessionManager.create(temp.path(), path.join(temp.path(), "replaced-sessions"));
+			manager.appendMessage({ role: "user", content: "owned conversation", timestamp: 1 });
+			await manager.ensureOnDisk();
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("expected journal");
+			const stub = stateSession();
+			Object.assign(stub.session, {
+				sessionManager: manager,
+				sessionId: manager.getSessionId(),
+				sessionFile: file,
+				isStreaming: idle,
+			});
+			const action = vi.fn();
+			const upgrade = vi.fn<(target?: SessionRestartTarget, canRestart?: () => boolean) => void>();
+			const harness = createRpcSurfaceHarness({ session: stub.session, upgradeRuntime: upgrade });
+			let replacement: SessionManager | undefined;
+			try {
+				expect(
+					await harness.handle({
+						type: "upgrade_runtime",
+						refresh: true,
+						whenIdle: true,
+						expectedSessionId: manager.getSessionId(),
+						expectedSessionFile: await fsPromises.realpath(file),
+						expectedBootId: readRuntimeBootIdentity().bootId,
+					}),
+				).toMatchObject({ success: true });
+				await flushImmediate();
+				if (!idle) expect(upgrade).toHaveBeenCalledTimes(1);
+				await manager.close();
+				replacement = await SessionManager.open(file);
+				if (boundary.endsWith("rebound")) Object.assign(harness.session, { sessionManager: replacement });
+				Object.assign(harness.session, { isStreaming: false });
+				if (idle) {
+					stub.emit({ type: "agent_end" });
+					await flushImmediate();
+					expect(upgrade).not.toHaveBeenCalled();
+				} else {
+					const canRestart = upgrade.mock.calls[0]?.[1];
+					if (!canRestart) throw new Error("expected execution fence");
+					if (canRestart()) action();
+					expect(action).not.toHaveBeenCalled();
+				}
+			} finally {
+				harness.dispose();
+				await replacement?.close();
+				await manager.close();
+			}
+		},
+	);
+
 	it.each(["single", "overlapping-legacy"] as const)(
 		"keeps same-generation refresh pending across initial and late foreground admission (%s)",
 		async mode => {
@@ -287,6 +395,7 @@ describe("upgrade_runtime", () => {
 					whenIdle: true,
 					expectedSessionId: expectedTarget.sessionId,
 					expectedSessionFile: expectedTarget.sessionFile,
+					expectedBootId: readRuntimeBootIdentity().bootId,
 				});
 				expect(responseData(response)).toMatchObject({
 					upgraded: false,
@@ -487,6 +596,8 @@ describe("upgrade_runtime", () => {
 		const alias = path.join(temp.path(), "selected-journal.jsonl");
 		await fs.promises.symlink(file, alias);
 		const manager = await SessionManager.open(alias);
+		manager.appendCustomEntry("fixture-owner-claim", {});
+		await manager.flush();
 		const auth = await AuthStorage.create(":memory:");
 		const registry = new ModelRegistry(auth, path.join(temp.path(), "models.yml"), {
 			ignoreLocalModelConfig: true,
@@ -528,6 +639,7 @@ describe("upgrade_runtime", () => {
 				state === "available" || state === "missing" || state === "closed"
 					? {}
 					: {
+							expectedBootId: readRuntimeBootIdentity().bootId,
 							...(state === "path-only"
 								? {}
 								: { expectedSessionId: state === "wrong-id" ? id.slice(0, 8) : id }),
@@ -912,8 +1024,9 @@ describe("InteractiveMode.restart across an in-place upgrade", () => {
 			return;
 		}
 		expect(command[0]).toBe("env");
-		expect(command[1]).toBe(`${SESSION_OWNER_CONTEXT_ENV}=${JSON.stringify(owner)}`);
-		expect(command[2]).toBe(`OMP_RUNNING_GENERATION_ENTRY=${upgradedEntry}`);
+		expect(command.slice(0, 3)).toEqual(["env", "-u", SESSION_OWNER_WAKE_TARGET_ENV]);
+		expect(command).toContain(`${SESSION_OWNER_CONTEXT_ENV}=${JSON.stringify(owner)}`);
+		expect(command).toContain(`OMP_RUNNING_GENERATION_ENTRY=${upgradedEntry}`);
 		const entryIndex = command.indexOf(upgradedEntry);
 		expect(entryIndex).toBeGreaterThan(2);
 		expect(command[entryIndex + 1]).toBe(SESSION_OWNER_WORKER_ARG);
@@ -1105,11 +1218,19 @@ describe("brokered owner upgrade end to end", () => {
 			const stateB = await feed.wait(frame => frame.type === "response" && frame.id === "state-b", 20_000);
 			expect(generationFields(stateB)).toEqual({ running: GEN_A, current: GEN_B, behind: true });
 
+			write({ id: "owner-preflight", type: "get_refresh_preflight" });
+			const preflight = await feed.wait(
+				frame => frame.type === "response" && frame.id === "owner-preflight",
+				20_000,
+			);
+			const receipt = responseData(preflight as RpcResponse).restartReceipt;
+			if (!isRecord(receipt) || typeof receipt.bootId !== "string") throw new Error("expected owner boot receipt");
 			write({
 				id: "upgrade",
 				type: "upgrade_runtime",
 				expectedSessionId: sessionId,
 				expectedSessionFile: await fs.promises.realpath(seededFile),
+				expectedBootId: receipt.bootId,
 			});
 			const upgraded = await feed.wait(frame => frame.type === "response" && frame.id === "upgrade", 20_000);
 			expect(upgraded.success).toBe(true);

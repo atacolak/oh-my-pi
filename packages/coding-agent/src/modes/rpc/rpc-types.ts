@@ -27,6 +27,7 @@ import type { McpReauthStatus, McpServerStatusEntry } from "./rpc-mcp";
 import type { CompactMode } from "../../session/compact-modes";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
+import type { SessionIdentityPatch, SessionIdentityRecord } from "../../session/session-identity";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
 import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import type { SubagentEventPayload, SubagentLifecyclePayload, SubagentProgressPayload } from "../../task";
@@ -37,6 +38,25 @@ import type { RpcMessagesPage } from "./rpc-messages";
 import type { GoalModeState } from "../../goals/state";
 import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
 import type { BtwHistoryRecord } from "../../session/btw-history";
+import type { NativeSessionInfo, NativeSessionList } from "../../session/session-service";
+import type {
+	AgentMailReadResult,
+	AgentMailReceipt,
+	AgentMailVerification,
+	AgentMailSendParams,
+	AgentMailSendResult,
+} from "../../session/session-mail";
+
+export interface RpcExitSessionResult {
+	scheduled: boolean;
+	owner: RpcRuntimeRestartReceipt;
+}
+
+export interface RpcSessionControlResult {
+	action: "abort" | "compact";
+	owner: RpcRuntimeRestartReceipt;
+	compaction?: CompactionResult;
+}
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -59,6 +79,15 @@ export type RpcCommand =
 	| { id?: string; type: "remove_queued_message"; message: string; queue: "steering" | "followUp" }
 	| { id?: string; type: "promote_queued_message"; message: string }
 	| { id?: string; type: "abort" }
+	| {
+			id?: string;
+			type: "session_control";
+			action: "abort" | "compact";
+			expectedSessionId: string;
+			expectedSessionFile: string;
+			expectedBootId: string;
+			mode?: CompactMode;
+	  }
 	| { id?: string; type: "abort_and_prompt"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort_and_restore_queue" }
 	| { id?: string; type: "new_session"; parentSession?: string }
@@ -66,7 +95,26 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "list_sessions"; query?: string; limit?: number; offset?: number }
+	| { id?: string; type: "resolve_session"; reference: string }
+	| { id?: string; type: "wake_session"; expectedSessionId: string; expectedSessionFile: string }
+	| ({ id?: string; type: "agent_mail_send" } & AgentMailSendParams)
 	| { id?: string; type: "get_refresh_preflight" }
+	| {
+			id?: string;
+			type: "set_session_identity";
+			expectedSessionId: string;
+			expectedSessionFile: string;
+			patch: SessionIdentityPatch;
+	  }
+	| {
+			id?: string;
+			type: "exit_session";
+			expectedSessionId: string;
+			expectedSessionFile: string;
+			expectedBootId: string;
+			force?: boolean;
+	  }
 	| {
 			id?: string;
 			type: "upgrade_runtime";
@@ -77,6 +125,7 @@ export type RpcCommand =
 			compactBeforeRestart?: boolean;
 			expectedSessionId?: string;
 			expectedSessionFile?: string;
+			expectedBootId?: string;
 	  }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
@@ -184,7 +233,47 @@ export type RpcCommand =
 	// Side questions (/btw); answers stream as `btw_delta` / `btw_record` frames
 	| { id?: string; type: "btw"; question: string; recordId?: string }
 	| { id?: string; type: "btw_cancel"; recordId?: string }
-	| { id?: string; type: "get_btw_history" };
+	| { id?: string; type: "get_btw_history" }
+
+	// Agent mail (cross-session, delivered over the recipient's session socket)
+	| {
+			id?: string;
+			type: "agent_mail_deliver";
+			/** Exact session UUID the sender captured for this owner; a mismatch refuses delivery. */
+			recipientSessionId: string;
+			recipientSessionFile: string;
+			recipientBootId: string;
+			messageId: string;
+			message: string;
+			threadId?: string;
+			replyTo?: string;
+			delivery: "queue" | "steer";
+			sentAt: number;
+			/** Claimed source owner; the recipient verifies the capability with that owner before admitting. */
+			senderSessionId: string;
+			senderSessionFile: string;
+			senderBootId: string;
+			/** Owner-issued single-use send capability for exactly this envelope. */
+			capabilityToken: string;
+	  }
+	| {
+			id?: string;
+			type: "agent_mail_verify_send";
+			capabilityToken: string;
+			recipientSessionId: string;
+			recipientSessionFile: string;
+			recipientBootId: string;
+			messageId: string;
+			message: string;
+			threadId?: string;
+			replyTo?: string;
+			delivery: "queue" | "steer";
+			sentAt: number;
+			senderSessionId: string;
+			senderSessionFile: string;
+			senderBootId: string;
+	  }
+	| { id?: string; type: "agent_mail_read"; threadId?: string; limit?: number };
 
 // ============================================================================
 // RPC State
@@ -193,6 +282,8 @@ export type RpcCommand =
 /** Owner-reported execution scope; no credentials or provider configuration. */
 export interface RpcSessionExecution {
 	profile: string | null;
+	/** Root profile recorded in the current transcript; null means unavailable or unbound. */
+	profileBinding: string | null;
 	cwd: string;
 	memory: { backend: "hindsight"; scoping: string; scopeTags: string[] | null } | null;
 }
@@ -545,6 +636,25 @@ export type RpcResponse =
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
 	| { id?: string; type: "response"; command: "get_refresh_preflight"; success: true; data: RpcRefreshPreflight }
+	| { id?: string; type: "response"; command: "set_session_identity"; success: true; data: SessionIdentityRecord }
+	| { id?: string; type: "response"; command: "session_control"; success: true; data: RpcSessionControlResult }
+	| { id?: string; type: "response"; command: "list_sessions"; success: true; data: NativeSessionList }
+	| { id?: string; type: "response"; command: "resolve_session"; success: true; data: NativeSessionInfo }
+	| {
+			id?: string;
+			type: "response";
+			command: "wake_session";
+			success: true;
+			data: NativeSessionInfo & { revived: boolean };
+	  }
+	| { id?: string; type: "response"; command: "agent_mail_send"; success: true; data: AgentMailSendResult }
+	| {
+			id?: string;
+			type: "response";
+			command: "exit_session";
+			success: true;
+			data: RpcExitSessionResult;
+	  }
 	| {
 			id?: string;
 			type: "response";
@@ -746,6 +856,10 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "dictation_start"; success: true }
 	| { id?: string; type: "response"; command: "dictation_stop"; success: true; data: { text: string } }
 	| { id?: string; type: "response"; command: "handoff"; success: true; data: RpcHandoffResult | null }
+	// Agent mail
+	| { id?: string; type: "response"; command: "agent_mail_deliver"; success: true; data: AgentMailReceipt }
+	| { id?: string; type: "response"; command: "agent_mail_verify_send"; success: true; data: AgentMailVerification }
+	| { id?: string; type: "response"; command: "agent_mail_read"; success: true; data: AgentMailReadResult }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

@@ -18,6 +18,13 @@ export const launchHelp = {
 		model: Flags.string({
 			description: 'Model to use (fuzzy match: "opus", "gpt-5.2"; exact with a provider: "openai/gpt-5.2")',
 		}),
+		agent: Flags.string({
+			description:
+				"Start this session as a discovered agent (user ~/.omp/agent/agents, project .omp/agents, or bundled)",
+		}),
+		"agent-cwd": Flags.string({
+			description: "Project root used only to discover --agent; the session still runs in --cwd",
+		}),
 		smol: Flags.string({ description: "Smol/fast model for lightweight tasks (or PI_SMOL_MODEL env)" }),
 		slow: Flags.string({ description: "Slow/reasoning model for thorough analysis (or PI_SLOW_MODEL env)" }),
 		plan: Flags.string({ description: "Plan model for architectural planning (or PI_PLAN_MODEL env)" }),
@@ -64,7 +71,7 @@ export const launchHelp = {
 		print: Flags.boolean({ char: "p", description: "Non-interactive mode: process prompt and exit" }),
 		continue: Flags.boolean({ char: "c", description: "Continue previous session" }),
 		resume: Flags.string({ char: "r", description: "Resume a session (by ID prefix, path, or picker if omitted)" }),
-		attach: Flags.string({ description: "Interactively attach only to the exact existing live transcript owner" }),
+		attach: Flags.string({ description: "Attach to a named actor, unique session-id suffix, or exact transcript path" }),
 		restore: Flags.string({
 			description:
 				"Resume a session as --resume does, then go on with what its last process left unfinished (the interrupted turn and the subagents it was running)",
@@ -158,6 +165,7 @@ export const launchHelp = {
 		`# Pick a session back up after a crash, subagents included\n  ${APP_NAME} --restore ~/.omp/agent/sessions/--path--/session.jsonl`,
 		`# Create a shell shortcut for a work profile\n  ${APP_NAME} --profile work --alias omp-work`,
 		`# Use different model (fuzzy matching)\n  ${APP_NAME} --model opus "Help me refactor this code"`,
+		`# Start as a named agent (tools, thinking, model, body)\n  ${APP_NAME} --agent navigator`,
 		`# Limit model cycling to specific models\n  ${APP_NAME} --models claude-sonnet,claude-haiku,gpt-4o`,
 		`# Export a session file to HTML\n  ${APP_NAME} --export ~/.omp/agent/sessions/--path--/session.jsonl`,
 	],

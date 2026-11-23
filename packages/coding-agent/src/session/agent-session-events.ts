@@ -9,6 +9,7 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
 import type { CustomMessage } from "./messages";
 import type { CacheWarmingRefreshEnd, CacheWarmingRefreshStart } from "./cache-warmer";
+import type { AgentMailRecord } from "./session-mail";
 
 /** Session-specific events that extend the core AgentEvent. */
 export type AgentSessionEvent =
@@ -89,6 +90,7 @@ export type AgentSessionEvent =
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }
 	| { type: "irc_message"; message: CustomMessage }
+	| { type: "agent_mail"; mail: AgentMailRecord }
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| {
 			type: "thinking_level_changed";

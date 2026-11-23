@@ -77,6 +77,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
 import { restartArgv } from "../cli/flag-tables";
 import { SESSION_OWNER_WORKER_ARG } from "../cli/worker-selectors";
+import { prepareSessionOwnerIdleRetirement } from "../launch/client";
 import { matchesSessionPath, type SessionRestartTarget } from "../launch/session-attach";
 import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
@@ -118,7 +119,7 @@ import { rebindMemoryBackendForCwd } from "../hindsight/backend";
 import { copyLocalArtifacts, resolveLocalRoot } from "../internal-urls";
 import { hasNativeJudge } from "../judgment";
 import { resolveUpgradedCliEntryCmd } from "../launch/runtime-generation";
-import { SESSION_OWNER_CONTEXT_ENV, sessionOwnerContext } from "../launch/session-owner";
+import { SESSION_OWNER_CONTEXT_ENV, SESSION_OWNER_WAKE_TARGET_ENV, sessionOwnerContext } from "../launch/session-owner";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
 import {
@@ -184,7 +185,8 @@ import { type DictationTarget, MicCursor, type SttCallbacks, STTController, type
 import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
 import { attestCliRestartReceiver, resolveCliEntryCmd, validateCliEntryCmd } from "../subprocess/worker-client";
 import type { ModelRuntimeUpgrade, RuntimeRestartOptions } from "./rpc/model-runtime-upgrade";
-import { getRpcRefreshPreflight, isGracefulRestartSettled } from "./rpc/rpc-refresh-preflight";
+import { getRpcRefreshPreflight, isGracefulRestartSettled, isSessionExitIdle } from "./rpc/rpc-refresh-preflight";
+import { getSessionIdleSleepSeconds } from "../session/idle-sleep-policy";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
@@ -1922,6 +1924,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		scheduledTurn: ((target: AgentViewSession) => boolean) | undefined;
 		presentRecap: ((recap: string) => void) | undefined;
 	} = { target: undefined, ready: false, isComposing: false, scheduledTurn: undefined, presentRecap: undefined };
+	/** Initialization belongs to the owner and survives a renderer hangup. */
+	#ownerReady = false;
 
 	syncIdleMaintenanceView(target: AgentViewSession | null = this.viewSession): void {
 		const activity = this.#idleMaintenanceActivity;
@@ -1943,9 +1947,51 @@ export class InteractiveMode implements InteractiveModeContext {
 			scheduledTurn: () => activity.scheduledTurn?.(target) === true,
 			// Delivered only while unblocked, so `target` is the session on screen.
 			onRecap: recap => activity.presentRecap?.(recap),
+			sleep:
+				target === this.session && sessionOwnerContext()
+					? {
+							seconds: () =>
+								getSessionIdleSleepSeconds(
+									this.session.settings,
+									this.sessionManager.getSessionIdentityMetadata(),
+								),
+							canExit: () => this.#canIdleSleep(),
+							exit: canExit => this.#retireIdleOwner(canExit),
+						}
+					: undefined,
 		});
 		if (previous !== target) previous?.refreshIdleMaintenance();
 		target.refreshIdleMaintenance();
+	}
+
+	#canIdleSleep(): boolean {
+		const manager = this.sessionManager;
+		const journal = manager.getCanonicalSessionFile();
+		const hasOwner = journal
+			? manager.hasSessionOwnership()
+			: !manager.isSessionOnDisk() && !manager.requiresSessionFile();
+		return (
+			this.#ownerReady &&
+			!this.#isShuttingDown &&
+			!this.#teardownFailed &&
+			!this.#dialogLifetime.signal.aborted &&
+			!this.hasPendingTerminalWork() &&
+			!this.#servedSessionSocket?.surface.hasPendingInputWork &&
+			!this.#servedSessionSocket?.socket.hasConnectedClients &&
+			hasOwner &&
+			isSessionExitIdle(this.session)
+		);
+	}
+
+	async #retireIdleOwner(canExit: () => boolean): Promise<boolean> {
+		const owner = sessionOwnerContext();
+		if (!owner || !canExit()) return false;
+		await using terminalRetirement = await prepareSessionOwnerIdleRetirement(owner);
+		if (!terminalRetirement || !canExit()) return false;
+		const socket = this.#servedSessionSocket?.socket;
+		using rpcRetirement = socket?.prepareIdleRetirement();
+		if ((socket && !rpcRetirement) || !canExit()) return false;
+		return await this.exitIdleSession(canExit);
 	}
 	get viewSession(): AgentViewSession {
 		return this.#focusController.target ?? this.session;
@@ -2506,29 +2552,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		// the terminal went away, not the session. The hangup handler below claims
 		// it and detaches only the view; this disposal callback stays armed for the
 		// real quit (SIGINT/SIGTERM) and is the fallback when detach fails.
-		this.#signalTeardown = createSessionTeardown({
-			getDraftText: () => this.#inputController.getDraftText(),
-			beginDispose: () => {
-				this.#closeAttempt?.abort();
-				this.session.beginDispose();
-				this.statusLine.dispose();
-			},
-			saveDraft: text => this.sessionManager.saveDraft(text),
-			disposeSession: async reason => {
-				await this.#btwController.dispose();
-				await this.session.dispose({
-					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
-					reason,
-				});
-			},
-		});
+		this.#getSessionTeardown();
 		// Forward the postmortem reason (SIGTERM/uncaughtException/…, or a SIGHUP
 		// whose detach failed) so the persisted `session_exit` diagnostic carries
 		// the real trigger. Postmortem runs callbacks in REVERSE registration
 		// order — this callback (registered after the AgentSession constructor's
 		// `agent-session:<id>` recorder) runs FIRST and its dispose() would
 		// otherwise persist the generic "dispose".
-		this.#cleanupUnsubscribe = postmortem.register("session-teardown", reason => this.#signalTeardown!(reason));
+		this.#cleanupUnsubscribe = postmortem.register("session-teardown", async reason => {
+			await this.#signalTeardown!(reason);
+		});
 
 		// Claim SIGHUP while this process is a live attach endpoint: closing the
 		// terminal detaches the view, it does not dispose the session or cancel
@@ -3082,6 +3115,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// `streamingBehavior: "steer"`, so whichever lands second queues into the
 		// other's turn instead of dying.
 		this.editor.disableSubmit = false;
+		this.#ownerReady = true;
 		this.#idleMaintenanceActivity.ready = true;
 		this.syncIdleMaintenanceView();
 		// Publish native send readiness even when no user input triggers another frame.
@@ -8252,6 +8286,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			mcpManager: this.mcpManager,
 			isShuttingDown: () => this.#isShuttingDown,
 			upgradeRuntime: (target, canRestart, options) => void this.restart(target, canRestart, options),
+			exitSession: canExit => this.exitIdleSession(canExit),
+			hasPendingHostWork: () => this.hasPendingTerminalWork(),
 			modelRuntimeUpgrade,
 			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
 		});
@@ -8449,6 +8485,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#quitHostOwned(0);
 	}
 
+	/** Cooperative sleep retains the journal, draft and worktrees; never forces another owner out. */
+	async exitIdleSession(canExit: () => boolean): Promise<boolean> {
+		if (this.#isShuttingDown || this.#teardownFailed || this.hasPendingTerminalWork() || !canExit()) return false;
+		const controller = new AbortController();
+		if (!(await this.session.confirmClose(controller.signal))) return false;
+		// Both extension decisions and draft storage may await. Admission stays open
+		// until a saved draft and a fresh idle/identity check permit disposal.
+		const canClose = (): boolean =>
+			!this.#isShuttingDown &&
+			!this.session.isDisposed &&
+			!this.#dialogLifetime.signal.aborted &&
+			!this.hasPendingTerminalWork() &&
+			canExit();
+		if (!canClose()) return false;
+		try {
+			if (!(await this.#teardown(canClose))) return false;
+		} catch (error) {
+			this.#handleTeardownError("close", error);
+			return false;
+		}
+		await this.#quitHostOwned(0);
+		return true;
+	}
+
 	#handleTeardownError(action: "close" | "restart", error: unknown): void {
 		this.#abandonClose();
 		const detail = error instanceof Error ? error.message : String(error);
@@ -8639,14 +8699,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		// A configured running-entry override must name the entry actually
 		// executed, including the upgraded generation.
 		const carriedEnv: [string, string][] = [];
-		if (owner) carriedEnv.push([SESSION_OWNER_CONTEXT_ENV, JSON.stringify({ ...owner, restartTarget: target })]);
+		if (owner) {
+			carriedEnv.push([
+				SESSION_OWNER_CONTEXT_ENV,
+				JSON.stringify({
+					projectDir: owner.projectDir,
+					...(owner.runtimeDir === undefined ? {} : { runtimeDir: owner.runtimeDir }),
+					name: owner.name,
+					id: owner.id,
+					restartTarget: target,
+				}),
+			]);
+		}
 		const runningEntryOverride = process.env.OMP_RUNNING_GENERATION_ENTRY?.trim();
 		if (entry.upgraded && runningEntryOverride && entry.entry) {
 			carriedEnv.push(["OMP_RUNNING_GENERATION_ENTRY", entry.entry]);
 		}
 		const replaceCmd =
 			carriedEnv.length > 0 && process.platform !== "win32"
-				? ["env", ...carriedEnv.map(([key, value]) => `${key}=${value}`), ...cmd]
+				? [
+						"env",
+						...(owner ? ["-u", SESSION_OWNER_WAKE_TARGET_ENV] : []),
+						...carriedEnv.map(([key, value]) => `${key}=${value}`),
+						...cmd,
+					]
 				: cmd;
 		await postmortem.cleanup();
 		await postmortem.drainStdout();
@@ -8704,47 +8780,47 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#closeAttempt = undefined;
 	}
 
-	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
-	async #teardown(): Promise<void> {
-		// An in-flight loop condition (or a deferred auto-submit timer) must not
-		// outlive session disposal: an unaborted `sleep 30`-style condition can
-		// resolve mid-teardown and drive `#passesLoopCondition` into invoking the
-		// pending input callback against a session that is already disposing.
-		this.#abortLoopCondition();
-		this.#cancelLoopAutoSubmit();
+	/** Draft admission and all irreversible cleanup share one teardown owner. */
+	#getSessionTeardown(): SessionTeardown {
+		return (this.#signalTeardown ??= createSessionTeardown({
+			getDraftText: () => this.#inputController.getDraftText(),
+			beginDispose: () => {
+				if (!this.#isShuttingDown) this.#beginClose();
+				this.#closeAttempt?.abort();
+				this.session.beginDispose();
+				this.statusLine.dispose();
+			},
+			saveDraft: text => this.sessionManager.saveDraft(text),
+			disposeSession: async reason => {
+				this.#abortLoopCondition();
+				this.#cancelLoopAutoSubmit();
+				this.#streamPublisher?.dispose();
+				this.#streamPublisher = undefined;
+				await this.#recorder?.stop();
+				this.#recorder = undefined;
+				await this.collabController.shutdown("host exited");
+				await this.#liveCommandController.stop();
+				await this.#btwController.dispose();
+				this.#omfgController.dispose();
+				this.#cleanseController.dispose();
+				this.#focusController.dispose();
+				await this.session.dispose({
+					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+					reason,
+				});
+			},
+		}));
+	}
 
+	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
+	async #teardown(canDispose?: () => boolean): Promise<boolean> {
 		// `#beginClose()` already acknowledged the close; escalate only once the
 		// teardown itself lingers, so time spent in exit prompts never counts.
 		const stillClosingTimer = setTimeout(() => {
 			this.showStatus("Still closing… (flushing memory backend / network)");
 		}, STILL_CLOSING_DELAY_MS);
 		try {
-			this.#streamPublisher?.dispose();
-			this.#streamPublisher = undefined;
-			await this.#recorder?.stop();
-			this.#recorder = undefined;
-			// Guests get goodbye and the registry entry disappears before the
-			// session is disposed, under the same still-closing progress notice.
-			await this.collabController.shutdown("host exited");
-			await this.#liveCommandController.stop();
-			await this.#btwController.dispose();
-			this.#omfgController.dispose();
-			this.#cleanseController.dispose();
-			this.#focusController.dispose();
-
-			// Persist the draft and dispose the session through the shared teardown
-			// so a signal that arrives mid-shutdown cannot fire a second dispose.
-			// The teardown is a promise-memoized singleton; whichever path calls it
-			// first runs the work, the other awaits the same settled promise.
-			// The teardown is registered lazily in `init()` — a `/exit` reached
-			// before `init()` completed falls back to a direct dispose.
-			if (this.#signalTeardown) {
-				await this.#signalTeardown();
-			} else {
-				await this.session.dispose({
-					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
-				});
-			}
+			if (!(await this.#getSessionTeardown()(undefined, canDispose))) return false;
 		} finally {
 			clearTimeout(stillClosingTimer);
 		}
@@ -8766,6 +8842,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		disposeProgramStatus();
 		popTerminalTitle();
 		this.stop();
+		return true;
 	}
 
 	requestShutdown(): void {
@@ -8780,6 +8857,20 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** True while a foreground submission is accepted but not yet handed to the session. */
 	hasPendingSubmission(): boolean {
 		return this.#pendingSubmittedInput !== undefined;
+	}
+
+	/** Terminal-owned work not yet represented by the AgentSession queue or run state. */
+	hasPendingTerminalWork(): boolean {
+		return (
+			this.hasPendingSubmission() ||
+			this.#vibeSkillInFlight > 0 ||
+			this.#vibeModeEntry !== undefined ||
+			this.#goalContinuationTimer !== undefined ||
+			this.#pendingGoalContinuationTurns > 0 ||
+			this.#loopAutoSubmitTimer !== undefined ||
+			this.#pendingLoopIterations > 0 ||
+			this.#loopConditionAbort !== undefined
+		);
 	}
 
 	async checkShutdownRequested(): Promise<void> {

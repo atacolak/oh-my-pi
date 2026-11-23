@@ -4,6 +4,11 @@
 
 ### Added
 
+- `omp sock` can discover, name, rename, inspect context, wake, attach to and control saved conversations by name, UUID or verified owner PID.
+- Native mail tools exchange threaded messages through session sockets, waking sleeping recipients and reporting admission separately from model replies.
+- Detached sessions sleep after one idle hour by default; global, profile and per-session overrides include `0` to disable sleep.
+- Graceful restart asks the model to checkpoint responsibilities and waits for acknowledgment, owned work and saved results before replacing the owner.
+- The [native session API guide](../../docs/native-session-api.md) covers Exocortex integration, context, restart modes and legacy migration boundaries.
 - attached hosts can verify a session's active agent profile, working directory and project memory scope.
 - attached hosts can inspect effective model, thinking level and bounded configuration warnings without opening the terminal.
 - RPC clients can now manage MCP servers: `get_mcp_status` lists configured, disabled and plugin servers with their live state, `set_mcp_enabled` persists and applies enablement, and `mcp_reauth` runs the OAuth flow on the calling connection; the `compact` command accepts an explicit `mode` (`soft`, `remote` or `snapcompact`) and refuses unknown values
@@ -27,6 +32,7 @@
 - Child-process RPC tests now run with hermetic `OMP_RUN_DIR`, `HOME`, and `PI_CODING_AGENT_DIR`, and `--no-session` launches no longer publish an attach socket that could never be resumed, so running the suite leaves no dead `.json`/`.sock` sidecars in `~/.omp/run`
 - Session attach endpoints now honor `OMP_RUN_DIR` for publication and discovery, matching RPC clients, so sessions kept in a custom run directory can be resumed, attached, and refreshed from the directory they publish in
 - Resuming a session whose attach endpoint was left behind by a dead process now opens it cold instead of failing as unreachable, unless another process still holds the session lease
+
 ## [18.18.8] - 2026-11-11
 
 ### Changed

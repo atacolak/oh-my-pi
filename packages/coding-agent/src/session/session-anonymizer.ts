@@ -342,6 +342,7 @@ const FIELD_RULES: Record<string, Rule> = {
 	inputTransformations: "transforms",
 	parentSession: "sessionPath",
 	previousSessionFiles: "sessionPath",
+	rootAgentCwd: "path",
 	runtime: "runtime",
 	content: "content",
 	...fields("struct", [

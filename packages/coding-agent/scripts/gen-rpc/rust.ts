@@ -207,15 +207,25 @@ class RustEmitter {
 	}
 
 	#literal(value: string | number | boolean): string {
-		if (typeof value === "number") throw new Error("numeric constants are not supported");
-		const name = `Lit${pascal(String(value))}`;
+		if (typeof value === "number" && !Number.isSafeInteger(value))
+			throw new Error("numeric constants must be safe integers");
+		const name =
+			typeof value === "number"
+				? `LitNumber${value < 0 ? "Neg" : ""}${Math.abs(value)}`
+				: `Lit${pascal(String(value))}`;
 		return this.#register(name, () => {
 			const check =
-				typeof value === "string" ? `value.as_str() == Some(${str(value)})` : `value.as_bool() == Some(${value})`;
+				typeof value === "string"
+					? `value.as_str() == Some(${str(value)})`
+					: typeof value === "number"
+						? `value.as_${value < 0 ? "i64" : "u64"}() == Some(${value})`
+						: `value.as_bool() == Some(${value})`;
 			const write =
 				typeof value === "string"
 					? `serializer.serialize_str(${str(value)})`
-					: `serializer.serialize_bool(${value})`;
+					: typeof value === "number"
+						? `serializer.serialize_${value < 0 ? "i64" : "u64"}(${value})`
+						: `serializer.serialize_bool(${value})`;
 			const shown = JSON.stringify(value);
 			return [
 				`/// The constant \`${shown}\`.`,
@@ -488,7 +498,7 @@ class RustEmitter {
 			if (dispatch && !unionMembers(model.defs.get(member))) {
 				for (const [value, target] of dispatch.cases) if (target === member) variant = pascal(value);
 			}
-			if ([...variants.values()].includes(variant) || variant === "Unknown") {
+			if ([...variants.values()].includes(variant) || (unknown && variant === "Unknown")) {
 				throw new Error(`${def.name}: duplicate variant ${variant}`);
 			}
 			variants.set(member, variant);
@@ -600,10 +610,10 @@ class RustEmitter {
 		let output = "()";
 		let decode = "\t\tlet _ = data;\n\t\tOk(())";
 		if (command.result) {
-			const result = this.#object(command.result);
 			let project = "";
 			output = command.result;
 			if (command.unwrap) {
+				const result = this.#object(command.result);
 				const plan = this.#planFields(result, result.fields).find(
 					candidate => candidate.field.key === command.unwrap,
 				);

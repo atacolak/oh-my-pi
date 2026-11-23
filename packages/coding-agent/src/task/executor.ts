@@ -65,6 +65,7 @@ import type { ToolPathWithSource } from "../extensibility/custom-tools";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { PreparedExtension } from "../extensibility/extensions/types";
 import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { HindsightSessionStateApi } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
@@ -624,6 +625,7 @@ export interface ExecutorOptions {
 	parentTelemetry?: AgentTelemetryConfig;
 	/** Skills to autoload via sendCustomMessage before the first prompt */
 	autoloadSkills?: Skill[];
+	skillLoadPolicy?: SkillLoadPolicy;
 	/**
 	 * Registry id of the spawning agent, recorded as this subagent's parent.
 	 * Forwarded verbatim to the SDK; the executor never derives it (the spawner
@@ -4740,13 +4742,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 							modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings),
 						)
 					: undefined;
-			const {
-				model,
-				thinkingLevel: resolvedThinkingLevel,
-				explicitThinkingLevel,
-				authFallbackUsed,
-				warning: modelResolutionWarning,
-			} = await awaitAbortable(
+			const resolveConfiguredModel = () =>
 				resolveModelOverrideWithAuthFallback(
 					modelPatterns,
 					options.parentActiveModelPattern,
@@ -4754,13 +4750,28 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					settings,
 					id,
 					options.perCallModelGrants ? { exactOnly: true } : undefined,
-				),
-			);
+				);
+			let resolution = await awaitAbortable(resolveConfiguredModel());
+			if (!resolution.model && !options.perCallModelGrants && configuredModelPatterns.length > 0) {
+				modelRegistry.refreshInBackground();
+				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
+				resolution = await awaitAbortable(resolveConfiguredModel());
+			}
+			const {
+				model,
+				thinkingLevel: resolvedThinkingLevel,
+				explicitThinkingLevel,
+				authFallbackUsed,
+				warning: modelResolutionWarning,
+			} = resolution;
 			if (options.perCallModelGrants && !model) {
 				throw new PerCallModelError(
 					`Requested exact model ${JSON.stringify(modelPatterns)} is unavailable. Use an exact provider/model[:level] selector; do not substitute another model.`,
 				);
 			}
+			// Extension factories can register the configured model during SDK startup.
+			// Require resolution there, after registration, before any child turn starts.
+			const deferredModelPatterns = !model && configuredModelPatterns.length > 0 ? modelPatterns : undefined;
 			if (modelResolutionWarning) {
 				logger.warn("Subagent model resolution warning", {
 					warning: modelResolutionWarning,
@@ -4963,13 +4974,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					oauthAccountPools: options.oauthAccountPools,
 					inheritedSessionAgents: options.inheritedSessionAgents,
 					model,
-					modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
-					modelPatternAuthFallback:
-						model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
-					modelPatternFallbackRole:
-						model || modelOverride === undefined ? undefined : subagentRetryFallbackRole(id),
-					modelPatternDefaultFallbackChain:
-						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
+					modelPattern: deferredModelPatterns,
+					requireModelPattern: configuredModelPatterns.length > 0,
+					modelPatternAuthFallback: deferredModelPatterns ? options.parentActiveModelPattern : undefined,
+					modelPatternFallbackRole: deferredModelPatterns ? subagentRetryFallbackRole(id) : undefined,
+					modelPatternDefaultFallbackChain: deferredModelPatterns ? inheritedRetryFallbackChain : undefined,
 					thinkingLevel: effectiveThinkingLevel,
 					...(perCallModelGrants
 						? {
@@ -4978,6 +4987,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 									assertPerCallModelApproved(dispatchModel, perCallModelGrants, modelRegistry);
 									if (spawnEffortCeiling) assertModelSupportsEffortCeiling(dispatchModel, spawnEffortCeiling);
 								},
+							}
+						: {}),
+					...(perCallModelGrants || agent.modelFallback === false
+						? {
 								disableModelFallback: true,
 								disableServerSideFallback: true,
 							}
@@ -4995,6 +5008,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					// Subagents never receive AGENTS.md, including from additional workspace roots they rediscover.
 					excludeAgentsMd: true,
 					skills: options.skills,
+					skillLoadPolicy: options.skillLoadPolicy,
 					promptTemplates: options.promptTemplates,
 					workspaceTree: options.workspaceTree,
 					rules: options.rules,
@@ -5226,6 +5240,8 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				readOnly: isReadOnlyAgent(agent),
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
+				modelFallback: agent.modelFallback,
+				skillLoadPolicy: options.skillLoadPolicy,
 				advisor: advisorSelection ? (advisorRolePattern ?? "on") : undefined,
 				compactionThreshold: options.compactionThresholdOverride,
 				outputSchema,
@@ -5274,7 +5290,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 
 			checkAbort();
 			// Autoload skills via sendCustomMessage (same mechanic as /skill:<name>)
-			if (options.autoloadSkills?.length) {
+			if (options.autoloadSkills?.length && !options.skillLoadPolicy) {
 				for (const skill of options.autoloadSkills) {
 					const { message, details } = await buildSkillPromptMessage(skill, { args: "" }, "autoload", session);
 					await session.sendCustomMessage(

@@ -2639,6 +2639,162 @@ pub struct ModelInfo {
 	pub compat: Option<Map<String, Value>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeSessionTerminal {
+	#[serde(rename = "protocolVersion")]
+	pub protocol_version: LitNumber1,
+	#[serde(rename = "projectDir")]
+	pub project_dir: String,
+	pub name: String,
+	pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeSessionInfo {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub handle: Option<String>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub title: Option<String>,
+	#[serde(rename = "rootAgent", deserialize_with = "Deserialize::deserialize")]
+	pub root_agent: Option<String>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub generation: Option<String>,
+	pub assignments: Vec<SessionIdentityAssignment>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub cwd: Option<String>,
+	#[serde(rename = "sessionFile", deserialize_with = "Deserialize::deserialize")]
+	pub session_file: Option<String>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub pid: Option<i64>,
+	#[serde(rename = "startedAt", deserialize_with = "Deserialize::deserialize")]
+	pub started_at: Option<f64>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub model: Option<String>,
+	pub availability: NativeSessionInfoAvailability,
+	pub state: NativeSessionInfoState,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub terminal: Option<NativeSessionTerminal>,
+	#[serde(rename = "rootAgentCwd", default, skip_serializing_if = "Option::is_none")]
+	pub root_agent_cwd: Option<String>,
+	#[serde(rename = "idleSleepSeconds", default, skip_serializing_if = "Option::is_none")]
+	pub idle_sleep_seconds: Option<i64>,
+	#[serde(rename = "modifiedAt", default, skip_serializing_if = "Option::is_none")]
+	pub modified_at: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub owner: Option<RuntimeRestartReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeSessionList {
+	pub sessions: Vec<NativeSessionInfo>,
+	pub total: i64,
+	pub truncated: bool,
+	#[serde(rename = "nextOffset", default, skip_serializing_if = "Option::is_none")]
+	pub next_offset: Option<i64>,
+	#[serde(rename = "attachableSockets", default, skip_serializing_if = "Option::is_none")]
+	pub attachable_sockets: Option<i64>,
+	#[serde(rename = "unverifiedSockets", default, skip_serializing_if = "Option::is_none")]
+	pub unverified_sockets: Option<i64>,
+	#[serde(rename = "omittedUnnamed", default, skip_serializing_if = "Option::is_none")]
+	pub omitted_unnamed: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeSessionWakeResult {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub handle: Option<String>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub title: Option<String>,
+	#[serde(rename = "rootAgent", deserialize_with = "Deserialize::deserialize")]
+	pub root_agent: Option<String>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub generation: Option<String>,
+	pub assignments: Vec<SessionIdentityAssignment>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub cwd: Option<String>,
+	#[serde(rename = "sessionFile", deserialize_with = "Deserialize::deserialize")]
+	pub session_file: Option<String>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub pid: Option<i64>,
+	#[serde(rename = "startedAt", deserialize_with = "Deserialize::deserialize")]
+	pub started_at: Option<f64>,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub model: Option<String>,
+	pub availability: NativeSessionWakeResultAvailability,
+	pub state: NativeSessionWakeResultState,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub terminal: Option<NativeSessionTerminal>,
+	pub revived: bool,
+	#[serde(rename = "rootAgentCwd", default, skip_serializing_if = "Option::is_none")]
+	pub root_agent_cwd: Option<String>,
+	#[serde(rename = "idleSleepSeconds", default, skip_serializing_if = "Option::is_none")]
+	pub idle_sleep_seconds: Option<i64>,
+	#[serde(rename = "modifiedAt", default, skip_serializing_if = "Option::is_none")]
+	pub modified_at: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub owner: Option<RuntimeRestartReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailAcceptedResult {
+	pub receipt: AgentMailReceipt,
+	pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailRefusedResult {
+	pub error: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailUnknownResult {
+	pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentMailSendResult {
+	Accepted(AgentMailAcceptedResult),
+	Refused(AgentMailRefusedResult),
+	Unknown(AgentMailUnknownResult),
+}
+
+impl AgentMailSendResult {
+	/// Decodes from JSON, dispatching on `status`.
+	pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+		let decode: fn(Value) -> Result<Self, serde_json::Error> = match value.get("status").and_then(Value::as_str) {
+			Some("accepted") => |value| serde_json::from_value(value).map(Self::Accepted),
+			Some("refused") => |value| serde_json::from_value(value).map(Self::Refused),
+			Some("unknown") => |value| serde_json::from_value(value).map(Self::Unknown),
+			other => {
+				return Err(serde_json::Error::custom(format!("unknown AgentMailSendResult status {other:?}")));
+			}
+		};
+		decode(value)
+	}
+}
+
+impl Serialize for AgentMailSendResult {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		match self {
+			Self::Accepted(member) => serialize_tagged(member, &[("status", "accepted")], serializer),
+			Self::Refused(member) => serialize_tagged(member, &[("status", "refused")], serializer),
+			Self::Unknown(member) => serialize_tagged(member, &[("status", "unknown")], serializer),
+		}
+	}
+}
+
+impl<'de> Deserialize<'de> for AgentMailSendResult {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		Self::from_value(Value::deserialize(deserializer)?).map_err(D::Error::custom)
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QueueMode {
 	#[serde(rename = "all")]
@@ -2954,6 +3110,175 @@ impl SubagentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionIdentityAssignment {
+	pub kind: String,
+	pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionIdentityPatch {
+	#[serde(rename = "actorHandle", default, skip_serializing_if = "Option::is_none")]
+	pub actor_handle: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub assignments: Option<Vec<SessionIdentityAssignment>>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub generation: Option<String>,
+	/// Actor override in seconds; zero disables, null inherits profile/config.
+	#[serde(rename = "idleSleepSeconds", default, skip_serializing_if = "Option::is_none")]
+	pub idle_sleep_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionIdentityRecord {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(rename = "sessionFile")]
+	pub session_file: String,
+	pub cwd: String,
+	#[serde(rename = "actorHandle", deserialize_with = "Deserialize::deserialize")]
+	pub actor_handle: Option<String>,
+	pub assignments: Vec<SessionIdentityAssignment>,
+	#[serde(rename = "rootAgent", default, skip_serializing_if = "Option::is_none")]
+	pub root_agent: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub generation: Option<String>,
+	#[serde(rename = "idleSleepSeconds", default, skip_serializing_if = "Option::is_none")]
+	pub idle_sleep_seconds: Option<i64>,
+	#[serde(rename = "modifiedAt", default, skip_serializing_if = "Option::is_none")]
+	pub modified_at: Option<f64>,
+}
+
+/// Recipient-side input path the sender chose: queue behind the run, or steer into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentMailDelivery {
+	#[serde(rename = "queue")]
+	Queue,
+	#[serde(rename = "steer")]
+	Steer,
+}
+
+impl AgentMailDelivery {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Queue => "queue",
+			Self::Steer => "steer",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentMailAdmission {
+	#[serde(rename = "admitted")]
+	Admitted,
+	#[serde(rename = "queued")]
+	Queued,
+	#[serde(rename = "steering")]
+	Steering,
+}
+
+impl AgentMailAdmission {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Admitted => "admitted",
+			Self::Queued => "queued",
+			Self::Steering => "steering",
+		}
+	}
+}
+
+/// Native addressability of one session end at mail time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailEndpointIdentity {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	/// Mutable actor handle at capture time; not a role, title or permission.
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub handle: Option<String>,
+	/// Provider/model string at capture time; distinct from any agent profile.
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub model: Option<String>,
+}
+
+/// Exact incarnation of one session owner; a change invalidates bound capabilities.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailIncarnation {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	/// Owned canonical session journal.
+	#[serde(rename = "sessionFile")]
+	pub session_file: String,
+	/// Native per-boot owner identity; not a runtime generation.
+	#[serde(rename = "bootId")]
+	pub boot_id: String,
+}
+
+/// Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailVerification {
+	pub valid: bool,
+	/// Why the capability was refused; absent when valid.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+	/// Owner-attested sender identity; present when valid.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub sender: Option<AgentMailEndpointIdentity>,
+	/// Source owner incarnation; present when valid.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source: Option<AgentMailIncarnation>,
+	/// Exact recipient incarnation bound into the proof.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub target: Option<AgentMailIncarnation>,
+}
+
+/// Bounded inbox read derived from the current journal; newest last.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailReadResult {
+	pub messages: Vec<AgentMailRecord>,
+	/// Admitted records matching the read filter.
+	pub total: i64,
+	/// True when `total` exceeds the returned messages.
+	pub truncated: bool,
+}
+
+/// Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailReceipt {
+	#[serde(rename = "messageId")]
+	pub message_id: String,
+	#[serde(rename = "threadId")]
+	pub thread_id: String,
+	pub admission: AgentMailAdmission,
+	/// Whether a run was streaming on the recipient when the mail was admitted.
+	pub busy: bool,
+	pub recipient: AgentMailEndpointIdentity,
+	pub target: AgentMailIncarnation,
+}
+
+/// One delivered mail record with full sender/recipient/thread provenance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailRecord {
+	#[serde(rename = "messageId")]
+	pub message_id: String,
+	#[serde(rename = "threadId")]
+	pub thread_id: String,
+	pub sender: AgentMailEndpointIdentity,
+	pub recipient: AgentMailEndpointIdentity,
+	pub source: AgentMailIncarnation,
+	pub target: AgentMailIncarnation,
+	pub body: String,
+	#[serde(rename = "sentAt")]
+	pub sent_at: i64,
+	#[serde(rename = "receivedAt")]
+	pub received_at: i64,
+	pub delivery: AgentMailDelivery,
+	pub admission: AgentMailAdmission,
+	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+	pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
 	pub content: String,
 	pub status: TodoStatus,
@@ -3190,12 +3515,19 @@ pub struct RuntimeRestartReceipt {
 	pub session_id: String,
 	#[serde(rename = "sessionFile")]
 	pub session_file: String,
+	/// Loaded owner incarnation; echo as expectedBootId on exact-session restart, then require a different bootId in the reopened owner's receipt.
 	#[serde(rename = "bootId")]
 	pub boot_id: String,
 	#[serde(rename = "importedGeneration", deserialize_with = "Deserialize::deserialize")]
 	pub imported_generation: Option<String>,
 	#[serde(rename = "basePromptDigest")]
 	pub base_prompt_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExitSessionResult {
+	pub scheduled: bool,
+	pub owner: RuntimeRestartReceipt,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3235,6 +3567,8 @@ pub struct SessionExecution {
 	pub cwd: String,
 	#[serde(deserialize_with = "Deserialize::deserialize")]
 	pub memory: Option<SessionExecutionMemory>,
+	#[serde(rename = "profileBinding", default, skip_serializing_if = "Option::is_none")]
+	pub profile_binding: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4218,6 +4552,12 @@ pub struct IrcMessageEvent {
 	pub message: CustomMessage,
 }
 
+/// A cross-session mail record was accepted by this owner and admitted into its input path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailEvent {
+	pub mail: AgentMailRecord,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoticeEvent {
 	pub level: NotifyType,
@@ -4296,6 +4636,8 @@ pub enum RpcAgentEvent {
 	TodoReminder(TodoReminderEvent),
 	TodoAutoClear(TodoAutoClearEvent),
 	IrcMessage(IrcMessageEvent),
+	/// A cross-session mail record was accepted by this owner and admitted into its input path.
+	AgentMail(AgentMailEvent),
 	Notice(NoticeEvent),
 	/// The effective thinking level changed.
 	ThinkingLevelChanged(ThinkingLevelChangedEvent),
@@ -4338,6 +4680,7 @@ impl RpcAgentEvent {
 			Some("todo_reminder") => |value| serde_json::from_value(value).map(Self::TodoReminder),
 			Some("todo_auto_clear") => |value| serde_json::from_value(value).map(Self::TodoAutoClear),
 			Some("irc_message") => |value| serde_json::from_value(value).map(Self::IrcMessage),
+			Some("agent_mail") => |value| serde_json::from_value(value).map(Self::AgentMail),
 			Some("notice") => |value| serde_json::from_value(value).map(Self::Notice),
 			Some("thinking_level_changed") => |value| serde_json::from_value(value).map(Self::ThinkingLevelChanged),
 			Some("goal_updated") => |value| serde_json::from_value(value).map(Self::GoalUpdated),
@@ -4382,6 +4725,7 @@ impl Serialize for RpcAgentEvent {
 			Self::TodoReminder(member) => serialize_tagged(member, &[("type", "todo_reminder")], serializer),
 			Self::TodoAutoClear(member) => serialize_tagged(member, &[("type", "todo_auto_clear")], serializer),
 			Self::IrcMessage(member) => serialize_tagged(member, &[("type", "irc_message")], serializer),
+			Self::AgentMail(member) => serialize_tagged(member, &[("type", "agent_mail")], serializer),
 			Self::Notice(member) => serialize_tagged(member, &[("type", "notice")], serializer),
 			Self::ThinkingLevelChanged(member) => serialize_tagged(member, &[("type", "thinking_level_changed")], serializer),
 			Self::GoalUpdated(member) => serialize_tagged(member, &[("type", "goal_updated")], serializer),
@@ -5394,7 +5738,7 @@ impl RpcNotification {
 			Some("session_info_update") => |value| serde_json::from_value(value).map(Self::SessionInfoUpdate),
 			Some("config_update") => |value| serde_json::from_value(value).map(Self::ConfigUpdate),
 			Some("rpc_frame_error") => |value| serde_json::from_value(value).map(Self::RpcFrameError),
-			Some("agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "manual_compaction_start" | "manual_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcAgentEvent),
+			Some("agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "manual_compaction_start" | "manual_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "agent_mail" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcAgentEvent),
 			_ => |value| Ok(Self::Unknown(value)),
 		};
 		decode(value)
@@ -5457,7 +5801,7 @@ impl RpcServerFrame {
 		let decode: fn(Value) -> Result<Self, serde_json::Error> = match value.get("type").and_then(Value::as_str) {
 			Some("response") => |value| serde_json::from_value(value).map(Self::Response),
 			Some("host_tool_call" | "host_tool_cancel" | "host_uri_request" | "host_uri_cancel") => |value| serde_json::from_value(value).map(Self::RpcHostRequest),
-			Some("ready" | "prompt_result" | "session_settled" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "dictation_state" | "dictation_transcript" | "dictation_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "manual_compaction_start" | "manual_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
+			Some("ready" | "prompt_result" | "session_settled" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "dictation_state" | "dictation_transcript" | "dictation_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "manual_compaction_start" | "manual_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "agent_mail" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
 			_ => |value| Ok(Self::Unknown(value)),
 		};
 		decode(value)
@@ -5531,6 +5875,27 @@ pub struct PromoteQueuedMessageParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionControlParams {
+	pub action: SessionControlParamsAction,
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	#[serde(rename = "expectedBootId")]
+	pub expected_boot_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub mode: Option<CompactMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionControlResult {
+	pub action: SessionControlResultAction,
+	pub owner: RuntimeRestartReceipt,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub compaction: Option<CompactionResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AbortAndPromptParams {
 	pub message: String,
 	/// Images attached to the message.
@@ -5555,26 +5920,85 @@ pub struct OpenSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListSessionsParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub query: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub limit: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolveSessionParams {
+	pub reference: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WakeSessionParams {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailSendParams {
+	pub to: String,
+	pub message: String,
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+	pub reply_to: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub delivery: Option<AgentMailDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetSessionIdentityParams {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	pub patch: SessionIdentityPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExitSessionParams {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	#[serde(rename = "expectedBootId")]
+	pub expected_boot_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub force: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpgradeRuntimeParams {
 	#[serde(rename = "whenIdle", default, skip_serializing_if = "Option::is_none")]
 	pub when_idle: Option<bool>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub force: Option<bool>,
-	/// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	/// Refresh policy and extensions even on the same generation; requires expectedSessionId, expectedSessionFile, and expectedBootId from preflight. Force is unsupported.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub refresh: Option<bool>,
-	/// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	/// Ask the model to checkpoint, then wait for all session-owned work. Requires all three expected owner fields; force is unsupported.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub graceful: Option<bool>,
 	/// Compact before teardown; failure preserves the running owner.
 	#[serde(rename = "compactBeforeRestart", default, skip_serializing_if = "Option::is_none")]
 	pub compact_before_restart: Option<bool>,
-	/// Full selected session id; supply together with expectedSessionFile.
+	/// Full selected session id; supply with expectedSessionFile and expectedBootId.
 	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
 	pub expected_session_id: Option<String>,
-	/// Canonical absolute transcript path; supply together with expectedSessionId.
+	/// Canonical absolute transcript path; supply with expectedSessionId and expectedBootId.
 	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
 	pub expected_session_file: Option<String>,
+	/// Owner incarnation from get_refresh_preflight.restartReceipt.bootId, not a generation SHA. Required with either expected session field and for refresh, graceful, or compactBeforeRestart. Rechecked before scheduling and execution.
+	#[serde(rename = "expectedBootId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_boot_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6054,6 +6478,73 @@ pub struct GetBtwHistoryResult {
 	pub records: Vec<BtwHistoryRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailDeliverParams {
+	/// Exact session UUID the sender captured; a mismatch refuses delivery.
+	#[serde(rename = "recipientSessionId")]
+	pub recipient_session_id: String,
+	#[serde(rename = "recipientSessionFile")]
+	pub recipient_session_file: String,
+	#[serde(rename = "recipientBootId")]
+	pub recipient_boot_id: String,
+	#[serde(rename = "messageId")]
+	pub message_id: String,
+	pub message: String,
+	pub delivery: AgentMailDelivery,
+	#[serde(rename = "sentAt")]
+	pub sent_at: i64,
+	/// Claimed source owner; verified through its own socket before admitting.
+	#[serde(rename = "senderSessionId")]
+	pub sender_session_id: String,
+	#[serde(rename = "senderSessionFile")]
+	pub sender_session_file: String,
+	#[serde(rename = "senderBootId")]
+	pub sender_boot_id: String,
+	/// Owner-issued single-use capability bound to exactly this envelope.
+	#[serde(rename = "capabilityToken")]
+	pub capability_token: String,
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+	pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailVerifySendParams {
+	#[serde(rename = "capabilityToken")]
+	pub capability_token: String,
+	#[serde(rename = "recipientSessionId")]
+	pub recipient_session_id: String,
+	#[serde(rename = "recipientSessionFile")]
+	pub recipient_session_file: String,
+	#[serde(rename = "recipientBootId")]
+	pub recipient_boot_id: String,
+	#[serde(rename = "messageId")]
+	pub message_id: String,
+	pub message: String,
+	pub delivery: AgentMailDelivery,
+	#[serde(rename = "sentAt")]
+	pub sent_at: i64,
+	#[serde(rename = "senderSessionId")]
+	pub sender_session_id: String,
+	#[serde(rename = "senderSessionFile")]
+	pub sender_session_file: String,
+	#[serde(rename = "senderBootId")]
+	pub sender_boot_id: String,
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+	pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailReadParams {
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub limit: Option<i64>,
+}
+
 /// The constant `"image"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct LitImage;
@@ -6240,6 +6731,117 @@ impl AssistantErrorEventReason {
 	}
 }
 
+/// The constant `1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitNumber1;
+
+impl Serialize for LitNumber1 {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_u64(1)
+	}
+}
+
+impl<'de> Deserialize<'de> for LitNumber1 {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_u64() == Some(1) {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected 1, got {value}")))
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NativeSessionInfoAvailability {
+	#[serde(rename = "live")]
+	Live,
+	#[serde(rename = "offline")]
+	Offline,
+	#[serde(rename = "unavailable")]
+	Unavailable,
+}
+
+impl NativeSessionInfoAvailability {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Live => "live",
+			Self::Offline => "offline",
+			Self::Unavailable => "unavailable",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NativeSessionInfoState {
+	#[serde(rename = "working")]
+	Working,
+	#[serde(rename = "idle")]
+	Idle,
+	#[serde(rename = "sleeping")]
+	Sleeping,
+	#[serde(rename = "unknown")]
+	Unknown,
+}
+
+impl NativeSessionInfoState {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Working => "working",
+			Self::Idle => "idle",
+			Self::Sleeping => "sleeping",
+			Self::Unknown => "unknown",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NativeSessionWakeResultAvailability {
+	#[serde(rename = "live")]
+	Live,
+	#[serde(rename = "offline")]
+	Offline,
+	#[serde(rename = "unavailable")]
+	Unavailable,
+}
+
+impl NativeSessionWakeResultAvailability {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Live => "live",
+			Self::Offline => "offline",
+			Self::Unavailable => "unavailable",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum NativeSessionWakeResultState {
+	#[serde(rename = "working")]
+	Working,
+	#[serde(rename = "idle")]
+	Idle,
+	#[serde(rename = "sleeping")]
+	Sleeping,
+	#[serde(rename = "unknown")]
+	Unknown,
+}
+
+impl NativeSessionWakeResultState {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Working => "working",
+			Self::Idle => "idle",
+			Self::Sleeping => "sleeping",
+			Self::Unknown => "unknown",
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
@@ -6422,6 +7024,42 @@ impl HostUriResultContentType {
 			Self::TextMarkdown => "text/markdown",
 			Self::ApplicationJson => "application/json",
 			Self::TextPlain => "text/plain",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionControlParamsAction {
+	#[serde(rename = "abort")]
+	Abort,
+	#[serde(rename = "compact")]
+	Compact,
+}
+
+impl SessionControlParamsAction {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Abort => "abort",
+			Self::Compact => "compact",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionControlResultAction {
+	#[serde(rename = "abort")]
+	Abort,
+	#[serde(rename = "compact")]
+	Compact,
+}
+
+impl SessionControlResultAction {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Abort => "abort",
+			Self::Compact => "compact",
 		}
 	}
 }
@@ -6663,6 +7301,30 @@ impl Command for AbortCommand {
 	}
 }
 
+/// Abort or compact only the exact observed session, canonical journal and owner boot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionControlCommand {
+	pub action: SessionControlParamsAction,
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	#[serde(rename = "expectedBootId")]
+	pub expected_boot_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub mode: Option<CompactMode>,
+}
+
+impl Command for SessionControlCommand {
+	const NAME: &'static str = "session_control";
+	const TIMEOUT_MS: Option<u64> = Some(120000);
+	type Output = SessionControlResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<SessionControlResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
 /// Abort the current run and submit a prompt; completed by its `prompt_result`.
 ///
 /// The returned value is only the acknowledgement: the work completes with a
@@ -6752,6 +7414,105 @@ impl Command for GetStateCommand {
 	}
 }
 
+/// Read a bounded page of native session metadata without waking or opening peer connections.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ListSessionsCommand {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub query: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub limit: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub offset: Option<i64>,
+}
+
+impl Command for ListSessionsCommand {
+	const NAME: &'static str = "list_sessions";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = NativeSessionList;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<NativeSessionList>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Resolve one saved native session reference without creating or waking an owner.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolveSessionCommand {
+	pub reference: String,
+}
+
+impl Command for ResolveSessionCommand {
+	const NAME: &'static str = "resolve_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = NativeSessionInfo;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<NativeSessionInfo>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Explicitly revive the exact saved UUID/journal through the canonical owner lifecycle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WakeSessionCommand {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+}
+
+impl Command for WakeSessionCommand {
+	const NAME: &'static str = "wake_session";
+	const TIMEOUT_MS: Option<u64> = Some(60000);
+	type Output = NativeSessionWakeResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<NativeSessionWakeResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailSendCommand {
+	pub to: String,
+	pub message: String,
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+	pub reply_to: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub delivery: Option<AgentMailDelivery>,
+}
+
+impl Command for AgentMailSendCommand {
+	const NAME: &'static str = "agent_mail_send";
+	const TIMEOUT_MS: Option<u64> = Some(60000);
+	type Output = AgentMailSendResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AgentMailSendResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Durably change this owner's actor handle or assignments without starting a turn; stale targets and conflicting claims refuse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetSessionIdentityCommand {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	pub patch: SessionIdentityPatch,
+}
+
+impl Command for SetSessionIdentityCommand {
+	const NAME: &'static str = "set_session_identity";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = SessionIdentityRecord;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<SessionIdentityRecord>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
 /// Observe refresh hazards and bounded mounted tools without restarting or starting a broker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GetRefreshPreflightCommand {}
@@ -6766,28 +7527,54 @@ impl Command for GetRefreshPreflightCommand {
 	}
 }
 
-/// Restart the session owner onto the current runtime generation, now or when idle.
+/// Schedule cooperative idle exit of this exact journal owner. All three expected fields are required and rechecked before teardown. Old servers reject this command. Scheduling is not proof of exit; force termination is unavailable. Uses the current connection only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExitSessionCommand {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	#[serde(rename = "expectedBootId")]
+	pub expected_boot_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub force: Option<bool>,
+}
+
+impl Command for ExitSessionCommand {
+	const NAME: &'static str = "exit_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ExitSessionResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ExitSessionResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Restart the session owner onto the current runtime generation, now or when idle. Exact-session lifecycle callers must echo all three expected owner fields from preflight; untargeted legacy upgrades provide no caller owner fence. This is not a shutdown, sleep, or kill action.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct UpgradeRuntimeCommand {
 	#[serde(rename = "whenIdle", default, skip_serializing_if = "Option::is_none")]
 	pub when_idle: Option<bool>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub force: Option<bool>,
-	/// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	/// Refresh policy and extensions even on the same generation; requires expectedSessionId, expectedSessionFile, and expectedBootId from preflight. Force is unsupported.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub refresh: Option<bool>,
-	/// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	/// Ask the model to checkpoint, then wait for all session-owned work. Requires all three expected owner fields; force is unsupported.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub graceful: Option<bool>,
 	/// Compact before teardown; failure preserves the running owner.
 	#[serde(rename = "compactBeforeRestart", default, skip_serializing_if = "Option::is_none")]
 	pub compact_before_restart: Option<bool>,
-	/// Full selected session id; supply together with expectedSessionFile.
+	/// Full selected session id; supply with expectedSessionFile and expectedBootId.
 	#[serde(rename = "expectedSessionId", default, skip_serializing_if = "Option::is_none")]
 	pub expected_session_id: Option<String>,
-	/// Canonical absolute transcript path; supply together with expectedSessionId.
+	/// Canonical absolute transcript path; supply with expectedSessionId and expectedBootId.
 	#[serde(rename = "expectedSessionFile", default, skip_serializing_if = "Option::is_none")]
 	pub expected_session_file: Option<String>,
+	/// Owner incarnation from get_refresh_preflight.restartReceipt.bootId, not a generation SHA. Required with either expected session field and for refresh, graceful, or compactBeforeRestart. Rechecked before scheduling and execution.
+	#[serde(rename = "expectedBootId", default, skip_serializing_if = "Option::is_none")]
+	pub expected_boot_id: Option<String>,
 }
 
 impl Command for UpgradeRuntimeCommand {
@@ -7890,5 +8677,105 @@ impl Command for GetBtwHistoryCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<GetBtwHistoryResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.records)
+	}
+}
+
+/// Deliver one cross-session mail to this owner; the sender capability is verified first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailDeliverCommand {
+	/// Exact session UUID the sender captured; a mismatch refuses delivery.
+	#[serde(rename = "recipientSessionId")]
+	pub recipient_session_id: String,
+	#[serde(rename = "recipientSessionFile")]
+	pub recipient_session_file: String,
+	#[serde(rename = "recipientBootId")]
+	pub recipient_boot_id: String,
+	#[serde(rename = "messageId")]
+	pub message_id: String,
+	pub message: String,
+	pub delivery: AgentMailDelivery,
+	#[serde(rename = "sentAt")]
+	pub sent_at: i64,
+	/// Claimed source owner; verified through its own socket before admitting.
+	#[serde(rename = "senderSessionId")]
+	pub sender_session_id: String,
+	#[serde(rename = "senderSessionFile")]
+	pub sender_session_file: String,
+	#[serde(rename = "senderBootId")]
+	pub sender_boot_id: String,
+	/// Owner-issued single-use capability bound to exactly this envelope.
+	#[serde(rename = "capabilityToken")]
+	pub capability_token: String,
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+	pub reply_to: Option<String>,
+}
+
+impl Command for AgentMailDeliverCommand {
+	const NAME: &'static str = "agent_mail_deliver";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = AgentMailReceipt;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AgentMailReceipt>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Verify (and consume) one send capability for exactly this envelope; reveals only validity and owner identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailVerifySendCommand {
+	#[serde(rename = "capabilityToken")]
+	pub capability_token: String,
+	#[serde(rename = "recipientSessionId")]
+	pub recipient_session_id: String,
+	#[serde(rename = "recipientSessionFile")]
+	pub recipient_session_file: String,
+	#[serde(rename = "recipientBootId")]
+	pub recipient_boot_id: String,
+	#[serde(rename = "messageId")]
+	pub message_id: String,
+	pub message: String,
+	pub delivery: AgentMailDelivery,
+	#[serde(rename = "sentAt")]
+	pub sent_at: i64,
+	#[serde(rename = "senderSessionId")]
+	pub sender_session_id: String,
+	#[serde(rename = "senderSessionFile")]
+	pub sender_session_file: String,
+	#[serde(rename = "senderBootId")]
+	pub sender_boot_id: String,
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
+	pub reply_to: Option<String>,
+}
+
+impl Command for AgentMailVerifySendCommand {
+	const NAME: &'static str = "agent_mail_verify_send";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = AgentMailVerification;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AgentMailVerification>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Read this session's agent-mail inbox, bounded, newest last.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AgentMailReadCommand {
+	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
+	pub thread_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub limit: Option<i64>,
+}
+
+impl Command for AgentMailReadCommand {
+	const NAME: &'static str = "agent_mail_read";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = AgentMailReadResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AgentMailReadResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }

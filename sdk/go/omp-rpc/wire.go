@@ -1886,6 +1886,384 @@ func (v *ModelInfo) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type NativeSessionTerminal struct {
+	ProjectDir string `json:"projectDir"`
+	Name       string `json:"name"`
+	ID         string `json:"id"`
+}
+
+func (v *NativeSessionTerminal) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "NativeSessionTerminal", v.decodeFrom)
+}
+
+func (v *NativeSessionTerminal) decodeFrom(raw map[string]json.RawMessage) error {
+	var out NativeSessionTerminal
+	d := fieldDecoder{raw: raw, owner: "NativeSessionTerminal"}
+	d.constant("protocolVersion", float64(1))
+	d.required("projectDir", &out.ProjectDir)
+	d.required("name", &out.Name)
+	d.required("id", &out.ID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v NativeSessionTerminal) MarshalJSON() ([]byte, error) {
+	type plain NativeSessionTerminal
+	return encodeObject(plain(v), `"protocolVersion":1`, nil)
+}
+
+type NativeSessionInfo struct {
+	SessionID        string                        `json:"sessionId"`
+	Handle           *string                       `json:"handle"`
+	Title            *string                       `json:"title"`
+	RootAgent        *string                       `json:"rootAgent"`
+	Generation       *string                       `json:"generation"`
+	Assignments      []SessionIdentityAssignment   `json:"assignments"`
+	Cwd              *string                       `json:"cwd"`
+	SessionFile      *string                       `json:"sessionFile"`
+	Pid              *int64                        `json:"pid"`
+	StartedAt        *float64                      `json:"startedAt"`
+	Model            *string                       `json:"model"`
+	Availability     NativeSessionInfoAvailability `json:"availability"`
+	State            NativeSessionInfoState        `json:"state"`
+	Terminal         *NativeSessionTerminal        `json:"terminal"`
+	RootAgentCwd     *string                       `json:"rootAgentCwd,omitempty"`
+	IdleSleepSeconds *int64                        `json:"idleSleepSeconds,omitempty"`
+	ModifiedAt       *float64                      `json:"modifiedAt,omitempty"`
+	Owner            *RuntimeRestartReceipt        `json:"owner,omitempty"`
+}
+
+func (v *NativeSessionInfo) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "NativeSessionInfo", v.decodeFrom)
+}
+
+func (v *NativeSessionInfo) decodeFrom(raw map[string]json.RawMessage) error {
+	var out NativeSessionInfo
+	d := fieldDecoder{raw: raw, owner: "NativeSessionInfo"}
+	d.required("sessionId", &out.SessionID)
+	d.nullable("handle", &out.Handle)
+	d.nullable("title", &out.Title)
+	d.nullable("rootAgent", &out.RootAgent)
+	d.nullable("generation", &out.Generation)
+	d.required("assignments", &out.Assignments)
+	d.nullable("cwd", &out.Cwd)
+	d.nullable("sessionFile", &out.SessionFile)
+	d.nullable("pid", &out.Pid)
+	d.nullable("startedAt", &out.StartedAt)
+	d.nullable("model", &out.Model)
+	d.required("availability", &out.Availability)
+	d.required("state", &out.State)
+	d.nullable("terminal", &out.Terminal)
+	d.optional("rootAgentCwd", &out.RootAgentCwd)
+	d.optional("idleSleepSeconds", &out.IdleSleepSeconds)
+	d.optional("modifiedAt", &out.ModifiedAt)
+	d.optional("owner", &out.Owner)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type NativeSessionInfoAvailability string
+
+const (
+	NativeSessionInfoAvailabilityLive        NativeSessionInfoAvailability = "live"
+	NativeSessionInfoAvailabilityOffline     NativeSessionInfoAvailability = "offline"
+	NativeSessionInfoAvailabilityUnavailable NativeSessionInfoAvailability = "unavailable"
+)
+
+func (v *NativeSessionInfoAvailability) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "NativeSessionInfoAvailability")
+	if err != nil {
+		return err
+	}
+	switch value := NativeSessionInfoAvailability(s); value {
+	case NativeSessionInfoAvailabilityLive, NativeSessionInfoAvailabilityOffline, NativeSessionInfoAvailabilityUnavailable:
+		*v = value
+		return nil
+	}
+	return unknownValue("NativeSessionInfoAvailability", s)
+}
+
+type NativeSessionInfoState string
+
+const (
+	NativeSessionInfoStateWorking  NativeSessionInfoState = "working"
+	NativeSessionInfoStateIdle     NativeSessionInfoState = "idle"
+	NativeSessionInfoStateSleeping NativeSessionInfoState = "sleeping"
+	NativeSessionInfoStateUnknown  NativeSessionInfoState = "unknown"
+)
+
+func (v *NativeSessionInfoState) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "NativeSessionInfoState")
+	if err != nil {
+		return err
+	}
+	switch value := NativeSessionInfoState(s); value {
+	case NativeSessionInfoStateWorking, NativeSessionInfoStateIdle, NativeSessionInfoStateSleeping, NativeSessionInfoStateUnknown:
+		*v = value
+		return nil
+	}
+	return unknownValue("NativeSessionInfoState", s)
+}
+
+type NativeSessionList struct {
+	Sessions          []NativeSessionInfo `json:"sessions"`
+	Total             int64               `json:"total"`
+	Truncated         bool                `json:"truncated"`
+	NextOffset        *int64              `json:"nextOffset,omitempty"`
+	AttachableSockets *int64              `json:"attachableSockets,omitempty"`
+	UnverifiedSockets *int64              `json:"unverifiedSockets,omitempty"`
+	OmittedUnnamed    *int64              `json:"omittedUnnamed,omitempty"`
+}
+
+func (v *NativeSessionList) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "NativeSessionList", v.decodeFrom)
+}
+
+func (v *NativeSessionList) decodeFrom(raw map[string]json.RawMessage) error {
+	var out NativeSessionList
+	d := fieldDecoder{raw: raw, owner: "NativeSessionList"}
+	d.required("sessions", &out.Sessions)
+	d.required("total", &out.Total)
+	d.required("truncated", &out.Truncated)
+	d.optional("nextOffset", &out.NextOffset)
+	d.optional("attachableSockets", &out.AttachableSockets)
+	d.optional("unverifiedSockets", &out.UnverifiedSockets)
+	d.optional("omittedUnnamed", &out.OmittedUnnamed)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type NativeSessionWakeResult struct {
+	SessionID        string                              `json:"sessionId"`
+	Handle           *string                             `json:"handle"`
+	Title            *string                             `json:"title"`
+	RootAgent        *string                             `json:"rootAgent"`
+	Generation       *string                             `json:"generation"`
+	Assignments      []SessionIdentityAssignment         `json:"assignments"`
+	Cwd              *string                             `json:"cwd"`
+	SessionFile      *string                             `json:"sessionFile"`
+	Pid              *int64                              `json:"pid"`
+	StartedAt        *float64                            `json:"startedAt"`
+	Model            *string                             `json:"model"`
+	Availability     NativeSessionWakeResultAvailability `json:"availability"`
+	State            NativeSessionWakeResultState        `json:"state"`
+	Terminal         *NativeSessionTerminal              `json:"terminal"`
+	Revived          bool                                `json:"revived"`
+	RootAgentCwd     *string                             `json:"rootAgentCwd,omitempty"`
+	IdleSleepSeconds *int64                              `json:"idleSleepSeconds,omitempty"`
+	ModifiedAt       *float64                            `json:"modifiedAt,omitempty"`
+	Owner            *RuntimeRestartReceipt              `json:"owner,omitempty"`
+}
+
+func (v *NativeSessionWakeResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "NativeSessionWakeResult", v.decodeFrom)
+}
+
+func (v *NativeSessionWakeResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out NativeSessionWakeResult
+	d := fieldDecoder{raw: raw, owner: "NativeSessionWakeResult"}
+	d.required("sessionId", &out.SessionID)
+	d.nullable("handle", &out.Handle)
+	d.nullable("title", &out.Title)
+	d.nullable("rootAgent", &out.RootAgent)
+	d.nullable("generation", &out.Generation)
+	d.required("assignments", &out.Assignments)
+	d.nullable("cwd", &out.Cwd)
+	d.nullable("sessionFile", &out.SessionFile)
+	d.nullable("pid", &out.Pid)
+	d.nullable("startedAt", &out.StartedAt)
+	d.nullable("model", &out.Model)
+	d.required("availability", &out.Availability)
+	d.required("state", &out.State)
+	d.nullable("terminal", &out.Terminal)
+	d.required("revived", &out.Revived)
+	d.optional("rootAgentCwd", &out.RootAgentCwd)
+	d.optional("idleSleepSeconds", &out.IdleSleepSeconds)
+	d.optional("modifiedAt", &out.ModifiedAt)
+	d.optional("owner", &out.Owner)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type NativeSessionWakeResultAvailability string
+
+const (
+	NativeSessionWakeResultAvailabilityLive        NativeSessionWakeResultAvailability = "live"
+	NativeSessionWakeResultAvailabilityOffline     NativeSessionWakeResultAvailability = "offline"
+	NativeSessionWakeResultAvailabilityUnavailable NativeSessionWakeResultAvailability = "unavailable"
+)
+
+func (v *NativeSessionWakeResultAvailability) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "NativeSessionWakeResultAvailability")
+	if err != nil {
+		return err
+	}
+	switch value := NativeSessionWakeResultAvailability(s); value {
+	case NativeSessionWakeResultAvailabilityLive, NativeSessionWakeResultAvailabilityOffline, NativeSessionWakeResultAvailabilityUnavailable:
+		*v = value
+		return nil
+	}
+	return unknownValue("NativeSessionWakeResultAvailability", s)
+}
+
+type NativeSessionWakeResultState string
+
+const (
+	NativeSessionWakeResultStateWorking  NativeSessionWakeResultState = "working"
+	NativeSessionWakeResultStateIdle     NativeSessionWakeResultState = "idle"
+	NativeSessionWakeResultStateSleeping NativeSessionWakeResultState = "sleeping"
+	NativeSessionWakeResultStateUnknown  NativeSessionWakeResultState = "unknown"
+)
+
+func (v *NativeSessionWakeResultState) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "NativeSessionWakeResultState")
+	if err != nil {
+		return err
+	}
+	switch value := NativeSessionWakeResultState(s); value {
+	case NativeSessionWakeResultStateWorking, NativeSessionWakeResultStateIdle, NativeSessionWakeResultStateSleeping, NativeSessionWakeResultStateUnknown:
+		*v = value
+		return nil
+	}
+	return unknownValue("NativeSessionWakeResultState", s)
+}
+
+type AgentMailAcceptedResult struct {
+	Receipt AgentMailReceipt `json:"receipt"`
+	Target  string           `json:"target"`
+}
+
+func (v *AgentMailAcceptedResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailAcceptedResult", v.decodeFrom)
+}
+
+func (v *AgentMailAcceptedResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailAcceptedResult
+	d := fieldDecoder{raw: raw, owner: "AgentMailAcceptedResult"}
+	d.constant("status", "accepted")
+	d.required("receipt", &out.Receipt)
+	d.required("target", &out.Target)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v AgentMailAcceptedResult) MarshalJSON() ([]byte, error) {
+	type plain AgentMailAcceptedResult
+	return encodeObject(plain(v), `"status":"accepted"`, nil)
+}
+
+type AgentMailRefusedResult struct {
+	Error string  `json:"error"`
+	Code  *string `json:"code,omitempty"`
+}
+
+func (v *AgentMailRefusedResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailRefusedResult", v.decodeFrom)
+}
+
+func (v *AgentMailRefusedResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailRefusedResult
+	d := fieldDecoder{raw: raw, owner: "AgentMailRefusedResult"}
+	d.constant("status", "refused")
+	d.required("error", &out.Error)
+	d.optional("code", &out.Code)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v AgentMailRefusedResult) MarshalJSON() ([]byte, error) {
+	type plain AgentMailRefusedResult
+	return encodeObject(plain(v), `"status":"refused"`, nil)
+}
+
+type AgentMailUnknownResult struct {
+	Error string `json:"error"`
+}
+
+func (v *AgentMailUnknownResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailUnknownResult", v.decodeFrom)
+}
+
+func (v *AgentMailUnknownResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailUnknownResult
+	d := fieldDecoder{raw: raw, owner: "AgentMailUnknownResult"}
+	d.constant("status", "unknown")
+	d.required("error", &out.Error)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v AgentMailUnknownResult) MarshalJSON() ([]byte, error) {
+	type plain AgentMailUnknownResult
+	return encodeObject(plain(v), `"status":"unknown"`, nil)
+}
+
+type AgentMailSendResult struct {
+	// Value holds one variant, chosen by "status" on decode.
+	Value AgentMailSendResultVariant
+}
+
+// AgentMailSendResultVariant is implemented by the types AgentMailSendResult can hold.
+type AgentMailSendResultVariant interface {
+	isAgentMailSendResult()
+}
+
+func (AgentMailAcceptedResult) isAgentMailSendResult() {}
+func (AgentMailRefusedResult) isAgentMailSendResult()  {}
+func (AgentMailUnknownResult) isAgentMailSendResult()  {}
+
+func (v AgentMailSendResult) MarshalJSON() ([]byte, error) {
+	return encodeVariant("AgentMailSendResult", v.Value)
+}
+
+func (v *AgentMailSendResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailSendResult", v.decodeFrom)
+}
+
+func (v *AgentMailSendResult) decodeFrom(raw map[string]json.RawMessage) error {
+	tag, err := unionTag(raw, "AgentMailSendResult", "status")
+	if err != nil {
+		return err
+	}
+	var value AgentMailSendResultVariant
+	switch tag {
+	case "accepted":
+		value, err = decodeVariant[AgentMailAcceptedResult](raw)
+	case "refused":
+		value, err = decodeVariant[AgentMailRefusedResult](raw)
+	case "unknown":
+		value, err = decodeVariant[AgentMailUnknownResult](raw)
+	default:
+		return unknownValue("AgentMailSendResult.status", tag)
+	}
+	if err != nil {
+		return err
+	}
+	v.Value = value
+	return nil
+}
+
 type QueueMode string
 
 const (
@@ -2186,6 +2564,313 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	return unknownValue("SubagentStatus", s)
+}
+
+type SessionIdentityAssignment struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+}
+
+func (v *SessionIdentityAssignment) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionIdentityAssignment", v.decodeFrom)
+}
+
+func (v *SessionIdentityAssignment) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionIdentityAssignment
+	d := fieldDecoder{raw: raw, owner: "SessionIdentityAssignment"}
+	d.required("kind", &out.Kind)
+	d.required("target", &out.Target)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SessionIdentityPatch struct {
+	ActorHandle *string                     `json:"actorHandle,omitempty"`
+	Assignments []SessionIdentityAssignment `json:"assignments,omitempty"`
+	Generation  *string                     `json:"generation,omitempty"`
+	// Actor override in seconds; zero disables, null inherits profile/config.
+	IdleSleepSeconds *int64 `json:"idleSleepSeconds,omitempty"`
+}
+
+func (v *SessionIdentityPatch) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionIdentityPatch", v.decodeFrom)
+}
+
+func (v *SessionIdentityPatch) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionIdentityPatch
+	d := fieldDecoder{raw: raw, owner: "SessionIdentityPatch"}
+	d.optional("actorHandle", &out.ActorHandle)
+	d.optional("assignments", &out.Assignments)
+	d.optional("generation", &out.Generation)
+	d.optional("idleSleepSeconds", &out.IdleSleepSeconds)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SessionIdentityRecord struct {
+	SessionID        string                      `json:"sessionId"`
+	SessionFile      string                      `json:"sessionFile"`
+	Cwd              string                      `json:"cwd"`
+	ActorHandle      *string                     `json:"actorHandle"`
+	Assignments      []SessionIdentityAssignment `json:"assignments"`
+	RootAgent        *string                     `json:"rootAgent,omitempty"`
+	Generation       *string                     `json:"generation,omitempty"`
+	IdleSleepSeconds *int64                      `json:"idleSleepSeconds,omitempty"`
+	ModifiedAt       *float64                    `json:"modifiedAt,omitempty"`
+}
+
+func (v *SessionIdentityRecord) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionIdentityRecord", v.decodeFrom)
+}
+
+func (v *SessionIdentityRecord) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionIdentityRecord
+	d := fieldDecoder{raw: raw, owner: "SessionIdentityRecord"}
+	d.required("sessionId", &out.SessionID)
+	d.required("sessionFile", &out.SessionFile)
+	d.required("cwd", &out.Cwd)
+	d.nullable("actorHandle", &out.ActorHandle)
+	d.required("assignments", &out.Assignments)
+	d.optional("rootAgent", &out.RootAgent)
+	d.optional("generation", &out.Generation)
+	d.optional("idleSleepSeconds", &out.IdleSleepSeconds)
+	d.optional("modifiedAt", &out.ModifiedAt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Recipient-side input path the sender chose: queue behind the run, or steer into it.
+type AgentMailDelivery string
+
+const (
+	AgentMailDeliveryQueue AgentMailDelivery = "queue"
+	AgentMailDeliverySteer AgentMailDelivery = "steer"
+)
+
+func (v *AgentMailDelivery) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailDelivery")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailDelivery(s); value {
+	case AgentMailDeliveryQueue, AgentMailDeliverySteer:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailDelivery", s)
+}
+
+type AgentMailAdmission string
+
+const (
+	AgentMailAdmissionAdmitted AgentMailAdmission = "admitted"
+	AgentMailAdmissionQueued   AgentMailAdmission = "queued"
+	AgentMailAdmissionSteering AgentMailAdmission = "steering"
+)
+
+func (v *AgentMailAdmission) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailAdmission")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailAdmission(s); value {
+	case AgentMailAdmissionAdmitted, AgentMailAdmissionQueued, AgentMailAdmissionSteering:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailAdmission", s)
+}
+
+// Native addressability of one session end at mail time.
+type AgentMailEndpointIdentity struct {
+	SessionID string `json:"sessionId"`
+	// Mutable actor handle at capture time; not a role, title or permission.
+	Handle *string `json:"handle"`
+	// Provider/model string at capture time; distinct from any agent profile.
+	Model *string `json:"model"`
+}
+
+func (v *AgentMailEndpointIdentity) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailEndpointIdentity", v.decodeFrom)
+}
+
+func (v *AgentMailEndpointIdentity) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailEndpointIdentity
+	d := fieldDecoder{raw: raw, owner: "AgentMailEndpointIdentity"}
+	d.required("sessionId", &out.SessionID)
+	d.nullable("handle", &out.Handle)
+	d.nullable("model", &out.Model)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Exact incarnation of one session owner; a change invalidates bound capabilities.
+type AgentMailIncarnation struct {
+	SessionID string `json:"sessionId"`
+	// Owned canonical session journal.
+	SessionFile string `json:"sessionFile"`
+	// Native per-boot owner identity; not a runtime generation.
+	BootID string `json:"bootId"`
+}
+
+func (v *AgentMailIncarnation) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailIncarnation", v.decodeFrom)
+}
+
+func (v *AgentMailIncarnation) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailIncarnation
+	d := fieldDecoder{raw: raw, owner: "AgentMailIncarnation"}
+	d.required("sessionId", &out.SessionID)
+	d.required("sessionFile", &out.SessionFile)
+	d.required("bootId", &out.BootID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself.
+type AgentMailVerification struct {
+	Valid bool `json:"valid"`
+	// Why the capability was refused; absent when valid.
+	Reason *string `json:"reason,omitempty"`
+	// Owner-attested sender identity; present when valid.
+	Sender *AgentMailEndpointIdentity `json:"sender,omitempty"`
+	// Source owner incarnation; present when valid.
+	Source *AgentMailIncarnation `json:"source,omitempty"`
+	// Exact recipient incarnation bound into the proof.
+	Target *AgentMailIncarnation `json:"target,omitempty"`
+}
+
+func (v *AgentMailVerification) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailVerification", v.decodeFrom)
+}
+
+func (v *AgentMailVerification) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailVerification
+	d := fieldDecoder{raw: raw, owner: "AgentMailVerification"}
+	d.required("valid", &out.Valid)
+	d.optional("reason", &out.Reason)
+	d.optional("sender", &out.Sender)
+	d.optional("source", &out.Source)
+	d.optional("target", &out.Target)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Bounded inbox read derived from the current journal; newest last.
+type AgentMailReadResult struct {
+	Messages []AgentMailRecord `json:"messages"`
+	// Admitted records matching the read filter.
+	Total int64 `json:"total"`
+	// True when `total` exceeds the returned messages.
+	Truncated bool `json:"truncated"`
+}
+
+func (v *AgentMailReadResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailReadResult", v.decodeFrom)
+}
+
+func (v *AgentMailReadResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailReadResult
+	d := fieldDecoder{raw: raw, owner: "AgentMailReadResult"}
+	d.required("messages", &out.Messages)
+	d.required("total", &out.Total)
+	d.required("truncated", &out.Truncated)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it.
+type AgentMailReceipt struct {
+	MessageID string             `json:"messageId"`
+	ThreadID  string             `json:"threadId"`
+	Admission AgentMailAdmission `json:"admission"`
+	// Whether a run was streaming on the recipient when the mail was admitted.
+	Busy      bool                      `json:"busy"`
+	Recipient AgentMailEndpointIdentity `json:"recipient"`
+	Target    AgentMailIncarnation      `json:"target"`
+}
+
+func (v *AgentMailReceipt) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailReceipt", v.decodeFrom)
+}
+
+func (v *AgentMailReceipt) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailReceipt
+	d := fieldDecoder{raw: raw, owner: "AgentMailReceipt"}
+	d.required("messageId", &out.MessageID)
+	d.required("threadId", &out.ThreadID)
+	d.required("admission", &out.Admission)
+	d.required("busy", &out.Busy)
+	d.required("recipient", &out.Recipient)
+	d.required("target", &out.Target)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// One delivered mail record with full sender/recipient/thread provenance.
+type AgentMailRecord struct {
+	MessageID  string                    `json:"messageId"`
+	ThreadID   string                    `json:"threadId"`
+	Sender     AgentMailEndpointIdentity `json:"sender"`
+	Recipient  AgentMailEndpointIdentity `json:"recipient"`
+	Source     AgentMailIncarnation      `json:"source"`
+	Target     AgentMailIncarnation      `json:"target"`
+	Body       string                    `json:"body"`
+	SentAt     int64                     `json:"sentAt"`
+	ReceivedAt int64                     `json:"receivedAt"`
+	Delivery   AgentMailDelivery         `json:"delivery"`
+	Admission  AgentMailAdmission        `json:"admission"`
+	ReplyTo    *string                   `json:"replyTo,omitempty"`
+}
+
+func (v *AgentMailRecord) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailRecord", v.decodeFrom)
+}
+
+func (v *AgentMailRecord) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailRecord
+	d := fieldDecoder{raw: raw, owner: "AgentMailRecord"}
+	d.required("messageId", &out.MessageID)
+	d.required("threadId", &out.ThreadID)
+	d.required("sender", &out.Sender)
+	d.required("recipient", &out.Recipient)
+	d.required("source", &out.Source)
+	d.required("target", &out.Target)
+	d.required("body", &out.Body)
+	d.required("sentAt", &out.SentAt)
+	d.required("receivedAt", &out.ReceivedAt)
+	d.required("delivery", &out.Delivery)
+	d.required("admission", &out.Admission)
+	d.optional("replyTo", &out.ReplyTo)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
 }
 
 type TodoItem struct {
@@ -2720,8 +3405,9 @@ func (v *RefreshModes) decodeFrom(raw map[string]json.RawMessage) error {
 }
 
 type RuntimeRestartReceipt struct {
-	SessionID          string  `json:"sessionId"`
-	SessionFile        string  `json:"sessionFile"`
+	SessionID   string `json:"sessionId"`
+	SessionFile string `json:"sessionFile"`
+	// Loaded owner incarnation; echo as expectedBootId on exact-session restart, then require a different bootId in the reopened owner's receipt.
 	BootID             string  `json:"bootId"`
 	ImportedGeneration *string `json:"importedGeneration"`
 	BasePromptDigest   string  `json:"basePromptDigest"`
@@ -2739,6 +3425,27 @@ func (v *RuntimeRestartReceipt) decodeFrom(raw map[string]json.RawMessage) error
 	d.required("bootId", &out.BootID)
 	d.nullable("importedGeneration", &out.ImportedGeneration)
 	d.required("basePromptDigest", &out.BasePromptDigest)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ExitSessionResult struct {
+	Scheduled bool                  `json:"scheduled"`
+	Owner     RuntimeRestartReceipt `json:"owner"`
+}
+
+func (v *ExitSessionResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ExitSessionResult", v.decodeFrom)
+}
+
+func (v *ExitSessionResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ExitSessionResult
+	d := fieldDecoder{raw: raw, owner: "ExitSessionResult"}
+	d.required("scheduled", &out.Scheduled)
+	d.required("owner", &out.Owner)
 	if d.err != nil {
 		return d.err
 	}
@@ -2824,9 +3531,10 @@ func (v SessionExecutionMemory) MarshalJSON() ([]byte, error) {
 }
 
 type SessionExecution struct {
-	Profile *string                 `json:"profile"`
-	Cwd     string                  `json:"cwd"`
-	Memory  *SessionExecutionMemory `json:"memory"`
+	Profile        *string                 `json:"profile"`
+	Cwd            string                  `json:"cwd"`
+	Memory         *SessionExecutionMemory `json:"memory"`
+	ProfileBinding *string                 `json:"profileBinding,omitempty"`
 }
 
 func (v *SessionExecution) UnmarshalJSON(data []byte) error {
@@ -2839,6 +3547,7 @@ func (v *SessionExecution) decodeFrom(raw map[string]json.RawMessage) error {
 	d.nullable("profile", &out.Profile)
 	d.required("cwd", &out.Cwd)
 	d.nullable("memory", &out.Memory)
+	d.optional("profileBinding", &out.ProfileBinding)
 	if d.err != nil {
 		return d.err
 	}
@@ -4933,6 +5642,32 @@ func (v IrcMessageEvent) MarshalJSON() ([]byte, error) {
 	return encodeObject(plain(v), `"type":"irc_message"`, nil)
 }
 
+// A cross-session mail record was accepted by this owner and admitted into its input path.
+type AgentMailEvent struct {
+	Mail AgentMailRecord `json:"mail"`
+}
+
+func (v *AgentMailEvent) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailEvent", v.decodeFrom)
+}
+
+func (v *AgentMailEvent) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailEvent
+	d := fieldDecoder{raw: raw, owner: "AgentMailEvent"}
+	d.constant("type", "agent_mail")
+	d.required("mail", &out.Mail)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v AgentMailEvent) MarshalJSON() ([]byte, error) {
+	type plain AgentMailEvent
+	return encodeObject(plain(v), `"type":"agent_mail"`, nil)
+}
+
 type NoticeEvent struct {
 	Level   NotifyType `json:"level"`
 	Message string     `json:"message"`
@@ -5094,6 +5829,7 @@ func (TtsrTriggeredEvent) isRpcAgentEvent()          {}
 func (TodoReminderEvent) isRpcAgentEvent()           {}
 func (TodoAutoClearEvent) isRpcAgentEvent()          {}
 func (IrcMessageEvent) isRpcAgentEvent()             {}
+func (AgentMailEvent) isRpcAgentEvent()              {}
 func (NoticeEvent) isRpcAgentEvent()                 {}
 func (ThinkingLevelChangedEvent) isRpcAgentEvent()   {}
 func (GoalUpdatedEvent) isRpcAgentEvent()            {}
@@ -5177,6 +5913,8 @@ func (v *RpcAgentEvent) decodeFrom(raw map[string]json.RawMessage) error {
 		value, err = decodeVariant[TodoAutoClearEvent](raw)
 	case "irc_message":
 		value, err = decodeVariant[IrcMessageEvent](raw)
+	case "agent_mail":
+		value, err = decodeVariant[AgentMailEvent](raw)
 	case "notice":
 		value, err = decodeVariant[NoticeEvent](raw)
 	case "thinking_level_changed":
@@ -7273,6 +8011,7 @@ func (TtsrTriggeredEvent) isRpcNotification()           {}
 func (TodoReminderEvent) isRpcNotification()            {}
 func (TodoAutoClearEvent) isRpcNotification()           {}
 func (IrcMessageEvent) isRpcNotification()              {}
+func (AgentMailEvent) isRpcNotification()               {}
 func (NoticeEvent) isRpcNotification()                  {}
 func (ThinkingLevelChangedEvent) isRpcNotification()    {}
 func (GoalUpdatedEvent) isRpcNotification()             {}
@@ -7393,6 +8132,8 @@ func (v *RpcNotification) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[TodoAutoClearEvent](raw)
 	case "irc_message":
 		value, err = decodeVariant[IrcMessageEvent](raw)
+	case "agent_mail":
+		value, err = decodeVariant[AgentMailEvent](raw)
 	case "notice":
 		value, err = decodeVariant[NoticeEvent](raw)
 	case "thinking_level_changed":
@@ -7478,6 +8219,7 @@ func (TtsrTriggeredEvent) isRpcServerFrame()           {}
 func (TodoReminderEvent) isRpcServerFrame()            {}
 func (TodoAutoClearEvent) isRpcServerFrame()           {}
 func (IrcMessageEvent) isRpcServerFrame()              {}
+func (AgentMailEvent) isRpcServerFrame()               {}
 func (NoticeEvent) isRpcServerFrame()                  {}
 func (ThinkingLevelChangedEvent) isRpcServerFrame()    {}
 func (GoalUpdatedEvent) isRpcServerFrame()             {}
@@ -7608,6 +8350,8 @@ func (v *RpcServerFrame) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[TodoAutoClearEvent](raw)
 	case "irc_message":
 		value, err = decodeVariant[IrcMessageEvent](raw)
+	case "agent_mail":
+		value, err = decodeVariant[AgentMailEvent](raw)
 	case "notice":
 		value, err = decodeVariant[NoticeEvent](raw)
 	case "thinking_level_changed":
@@ -7643,6 +8387,49 @@ func (v *NegotiateProtocolResult) decodeFrom(raw map[string]json.RawMessage) err
 	}
 	*v = out
 	return nil
+}
+
+type SessionControlResult struct {
+	Action     SessionControlResultAction `json:"action"`
+	Owner      RuntimeRestartReceipt      `json:"owner"`
+	Compaction *CompactionResult          `json:"compaction,omitempty"`
+}
+
+func (v *SessionControlResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionControlResult", v.decodeFrom)
+}
+
+func (v *SessionControlResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionControlResult
+	d := fieldDecoder{raw: raw, owner: "SessionControlResult"}
+	d.required("action", &out.Action)
+	d.required("owner", &out.Owner)
+	d.optional("compaction", &out.Compaction)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SessionControlResultAction string
+
+const (
+	SessionControlResultActionAbort   SessionControlResultAction = "abort"
+	SessionControlResultActionCompact SessionControlResultAction = "compact"
+)
+
+func (v *SessionControlResultAction) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "SessionControlResultAction")
+	if err != nil {
+		return err
+	}
+	switch value := SessionControlResultAction(s); value {
+	case SessionControlResultActionAbort, SessionControlResultActionCompact:
+		*v = value
+		return nil
+	}
+	return unknownValue("SessionControlResultAction", s)
 }
 
 type SetSlowModeResult struct {
@@ -8362,6 +9149,42 @@ func (c Commands) Abort(ctx context.Context) error {
 	return c.call(ctx, "abort", nil, 0, nil)
 }
 
+// SessionControlCommand holds the parameters of "session_control".
+type SessionControlCommand struct {
+	Action              SessionControlCommandAction `json:"action"`
+	ExpectedSessionID   string                      `json:"expectedSessionId"`
+	ExpectedSessionFile string                      `json:"expectedSessionFile"`
+	ExpectedBootID      string                      `json:"expectedBootId"`
+	Mode                *CompactMode                `json:"mode,omitempty"`
+}
+
+// SessionControl sends "session_control": Abort or compact only the exact observed session, canonical journal and owner boot.
+func (c Commands) SessionControl(ctx context.Context, p SessionControlCommand) (SessionControlResult, error) {
+	var out SessionControlResult
+	err := c.call(ctx, "session_control", p, 120*time.Second, &out)
+	return out, err
+}
+
+type SessionControlCommandAction string
+
+const (
+	SessionControlCommandActionAbort   SessionControlCommandAction = "abort"
+	SessionControlCommandActionCompact SessionControlCommandAction = "compact"
+)
+
+func (v *SessionControlCommandAction) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "SessionControlCommandAction")
+	if err != nil {
+		return err
+	}
+	switch value := SessionControlCommandAction(s); value {
+	case SessionControlCommandActionAbort, SessionControlCommandActionCompact:
+		*v = value
+		return nil
+	}
+	return unknownValue("SessionControlCommandAction", s)
+}
+
 // AbortAndPromptCommand holds the parameters of "abort_and_prompt".
 type AbortAndPromptCommand struct {
 	Message string `json:"message"`
@@ -8415,6 +9238,75 @@ func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	return out, err
 }
 
+// ListSessionsCommand holds the parameters of "list_sessions".
+type ListSessionsCommand struct {
+	Query  *string `json:"query,omitempty"`
+	Limit  *int64  `json:"limit,omitempty"`
+	Offset *int64  `json:"offset,omitempty"`
+}
+
+// ListSessions sends "list_sessions": Read a bounded page of native session metadata without waking or opening peer connections.
+func (c Commands) ListSessions(ctx context.Context, p ListSessionsCommand) (NativeSessionList, error) {
+	var out NativeSessionList
+	err := c.call(ctx, "list_sessions", p, 0, &out)
+	return out, err
+}
+
+// ResolveSessionCommand holds the parameters of "resolve_session".
+type ResolveSessionCommand struct {
+	Reference string `json:"reference"`
+}
+
+// ResolveSession sends "resolve_session": Resolve one saved native session reference without creating or waking an owner.
+func (c Commands) ResolveSession(ctx context.Context, p ResolveSessionCommand) (NativeSessionInfo, error) {
+	var out NativeSessionInfo
+	err := c.call(ctx, "resolve_session", p, 0, &out)
+	return out, err
+}
+
+// WakeSessionCommand holds the parameters of "wake_session".
+type WakeSessionCommand struct {
+	ExpectedSessionID   string `json:"expectedSessionId"`
+	ExpectedSessionFile string `json:"expectedSessionFile"`
+}
+
+// WakeSession sends "wake_session": Explicitly revive the exact saved UUID/journal through the canonical owner lifecycle.
+func (c Commands) WakeSession(ctx context.Context, p WakeSessionCommand) (NativeSessionWakeResult, error) {
+	var out NativeSessionWakeResult
+	err := c.call(ctx, "wake_session", p, 60*time.Second, &out)
+	return out, err
+}
+
+// AgentMailSendCommand holds the parameters of "agent_mail_send".
+type AgentMailSendCommand struct {
+	To       string             `json:"to"`
+	Message  string             `json:"message"`
+	ThreadID *string            `json:"threadId,omitempty"`
+	ReplyTo  *string            `json:"replyTo,omitempty"`
+	Delivery *AgentMailDelivery `json:"delivery,omitempty"`
+}
+
+// AgentMailSend sends "agent_mail_send": Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried.
+func (c Commands) AgentMailSend(ctx context.Context, p AgentMailSendCommand) (AgentMailSendResult, error) {
+	var out AgentMailSendResult
+	err := c.call(ctx, "agent_mail_send", p, 60*time.Second, &out)
+	return out, err
+}
+
+// SetSessionIdentityCommand holds the parameters of "set_session_identity".
+type SetSessionIdentityCommand struct {
+	ExpectedSessionID   string               `json:"expectedSessionId"`
+	ExpectedSessionFile string               `json:"expectedSessionFile"`
+	Patch               SessionIdentityPatch `json:"patch"`
+}
+
+// SetSessionIdentity sends "set_session_identity": Durably change this owner's actor handle or assignments without starting a turn; stale targets and conflicting claims refuse.
+func (c Commands) SetSessionIdentity(ctx context.Context, p SetSessionIdentityCommand) (SessionIdentityRecord, error) {
+	var out SessionIdentityRecord
+	err := c.call(ctx, "set_session_identity", p, 0, &out)
+	return out, err
+}
+
 // GetRefreshPreflight sends "get_refresh_preflight": Observe refresh hazards and bounded mounted tools without restarting or starting a broker.
 func (c Commands) GetRefreshPreflight(ctx context.Context) (RefreshPreflight, error) {
 	var out RefreshPreflight
@@ -8422,23 +9314,40 @@ func (c Commands) GetRefreshPreflight(ctx context.Context) (RefreshPreflight, er
 	return out, err
 }
 
+// ExitSessionCommand holds the parameters of "exit_session".
+type ExitSessionCommand struct {
+	ExpectedSessionID   string `json:"expectedSessionId"`
+	ExpectedSessionFile string `json:"expectedSessionFile"`
+	ExpectedBootID      string `json:"expectedBootId"`
+	Force               *bool  `json:"force,omitempty"`
+}
+
+// ExitSession sends "exit_session": Schedule cooperative idle exit of this exact journal owner. All three expected fields are required and rechecked before teardown. Old servers reject this command. Scheduling is not proof of exit; force termination is unavailable. Uses the current connection only.
+func (c Commands) ExitSession(ctx context.Context, p ExitSessionCommand) (ExitSessionResult, error) {
+	var out ExitSessionResult
+	err := c.call(ctx, "exit_session", p, 0, &out)
+	return out, err
+}
+
 // UpgradeRuntimeCommand holds the parameters of "upgrade_runtime".
 type UpgradeRuntimeCommand struct {
 	WhenIdle *bool `json:"whenIdle,omitempty"`
 	Force    *bool `json:"force,omitempty"`
-	// Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported.
+	// Refresh policy and extensions even on the same generation; requires expectedSessionId, expectedSessionFile, and expectedBootId from preflight. Force is unsupported.
 	Refresh *bool `json:"refresh,omitempty"`
-	// Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported.
+	// Ask the model to checkpoint, then wait for all session-owned work. Requires all three expected owner fields; force is unsupported.
 	Graceful *bool `json:"graceful,omitempty"`
 	// Compact before teardown; failure preserves the running owner.
 	CompactBeforeRestart *bool `json:"compactBeforeRestart,omitempty"`
-	// Full selected session id; supply together with expectedSessionFile.
+	// Full selected session id; supply with expectedSessionFile and expectedBootId.
 	ExpectedSessionID *string `json:"expectedSessionId,omitempty"`
-	// Canonical absolute transcript path; supply together with expectedSessionId.
+	// Canonical absolute transcript path; supply with expectedSessionId and expectedBootId.
 	ExpectedSessionFile *string `json:"expectedSessionFile,omitempty"`
+	// Owner incarnation from get_refresh_preflight.restartReceipt.bootId, not a generation SHA. Required with either expected session field and for refresh, graceful, or compactBeforeRestart. Rechecked before scheduling and execution.
+	ExpectedBootID *string `json:"expectedBootId,omitempty"`
 }
 
-// UpgradeRuntime sends "upgrade_runtime": Restart the session owner onto the current runtime generation, now or when idle.
+// UpgradeRuntime sends "upgrade_runtime": Restart the session owner onto the current runtime generation, now or when idle. Exact-session lifecycle callers must echo all three expected owner fields from preflight; untargeted legacy upgrades provide no caller owner fence. This is not a shutdown, sleep, or kill action.
 func (c Commands) UpgradeRuntime(ctx context.Context, p UpgradeRuntimeCommand) (UpgradeRuntimeResult, error) {
 	var out UpgradeRuntimeResult
 	err := c.call(ctx, "upgrade_runtime", p, 0, &out)
@@ -9124,4 +10033,68 @@ func (c Commands) GetBtwHistory(ctx context.Context) ([]BtwHistoryRecord, error)
 	var out GetBtwHistoryResult
 	err := c.call(ctx, "get_btw_history", nil, 0, &out)
 	return out.Records, err
+}
+
+// AgentMailDeliverCommand holds the parameters of "agent_mail_deliver".
+type AgentMailDeliverCommand struct {
+	// Exact session UUID the sender captured; a mismatch refuses delivery.
+	RecipientSessionID   string            `json:"recipientSessionId"`
+	RecipientSessionFile string            `json:"recipientSessionFile"`
+	RecipientBootID      string            `json:"recipientBootId"`
+	MessageID            string            `json:"messageId"`
+	Message              string            `json:"message"`
+	Delivery             AgentMailDelivery `json:"delivery"`
+	SentAt               int64             `json:"sentAt"`
+	// Claimed source owner; verified through its own socket before admitting.
+	SenderSessionID   string `json:"senderSessionId"`
+	SenderSessionFile string `json:"senderSessionFile"`
+	SenderBootID      string `json:"senderBootId"`
+	// Owner-issued single-use capability bound to exactly this envelope.
+	CapabilityToken string  `json:"capabilityToken"`
+	ThreadID        *string `json:"threadId,omitempty"`
+	ReplyTo         *string `json:"replyTo,omitempty"`
+}
+
+// AgentMailDeliver sends "agent_mail_deliver": Deliver one cross-session mail to this owner; the sender capability is verified first.
+func (c Commands) AgentMailDeliver(ctx context.Context, p AgentMailDeliverCommand) (AgentMailReceipt, error) {
+	var out AgentMailReceipt
+	err := c.call(ctx, "agent_mail_deliver", p, 0, &out)
+	return out, err
+}
+
+// AgentMailVerifySendCommand holds the parameters of "agent_mail_verify_send".
+type AgentMailVerifySendCommand struct {
+	CapabilityToken      string            `json:"capabilityToken"`
+	RecipientSessionID   string            `json:"recipientSessionId"`
+	RecipientSessionFile string            `json:"recipientSessionFile"`
+	RecipientBootID      string            `json:"recipientBootId"`
+	MessageID            string            `json:"messageId"`
+	Message              string            `json:"message"`
+	Delivery             AgentMailDelivery `json:"delivery"`
+	SentAt               int64             `json:"sentAt"`
+	SenderSessionID      string            `json:"senderSessionId"`
+	SenderSessionFile    string            `json:"senderSessionFile"`
+	SenderBootID         string            `json:"senderBootId"`
+	ThreadID             *string           `json:"threadId,omitempty"`
+	ReplyTo              *string           `json:"replyTo,omitempty"`
+}
+
+// AgentMailVerifySend sends "agent_mail_verify_send": Verify (and consume) one send capability for exactly this envelope; reveals only validity and owner identity.
+func (c Commands) AgentMailVerifySend(ctx context.Context, p AgentMailVerifySendCommand) (AgentMailVerification, error) {
+	var out AgentMailVerification
+	err := c.call(ctx, "agent_mail_verify_send", p, 0, &out)
+	return out, err
+}
+
+// AgentMailReadCommand holds the parameters of "agent_mail_read".
+type AgentMailReadCommand struct {
+	ThreadID *string `json:"threadId,omitempty"`
+	Limit    *int64  `json:"limit,omitempty"`
+}
+
+// AgentMailRead sends "agent_mail_read": Read this session's agent-mail inbox, bounded, newest last.
+func (c Commands) AgentMailRead(ctx context.Context, p AgentMailReadCommand) (AgentMailReadResult, error) {
+	var out AgentMailReadResult
+	err := c.call(ctx, "agent_mail_read", p, 0, &out)
+	return out, err
 }

@@ -132,6 +132,7 @@ export class RpcSessionSocket {
 	#tail: Promise<void> = Promise.resolve();
 	#sequence = 0;
 	#closed = false;
+	#idleRetiring = false;
 	#projectEvent: ((event: object, conn: RpcClientConn) => object | undefined) | undefined;
 
 	constructor(options: RpcSessionSocketOptions) {
@@ -153,6 +154,25 @@ export class RpcSessionSocket {
 
 	get sidecarPath(): string | undefined {
 		return this.#listener?.sidecarPath;
+	}
+
+	/** Live RPC viewers are owned by this listener, never inferred from transcript age. */
+	get hasConnectedClients(): boolean {
+		return this.#connections.size > 0;
+	}
+
+	/** Atomically exclude new viewers while a detached owner decides whether to retire. */
+	prepareIdleRetirement(): Disposable | undefined {
+		if (this.#closed || this.#idleRetiring || this.hasConnectedClients) return undefined;
+		this.#idleRetiring = true;
+		let released = false;
+		return {
+			[Symbol.dispose]: () => {
+				if (released) return;
+				released = true;
+				this.#idleRetiring = false;
+			},
+		};
 	}
 
 	listen(createSurface: (conn: RpcClientConn) => RpcSessionSocketSurface): Promise<void> {
@@ -285,6 +305,10 @@ export class RpcSessionSocket {
 	}
 
 	#accept(socket: IpcConnection, createSurface: (conn: RpcClientConn) => RpcSessionSocketSurface): void {
+		if (this.#closed || this.#idleRetiring) {
+			socket.destroy();
+			return;
+		}
 		const conn = new RpcClientConnection({
 			id: `socket-${++this.#sequence}`,
 			// `state` is initialized before any frame can reach this sink: the

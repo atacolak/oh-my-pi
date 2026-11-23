@@ -30,6 +30,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { SkillsSettings } from "../extensibility/settings";
+import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { CursorMcpResourceAdapter } from "../cursor";
 import type { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import type { EvalPreludeDefinition } from "../eval/preludes";
@@ -260,6 +261,7 @@ export interface AgentSessionConfig {
 	evalToolSession?: ToolSession;
 	/** Loaded skills already discovered by the SDK. */
 	skills?: Skill[];
+	skillLoadPolicy?: SkillLoadPolicy;
 	/** Frozen routing hints shared with the system prompt and later skillful notices. */
 	skillDescriptions?: SkillDescriptionCatalog;
 	/** Skill loading warnings already captured by the SDK. */
@@ -372,6 +374,8 @@ export interface AgentSessionConfig {
 	asyncJobManager?: AsyncJobManagerApi;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
+	/** Resolved profile actually mounted on this session, not a registry or model label. */
+	rootAgentName?: string;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
 	/** Registry whose awaits table records this agent blocked on the user while a dialog waits for their answer. */
@@ -454,6 +458,19 @@ export interface PromptOptions {
 	 * reaching the agent, instead of resolving `true` (default: false).
 	 */
 	throwOnDrop?: boolean;
+	/**
+	 * Exact-target admission guard for externally addressed input. The owner
+	 * calls it before setup and again at queue/run commit boundaries, including
+	 * after deferred extension loading and maintenance. Throw to refuse stale
+	 * input; no separate queue or history repair is involved.
+	 */
+	assertInputTarget?: () => void;
+	/**
+	 * Called once input actually joins a queue or claims its normal agent run,
+	 * after idle setup/preflight succeeds but before inference completes.
+	 * Unlike onPromptAdmitted, this does not report an idle setup reservation.
+	 */
+	onPromptCommitted?: () => void;
 	/** Image attachments. */
 	images?: ImageContent[];
 	/** Queue behavior while streaming. `"aside"` is non-interrupting — it does not steer/follow-up

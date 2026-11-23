@@ -12,15 +12,38 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { IpcConnection, ipcEndpoint } from "@oh-my-pi/pi-natives";
-import { isEnoent, isPidAlive, isRecord, readLines, Snowflake, toError } from "@oh-my-pi/pi-utils";
-import { flagConsumesValue } from "../cli/flag-tables";
+import {
+	isEnoent,
+	isPidAlive,
+	isRecord,
+	logger,
+	readLines,
+	Snowflake,
+	toError,
+	withFileLock,
+} from "@oh-my-pi/pi-utils";
+import { actorProfileResumeArgv, flagConsumesValue } from "../cli/flag-tables";
+import type { SessionIdentityRecord } from "../session/session-identity";
+import { readSessionHeader } from "../session/session-loader";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import type { DaemonBrokerClient } from "./client";
 import { createDaemonBrokerClient, requireTerminalProtocol } from "./client";
 import { type DaemonTerminalNotification, sanitizeTerminalGeometry } from "./protocol";
-import { resolveSessionEndpointDir, SESSION_RUN_DIR_ENV, type SessionAttachTerminal } from "./session-attach";
-import { runLiveSessionAttach } from "./session-attach-run";
-import { isSessionOwnerProcess, sessionOwnerIdentity, sessionOwnerSpec } from "./session-owner";
+import {
+	probeSessionAttach,
+	resolveSessionEndpointDir,
+	SESSION_RUN_DIR_ENV,
+	type SessionAttachProbe,
+	type SessionAttachTerminal,
+} from "./session-attach";
+import { runLiveSessionAttach, type LiveSessionAttachOptions, verifyLiveSessionOwner } from "./session-attach-run";
+import {
+	isSessionOwnerProcess,
+	reserveSessionOwnerTarget,
+	SESSION_OWNER_WAKE_TARGET_ENV,
+	sessionOwnerIdentity,
+	sessionOwnerSpec,
+} from "./session-owner";
 import { runTerminalMirror, type TerminalMirrorOptions } from "./terminal-mirror";
 
 /** The launch shape a brokered decision depends on. */
@@ -157,6 +180,9 @@ export interface BootBrokeredOwnerOptions {
 	endpointDir?: string;
 	/** Known for `--resume <id>`; discovered from the publication otherwise. */
 	expectedSessionId?: string;
+	/** Exact owner identity, used when launching a different named actor. */
+	identity?: Record<string, string>;
+	generation?: string;
 	columns?: number;
 	rows?: number;
 	timeoutMs?: number;
@@ -271,9 +297,17 @@ async function ownerFailureOutput(client: DaemonBrokerClient, name: string): Pro
  */
 export async function bootBrokeredOwner(options: BootBrokeredOwnerOptions): Promise<BrokeredOwner> {
 	const endpointDir = resolveSessionEndpointDir(options.endpointDir);
+	const name = `omp-session-${Snowflake.next()}`;
+	const spec = await sessionOwnerSpec({
+		name,
+		projectDir: options.projectDir,
+		argv: options.argv,
+		identity: options.identity ?? sessionOwnerIdentity(process.env),
+		env: { [SESSION_RUN_DIR_ENV]: endpointDir },
+		...(options.generation === undefined ? {} : { generation: options.generation }),
+	});
 	const client = options.client ?? (await createDaemonBrokerClient(options.projectDir));
 	let started: DaemonSnapshot | undefined;
-	const name = `omp-session-${Snowflake.next()}`;
 	const subscriptionId = `owner-${Snowflake.next()}`;
 	const initialFrames: DaemonTerminalNotification[] = [];
 	const geometry = sanitizeTerminalGeometry(options.columns, options.rows);
@@ -285,13 +319,7 @@ export async function bootBrokeredOwner(options: BootBrokeredOwnerOptions): Prom
 		const result = await client.request({
 			op: "terminal_start",
 			subscriptionId,
-			spec: sessionOwnerSpec({
-				name,
-				projectDir: options.projectDir,
-				argv: options.argv,
-				identity: sessionOwnerIdentity(process.env),
-				env: { [SESSION_RUN_DIR_ENV]: endpointDir },
-			}),
+			spec,
 			columns: geometry.columns,
 			rows: geometry.rows,
 		});
@@ -320,14 +348,129 @@ export async function bootBrokeredOwner(options: BootBrokeredOwnerOptions): Prom
 	} catch (error) {
 		if (started !== undefined) {
 			await client.request({ op: "stop", name, id: started.id, timeoutMs: 2_000 }).catch(stopError => {
-				process.stderr.write(
-					`warning: failed to stop unpublished session owner ${name}: ${toError(stopError).message}\n`,
-				);
+				logger.warn("Failed to stop unpublished session owner", { name, error: toError(stopError).message });
 			});
 		}
 		client.close();
 		throw error;
 	}
+}
+
+export interface EnsuredSessionOwner {
+	sessionId: string;
+	sessionFile: string;
+	socketPath: string;
+	terminal?: SessionAttachTerminal;
+	revived: boolean;
+}
+
+/** Verify the live owner against the durable identity, not the caller's profile or process. */
+export async function verifyResolvedSessionOwner(
+	session: SessionIdentityRecord,
+	probe: SessionAttachProbe,
+): Promise<void> {
+	if (probe.status !== "live" || !isRecord(probe.state)) throw new Error("Live session identity is unavailable");
+	const diagnostics = probe.state.sessionDiagnostics;
+	const execution = isRecord(diagnostics) ? diagnostics.execution : undefined;
+	if (!isRecord(execution)) throw new Error("Live session execution binding is unavailable");
+	if (
+		(execution.profile ?? null) !== (session.rootAgent ?? null) ||
+		(execution.profileBinding ?? null) !== (session.rootAgent ?? null)
+	)
+		throw new Error("Live session profile does not match its journal binding");
+	const generation = isRecord(probe.state.generation) ? probe.state.generation.running : undefined;
+	if (session.generation !== undefined && generation !== session.generation)
+		throw new Error("Live session generation does not match its journal pin");
+	if (typeof execution.cwd !== "string" || (await fsp.realpath(execution.cwd)) !== (await fsp.realpath(session.cwd)))
+		throw new Error("Live session working directory does not match its journal");
+}
+
+/**
+ * Ensure the exact saved conversation has one live owner, without opening a viewer
+ * or starting inference. Mail, RPC and terminal callers share this lifecycle.
+ * The OS-backed wake lock spans child startup; the journal reservation still fences
+ * the receiver, including processes that do not participate in the wake operation.
+ */
+export async function ensureSessionOwner(
+	session: SessionIdentityRecord,
+	options: { endpointDir?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<EnsuredSessionOwner> {
+	const endpointDir = resolveSessionEndpointDir(options.endpointDir);
+	await fsp.mkdir(endpointDir, { recursive: true });
+	const inspect = () =>
+		probeSessionAttach(session.sessionId, {
+			endpointDir,
+			sessionPath: session.sessionFile,
+			includeState: true,
+		});
+	const observed = async (probe: SessionAttachProbe, revived: boolean): Promise<EnsuredSessionOwner> => {
+		await verifyResolvedSessionOwner(session, probe);
+		if (probe.status !== "live") throw new Error("Session owner did not become reachable");
+		return {
+			sessionId: session.sessionId,
+			sessionFile: session.sessionFile,
+			socketPath: ipcEndpoint(endpointDir, session.sessionId),
+			...(probe.terminal === undefined ? {} : { terminal: probe.terminal }),
+			revived,
+		};
+	};
+	return withFileLock(
+		path.join(endpointDir, `${session.sessionId}.wake`),
+		async () => {
+			options.signal?.throwIfAborted();
+			const initial = await inspect();
+			if (initial.status === "live") return observed(initial, false);
+			const reservation = await reserveSessionOwnerTarget(session.sessionId, session.sessionFile, {
+				probe: () => inspect(),
+			});
+			if (reservation.kind === "refuse") throw new Error(`Session wake refused: ${reservation.code}`);
+			if (reservation.kind === "attach") return observed(await inspect(), false);
+			// Only the receiver may hold the journal lease during its lifetime.
+			reservation.reservation.release();
+			options.signal?.throwIfAborted();
+			const header = await readSessionHeader(session.sessionFile);
+			if (!header || header.id !== session.sessionId || (header.rootAgent ?? null) !== (session.rootAgent ?? null))
+				throw new Error("Saved session profile changed before wake");
+			if (
+				header.rootAgentCwd !== undefined &&
+				(typeof header.rootAgentCwd !== "string" || !path.isAbsolute(header.rootAgentCwd))
+			)
+				throw new Error("Saved agent definition directory is invalid");
+			const owner = await bootBrokeredOwner({
+				projectDir: session.cwd,
+				argv: actorProfileResumeArgv(
+					session.rootAgent ?? null,
+					header.rootAgentCwd ?? session.cwd,
+					session.sessionFile,
+				),
+				endpointDir,
+				expectedSessionId: session.sessionId,
+				...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+				...(session.generation === undefined ? {} : { generation: session.generation }),
+				identity: {
+					...(session.actorHandle ? { ACTOR_NAME: session.actorHandle } : {}),
+					[SESSION_OWNER_WAKE_TARGET_ENV]: JSON.stringify({
+						sessionId: session.sessionId,
+						sessionFile: session.sessionFile,
+						profile: session.rootAgent ?? null,
+						...(header.rootAgentCwd === undefined ? {} : { profileCwd: header.rootAgentCwd }),
+						...(session.generation === undefined ? {} : { generation: session.generation }),
+					}),
+				},
+			});
+			try {
+				return await observed(await inspect(), true);
+			} finally {
+				// Detach the temporary startup subscription; keep the owner alive.
+				owner.client.close();
+			}
+		},
+		{
+			retries: Math.max(1, Math.ceil((options.timeoutMs ?? 30_000) / 100)),
+			retryDelayMs: 100,
+			signal: options.signal,
+		},
+	);
 }
 
 /** The resolved target of a persistent launch, already ownership-gated by the caller. */
@@ -340,6 +483,10 @@ export interface InteractiveOwnerLaunchOptions {
 	projectDir: string;
 	argv: readonly string[];
 	target: PersistentLaunchTarget;
+	identity?: Record<string, string>;
+	generation?: string;
+	sessionPath?: string;
+	validateOwner?: LiveSessionAttachOptions["validateOwner"];
 	endpointDir?: string;
 	columns?: number;
 	rows?: number;
@@ -360,6 +507,8 @@ export async function runInteractiveOwnerLaunch(options: InteractiveOwnerLaunchO
 		}
 		return runLiveSessionAttach(options.target.sessionId, options.target.terminal, {
 			...(options.endpointDir === undefined ? {} : { endpointDir: options.endpointDir }),
+			...(options.sessionPath === undefined ? {} : { sessionPath: options.sessionPath }),
+			...(options.validateOwner === undefined ? {} : { validateOwner: options.validateOwner }),
 			...(options.mirror === undefined ? {} : { mirror: options.mirror }),
 		});
 	}
@@ -367,6 +516,8 @@ export async function runInteractiveOwnerLaunch(options: InteractiveOwnerLaunchO
 	const owner = await bootBrokeredOwner({
 		projectDir: options.projectDir,
 		argv: options.argv,
+		...(options.identity === undefined ? {} : { identity: options.identity }),
+		...(options.generation === undefined ? {} : { generation: options.generation }),
 		...(options.endpointDir === undefined ? {} : { endpointDir: options.endpointDir }),
 		...(expectedSessionId === undefined ? {} : { expectedSessionId }),
 		...(options.columns === undefined ? {} : { columns: options.columns }),
@@ -382,6 +533,21 @@ export async function runInteractiveOwnerLaunch(options: InteractiveOwnerLaunchO
 			subscriptionId: owner.subscriptionId,
 			alreadyAttached: true,
 			initialFrames: owner.initialFrames,
+			...(options.validateOwner === undefined
+				? {}
+				: {
+						inputAfterRefresh: true,
+						refresh: () =>
+							verifyLiveSessionOwner(
+								owner.sessionId,
+								{ protocolVersion: 1, projectDir: options.projectDir, name: owner.name, id: owner.daemon.id },
+								{
+									sessionPath: options.sessionPath,
+									endpointDir: owner.endpointDir,
+									validateOwner: options.validateOwner,
+								},
+							),
+					}),
 		});
 		return result.detached ? 0 : (result.exitCode ?? 1);
 	} finally {

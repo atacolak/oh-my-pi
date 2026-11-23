@@ -5,6 +5,7 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { type AsyncJob, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { readRuntimeBootIdentity } from "@oh-my-pi/pi-coding-agent/launch/runtime-generation";
 import { ModelRuntimeUpgrade } from "@oh-my-pi/pi-coding-agent/modes/rpc/model-runtime-upgrade";
 import {
 	GracefulRestartResults,
@@ -218,6 +219,7 @@ describe("graceful runtime restart", () => {
 					graceful: true,
 					expectedSessionId: session.sessionId,
 					expectedSessionFile: await fs.realpath(file),
+					expectedBootId: readRuntimeBootIdentity().bootId,
 				});
 				expect(response).toMatchObject({
 					success: true,

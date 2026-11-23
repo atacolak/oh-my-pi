@@ -17,6 +17,27 @@ func decodeFrame(t *testing.T, line string) RpcServerFrameVariant {
 	}
 	return frame.Value
 }
+func TestNativeTerminalAndUnknownMailOutcome(t *testing.T) {
+	raw := `{"protocolVersion":1,"projectDir":"/project","name":"owner","id":"boot"}`
+	var terminal NativeSessionTerminal
+	if err := json.Unmarshal([]byte(raw), &terminal); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(terminal)
+	if err != nil || !strings.Contains(string(encoded), `"protocolVersion":1`) {
+		t.Fatalf("terminal version lost: %s %v", encoded, err)
+	}
+	if err := json.Unmarshal([]byte(strings.Replace(raw, `"protocolVersion":1`, `"protocolVersion":2`, 1)), &terminal); err == nil {
+		t.Fatal("unsupported terminal protocol accepted")
+	}
+	var result AgentMailSendResult
+	if err := json.Unmarshal([]byte(`{"status":"unknown","error":"receipt timed out"}`), &result); err != nil {
+		t.Fatal(err)
+	}
+	if unknown, ok := result.Value.(AgentMailUnknownResult); !ok || unknown.Error != "receipt timed out" {
+		t.Fatalf("unknown delivery outcome lost: %#v", result.Value)
+	}
+}
 
 func TestUnknownNotificationKeepsRawFrame(t *testing.T) {
 	line := `{"type":"brand_new_frame","payload":{"x":[1,2]}}`

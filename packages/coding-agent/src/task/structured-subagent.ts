@@ -851,6 +851,16 @@ function buildExecutorOptions(
 		contextFiles: session.contextFiles,
 		noContextFiles: session.noContextFiles,
 		skills,
+		skillLoadPolicy:
+			preparedSession && policy.agent.skills
+				? {
+						eager: [],
+						discoverable:
+							policy.agent.skills.discoverable === undefined
+								? undefined
+								: [...policy.agent.skills.eager, ...policy.agent.skills.discoverable],
+					}
+				: policy.agent.skills,
 		// Autoload runs after session start, outside the seance isolation options.
 		autoloadSkills: preparedSession ? undefined : autoloadSkills,
 		workspaceTree: session.workspaceTree,

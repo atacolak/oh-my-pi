@@ -49,6 +49,12 @@ export type DaemonSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKIL
 /** Terminal stream generation advertised in `ping` results; absence means the broker has no terminal streams. */
 export const DAEMON_TERMINAL_PROTOCOL_VERSION = 1;
 
+/**
+ * Guarded process control generation advertised in `ping` results; absence means the broker cannot
+ * refuse a stop whose exact generation, pid, and spawn-held process reference do not match.
+ */
+export const DAEMON_PROCESS_CONTROL_VERSION = 1;
+
 /** Typed broker operation sent over the authenticated socket. */
 export type DaemonOperation =
 	| { op: "ping" }
@@ -88,6 +94,16 @@ export type DaemonOperation =
 			timeoutMs: number;
 			/** Stop only this generation (`DaemonSnapshot.id`); another one is left running. Legacy brokers ignore it. */
 			id?: string;
+			/**
+			 * PID the caller observed for that generation. With `requireProcessHandle` the broker refuses
+			 * unless this matches the reference it captured at launch.
+			 */
+			expectedPid?: number;
+			/**
+			 * Refuse unless this broker holds the native process reference captured at its own launch of
+			 * the exact `id`/`expectedPid` generation. Legacy brokers ignore it.
+			 */
+			requireProcessHandle?: boolean;
 	  }
 	| { op: "restart"; name: string }
 	| { op: "mode"; name: string; mode: "persist" | "session" | "detached" }
@@ -98,6 +114,15 @@ export type DaemonOperation =
 	| { op: "terminal_start"; subscriptionId: string; spec: DaemonSpec; columns: number; rows: number }
 	/** Stream an already running generation; the exact `DaemonSnapshot.id` is required. */
 	| { op: "terminal_attach"; subscriptionId: string; name: string; id: string; columns: number; rows: number }
+	/**
+	 * Fence one running persistent terminal generation against new viewers while its
+	 * owner closes cooperatively. Refused while a viewer is still attached. A caller
+	 * may supply the lease nonce so a retried prepare after a lost reply is
+	 * idempotent instead of being refused as another caller's pending lease.
+	 */
+	| { op: "terminal_idle_prepare"; name: string; id: string; lease?: string }
+	/** Release a retirement fence; only the matching generation and token clear it. */
+	| { op: "terminal_idle_cancel"; name: string; id: string; lease: string }
 	| { op: "terminal_resize"; subscriptionId: string; name: string; id: string; columns: number; rows: number }
 	| { op: "terminal_detach"; subscriptionId: string; name: string; id: string }
 	/** Confirm receipt of every output frame up to and including `sequence`. */
@@ -106,7 +131,7 @@ export type DaemonOperation =
 
 /** Typed broker result decoded before it reaches tool code. */
 export type DaemonRpcResult =
-	| { op: "ping"; projectDir: string; terminalProtocolVersion?: number }
+	| { op: "ping"; projectDir: string; terminalProtocolVersion?: number; processControlVersion?: number }
 	| { op: "start"; daemon: DaemonSnapshot; readyTimedOut: boolean }
 	| { op: "list"; daemons: DaemonSnapshot[] }
 	| {
@@ -130,6 +155,8 @@ export type DaemonRpcResult =
 	| { op: "cancel"; cancelled: boolean }
 	| { op: "terminal_start"; daemon: DaemonSnapshot }
 	| { op: "terminal_attach"; daemon: DaemonSnapshot; columns: number; rows: number }
+	| { op: "terminal_idle_prepare"; name: string; id: string; lease: string }
+	| { op: "terminal_idle_cancel"; name: string; id: string; released: boolean }
 	| { op: "terminal_resize"; subscriptionId: string; name: string; id: string; columns: number; rows: number }
 	| { op: "terminal_detach"; subscriptionId: string; name: string; id: string }
 	| { op: "terminal_ack"; subscriptionId: string; name: string; id: string; sequence: number }
@@ -466,13 +493,30 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				data: optionalString(source.data, "operation.data"),
 				signal: source.signal === undefined ? undefined : daemonSignal(source.signal),
 			};
-		case "stop":
+		case "stop": {
+			const requireProcessHandle =
+				source.requireProcessHandle === undefined
+					? undefined
+					: booleanValue(source.requireProcessHandle, "operation.requireProcessHandle");
+			const expectedPid =
+				source.expectedPid === undefined
+					? undefined
+					: positiveInteger(source.expectedPid, "operation.expectedPid");
+			if (requireProcessHandle === true && expectedPid === undefined) {
+				throw new Error("operation.expectedPid is required when operation.requireProcessHandle is true");
+			}
 			return {
 				op,
 				name: stringValue(source.name, "operation.name"),
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
-				id: optionalString(source.id, "operation.id"),
+				id:
+					requireProcessHandle === true
+						? stringValue(source.id, "operation.id")
+						: optionalString(source.id, "operation.id"),
+				expectedPid,
+				requireProcessHandle,
 			};
+		}
 		case "terminal_start":
 			return {
 				op,
@@ -489,6 +533,20 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				id: stringValue(source.id, "operation.id"),
 				columns: positiveInteger(source.columns, "operation.columns"),
 				rows: positiveInteger(source.rows, "operation.rows"),
+			};
+		case "terminal_idle_prepare":
+			return {
+				op,
+				name: stringValue(source.name, "operation.name"),
+				id: stringValue(source.id, "operation.id"),
+				lease: optionalString(source.lease, "operation.lease"),
+			};
+		case "terminal_idle_cancel":
+			return {
+				op,
+				name: stringValue(source.name, "operation.name"),
+				id: stringValue(source.id, "operation.id"),
+				lease: stringValue(source.lease, "operation.lease"),
 			};
 		case "terminal_resize":
 			return {
@@ -542,6 +600,10 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 					source.terminalProtocolVersion === undefined
 						? undefined
 						: positiveInteger(source.terminalProtocolVersion, "result.terminalProtocolVersion"),
+				processControlVersion:
+					source.processControlVersion === undefined
+						? undefined
+						: positiveInteger(source.processControlVersion, "result.processControlVersion"),
 			};
 		case "start":
 			return {
@@ -597,6 +659,20 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 				daemon: parseDaemonSnapshot(source.daemon),
 				columns: positiveInteger(source.columns, "result.columns"),
 				rows: positiveInteger(source.rows, "result.rows"),
+			};
+		case "terminal_idle_prepare":
+			return {
+				op: "terminal_idle_prepare",
+				name: stringValue(source.name, "result.name"),
+				id: stringValue(source.id, "result.id"),
+				lease: stringValue(source.lease, "result.lease"),
+			};
+		case "terminal_idle_cancel":
+			return {
+				op: "terminal_idle_cancel",
+				name: stringValue(source.name, "result.name"),
+				id: stringValue(source.id, "result.id"),
+				released: booleanValue(source.released, "result.released"),
 			};
 		case "terminal_resize":
 			return {

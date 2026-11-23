@@ -5,6 +5,7 @@ import { getActiveProfile, setProfile } from "@oh-my-pi/pi-utils";
 import { runCli } from "../../src/cli";
 import { extractProfileFlags } from "../../src/cli/profile-bootstrap";
 import { ModelRegistry } from "../../src/config/model-registry";
+import { consumeSessionOwnerContext } from "../../src/launch/session-owner";
 import { Settings } from "../../src/config/settings";
 import { InteractiveMode } from "../../src/modes/interactive-mode";
 import { AuthStorage } from "../../src/session/auth-storage";
@@ -12,6 +13,8 @@ import { AgentSession } from "../../src/session/agent-session";
 import { SessionManager } from "../../src/session/session-manager";
 import * as workerClient from "../../src/subprocess/worker-client";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+
+const ownerContext = consumeSessionOwnerContext(process.env);
 
 if (process.argv[2] === "receive" && process.argv[3] === "--version") {
 	// Forward the read-only capability query to the real CLI; this fixture only tests profile propagation.
@@ -29,7 +32,7 @@ if (process.argv[2] === "receive" && process.argv[3] === "--version") {
 	if (!found) throw new Error(`Restarted profile could not find session ${sessionFile}`);
 	const resumed = await SessionManager.open(found.path);
 	process.stdout.write(
-		`${JSON.stringify({ profile: getActiveProfile() ?? "default", entries: resumed.getEntries() })}\n`,
+		`${JSON.stringify({ profile: getActiveProfile() ?? "default", entries: resumed.getEntries(), wakeTarget: ownerContext?.wakeTarget ?? null })}\n`,
 	);
 	await resumed.close();
 } else {

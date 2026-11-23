@@ -15,6 +15,8 @@ const IDENTITY_CHILD = path.join(import.meta.dir, "../fixtures/session-owner-ide
 const IDENTITY_BROKER = path.join(import.meta.dir, "../fixtures/session-owner-identity-broker.ts");
 
 const BROKER_IDENTITY: Record<(typeof SESSION_OWNER_IDENTITY_KEYS)[number], string> = {
+	ACTOR_NAME: "broker-actor",
+	OMP_SESSION_OWNER_WAKE_TARGET: "stale-broker-target",
 	HCOM_PROCESS_ID: "broker-process-id",
 	HCOM_INSTANCE_NAME: "memory_lead",
 	HCOM_NAME: "memory_lead",
@@ -94,17 +96,17 @@ describe("session owner identity", () => {
 		expect(sessionOwnerIdentity({ HCOM_OMP_IDENTITY_OWNER: "midi", OMP_SESSION: "1" })).toEqual({});
 	});
 
-	it("carries the identity its launcher declares into the owner spec", () => {
+	it("carries the identity its launcher declares into the owner spec", async () => {
 		const identity = { HCOM_PROCESS_ID: "21b683ec", HCOM_INSTANCE_NAME: "argon", HCOM_LAUNCHED: "1" };
 
-		const spec = sessionOwnerSpec({ name: "mind-a", projectDir: "/p", argv: ["--resume", "sess-1"], identity });
+		const spec = await sessionOwnerSpec({ name: "mind-a", projectDir: "/p", argv: ["--resume", "sess-1"], identity });
 
 		expect(spec.identity).toEqual(identity);
 		expect(spec.env).toEqual({});
 	});
 
-	it("keeps identity keys out of the spec env even when the caller repeats them", () => {
-		const spec = sessionOwnerSpec({
+	it("keeps identity keys out of the spec env even when the caller repeats them", async () => {
+		const spec = await sessionOwnerSpec({
 			name: "mind-a",
 			projectDir: "/p",
 			argv: [],

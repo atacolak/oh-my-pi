@@ -134,6 +134,17 @@ _SUBAGENT_STATUS_VALUES: Final[frozenset[str]] = frozenset({"pending", "running"
 _decode_subagent_status = cast("Decoder[SubagentStatus]", literal(_SUBAGENT_STATUS_VALUES))
 
 
+AgentMailDelivery: TypeAlias = Literal["queue", "steer"]
+"""Recipient-side input path the sender chose: queue behind the run, or steer into it."""
+_AGENT_MAIL_DELIVERY_VALUES: Final[frozenset[str]] = frozenset({"queue", "steer"})
+_decode_agent_mail_delivery = cast("Decoder[AgentMailDelivery]", literal(_AGENT_MAIL_DELIVERY_VALUES))
+
+
+AgentMailAdmission: TypeAlias = Literal["admitted", "queued", "steering"]
+_AGENT_MAIL_ADMISSION_VALUES: Final[frozenset[str]] = frozenset({"admitted", "queued", "steering"})
+_decode_agent_mail_admission = cast("Decoder[AgentMailAdmission]", literal(_AGENT_MAIL_ADMISSION_VALUES))
+
+
 SlowModeScope: TypeAlias = Literal["session", "global"]
 """Where `/slow` lives: persisted config shared by every session, or this session's flex tier."""
 _SLOW_MODE_SCOPE_VALUES: Final[frozenset[str]] = frozenset({"session", "global"})
@@ -579,6 +590,191 @@ class ModelInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class NativeSessionTerminal:
+    protocol_version: Literal[1] = 1
+    project_dir: str
+    name: str
+    id: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class NativeSessionInfo:
+    session_id: str
+    handle: str | None
+    title: str | None
+    root_agent: str | None
+    generation: str | None
+    assignments: tuple[SessionIdentityAssignment, ...]
+    cwd: str | None
+    session_file: str | None
+    pid: int | None
+    started_at: float | None
+    model: str | None
+    availability: Literal["live", "offline", "unavailable"]
+    state: Literal["working", "idle", "sleeping", "unknown"]
+    terminal: NativeSessionTerminal | None
+    root_agent_cwd: str | None = None
+    idle_sleep_seconds: int | None = None
+    modified_at: float | None = None
+    owner: RuntimeRestartReceipt | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class NativeSessionList:
+    sessions: tuple[NativeSessionInfo, ...]
+    total: int
+    truncated: bool
+    next_offset: int | None = None
+    attachable_sockets: int | None = None
+    unverified_sockets: int | None = None
+    omitted_unnamed: int | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class NativeSessionWakeResult:
+    session_id: str
+    handle: str | None
+    title: str | None
+    root_agent: str | None
+    generation: str | None
+    assignments: tuple[SessionIdentityAssignment, ...]
+    cwd: str | None
+    session_file: str | None
+    pid: int | None
+    started_at: float | None
+    model: str | None
+    availability: Literal["live", "offline", "unavailable"]
+    state: Literal["working", "idle", "sleeping", "unknown"]
+    terminal: NativeSessionTerminal | None
+    revived: bool
+    root_agent_cwd: str | None = None
+    idle_sleep_seconds: int | None = None
+    modified_at: float | None = None
+    owner: RuntimeRestartReceipt | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailAcceptedResult:
+    status: Literal["accepted"] = "accepted"
+    receipt: AgentMailReceipt
+    target: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailRefusedResult:
+    status: Literal["refused"] = "refused"
+    error: str
+    code: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailUnknownResult:
+    status: Literal["unknown"] = "unknown"
+    error: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionIdentityAssignment:
+    kind: str
+    target: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionIdentityPatch:
+    actor_handle: str | None = None
+    assignments: tuple[SessionIdentityAssignment, ...] | None = None
+    generation: str | None = None
+    idle_sleep_seconds: int | None = None
+    """Actor override in seconds; zero disables, null inherits profile/config."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionIdentityRecord:
+    session_id: str
+    session_file: str
+    cwd: str
+    actor_handle: str | None
+    assignments: tuple[SessionIdentityAssignment, ...]
+    root_agent: str | None = None
+    generation: str | None = None
+    idle_sleep_seconds: int | None = None
+    modified_at: float | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailEndpointIdentity:
+    """Native addressability of one session end at mail time."""
+    session_id: str
+    handle: str | None
+    """Mutable actor handle at capture time; not a role, title or permission."""
+    model: str | None
+    """Provider/model string at capture time; distinct from any agent profile."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailIncarnation:
+    """Exact incarnation of one session owner; a change invalidates bound capabilities."""
+    session_id: str
+    session_file: str
+    """Owned canonical session journal."""
+    boot_id: str
+    """Native per-boot owner identity; not a runtime generation."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailVerification:
+    """Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself."""
+    valid: bool
+    reason: str | None = None
+    """Why the capability was refused; absent when valid."""
+    sender: AgentMailEndpointIdentity | None = None
+    """Owner-attested sender identity; present when valid."""
+    source: AgentMailIncarnation | None = None
+    """Source owner incarnation; present when valid."""
+    target: AgentMailIncarnation | None = None
+    """Exact recipient incarnation bound into the proof."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailReadResult:
+    """Bounded inbox read derived from the current journal; newest last."""
+    messages: tuple[AgentMailRecord, ...]
+    total: int
+    """Admitted records matching the read filter."""
+    truncated: bool
+    """True when `total` exceeds the returned messages."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailReceipt:
+    """Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it."""
+    message_id: str
+    thread_id: str
+    admission: AgentMailAdmission
+    busy: bool
+    """Whether a run was streaming on the recipient when the mail was admitted."""
+    recipient: AgentMailEndpointIdentity
+    target: AgentMailIncarnation
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailRecord:
+    """One delivered mail record with full sender/recipient/thread provenance."""
+    message_id: str
+    thread_id: str
+    sender: AgentMailEndpointIdentity
+    recipient: AgentMailEndpointIdentity
+    source: AgentMailIncarnation
+    target: AgentMailIncarnation
+    body: str
+    sent_at: int
+    received_at: int
+    delivery: AgentMailDelivery
+    admission: AgentMailAdmission
+    reply_to: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TodoItem:
     content: str
     status: TodoStatus
@@ -727,8 +923,15 @@ class RuntimeRestartReceipt:
     session_id: str
     session_file: str
     boot_id: str
+    """Loaded owner incarnation; echo as expectedBootId on exact-session restart, then require a different bootId in the reopened owner's receipt."""
     imported_generation: str | None
     base_prompt_digest: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ExitSessionResult:
+    scheduled: bool
+    owner: RuntimeRestartReceipt
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -759,6 +962,7 @@ class SessionExecution:
     profile: str | None
     cwd: str
     memory: SessionExecutionMemory | None
+    profile_binding: str | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1375,6 +1579,13 @@ class IrcMessageEvent:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailEvent:
+    """A cross-session mail record was accepted by this owner and admitted into its input path."""
+    type: Literal["agent_mail"] = "agent_mail"
+    mail: AgentMailRecord
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class NoticeEvent:
     type: Literal["notice"] = "notice"
     level: NotifyType
@@ -1824,6 +2035,13 @@ class NegotiateProtocolResult:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class SessionControlResult:
+    action: Literal["abort", "compact"]
+    owner: RuntimeRestartReceipt
+    compaction: CompactionResult | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class LiveConnectResult:
     voice: str
     sdp_answer: str
@@ -1860,11 +2078,14 @@ AssistantMessageEvent: TypeAlias = AssistantStartEvent | AssistantTextStartEvent
 """Streaming update for one assistant message, discriminated by `type`."""
 
 
+AgentMailSendResult: TypeAlias = AgentMailAcceptedResult | AgentMailRefusedResult | AgentMailUnknownResult
+
+
 UsageLimitState: TypeAlias = UsageLimitLowPriority | UsageLimitWrapUp
 """Provider-neutral state of an account past its usage limit, discriminated by `stage`."""
 
 
-RpcAgentEvent: TypeAlias = AgentStartEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | ManualCompactionStartEvent | ManualCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent
+RpcAgentEvent: TypeAlias = AgentStartEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | ManualCompactionStartEvent | ManualCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | AgentMailEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent
 """A session event, discriminated by `type`; `set_event_filter` selects which are sent."""
 
 
@@ -2085,6 +2306,205 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
     )
 
 
+def parse_native_session_terminal(value: object, path: str = "NativeSessionTerminal") -> NativeSessionTerminal:
+    payload = expect_object(value, path)
+    required(payload, "protocolVersion", cast('Decoder[Literal[1]]', literal(frozenset({"1"}))), path)
+    return NativeSessionTerminal(
+        project_dir=required(payload, "projectDir", decode_str, path),
+        name=required(payload, "name", decode_str, path),
+        id=required(payload, "id", decode_str, path),
+    )
+
+
+def parse_native_session_info(value: object, path: str = "NativeSessionInfo") -> NativeSessionInfo:
+    payload = expect_object(value, path)
+    return NativeSessionInfo(
+        session_id=required(payload, "sessionId", decode_str, path),
+        handle=required(payload, "handle", nullable(decode_str), path),
+        title=required(payload, "title", nullable(decode_str), path),
+        root_agent=required(payload, "rootAgent", nullable(decode_str), path),
+        generation=required(payload, "generation", nullable(decode_str), path),
+        assignments=required(payload, "assignments", array(parse_session_identity_assignment), path),
+        cwd=required(payload, "cwd", nullable(decode_str), path),
+        session_file=required(payload, "sessionFile", nullable(decode_str), path),
+        pid=required(payload, "pid", nullable(decode_int), path),
+        started_at=required(payload, "startedAt", nullable(decode_float), path),
+        model=required(payload, "model", nullable(decode_str), path),
+        availability=required(payload, "availability", cast('Decoder[Literal["live", "offline", "unavailable"]]', literal(frozenset({"live", "offline", "unavailable"}))), path),
+        state=required(payload, "state", cast('Decoder[Literal["working", "idle", "sleeping", "unknown"]]', literal(frozenset({"working", "idle", "sleeping", "unknown"}))), path),
+        terminal=required(payload, "terminal", nullable(parse_native_session_terminal), path),
+        root_agent_cwd=optional(payload, "rootAgentCwd", decode_str, path),
+        idle_sleep_seconds=optional(payload, "idleSleepSeconds", nullable(decode_int), path),
+        modified_at=optional(payload, "modifiedAt", decode_float, path),
+        owner=optional(payload, "owner", parse_runtime_restart_receipt, path),
+    )
+
+
+def parse_native_session_list(value: object, path: str = "NativeSessionList") -> NativeSessionList:
+    payload = expect_object(value, path)
+    return NativeSessionList(
+        sessions=required(payload, "sessions", array(parse_native_session_info), path),
+        total=required(payload, "total", decode_int, path),
+        truncated=required(payload, "truncated", decode_bool, path),
+        next_offset=optional(payload, "nextOffset", decode_int, path),
+        attachable_sockets=optional(payload, "attachableSockets", decode_int, path),
+        unverified_sockets=optional(payload, "unverifiedSockets", decode_int, path),
+        omitted_unnamed=optional(payload, "omittedUnnamed", decode_int, path),
+    )
+
+
+def parse_native_session_wake_result(value: object, path: str = "NativeSessionWakeResult") -> NativeSessionWakeResult:
+    payload = expect_object(value, path)
+    return NativeSessionWakeResult(
+        session_id=required(payload, "sessionId", decode_str, path),
+        handle=required(payload, "handle", nullable(decode_str), path),
+        title=required(payload, "title", nullable(decode_str), path),
+        root_agent=required(payload, "rootAgent", nullable(decode_str), path),
+        generation=required(payload, "generation", nullable(decode_str), path),
+        assignments=required(payload, "assignments", array(parse_session_identity_assignment), path),
+        cwd=required(payload, "cwd", nullable(decode_str), path),
+        session_file=required(payload, "sessionFile", nullable(decode_str), path),
+        pid=required(payload, "pid", nullable(decode_int), path),
+        started_at=required(payload, "startedAt", nullable(decode_float), path),
+        model=required(payload, "model", nullable(decode_str), path),
+        availability=required(payload, "availability", cast('Decoder[Literal["live", "offline", "unavailable"]]', literal(frozenset({"live", "offline", "unavailable"}))), path),
+        state=required(payload, "state", cast('Decoder[Literal["working", "idle", "sleeping", "unknown"]]', literal(frozenset({"working", "idle", "sleeping", "unknown"}))), path),
+        terminal=required(payload, "terminal", nullable(parse_native_session_terminal), path),
+        revived=required(payload, "revived", decode_bool, path),
+        root_agent_cwd=optional(payload, "rootAgentCwd", decode_str, path),
+        idle_sleep_seconds=optional(payload, "idleSleepSeconds", nullable(decode_int), path),
+        modified_at=optional(payload, "modifiedAt", decode_float, path),
+        owner=optional(payload, "owner", parse_runtime_restart_receipt, path),
+    )
+
+
+def parse_agent_mail_accepted_result(value: object, path: str = "AgentMailAcceptedResult") -> AgentMailAcceptedResult:
+    payload = expect_object(value, path)
+    required(payload, "status", cast('Decoder[Literal["accepted"]]', literal(frozenset({"accepted"}))), path)
+    return AgentMailAcceptedResult(
+        receipt=required(payload, "receipt", parse_agent_mail_receipt, path),
+        target=required(payload, "target", decode_str, path),
+    )
+
+
+def parse_agent_mail_refused_result(value: object, path: str = "AgentMailRefusedResult") -> AgentMailRefusedResult:
+    payload = expect_object(value, path)
+    required(payload, "status", cast('Decoder[Literal["refused"]]', literal(frozenset({"refused"}))), path)
+    return AgentMailRefusedResult(
+        error=required(payload, "error", decode_str, path),
+        code=optional(payload, "code", decode_str, path),
+    )
+
+
+def parse_agent_mail_unknown_result(value: object, path: str = "AgentMailUnknownResult") -> AgentMailUnknownResult:
+    payload = expect_object(value, path)
+    required(payload, "status", cast('Decoder[Literal["unknown"]]', literal(frozenset({"unknown"}))), path)
+    return AgentMailUnknownResult(
+        error=required(payload, "error", decode_str, path),
+    )
+
+
+def parse_session_identity_assignment(value: object, path: str = "SessionIdentityAssignment") -> SessionIdentityAssignment:
+    payload = expect_object(value, path)
+    return SessionIdentityAssignment(
+        kind=required(payload, "kind", decode_str, path),
+        target=required(payload, "target", decode_str, path),
+    )
+
+
+def parse_session_identity_patch(value: object, path: str = "SessionIdentityPatch") -> SessionIdentityPatch:
+    payload = expect_object(value, path)
+    return SessionIdentityPatch(
+        actor_handle=optional(payload, "actorHandle", nullable(decode_str), path),
+        assignments=optional(payload, "assignments", array(parse_session_identity_assignment), path),
+        generation=optional(payload, "generation", nullable(decode_str), path),
+        idle_sleep_seconds=optional(payload, "idleSleepSeconds", nullable(decode_int), path),
+    )
+
+
+def parse_session_identity_record(value: object, path: str = "SessionIdentityRecord") -> SessionIdentityRecord:
+    payload = expect_object(value, path)
+    return SessionIdentityRecord(
+        session_id=required(payload, "sessionId", decode_str, path),
+        session_file=required(payload, "sessionFile", decode_str, path),
+        cwd=required(payload, "cwd", decode_str, path),
+        actor_handle=required(payload, "actorHandle", nullable(decode_str), path),
+        assignments=required(payload, "assignments", array(parse_session_identity_assignment), path),
+        root_agent=optional(payload, "rootAgent", decode_str, path),
+        generation=optional(payload, "generation", decode_str, path),
+        idle_sleep_seconds=optional(payload, "idleSleepSeconds", nullable(decode_int), path),
+        modified_at=optional(payload, "modifiedAt", decode_float, path),
+    )
+
+
+def parse_agent_mail_endpoint_identity(value: object, path: str = "AgentMailEndpointIdentity") -> AgentMailEndpointIdentity:
+    payload = expect_object(value, path)
+    return AgentMailEndpointIdentity(
+        session_id=required(payload, "sessionId", decode_str, path),
+        handle=required(payload, "handle", nullable(decode_str), path),
+        model=required(payload, "model", nullable(decode_str), path),
+    )
+
+
+def parse_agent_mail_incarnation(value: object, path: str = "AgentMailIncarnation") -> AgentMailIncarnation:
+    payload = expect_object(value, path)
+    return AgentMailIncarnation(
+        session_id=required(payload, "sessionId", decode_str, path),
+        session_file=required(payload, "sessionFile", decode_str, path),
+        boot_id=required(payload, "bootId", decode_str, path),
+    )
+
+
+def parse_agent_mail_verification(value: object, path: str = "AgentMailVerification") -> AgentMailVerification:
+    payload = expect_object(value, path)
+    return AgentMailVerification(
+        valid=required(payload, "valid", decode_bool, path),
+        reason=optional(payload, "reason", decode_str, path),
+        sender=optional(payload, "sender", parse_agent_mail_endpoint_identity, path),
+        source=optional(payload, "source", parse_agent_mail_incarnation, path),
+        target=optional(payload, "target", parse_agent_mail_incarnation, path),
+    )
+
+
+def parse_agent_mail_read_result(value: object, path: str = "AgentMailReadResult") -> AgentMailReadResult:
+    payload = expect_object(value, path)
+    return AgentMailReadResult(
+        messages=required(payload, "messages", array(parse_agent_mail_record), path),
+        total=required(payload, "total", decode_int, path),
+        truncated=required(payload, "truncated", decode_bool, path),
+    )
+
+
+def parse_agent_mail_receipt(value: object, path: str = "AgentMailReceipt") -> AgentMailReceipt:
+    payload = expect_object(value, path)
+    return AgentMailReceipt(
+        message_id=required(payload, "messageId", decode_str, path),
+        thread_id=required(payload, "threadId", decode_str, path),
+        admission=required(payload, "admission", _decode_agent_mail_admission, path),
+        busy=required(payload, "busy", decode_bool, path),
+        recipient=required(payload, "recipient", parse_agent_mail_endpoint_identity, path),
+        target=required(payload, "target", parse_agent_mail_incarnation, path),
+    )
+
+
+def parse_agent_mail_record(value: object, path: str = "AgentMailRecord") -> AgentMailRecord:
+    payload = expect_object(value, path)
+    return AgentMailRecord(
+        message_id=required(payload, "messageId", decode_str, path),
+        thread_id=required(payload, "threadId", decode_str, path),
+        sender=required(payload, "sender", parse_agent_mail_endpoint_identity, path),
+        recipient=required(payload, "recipient", parse_agent_mail_endpoint_identity, path),
+        source=required(payload, "source", parse_agent_mail_incarnation, path),
+        target=required(payload, "target", parse_agent_mail_incarnation, path),
+        body=required(payload, "body", decode_str, path),
+        sent_at=required(payload, "sentAt", decode_int, path),
+        received_at=required(payload, "receivedAt", decode_int, path),
+        delivery=required(payload, "delivery", _decode_agent_mail_delivery, path),
+        admission=required(payload, "admission", _decode_agent_mail_admission, path),
+        reply_to=optional(payload, "replyTo", decode_str, path),
+    )
+
+
 def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
     payload = expect_object(value, path)
     return TodoItem(
@@ -2245,6 +2665,14 @@ def parse_runtime_restart_receipt(value: object, path: str = "RuntimeRestartRece
     )
 
 
+def parse_exit_session_result(value: object, path: str = "ExitSessionResult") -> ExitSessionResult:
+    payload = expect_object(value, path)
+    return ExitSessionResult(
+        scheduled=required(payload, "scheduled", decode_bool, path),
+        owner=required(payload, "owner", parse_runtime_restart_receipt, path),
+    )
+
+
 def parse_refresh_preflight(value: object, path: str = "RefreshPreflight") -> RefreshPreflight:
     payload = expect_object(value, path)
     return RefreshPreflight(
@@ -2280,6 +2708,7 @@ def parse_session_execution(value: object, path: str = "SessionExecution") -> Se
         profile=required(payload, "profile", nullable(decode_str), path),
         cwd=required(payload, "cwd", decode_str, path),
         memory=required(payload, "memory", nullable(parse_session_execution_memory), path),
+        profile_binding=optional(payload, "profileBinding", nullable(decode_str), path),
     )
 
 
@@ -2961,6 +3390,14 @@ def parse_irc_message_event(value: object, path: str = "IrcMessageEvent") -> Irc
     )
 
 
+def parse_agent_mail_event(value: object, path: str = "AgentMailEvent") -> AgentMailEvent:
+    payload = expect_object(value, path)
+    required(payload, "type", cast('Decoder[Literal["agent_mail"]]', literal(frozenset({"agent_mail"}))), path)
+    return AgentMailEvent(
+        mail=required(payload, "mail", parse_agent_mail_record, path),
+    )
+
+
 def parse_notice_event(value: object, path: str = "NoticeEvent") -> NoticeEvent:
     payload = expect_object(value, path)
     required(payload, "type", cast('Decoder[Literal["notice"]]', literal(frozenset({"notice"}))), path)
@@ -3466,6 +3903,15 @@ def parse_negotiate_protocol_result(value: object, path: str = "NegotiateProtoco
     )
 
 
+def parse_session_control_result(value: object, path: str = "SessionControlResult") -> SessionControlResult:
+    payload = expect_object(value, path)
+    return SessionControlResult(
+        action=required(payload, "action", cast('Decoder[Literal["abort", "compact"]]', literal(frozenset({"abort", "compact"}))), path),
+        owner=required(payload, "owner", parse_runtime_restart_receipt, path),
+        compaction=optional(payload, "compaction", parse_compaction_result, path),
+    )
+
+
 def parse_live_connect_result(value: object, path: str = "LiveConnectResult") -> LiveConnectResult:
     payload = expect_object(value, path)
     return LiveConnectResult(
@@ -3497,6 +3943,10 @@ def parse_mcp_reauth_result(value: object, path: str = "McpReauthResult") -> Mcp
     )
 
 
+def parse_agent_mail_send_result(value: object, path: str = "AgentMailSendResult") -> AgentMailSendResult:
+    return dispatch("status", _AGENT_MAIL_SEND_RESULT_CASES)(value, path)
+
+
 def parse_usage_limit_state(value: object, path: str = "UsageLimitState") -> UsageLimitState:
     return dispatch("stage", _USAGE_LIMIT_STATE_CASES)(value, path)
 
@@ -3512,6 +3962,13 @@ def parse_notification(value: object, path: str = "notification") -> RpcNotifica
     if not isinstance(tag, str) or tag not in _RPC_NOTIFICATION_CASES:
         return UnknownNotification(decode_json_object(payload, path))
     return _RPC_NOTIFICATION_CASES[tag](payload, tag)
+
+
+_AGENT_MAIL_SEND_RESULT_CASES: Final[dict[str, Decoder[AgentMailSendResult]]] = {
+        "accepted": parse_agent_mail_accepted_result,
+        "refused": parse_agent_mail_refused_result,
+        "unknown": parse_agent_mail_unknown_result,
+}
 
 
 _USAGE_LIMIT_STATE_CASES: Final[dict[str, Decoder[UsageLimitState]]] = {
@@ -3550,6 +4007,7 @@ _RPC_AGENT_EVENT_CASES: Final[dict[str, Decoder[RpcAgentEvent]]] = {
         "todo_reminder": parse_todo_reminder_event,
         "todo_auto_clear": parse_todo_auto_clear_event,
         "irc_message": parse_irc_message_event,
+        "agent_mail": parse_agent_mail_event,
         "notice": parse_notice_event,
         "thinking_level_changed": parse_thinking_level_changed_event,
         "goal_updated": parse_goal_updated_event,
@@ -3609,6 +4067,7 @@ _RPC_NOTIFICATION_CASES: Final[dict[str, Decoder[RpcNotification]]] = {
         "todo_reminder": parse_rpc_agent_event,
         "todo_auto_clear": parse_rpc_agent_event,
         "irc_message": parse_rpc_agent_event,
+        "agent_mail": parse_rpc_agent_event,
         "notice": parse_rpc_agent_event,
         "thinking_level_changed": parse_rpc_agent_event,
         "goal_updated": parse_rpc_agent_event,
@@ -3661,6 +4120,17 @@ class WireClient:
         params: dict[str, object] = {}
         self._command("abort", params)
 
+    def session_control(self, action: Literal["abort", "compact"], expected_session_id: str, expected_session_file: str, expected_boot_id: str, *, mode: CompactMode | None = None) -> SessionControlResult:
+        """Abort or compact only the exact observed session, canonical journal and owner boot."""
+        params: dict[str, object] = {}
+        params["action"] = action
+        params["expectedSessionId"] = expected_session_id
+        params["expectedSessionFile"] = expected_session_file
+        params["expectedBootId"] = expected_boot_id
+        if mode is not None:
+            params["mode"] = mode
+        return parse_session_control_result(self._command("session_control", params, timeout=120), "session_control")
+
     def abort_and_restore_queue(self) -> AbortAndRestoreQueueResult:
         """Withdraw queued user input, then abort the current run; returns the withdrawn input."""
         params: dict[str, object] = {}
@@ -3688,13 +4158,60 @@ class WireClient:
         params: dict[str, object] = {}
         return parse_session_state(self._command("get_state", params), "get_state")
 
+    def list_sessions(self, *, query: str | None = None, limit: int | None = None, offset: int | None = None) -> NativeSessionList:
+        """Read a bounded page of native session metadata without waking or opening peer connections."""
+        params: dict[str, object] = {}
+        if query is not None:
+            params["query"] = query
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return parse_native_session_list(self._command("list_sessions", params), "list_sessions")
+
+    def resolve_session(self, reference: str) -> NativeSessionInfo:
+        """Resolve one saved native session reference without creating or waking an owner."""
+        params: dict[str, object] = {}
+        params["reference"] = reference
+        return parse_native_session_info(self._command("resolve_session", params), "resolve_session")
+
+    def wake_session(self, expected_session_id: str, expected_session_file: str) -> NativeSessionWakeResult:
+        """Explicitly revive the exact saved UUID/journal through the canonical owner lifecycle."""
+        params: dict[str, object] = {}
+        params["expectedSessionId"] = expected_session_id
+        params["expectedSessionFile"] = expected_session_file
+        return parse_native_session_wake_result(self._command("wake_session", params, timeout=60), "wake_session")
+
+    def agent_mail_send(self, to: str, message: str, *, thread_id: str | None = None, reply_to: str | None = None, delivery: AgentMailDelivery | None = None) -> AgentMailSendResult:
+        """Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried."""
+        params: dict[str, object] = {}
+        params["to"] = to
+        params["message"] = message
+        if thread_id is not None:
+            params["threadId"] = thread_id
+        if reply_to is not None:
+            params["replyTo"] = reply_to
+        if delivery is not None:
+            params["delivery"] = delivery
+        return parse_agent_mail_send_result(self._command("agent_mail_send", params, timeout=60), "agent_mail_send")
+
     def get_refresh_preflight(self) -> RefreshPreflight:
         """Observe refresh hazards and bounded mounted tools without restarting or starting a broker."""
         params: dict[str, object] = {}
         return parse_refresh_preflight(self._command("get_refresh_preflight", params), "get_refresh_preflight")
 
-    def upgrade_runtime(self, *, when_idle: bool | None = None, force: bool | None = None, refresh: bool | None = None, graceful: bool | None = None, compact_before_restart: bool | None = None, expected_session_id: str | None = None, expected_session_file: str | None = None) -> UpgradeRuntimeResult:
-        """Restart the session owner onto the current runtime generation, now or when idle."""
+    def exit_session(self, expected_session_id: str, expected_session_file: str, expected_boot_id: str, *, force: bool | None = None) -> ExitSessionResult:
+        """Schedule cooperative idle exit of this exact journal owner. All three expected fields are required and rechecked before teardown. Old servers reject this command. Scheduling is not proof of exit; force termination is unavailable. Uses the current connection only."""
+        params: dict[str, object] = {}
+        params["expectedSessionId"] = expected_session_id
+        params["expectedSessionFile"] = expected_session_file
+        params["expectedBootId"] = expected_boot_id
+        if force is not None:
+            params["force"] = force
+        return parse_exit_session_result(self._command("exit_session", params), "exit_session")
+
+    def upgrade_runtime(self, *, when_idle: bool | None = None, force: bool | None = None, refresh: bool | None = None, graceful: bool | None = None, compact_before_restart: bool | None = None, expected_session_id: str | None = None, expected_session_file: str | None = None, expected_boot_id: str | None = None) -> UpgradeRuntimeResult:
+        """Restart the session owner onto the current runtime generation, now or when idle. Exact-session lifecycle callers must echo all three expected owner fields from preflight; untargeted legacy upgrades provide no caller owner fence. This is not a shutdown, sleep, or kill action."""
         params: dict[str, object] = {}
         if when_idle is not None:
             params["whenIdle"] = when_idle
@@ -3710,6 +4227,8 @@ class WireClient:
             params["expectedSessionId"] = expected_session_id
         if expected_session_file is not None:
             params["expectedSessionFile"] = expected_session_file
+        if expected_boot_id is not None:
+            params["expectedBootId"] = expected_boot_id
         return parse_upgrade_runtime_result(self._command("upgrade_runtime", params), "upgrade_runtime")
 
     def set_fast_mode(self, enabled: bool) -> FastModeResult:
@@ -4113,6 +4632,55 @@ class WireClient:
         params: dict[str, object] = {}
         return required(expect_object(self._command("get_btw_history", params), "get_btw_history"), "records", array(parse_btw_history_record), "get_btw_history")
 
+    def agent_mail_deliver(self, recipient_session_id: str, recipient_session_file: str, recipient_boot_id: str, message_id: str, message: str, delivery: AgentMailDelivery, sent_at: int, sender_session_id: str, sender_session_file: str, sender_boot_id: str, capability_token: str, *, thread_id: str | None = None, reply_to: str | None = None) -> AgentMailReceipt:
+        """Deliver one cross-session mail to this owner; the sender capability is verified first."""
+        params: dict[str, object] = {}
+        params["recipientSessionId"] = recipient_session_id
+        params["recipientSessionFile"] = recipient_session_file
+        params["recipientBootId"] = recipient_boot_id
+        params["messageId"] = message_id
+        params["message"] = message
+        params["delivery"] = delivery
+        params["sentAt"] = sent_at
+        params["senderSessionId"] = sender_session_id
+        params["senderSessionFile"] = sender_session_file
+        params["senderBootId"] = sender_boot_id
+        params["capabilityToken"] = capability_token
+        if thread_id is not None:
+            params["threadId"] = thread_id
+        if reply_to is not None:
+            params["replyTo"] = reply_to
+        return parse_agent_mail_receipt(self._command("agent_mail_deliver", params), "agent_mail_deliver")
+
+    def agent_mail_verify_send(self, capability_token: str, recipient_session_id: str, recipient_session_file: str, recipient_boot_id: str, message_id: str, message: str, delivery: AgentMailDelivery, sent_at: int, sender_session_id: str, sender_session_file: str, sender_boot_id: str, *, thread_id: str | None = None, reply_to: str | None = None) -> AgentMailVerification:
+        """Verify (and consume) one send capability for exactly this envelope; reveals only validity and owner identity."""
+        params: dict[str, object] = {}
+        params["capabilityToken"] = capability_token
+        params["recipientSessionId"] = recipient_session_id
+        params["recipientSessionFile"] = recipient_session_file
+        params["recipientBootId"] = recipient_boot_id
+        params["messageId"] = message_id
+        params["message"] = message
+        params["delivery"] = delivery
+        params["sentAt"] = sent_at
+        params["senderSessionId"] = sender_session_id
+        params["senderSessionFile"] = sender_session_file
+        params["senderBootId"] = sender_boot_id
+        if thread_id is not None:
+            params["threadId"] = thread_id
+        if reply_to is not None:
+            params["replyTo"] = reply_to
+        return parse_agent_mail_verification(self._command("agent_mail_verify_send", params), "agent_mail_verify_send")
+
+    def agent_mail_read(self, *, thread_id: str | None = None, limit: int | None = None) -> AgentMailReadResult:
+        """Read this session's agent-mail inbox, bounded, newest last."""
+        params: dict[str, object] = {}
+        if thread_id is not None:
+            params["threadId"] = thread_id
+        if limit is not None:
+            params["limit"] = limit
+        return parse_agent_mail_read_result(self._command("agent_mail_read", params), "agent_mail_read")
+
     def on_ready(self, listener: Callable[[ReadyEvent], None]) -> Callable[[], None]:
         """Subscribe to `ready`: First frame after startup; transport fields are absent on servers without protocol v2."""
         return self._listen("ready", listener)
@@ -4317,6 +4885,10 @@ class WireClient:
         """Subscribe to `irc_message` frames."""
         return self._listen("irc_message", listener)
 
+    def on_agent_mail(self, listener: Callable[[AgentMailEvent], None]) -> Callable[[], None]:
+        """Subscribe to `agent_mail`: A cross-session mail record was accepted by this owner and admitted into its input path."""
+        return self._listen("agent_mail", listener)
+
     def on_notice(self, listener: Callable[[NoticeEvent], None]) -> Callable[[], None]:
         """Subscribe to `notice` frames."""
         return self._listen("notice", listener)
@@ -4339,6 +4911,19 @@ __all__ = [
     "AdvisorCostChangedEvent",
     "AdvisorYieldedEvent",
     "AgentEndEvent",
+    "AgentMailAcceptedResult",
+    "AgentMailAdmission",
+    "AgentMailDelivery",
+    "AgentMailEndpointIdentity",
+    "AgentMailEvent",
+    "AgentMailIncarnation",
+    "AgentMailReadResult",
+    "AgentMailReceipt",
+    "AgentMailRecord",
+    "AgentMailRefusedResult",
+    "AgentMailSendResult",
+    "AgentMailUnknownResult",
+    "AgentMailVerification",
     "AgentMessage",
     "AgentSource",
     "AgentStartEvent",
@@ -4405,6 +4990,7 @@ __all__ = [
     "DictationTranscriptEvent",
     "EditorUiRequest",
     "Effort",
+    "ExitSessionResult",
     "ExtensionError",
     "ExtensionUiMethod",
     "ExtensionUiRequest",
@@ -4456,6 +5042,10 @@ __all__ = [
     "ModelCost",
     "ModelCycleResult",
     "ModelInfo",
+    "NativeSessionInfo",
+    "NativeSessionList",
+    "NativeSessionTerminal",
+    "NativeSessionWakeResult",
     "NavigateTreeResult",
     "NegotiateProtocolResult",
     "NoticeEvent",
@@ -4491,12 +5081,16 @@ __all__ = [
     "RuntimeRestartReceipt",
     "SelectOptionDetail",
     "SelectUiRequest",
+    "SessionControlResult",
     "SessionCredits",
     "SessionDiagnosticModel",
     "SessionDiagnostics",
     "SessionEntries",
     "SessionExecution",
     "SessionExecutionMemory",
+    "SessionIdentityAssignment",
+    "SessionIdentityPatch",
+    "SessionIdentityRecord",
     "SessionInfoUpdateEvent",
     "SessionSettledEvent",
     "SessionState",
@@ -4559,6 +5153,17 @@ __all__ = [
     "parse_advisor_cost_changed_event",
     "parse_advisor_yielded_event",
     "parse_agent_end_event",
+    "parse_agent_mail_accepted_result",
+    "parse_agent_mail_endpoint_identity",
+    "parse_agent_mail_event",
+    "parse_agent_mail_incarnation",
+    "parse_agent_mail_read_result",
+    "parse_agent_mail_receipt",
+    "parse_agent_mail_record",
+    "parse_agent_mail_refused_result",
+    "parse_agent_mail_send_result",
+    "parse_agent_mail_unknown_result",
+    "parse_agent_mail_verification",
     "parse_agent_message",
     "parse_agent_start_event",
     "parse_anthropic_server_tool_content",
@@ -4614,6 +5219,7 @@ __all__ = [
     "parse_dictation_state_event",
     "parse_dictation_transcript_event",
     "parse_editor_ui_request",
+    "parse_exit_session_result",
     "parse_extension_error",
     "parse_extension_ui_request",
     "parse_fallback_content",
@@ -4653,6 +5259,10 @@ __all__ = [
     "parse_model_cost",
     "parse_model_cycle_result",
     "parse_model_info",
+    "parse_native_session_info",
+    "parse_native_session_list",
+    "parse_native_session_terminal",
+    "parse_native_session_wake_result",
     "parse_navigate_tree_result",
     "parse_negotiate_protocol_result",
     "parse_notice_event",
@@ -4684,12 +5294,16 @@ __all__ = [
     "parse_runtime_restart_receipt",
     "parse_select_option_detail",
     "parse_select_ui_request",
+    "parse_session_control_result",
     "parse_session_credits",
     "parse_session_diagnostic_model",
     "parse_session_diagnostics",
     "parse_session_entries",
     "parse_session_execution",
     "parse_session_execution_memory",
+    "parse_session_identity_assignment",
+    "parse_session_identity_patch",
+    "parse_session_identity_record",
     "parse_session_info_update_event",
     "parse_session_settled_event",
     "parse_session_state",

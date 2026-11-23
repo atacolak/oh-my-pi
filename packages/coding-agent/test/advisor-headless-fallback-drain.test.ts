@@ -48,7 +48,7 @@ describe("headless advisor drain with a fallback reviewer", () => {
 		await tempDir?.remove();
 	});
 
-	async function startSessionWithFailingAdvisor(backupDelayMs = 0) {
+	async function startSessionWithFailingAdvisor(backupDelayMs = 0, options: { disableModelFallback?: boolean } = {}) {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!primaryModel) throw new Error("Expected bundled anthropic/claude-sonnet-4-5");
 		if (!getBundledModel("anthropic", BACKUP_ADVISOR))
@@ -91,6 +91,7 @@ describe("headless advisor drain with a fallback reviewer", () => {
 			modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
 			advisorTools: [],
 			advisorStreamFn,
+			disableModelFallback: options.disableModelFallback,
 		});
 		session = advised;
 		expect(advised.setAdvisorEnabled(true)).toBe(true);
@@ -106,6 +107,18 @@ describe("headless advisor drain with a fallback reviewer", () => {
 		expect(await advised.waitForAdvisorCatchup(10_000, { waitThroughRecovery: true })).toBe(true);
 		expect(unavailableAdvisor.calls.length).toBeGreaterThanOrEqual(1);
 		expect(backupAdvisor.calls).toHaveLength(1);
+	}, 20_000);
+
+	it("keeps the failing advisor on its primary model when model fallback is disabled", async () => {
+		const { advised, unavailableAdvisor, backupAdvisor } = await startSessionWithFailingAdvisor(0, {
+			disableModelFallback: true,
+		});
+
+		await advised.waitForAdvisorCatchup(10_000, { waitThroughRecovery: true });
+
+		expect(unavailableAdvisor.calls.length).toBeGreaterThanOrEqual(1);
+		expect(backupAdvisor.calls).toHaveLength(0);
+		expect(advised.getAdvisorAgent()?.state.model.id).toBe(PRIMARY_ADVISOR);
 	}, 20_000);
 
 	it("releases the default drain promptly while fallback recovery is still running", async () => {

@@ -1,3 +1,15 @@
+> [!NOTE]
+> ## `cap/omp-daemon-socket` — Native sessions and shared socket APIs
+>
+> One journal owner, durable optional names, wake-before-mail, safe terminal attachment, idle sleep, owner-fenced lifecycle controls and a Node-compatible API over the host's existing connection.
+>
+> - **API guide:** [Native session API cheatsheet](docs/native-session-api.md)
+> - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)
+> - **Upstream PR:** [#18725](https://github.com/can1357/oh-my-pi/pull/18725) remains independently reviewable; native naming/mail/lifecycle additions are fork-local.
+> - **Upstream base:** [OMP 18.18.8 (`679691a7`)](https://github.com/can1357/oh-my-pi/tree/679691a78141de0dd6ba1b7a5d5c1b1d7d967a63)
+>
+> Names do not create a second identity or grant permissions. Existing actor registries and consumers stay until separately verified migration parity. No running owner is restarted by publication.
+
 <p align="center">
   <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
 </p>

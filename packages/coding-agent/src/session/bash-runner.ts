@@ -63,12 +63,14 @@ export interface BashRunnerHost {
 	settings: Settings;
 	extensionRunner(): ExtensionRunner | undefined;
 	isStreaming(): boolean;
+	isDisposed(): boolean;
 }
 
 /** Owns bash execution and preserves result ownership across transcript transitions. */
 export class BashRunner {
 	readonly #host: BashRunnerHost;
 	#abortControllers = new Set<AbortController>();
+	#activeExecutions = 0;
 	/** Session ids of cancelled commands; a command keeps the id it started under across transitions. */
 	#cancelledSessionIds = new Set<string>();
 	#pendingMessages: PendingBashMessage[] = [];
@@ -89,10 +91,12 @@ export class BashRunner {
 		onChunk?: (chunk: string) => void,
 		options?: BashExecuteOptions,
 	): Promise<BashResult> {
+		this.#assertExecutionAllowed();
 		const target = this.#captureSessionTarget();
 		let targetTransferred = false;
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.#host.sessionManager.getCwd();
+		this.#activeExecutions++;
 		try {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_bash")) {
@@ -102,6 +106,7 @@ export class BashRunner {
 					excludeFromContext,
 					cwd,
 				});
+				this.#assertExecutionAllowed();
 				if (hookResult?.result) {
 					targetTransferred = true;
 					await this.#recordResultForTarget(target, command, hookResult.result, options);
@@ -124,6 +129,7 @@ export class BashRunner {
 							?.getRegisteredTool("bash")
 							?.definition.shellEnv?.({ command, cwd, env: { ...this.#host.settings.getShellConfig().env } })
 					: undefined;
+			this.#assertExecutionAllowed();
 
 			const abortController = new AbortController();
 			this.#abortControllers.add(abortController);
@@ -151,7 +157,11 @@ export class BashRunner {
 			await this.#recordResultForTarget(target, command, result, options);
 			return result;
 		} finally {
-			if (!targetTransferred) await this.#releaseSessionTarget(target);
+			try {
+				if (!targetTransferred) await this.#releaseSessionTarget(target);
+			} finally {
+				this.#activeExecutions--;
+			}
 		}
 	}
 
@@ -186,9 +196,9 @@ export class BashRunner {
 		await Promise.all([...this.#cancelledSessionIds].map(drainAbortedShells));
 	}
 
-	/** Whether a bash command is currently running. */
+	/** Whether bash admission, execution or result persistence is still in flight. */
 	get isRunning(): boolean {
-		return this.#abortControllers.size > 0;
+		return this.#activeExecutions > 0;
 	}
 
 	/** Whether bash results are waiting for a safe persistence boundary. */
@@ -323,6 +333,10 @@ export class BashRunner {
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};
+	}
+
+	#assertExecutionAllowed(): void {
+		if (this.#host.isDisposed()) throw new Error("Session is disposed; cannot execute bash");
 	}
 
 	#captureSessionTarget(): BashSessionTarget {

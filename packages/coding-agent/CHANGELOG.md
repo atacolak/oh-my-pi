@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Use `/name <name>` instead of `/name actor <name>`; `/name clear` removes only the attach name.
+
 ### Added
 
 - Added native RPC model-role discovery and session-only selection, with persistent role identity and optional thinking preservation.
@@ -335,6 +339,7 @@
 ## [18.18.0] - 2026-11-07
 
 ## [18.18.0] - 2026-11-07
+- `/name` shows the attach name, `/name clear` removes it without deleting the conversation, and `/title` changes the separate conversation title.
 - `omp sock` can discover, name, rename, inspect context, wake, attach to and control saved conversations by name, UUID or verified owner PID.
 - Native mail tools exchange threaded messages through session sockets, waking sleeping recipients and reporting admission separately from model replies.
 - Detached sessions sleep after one idle hour by default; global, profile and per-session overrides include `0` to disable sleep.
@@ -356,6 +361,8 @@
 
 ### Fixed
 
+- Native session names match case-insensitively and refuse case-only duplicate claims, including sleeping sessions.
+- Naming and clearing show visible confirmation, and rejected name changes explain the conflict.
 - Attaching by UUID works with older running sessions that omit the newer profile-binding diagnostic.
 - runtime upgrades wait for admitted input, stay bound to the selected conversation and refuse missing transcript targets.
 - restart refuses unavailable or incompatible receivers, mismatched journals and missing ownership before closing the current conversation.

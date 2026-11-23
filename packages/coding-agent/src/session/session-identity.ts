@@ -538,9 +538,10 @@ function assertUniqueHandles(journals: readonly JournalIdentity[], limit: number
 	const owners = new Map<string, string[]>();
 	for (const { record } of journals) {
 		if (!record.actorHandle) continue;
-		const ids = owners.get(record.actorHandle);
+		const handle = record.actorHandle.toLowerCase();
+		const ids = owners.get(handle);
 		if (ids) ids.push(record.sessionId);
-		else owners.set(record.actorHandle, [record.sessionId]);
+		else owners.set(handle, [record.sessionId]);
 	}
 	for (const [handle, ids] of owners) {
 		if (ids.length < 2) continue;
@@ -656,7 +657,7 @@ export function resolveSessionIdentityReference(
 	const normalized = normalizeReference(reference);
 	const lowered = normalized.toLowerCase();
 	const matches = records.filter(
-		record => record.actorHandle === normalized || record.sessionId.toLowerCase().startsWith(lowered),
+		record => record.actorHandle?.toLowerCase() === lowered || record.sessionId.toLowerCase().startsWith(lowered),
 	);
 	if (matches.length === 1) return matches[0]!.sessionId;
 	if (matches.length > 1)
@@ -678,7 +679,9 @@ function assertHandleAvailable(
 ): void {
 	if (!actorHandle) return;
 	const claimants = catalog.records
-		.filter(record => record.actorHandle === actorHandle && record.sessionId !== sessionId)
+		.filter(
+			record => record.actorHandle?.toLowerCase() === actorHandle.toLowerCase() && record.sessionId !== sessionId,
+		)
 		.map(record => record.sessionId);
 	if (claimants.length === 0) return;
 	throw new SessionIdentityConflictError(
@@ -774,7 +777,7 @@ function validateExistingPins(
 	if (pins.generation !== undefined && record.generation !== undefined && record.generation !== pins.generation) {
 		throw new SessionIdentityPinConflictError(record.sessionId, "generation", record.generation, pins.generation);
 	}
-	if (pins.actorHandle !== undefined && record.actorHandle !== pins.actorHandle) {
+	if (pins.actorHandle !== undefined && record.actorHandle?.toLowerCase() !== pins.actorHandle.toLowerCase()) {
 		throw new SessionIdentityPinConflictError(
 			record.sessionId,
 			"actorHandle",
@@ -932,7 +935,9 @@ export async function createOrOpenSessionIdentity(
 		if (reference !== undefined) {
 			target = resolveInCatalog(catalog, reference, limit);
 		} else if (actorHandle !== undefined && actorHandle !== null) {
-			const claimants = catalog.records.filter(record => record.actorHandle === actorHandle);
+			const claimants = catalog.records.filter(
+				record => record.actorHandle?.toLowerCase() === actorHandle.toLowerCase(),
+			);
 			if (claimants.length > 1) {
 				throw new SessionIdentityConflictError(
 					`Actor handle "${actorHandle}" is claimed by more than one session: ${bounded(

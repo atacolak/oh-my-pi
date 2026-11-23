@@ -256,9 +256,8 @@ export class UiHelpers {
 	 * Show a status message in the chat.
 	 *
 	 * If multiple status messages are emitted back-to-back (without anything else being added to the chat),
-	 * we update the previous status line instead of appending new ones to avoid log spam. A repeat of the
-	 * exact same text replaces the line with a fresh notice: an in-place update with identical props sends
-	 * nothing to a native terminal, so its expired toast would never show again.
+	 * replace the previous status line instead of appending new ones to avoid log spam. Present a fresh
+	 * notice so the live transcript anchor is refreshed and native terminals can show the toast again.
 	 */
 	showStatus(message: string, options?: ShowStatusOptions): void {
 		const children = this.ctx.chatContainer.children;
@@ -269,14 +268,7 @@ export class UiHelpers {
 		const styleFn = useDim ? (t: string) => theme.fg("dim", t) : undefined;
 		const notice = { styleFn, toast: options?.toast, action: options?.action };
 
-		if (last && last === this.ctx.lastStatus) {
-			if (this.ctx.lastStatus.message !== message) {
-				this.ctx.lastStatus.setMessage(message, notice);
-				this.ctx.ui.requestRender();
-				return;
-			}
-			this.ctx.chatContainer.removeChild(last);
-		}
+		if (last && last === this.ctx.lastStatus) this.ctx.chatContainer.removeChild(last);
 
 		const status = new StatusNotice(message, notice);
 		this.ctx.present([status]);

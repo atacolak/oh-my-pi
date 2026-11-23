@@ -5,7 +5,7 @@ Use this guide when connecting Exocortex, a plugin, or an agent to OMP sessions.
 ## The model
 
 - **Session UUID:** the durable conversation ID. Keep it across naming, sleep, wake and restart.
-- **Native name:** an optional, unique friendly address for that UUID. It is not a conversation title, profile, model or permission grant. Rename changes the address, not the conversation.
+- **Native name:** an optional, unique friendly address for that UUID. Names match case-insensitively while preserving their display spelling, including sleeping sessions. A name is not a conversation title, profile, model or permission grant. Rename changes the address, not the conversation.
 - **Journal:** the canonical persisted conversation. Do not edit a live journal yourself.
 - **Owner:** the single process holding the journal lease and publishing its RPC socket. Multiple views may attach; they do not create another owner.
 - **Boot ID:** one owner incarnation. A restart changes this even if the operating-system PID stays the same.
@@ -40,7 +40,16 @@ Replace `atlas` with a full UUID, an unambiguous UUID prefix, or a native name.
 | Inspect a resource path | `omp sock where atlas` | Prefer paths in this result to guessing a profile or journal location. |
 | Open a resource | `omp sock open atlas profile` | `profile`, `transcript` or `folder`; uses the configured editor. |
 
-Inside the existing OMP terminal, `/name actor repository-owner` names or renames the current conversation, `/context` opens OMP's context browser, and `/restart` runs the ordinary local restart path. Use the explicit graceful API/CLI for checkpoint-before-restart behavior; `/restart` is not that handshake.
+Inside the existing OMP terminal:
+
+| Command | Meaning |
+|---|---|
+| `/name` | Show the current attach name. |
+| `/name repository-owner` | Set or change the attach name, with visible confirmation. |
+| `/name clear` | Remove only the name; the same UUID, history, profile and memory access remain. `clear` is a reserved action, not a name argument. |
+| `/title Working on the repository` | Change the conversation title, not its attach name. `/rename` remains an equivalent title command. |
+
+Names differing only by case cannot belong to different sessions. Historical case-colliding claims refuse instead of selecting or rewriting either conversation. `/context` opens OMP's context browser, and `/restart` runs the ordinary local restart path. Use the explicit graceful API/CLI for checkpoint-before-restart behavior; `/restart` is not that handshake. Already-running owners need a controlled upgrade before new slash commands are available.
 
 **Starting a genuinely new conversation is different from waking:** launch `omp` normally, optionally with `--agent PROFILE --agent-cwd /definition/root`. The existing CLI/host launch owner creates its UUID. `wake_session` does not create, and RPC `new_session` switches the current owner rather than creating an independent actor. An Exocortex host must use its authoritative session-creation seam; do not spawn a second client or use a Bun subprocess shim from a leaf plugin.
 

@@ -12,6 +12,8 @@ import * as sessionAttachOwner from "@oh-my-pi/pi-coding-agent/launch/session-at
 import * as attachRunOwner from "@oh-my-pi/pi-coding-agent/launch/session-attach-run";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
+import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
+import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import {
@@ -157,7 +159,7 @@ describe("native session identity catalog", () => {
 		}
 	}
 
-	it("slash actor naming and renaming change the durable address without changing profile, conversation or automatic titles", async () => {
+	it("slash naming, renaming and clearing preserve the conversation, profile and independent title", async () => {
 		const created = await create(undefined, "lead");
 		const { session, auth } = await createSdkOwner(created.manager);
 		const output: string[] = [];
@@ -174,17 +176,17 @@ describe("native session identity catalog", () => {
 		};
 		const prompt = session.systemPrompt;
 		try {
-			await executeAcpBuiltinSlashCommand("/name actor atlas", runtime);
+			await executeAcpBuiltinSlashCommand("/name atlas", runtime);
 			expect((await resolveSessionIdentity("atlas")).sessionId).toBe(created.id);
 			await created.manager.setSessionName("Working on the first task", "auto");
-			await executeAcpBuiltinSlashCommand("/name actor orbit", runtime);
+			await executeAcpBuiltinSlashCommand("/name orbit", runtime);
 			expect((await resolveSessionIdentity("orbit")).sessionId).toBe(created.id);
 			await expect(resolveSessionIdentity("atlas")).rejects.toBeInstanceOf(SessionIdentityNotFoundError);
 			expect(created.manager.getHeader()?.rootAgent).toBe("lead");
 			expect(session.systemPrompt).toEqual(prompt);
 			await created.manager.setSessionName("Working on the next task", "auto");
 			expect(created.manager.getSessionName()).toBe("Working on the next task");
-			await executeAcpBuiltinSlashCommand("/name actor", runtime);
+			await executeAcpBuiltinSlashCommand("/name", runtime);
 			expect(output.at(-1)).toContain("orbit");
 			expect(
 				(await loadEntriesFromFile(created.file)).some(
@@ -194,6 +196,56 @@ describe("native session identity catalog", () => {
 						(entry.data as { actorHandle?: string }).actorHandle === "orbit",
 				),
 			).toBe(true);
+			await executeAcpBuiltinSlashCommand("/name clear", runtime);
+			expect(output.at(-1)).toContain("Name cleared: orbit");
+			expect((await resolveSessionIdentity(created.id)).actorHandle).toBeNull();
+			await expect(resolveSessionIdentity("orbit")).rejects.toBeInstanceOf(SessionIdentityNotFoundError);
+			expect(created.manager.getSessionName()).toBe("Working on the next task");
+			expect(created.manager.getHeader()?.rootAgent).toBe("lead");
+			expect(session.systemPrompt).toEqual(prompt);
+			await executeAcpBuiltinSlashCommand("/name", runtime);
+			expect(output.at(-1)).toContain("no name");
+		} finally {
+			await session.dispose();
+			auth.close();
+		}
+	});
+
+	it("shows TUI name and clear acknowledgments immediately and explains conflicts without changing the name", async () => {
+		const created = await create(undefined, "lead");
+		await create("taken");
+		const { session, auth } = await createSdkOwner(created.manager);
+		const notices: string[] = [];
+		const errors: string[] = [];
+		let draft = "/name FirstName";
+		const ctx = createInteractiveModeContext({
+			session,
+			sessionManager: created.manager,
+			settings: session.settings,
+			editor: {
+				setText: text => {
+					draft = text;
+				},
+				addToHistory: () => {},
+			},
+			showStatus: text => {
+				notices.push(text);
+			},
+			showError: text => {
+				errors.push(text);
+			},
+		});
+		try {
+			await executeBuiltinSlashCommand(draft, { ctx });
+			expect(draft).toBe("");
+			expect(notices.at(-1)).toContain("FirstName");
+			expect((await resolveSessionIdentity("firstname")).sessionId).toBe(created.id);
+			await executeBuiltinSlashCommand("/name TaKeN", { ctx });
+			expect(errors.at(-1)).toContain("already claimed");
+			expect((await resolveSessionIdentity("FIRSTNAME")).sessionId).toBe(created.id);
+			await executeBuiltinSlashCommand("/name clear", { ctx });
+			expect(notices.at(-1)).toContain("Name cleared: FirstName");
+			expect((await resolveSessionIdentity(created.id)).actorHandle).toBeNull();
 		} finally {
 			await session.dispose();
 			auth.close();
@@ -214,7 +266,7 @@ describe("native session identity catalog", () => {
 			reloadPlugins: async () => {},
 		};
 		try {
-			await expect(executeAcpBuiltinSlashCommand("/name actor taken", runtime)).rejects.toBeInstanceOf(
+			await expect(executeAcpBuiltinSlashCommand("/name taken", runtime)).rejects.toBeInstanceOf(
 				SessionIdentityConflictError,
 			);
 			expect((await resolveSessionIdentity("first")).sessionId).toBe(first.id);
@@ -239,7 +291,7 @@ describe("native session identity catalog", () => {
 		};
 		try {
 			expect(await session.switchSession(created.file)).toBe(true);
-			await executeAcpBuiltinSlashCommand("/name actor after-reload", runtime);
+			await executeAcpBuiltinSlashCommand("/name after-reload", runtime);
 			expect((await resolveSessionIdentity("after-reload")).sessionId).toBe(created.id);
 			await expect(resolveSessionIdentity("before-reload")).rejects.toBeInstanceOf(SessionIdentityNotFoundError);
 		} finally {
@@ -268,13 +320,13 @@ describe("native session identity catalog", () => {
 			};
 			try {
 				const id = manager.getSessionId();
-				await executeAcpBuiltinSlashCommand("/name actor custom-atlas", runtime);
+				await executeAcpBuiltinSlashCommand("/name custom-atlas", runtime);
 				expect((await resolveSessionIdentity("custom-atlas", { sessionsRoot: customRoot })).sessionId).toBe(id);
 				const other = SessionManager.create(cwd, sessionDir);
 				managers.push(other);
 				await other.ensureOnDisk();
 				await assignSessionIdentity(other, { actorHandle: "custom-taken" }, { sessionsRoot: customRoot });
-				await expect(executeAcpBuiltinSlashCommand("/name actor custom-taken", runtime)).rejects.toBeInstanceOf(
+				await expect(executeAcpBuiltinSlashCommand("/name custom-taken", runtime)).rejects.toBeInstanceOf(
 					SessionIdentityConflictError,
 				);
 				expect((await resolveSessionIdentity("custom-atlas", { sessionsRoot: customRoot })).sessionId).toBe(id);
@@ -490,19 +542,55 @@ describe("native session identity catalog", () => {
 		expect((await resolveSessionIdentity("shared")).sessionId).toBe(second.id);
 	});
 
+	it("resolves and reopens sleeping names without regard to case while preserving their display spelling", async () => {
+		const created = await create("MixedCase", "lead");
+		await created.manager.close();
+		expect((await resolveSessionIdentity("mIXEDcASE")).sessionId).toBe(created.id);
+		const reopened = await createOrOpenSessionIdentity({ cwd, actorHandle: "MIXEDCASE", rootAgent: "lead" });
+		managers.push(reopened.manager);
+		expect(reopened.created).toBe(false);
+		expect(reopened.identity.sessionId).toBe(created.id);
+		expect(reopened.identity.actorHandle).toBe("MixedCase");
+		expect(reopened.manager.getSessionFile()).toBe(created.file);
+	});
+
+	it("refuses case-only duplicate claims without altering either saved name", async () => {
+		const first = await create("TakenName");
+		const second = await create("other");
+		const before = await Bun.file(second.file).text();
+		await expect(assignSessionIdentity(second.manager, { actorHandle: "tAKENnAME" })).rejects.toBeInstanceOf(
+			SessionIdentityConflictError,
+		);
+		expect(await Bun.file(second.file).text()).toBe(before);
+		expect((await resolveSessionIdentity("TAKENNAME")).sessionId).toBe(first.id);
+		expect((await resolveSessionIdentity("OTHER")).sessionId).toBe(second.id);
+	});
+
+	it("refuses historical case-colliding journals instead of advertising or selecting either owner", async () => {
+		const first = await create("old-name");
+		const second = await create("Old-Name-two");
+		second.manager.appendSessionIdentityMetadata({ version: 1, actorHandle: "OLD-NAME" });
+		await second.manager.flush();
+		const before = await Bun.file(second.file).text();
+		await expect(listSessionIdentities()).rejects.toBeInstanceOf(SessionIdentityConflictError);
+		await expect(resolveSessionIdentity("old-name")).rejects.toBeInstanceOf(SessionIdentityConflictError);
+		expect(await Bun.file(second.file).text()).toBe(before);
+		expect(first.manager.getSessionIdentityMetadata()?.actorHandle).toBe("old-name");
+	});
+
 	it("lets exactly one of two concurrent claims win", async () => {
 		const a = await create();
 		const b = await create();
 		const results = await Promise.allSettled([
 			assignSessionIdentity(a.manager, { actorHandle: "race" }),
-			assignSessionIdentity(b.manager, { actorHandle: "race" }),
+			assignSessionIdentity(b.manager, { actorHandle: "RaCe" }),
 		]);
 		expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
 		const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
 		expect(rejected?.reason).toBeInstanceOf(SessionIdentityConflictError);
 
 		const catalog = await listSessionIdentities();
-		expect(catalog.filter(record => record.actorHandle === "race")).toHaveLength(1);
+		expect(catalog.filter(record => record.actorHandle?.toLowerCase() === "race")).toHaveLength(1);
 	});
 
 	it("explains ambiguous prefixes with bounded candidates and resolves unique ones", async () => {
@@ -989,7 +1077,7 @@ describe("native session identity catalog", () => {
 					status: "live",
 					sessionId: created.id,
 					terminal: { protocolVersion: 1, projectDir: cwd, name: "fixture", id: "fixture-terminal" },
-					state: { sessionDiagnostics: { execution: { cwd } }, generation },
+					state: { sessionDiagnostics: { execution: { profile: null, cwd } }, generation },
 				});
 				process.exitCode = 0;
 				await runNamedSessionAttach("live-generation");
@@ -1001,7 +1089,10 @@ describe("native session identity catalog", () => {
 				status: "live",
 				sessionId: created.id,
 				terminal: { protocolVersion: 1, projectDir: cwd, name: "fixture", id: "fixture-terminal" },
-				state: { sessionDiagnostics: { execution: { cwd } }, generation: { running: "required-generation" } },
+				state: {
+					sessionDiagnostics: { execution: { profile: null, cwd } },
+					generation: { running: "required-generation" },
+				},
 			});
 			await runNamedSessionAttach("live-generation");
 			expect(process.exitCode).toBe(0);
@@ -1078,9 +1169,9 @@ describe("native session identity catalog", () => {
 	});
 
 	it("lets only one of two real native owner processes claim the same handle", async () => {
-		const children = Array.from({ length: 2 }, () =>
+		const children = ["process-race", "PROCESS-RACE"].map(handle =>
 			Bun.spawn(
-				[process.execPath, path.join(import.meta.dir, "fixtures/session-identity-process.ts"), cwd, "process-race"],
+				[process.execPath, path.join(import.meta.dir, "fixtures/session-identity-process.ts"), cwd, handle],
 				{
 					cwd,
 					env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
@@ -1112,7 +1203,9 @@ describe("native session identity catalog", () => {
 			if (!accepted) throw new Error("No native process won the handle claim");
 			const catalog = await listSessionIdentities();
 			expect(
-				catalog.filter(record => record.actorHandle === "process-race").map(record => record.sessionId),
+				catalog
+					.filter(record => record.actorHandle?.toLowerCase() === "process-race")
+					.map(record => record.sessionId),
 			).toEqual([accepted.sessionId]);
 			expect(catalog).toHaveLength(2);
 		} finally {

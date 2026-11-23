@@ -193,13 +193,17 @@ for (const mode of ["TUI", "headless"] as const) {
 		});
 
 		it("persists an explicit title without asking the model", async () => {
-			const { session, execute } = createRuntime(mode);
+			const { session, sessionManager, execute } = createRuntime(mode);
 			const generate = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("Unrequested generated title");
+			sessionManager.appendSessionIdentityMetadata({ version: 1, actorHandle: "attach-owner" });
 
-			await execute("/rename   Cache ownership   ");
+			await execute("/title   Cache ownership   ");
 
 			expect(session.sessionName).toBe("Cache ownership");
 			expect(generate).not.toHaveBeenCalled();
+			await execute("/rename Follow-up task");
+			expect(session.sessionName).toBe("Follow-up task");
+			expect(sessionManager.getSessionIdentityMetadata()?.actorHandle).toBe("attach-owner");
 		});
 
 		it("keeps the previous title without inference when there is no conversation", async () => {

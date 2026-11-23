@@ -463,9 +463,9 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 	}
 
 	if (attachFlagCount > 0) {
-		if (attachFlagCount !== 1) throw new CliUsageError("--attach requires exactly one transcript path");
-		if (!result.attach || !path.isAbsolute(result.attach)) {
-			throw new CliUsageError("--attach requires an absolute transcript path");
+		if (attachFlagCount !== 1) throw new CliUsageError("--attach requires exactly one target");
+		if (!result.attach || (!path.isAbsolute(result.attach) && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(result.attach))) {
+			throw new CliUsageError("--attach requires an absolute transcript path, actor handle, or session UUID prefix");
 		}
 		for (let i = 0; i < inputArgs.length; i++) {
 			const arg = inputArgs[i];

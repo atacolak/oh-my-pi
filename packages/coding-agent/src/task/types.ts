@@ -22,6 +22,12 @@ export interface AutomationAuthorPolicy {
 	jurisdiction: "descendants" | "scope";
 }
 
+/** Durable automation-authoring grant carried by a root AgentDefinition. Independent from `spawns`. */
+export interface AutomationAuthorPolicy {
+	allowedAgents: string[] | "*";
+	jurisdiction: "descendants" | "scope";
+}
+
 const parseNumber = (value: string | undefined, defaultValue: number): number => {
 	if (value) {
 		try {
@@ -356,6 +362,8 @@ export interface AgentDefinition {
 	automationAuthor?: AutomationAuthorPolicy;
 	/** Root-only memory policy: `HINDSIGHT_AUTO_*` env wins, then these values, then settings. */
 	memory?: AgentMemoryPolicy;
+	/** Root-only idle sleep after this many seconds without activity; `0` disables it. Absent inherits `session.idleSleepSeconds`. */
+	idleSleepSeconds?: number;
 
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;

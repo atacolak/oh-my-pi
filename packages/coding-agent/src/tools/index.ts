@@ -36,6 +36,11 @@ import type { CostGateApi } from "../session/cost-gate";
 import type { CustomMessage } from "../session/messages";
 import type { UsageStatistics } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
+import type {
+	AgentMailDiscoveryResult,
+	AgentMailReadResult,
+	AgentMailSendResult,
+} from "../session/session-mail";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
@@ -114,6 +119,8 @@ export * from "@oh-my-pi/pi-tui/tools/streaming-output";
 export * from "../task";
 export * from "../web/search";
 export * from "./ask";
+export * from "./agent-mail";
+export * from "./agent-sessions";
 export * from "./ast-edit";
 export * from "./ast-grep";
 export * from "./bash";
@@ -166,6 +173,8 @@ export type { VibeToolDetails } from "@oh-my-pi/pi-tui/tools/vibe";
 export * from "./write";
 export * from "./xdev";
 export * from "./yield";
+import { AgentMailTool } from "./agent-mail";
+import { AgentSessionsTool } from "./agent-sessions";
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any, any, any>;
@@ -416,6 +425,32 @@ export interface ToolSession {
 	agentRegistry?: AgentRegistryApi;
 	/** Idle→parked→revive lifecycle owner; lets explicit cancellation stop a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
 	agentLifecycle?: () => AgentLifecycleApi;
+	/**
+	 * Cross-session agent mail, owned by the authoritative session. Tools are
+	 * thin consumers of these owner methods; they never route addresses, own
+	 * transport or hold mail state. Absent when the owner exposes no mail.
+	 */
+	agentMail?: {
+		/**
+		 * Resolve a peer, issue a capability and deliver over the recipient's
+		 * native socket. A refusal is definite; a transport failure after the
+		 * send is `unknown` and is never resent.
+		 */
+		send(
+			params: {
+				to: string;
+				message: string;
+				delivery?: "queue" | "steer";
+				threadId?: string;
+				replyTo?: string;
+			},
+			options?: { responseTimeoutMs?: number },
+		): Promise<AgentMailSendResult>;
+		/** Bounded read of this session's admitted mail history; newest last. */
+		read(options?: { threadId?: string; limit?: number }): AgentMailReadResult;
+		/** Bounded peer discovery through the native authorities with live handshakes. */
+		discover(options?: { query?: string; liveOnly?: boolean; limit?: number }): Promise<AgentMailDiscoveryResult>;
+	};
 	/** Get artifacts directory for artifact:// URLs */
 	getArtifactsDir?: () => string | null;
 	/** Get the ArtifactManager backing this session (shared across parent + subagents). */
@@ -622,6 +657,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
+	agent_mail: s => new AgentMailTool(s),
+	agent_sessions: s => new AgentSessionsTool(s),
 };
 
 export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {
@@ -713,6 +750,14 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			requestedTools.push("checkpoint");
 		}
 	}
+		if (requestedTools && !restrictToolNames) {
+			// Mail discovery pairs with mail sending (like checkpoint/rewind): an
+			// explicit `agent_mail` grant without `agent_sessions` still lets the
+			// agent discover peers. Restricted lists own their roster and stay exact.
+			if (requestedTools.includes("agent_mail") && !requestedTools.includes("agent_sessions")) {
+				requestedTools.push("agent_sessions");
+			}
+		}
 	// Auto-include AST counterparts when their text-based sibling is present.
 	// Restricted callers own the active list and must not have it widened.
 	if (requestedTools && !restrictToolNames) {
@@ -832,6 +877,9 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		if (name === "task") {
 			return canSpawnAtDepth(cfgTaskMaxRecursionDepth.get(session.settings), session.taskDepth ?? 0);
 		}
+		// Cross-session agent mail is an explicit per-agent grant, never a default:
+		// both tools activate only when the requested tool list names them.
+		if (name === "agent_mail" || name === "agent_sessions") return requestedTools?.includes(name) === true;
 		return true;
 	};
 	if (includeYield && requestedTools && !requestedTools.includes("yield")) {

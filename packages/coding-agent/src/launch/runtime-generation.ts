@@ -135,6 +135,33 @@ export function resolveUpgradedCliEntryCmd(entryCmd: readonly string[]): Upgrade
 	return { cmd, running: layout.running, current, entry: candidate, upgraded: true };
 }
 
+/** Select an exact installed generation; never substitute `current` or an unmanaged entry. */
+export function resolvePinnedCliEntryCmd(entryCmd: readonly string[], pinned: string): string[] {
+	if (!GENERATION_ID.test(pinned)) throw new Error("Pinned generation must be a full generation SHA");
+	const shapedIndex = findGenerationEntryIndex(entryCmd);
+	const layout =
+		shapedIndex === -1
+			? parseGenerationEntry(runningGenerationEntry())
+			: parseGenerationEntry(entryCmd[shapedIndex] as string);
+	if (!layout?.relativePath) {
+		throw new Error("Native pinned-generation cold launch requires a generation-managed entry");
+	}
+	const index = shapedIndex === -1 ? findRelativeEntryIndex(entryCmd, layout.relativePath) : shapedIndex;
+	if (index === -1) throw new Error("Pinned generation has no matching CLI entry");
+	const generationDir = path.join(layout.root, pinned);
+	const candidate = path.join(generationDir, layout.relativePath);
+	const canonicalRoot = fs.realpathSync(layout.root);
+	if (
+		fs.realpathSync(generationDir) !== path.join(canonicalRoot, pinned) ||
+		!fs.realpathSync(candidate).startsWith(`${path.join(canonicalRoot, pinned)}${path.sep}`)
+	) {
+		throw new Error("Pinned generation entry escapes its immutable generation directory");
+	}
+	const cmd = [...entryCmd];
+	cmd[index] = candidate;
+	return cmd;
+}
+
 function findGenerationEntryIndex(entryCmd: readonly string[]): number {
 	const limit = Math.min(entryCmd.length, 2);
 	for (let index = 0; index < limit; index++) {

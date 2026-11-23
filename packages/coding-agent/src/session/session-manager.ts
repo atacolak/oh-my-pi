@@ -19,8 +19,11 @@ import {
 	isEnotdir,
 	isEnotempty,
 	isFsError,
+	isRecord,
 	logger,
+	normalizePathForComparison,
 	pathIsWithin,
+	resolveEquivalentPath,
 	stringifyJson,
 	toError,
 } from "@oh-my-pi/pi-utils";
@@ -122,9 +125,13 @@ import { forgetExternalizedImages, prepareEntryForPersistence } from "./session-
 import { loadPinnedSessionIds, sortPinnedFirst } from "./session-pins";
 import {
 	FileSessionStorage,
+	isSessionLeaseHeld,
 	MemorySessionStorage,
+	readSessionHeaderIdSync,
 	type SessionOwnershipClaim,
 	type SessionReservation,
+	SessionReservationBusyError,
+	SessionReservationUnavailableError,
 	type SessionStorage,
 	type SessionStorageWriter,
 	SessionWriteConflictError,
@@ -145,6 +152,7 @@ import {
 	startSessionEpisode,
 	type EpisodeTriggerKind,
 } from "./session-index";
+import { validateIdleSleepSeconds } from "./idle-sleep-policy";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
@@ -189,6 +197,139 @@ export function mintSessionId(): string {
 	return Bun.randomUUIDv7();
 }
 
+/** Custom-entry type carrying a session's native actor identity; plain `custom` entries never enter model context. */
+export const SESSION_IDENTITY_CUSTOM_TYPE = "omp.session_identity";
+
+export const SESSION_IDENTITY_VERSION = 1;
+
+/** One responsibility an actor session holds beyond its own transcript. */
+export interface SessionIdentityAssignment {
+	kind: string;
+	target: string;
+}
+
+/** Full identity snapshot, appended as the newest {@link SESSION_IDENTITY_CUSTOM_TYPE} entry. */
+export interface SessionIdentityMetadata {
+	version: typeof SESSION_IDENTITY_VERSION;
+	actorHandle?: string | null;
+	assignments?: readonly SessionIdentityAssignment[];
+	generation?: string | null;
+	/** Actor-specific idle retirement in seconds; null inherits profile/config policy, zero disables. */
+	idleSleepSeconds?: number | null;
+}
+
+/** A journaled identity entry is unreadable or violates the versioned shape. */
+export class SessionIdentityMetadataError extends Error {
+	readonly entryId: string | undefined;
+
+	constructor(message: string, entryId?: string) {
+		super(message);
+		this.name = "SessionIdentityMetadataError";
+		this.entryId = entryId;
+	}
+}
+
+function identityString(value: unknown, field: string, entryId?: string): string {
+	if (typeof value !== "string" || !value.trim()) {
+		throw new SessionIdentityMetadataError(`Session identity ${field} must be a nonempty string`, entryId);
+	}
+	return value.trim();
+}
+
+/**
+ * Parse one identity payload strictly: recovery refuses malformed or
+ * unsupported claims instead of picking a plausible winner.
+ */
+export function parseSessionIdentityMetadata(data: unknown, entryId?: string): SessionIdentityMetadata {
+	if (!isRecord(data)) throw new SessionIdentityMetadataError("Session identity metadata must be an object", entryId);
+	if (data.version !== SESSION_IDENTITY_VERSION) {
+		throw new SessionIdentityMetadataError(`Unsupported session identity version ${String(data.version)}`, entryId);
+	}
+	const metadata: SessionIdentityMetadata = { version: SESSION_IDENTITY_VERSION };
+	if (data.actorHandle !== undefined) {
+		metadata.actorHandle =
+			data.actorHandle === null ? null : identityString(data.actorHandle, "actorHandle", entryId);
+	}
+	if (data.generation !== undefined) {
+		metadata.generation = data.generation === null ? null : identityString(data.generation, "generation", entryId);
+	}
+	if (data.idleSleepSeconds !== undefined) {
+		try {
+			metadata.idleSleepSeconds =
+				data.idleSleepSeconds === null ? null : validateIdleSleepSeconds(data.idleSleepSeconds);
+		} catch {
+			throw new SessionIdentityMetadataError(
+				"Idle sleep seconds must be a nonnegative safe integer or null",
+				entryId,
+			);
+		}
+	}
+	if (data.assignments !== undefined) {
+		if (!Array.isArray(data.assignments)) {
+			throw new SessionIdentityMetadataError("Session identity assignments must be an array", entryId);
+		}
+		metadata.assignments = data.assignments.map(assignment => {
+			if (!isRecord(assignment)) {
+				throw new SessionIdentityMetadataError("Session identity assignment must be an object", entryId);
+			}
+			return {
+				kind: identityString(assignment.kind, "assignment kind", entryId),
+				target: identityString(assignment.target, "assignment target", entryId),
+			};
+		});
+	}
+	return metadata;
+}
+
+/**
+ * Latest identity snapshot in journal order, with the entry that carried it.
+ * Malformed claims refuse instead of falling back to an older snapshot.
+ */
+export function latestSessionIdentityMetadata(
+	entries: readonly SessionEntry[],
+): { metadata: SessionIdentityMetadata; entryId: string } | undefined {
+	let latest: { metadata: SessionIdentityMetadata; entryId: string } | undefined;
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== SESSION_IDENTITY_CUSTOM_TYPE) continue;
+		latest = { metadata: parseSessionIdentityMetadata(entry.data, entry.id), entryId: entry.id };
+	}
+	return latest;
+}
+
+/**
+ * Drop exclusive identity entries from a journal copied into a new session.
+ * Children of a stripped entry are re-parented onto its parent and a leaf
+ * pointer aimed at one follows the same chain, so the tree stays connected.
+ */
+function stripExclusiveIdentityEntries(
+	entries: readonly SessionEntry[],
+	activeLeafId: string | null = null,
+): { entries: SessionEntry[]; activeLeafId: string | null } {
+	const replacements = new Map<string, string | null>();
+	const resolve = (id: string | null): string | null => {
+		let current = id;
+		const seen = new Set<string>();
+		while (current !== null && replacements.has(current)) {
+			if (seen.has(current)) return null;
+			seen.add(current);
+			current = replacements.get(current) ?? null;
+		}
+		return current;
+	};
+	const kept: SessionEntry[] = [];
+	for (const entry of entries) {
+		if (entry.type === "custom" && entry.customType === SESSION_IDENTITY_CUSTOM_TYPE) {
+			replacements.set(entry.id, resolve(entry.parentId));
+			continue;
+		}
+		const parentId = resolve(entry.parentId);
+		const leafId = resolve(entry.activeLeafId ?? null);
+		const unchanged = parentId === entry.parentId && leafId === (entry.activeLeafId ?? null);
+		kept.push(unchanged ? entry : ({ ...entry, parentId, activeLeafId: leafId } as SessionEntry));
+	}
+	return { entries: kept, activeLeafId: resolve(activeLeafId) };
+}
+
 /**
  * `moveTo` refused before anything moved: another live omp process writes the
  * session, or the session file at the destination.
@@ -202,6 +343,15 @@ export class SessionMoveRefusedError extends Error {
 
 function nowIso(): string {
 	return new Date().toISOString();
+}
+
+function readRootAgentProfile(header: SessionHeader): string | undefined {
+	const value = header.rootAgent;
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || !value.trim()) {
+		throw new Error("Session header holds an invalid root agent profile");
+	}
+	return value;
 }
 
 function fileSafeTimestamp(iso: string): string {
@@ -1095,6 +1245,9 @@ export class SessionManager {
 	#diskFailureLogged = false;
 	/** FIFO reservation for atomic batches and authoritative recovery. */
 	#atomicPersistenceTail: Promise<void> = Promise.resolve();
+	/** Metadata mutations hold this token through durable readback; lifecycle state stays on AgentSession. */
+	#identityMutationActive = false;
+	#identityMutationLifecycleGuard: (() => void) | undefined;
 	/** Observer notifications withheld until their entries are proven durable. */
 	#pendingDurabilityNotifications: SessionEntry[] = [];
 	/** Bumped on every sync rewrite / chain reset so stale queued tasks become no-ops. */
@@ -1447,7 +1600,7 @@ export class SessionManager {
 	 * await it. Returns the sibling.
 	 */
 	#moveOffSessionFile(reason: SessionPersistenceNotice["reason"]): string {
-		if (this.#ownershipPolicy === "require-owner") {
+		if (this.#ownershipPolicy === "require-owner" || this.#identityMutationActive) {
 			throw new SessionOwnershipConflictError(this.#sessionId, this.#sessionFile as string);
 		}
 		const from = this.#sessionFile as string;
@@ -2228,6 +2381,7 @@ export class SessionManager {
 			parentSession: options?.parentSession,
 			providerPromptCacheKey: options?.providerPromptCacheKey,
 			rootAgent: options?.rootAgent,
+			rootAgentCwd: options?.rootAgentCwd,
 			taskPromptCacheKey: options?.taskPromptCacheKey,
 		};
 
@@ -2768,7 +2922,12 @@ export class SessionManager {
 	 */
 	async newSession(options?: NewSessionOptions): Promise<string | undefined> {
 		await this.#drainAndCloseWriter();
-		const sessionFile = this.#resetToNewSession(options);
+		const sessionFile = this.#resetToNewSession({
+			...options,
+			rootAgent: options?.rootAgent ?? this.#header.rootAgent,
+			rootAgentCwd:
+				options?.rootAgentCwd ?? (options?.rootAgent === undefined ? this.#header.rootAgentCwd : undefined),
+		});
 		if (options?.drop !== true) await this.ensureOnDisk();
 		return sessionFile;
 	}
@@ -2815,6 +2974,7 @@ export class SessionManager {
 			providerPromptCacheKey: SessionManager.getInheritedProviderPromptCacheKey(this.#header),
 			taskPromptCacheKey: this.#header.taskPromptCacheKey,
 			rootAgent: this.#header.rootAgent,
+			rootAgentCwd: this.#header.rootAgentCwd,
 		};
 
 		this.#sessionName = this.#header.title;
@@ -2828,6 +2988,11 @@ export class SessionManager {
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
+
+		const stripped = stripExclusiveIdentityEntries(this.#entries, this.#index.leafId());
+		this.#entries = stripped.entries;
+		this.#index.rebuild(stripped.entries);
+		this.#index.setLeaf(stripped.activeLeafId);
 
 		await this.#rewriteAtomically();
 		return { oldSessionFile, newSessionFile: this.#sessionFile };
@@ -3076,11 +3241,61 @@ export class SessionManager {
 		manager.#additionalDirectories = [...this.#additionalDirectories];
 		manager.#header.additionalDirectories =
 			manager.#additionalDirectories.length > 0 ? [...manager.#additionalDirectories] : undefined;
-		manager.#entries = structuredClone(this.#entries);
-		manager.#index.rebuild(manager.#entries);
+		const stripped = stripExclusiveIdentityEntries(structuredClone(this.#entries), this.#index.leafId());
+		manager.#entries = stripped.entries;
+		manager.#index.rebuild(stripped.entries);
+		manager.#index.setLeaf(stripped.activeLeafId);
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
 		return manager;
+	}
+
+	/** Bind the execution owner's transition admission without copying its lifecycle state. */
+	bindIdentityMutationLifecycle(guard: () => void): Disposable {
+		if (this.#identityMutationLifecycleGuard) throw new Error("Session already has an identity lifecycle owner");
+		this.#identityMutationLifecycleGuard = guard;
+		return {
+			[Symbol.dispose]: () => {
+				if (this.#identityMutationLifecycleGuard === guard) this.#identityMutationLifecycleGuard = undefined;
+			},
+		};
+	}
+
+	get isIdentityMutationInProgress(): boolean {
+		return this.#identityMutationActive;
+	}
+
+	/** Exclude transcript replacement while an identity claim or release is being committed. */
+	beginIdentityMutation(): Disposable {
+		this.#identityMutationLifecycleGuard?.();
+		if (this.#identityMutationActive) throw new Error("Session identity mutation is already in progress");
+		this.#identityMutationActive = true;
+		let released = false;
+		return {
+			[Symbol.dispose]: () => {
+				if (released) return;
+				released = true;
+				this.#identityMutationActive = false;
+			},
+		};
+	}
+
+	/** Admit an identity write on this manager's exact local journal, never a sibling. */
+	async prepareIdentityJournal(): Promise<void> {
+		if (!this.#identityMutationActive) throw new Error("Identity journal preparation requires a mutation guard");
+		if (
+			this.#released ||
+			this.#sessionFileRelocating ||
+			!this.#persist ||
+			!this.#sessionFile ||
+			!(this.#storage instanceof FileSessionStorage) ||
+			(this.#sessionClaim !== undefined && this.#sessionClaim.release?.active !== true)
+		) {
+			throw new SessionReservationUnavailableError(this.#sessionId, "the manager cannot admit an identity write");
+		}
+		this.#claimSession();
+		if (!this.hasSessionOwnership()) throw new SessionReservationBusyError(this.#sessionId);
+		await this.ensureOnDisk();
 	}
 
 	/**
@@ -3522,6 +3737,17 @@ export class SessionManager {
 
 	getSessionFile(): string | undefined {
 		return this.#sessionFile;
+	}
+
+	/** Observe this local journal's canonical identity without acquiring a lease or writing. */
+	getCanonicalSessionFile(): string | undefined {
+		const file = this.#sessionFile;
+		if (!file || this.#released || this.#sessionFileRelocating || !(this.#storage instanceof FileSessionStorage))
+			return undefined;
+		const canonical = resolveEquivalentPath(file, { throughMissing: true });
+		if (readSessionHeaderIdSync(canonical) !== this.#sessionId || !this.isSessionOnDisk()) return undefined;
+		if (resolveEquivalentPath(file, { throughMissing: true }) !== canonical) return undefined;
+		return canonical;
 	}
 
 	/** Observe this manager's own claim or live bootstrap reservation without acquiring a lease. */
@@ -4227,6 +4453,27 @@ export class SessionManager {
 	}
 
 	/**
+	 * Append a full identity snapshot as a plain `custom` entry. It never
+	 * enters model context; durability is the caller's business (`ensureOnDisk`
+	 * followed by `flush`).
+	 */
+	appendSessionIdentityMetadata(metadata: SessionIdentityMetadata): string {
+		const entry: CustomEntry<SessionIdentityMetadata> = {
+			type: "custom",
+			customType: SESSION_IDENTITY_CUSTOM_TYPE,
+			data: parseSessionIdentityMetadata(metadata),
+			...this.#freshEntryFields(),
+		};
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	/** Newest identity snapshot this manager holds in memory; malformed claims refuse. */
+	getSessionIdentityMetadata(): SessionIdentityMetadata | undefined {
+		return latestSessionIdentityMetadata(this.#entries)?.metadata;
+	}
+
+	/**
 	 * Rewrite the session file after in-place entry updates (e.g. pruning old tool
 	 * outputs). Use sparingly.
 	 */
@@ -4444,11 +4691,17 @@ export class SessionManager {
 		return this.#header;
 	}
 
-	async setRootAgent(name: string): Promise<void> {
+	/** Persist the resolved root agent profile so an explicit resume restores it. */
+	async setRootAgent(name: string, cwd?: string): Promise<void> {
 		if (!this.#header) return;
 		const trimmed = name.trim();
-		if (!trimmed || this.#header.rootAgent === trimmed) return;
+		if (!trimmed) return;
+		const sameProfile = readRootAgentProfile(this.#header) === trimmed;
+		const rootAgentCwd =
+			cwd === undefined ? (sameProfile ? this.#header.rootAgentCwd : undefined) : path.resolve(cwd);
+		if (sameProfile && this.#header.rootAgentCwd === rootAgentCwd) return;
 		this.#header.rootAgent = trimmed;
+		this.#header.rootAgentCwd = rootAgentCwd;
 		this.#rewriteRequired = true;
 		await this.#rewriteAtomically();
 	}
@@ -4615,7 +4868,9 @@ export class SessionManager {
 			if (entry.type === "label") continue;
 			entriesToKeep.push(entry.activeLeafId === undefined ? entry : { ...entry, activeLeafId: undefined });
 		}
-		const keptIds = new Set(entriesToKeep.map(entry => entry.id));
+		const strippedBranch = stripExclusiveIdentityEntries(entriesToKeep);
+		const keptEntries = strippedBranch.entries;
+		const keptIds = new Set(keptEntries.map(entry => entry.id));
 		const labelsToCarry: Array<{ targetId: string; label: string }> = [];
 		for (const [targetId, label] of this.#index.labelsInEffect()) {
 			if (keptIds.has(targetId)) labelsToCarry.push({ targetId, label });
@@ -4636,10 +4891,11 @@ export class SessionManager {
 			parentSession: this.#persist ? sourceSessionFile : undefined,
 			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
 			rootAgent: this.#header?.rootAgent,
+			rootAgentCwd: this.#header?.rootAgentCwd,
 		};
 
 		const labels: LabelEntry[] = [];
-		let parentId = entriesToKeep[entriesToKeep.length - 1]?.id ?? null;
+		let parentId = keptEntries[keptEntries.length - 1]?.id ?? null;
 		for (const carried of labelsToCarry) {
 			const labelEntry: LabelEntry = {
 				type: "label",
@@ -4656,7 +4912,7 @@ export class SessionManager {
 
 		this.#leaveSessionForExplicitTransition();
 		this.#header = header;
-		this.#entries = [...entriesToKeep, ...labels];
+		this.#entries = [...keptEntries, ...labels];
 		this.#sessionId = newSessionId;
 		this.#taskSiblingCandidate = undefined;
 		this.#sessionName = header.title;
@@ -4789,6 +5045,8 @@ export class SessionManager {
 		manager.#resetToNewSession(
 			{
 				parentSession: sourceHeader?.id,
+				rootAgent: options?.seance ? undefined : sourceHeader?.rootAgent,
+				rootAgentCwd: options?.seance ? undefined : sourceHeader?.rootAgentCwd,
 				providerPromptCacheKey: SessionManager.getInheritedProviderPromptCacheKey(sourceHeader),
 				taskPromptCacheKey: sourceHeader?.taskPromptCacheKey,
 			},
@@ -4809,12 +5067,18 @@ export class SessionManager {
 		manager.#titleSource = manager.#header.titleSource;
 		manager.#titleUpdatedAt = nowIso();
 		manager.#hasTitleSlot = true;
-		manager.#entries = history;
-		manager.#index.rebuild(history);
+		const sourceIndex = new SessionEntryIndex();
+		sourceIndex.rebuild(history);
+		const stripped = stripExclusiveIdentityEntries(history, sourceIndex.leafId());
+		manager.#entries = stripped.entries;
+		manager.#index.rebuild(stripped.entries);
+		manager.#index.setLeaf(stripped.activeLeafId);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
 		if (options?.repairInterruptedTail) {
-			SessionManager.#repairForkedInterruptedTail(history, manager.#index.pathTo());
-			manager.#index.rebuild(history);
+			const previousLength = stripped.entries.length;
+			SessionManager.#repairForkedInterruptedTail(stripped.entries, manager.#index.pathTo());
+			manager.#index.rebuild(stripped.entries);
+			if (stripped.entries.length === previousLength) manager.#index.setLeaf(stripped.activeLeafId);
 		}
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
@@ -4918,6 +5182,8 @@ export class SessionManager {
 			ownershipPolicy?: SessionOwnershipPolicy;
 			/** Bootstrap reservation adopted by this manager's first claim (strict owner path). */
 			ownershipReservation?: SessionReservation;
+			/** Validate the fresh loaded header before opening or mutating the session. */
+			validateHeader?: (header: SessionHeader | undefined) => void;
 		},
 	): Promise<SessionManager> {
 		const probed = await loadSessionFile(filePath, storage, { throwIfMissing: options?.throwIfMissing });
@@ -4946,6 +5212,7 @@ export class SessionManager {
 		const loaded = options?.throwIfMissing
 			? await loadSessionFile(filePath, storage, { throwIfMissing: true })
 			: probed;
+		options?.validateHeader?.(loaded.entries.find(entry => entry.type === "session") as SessionHeader | undefined);
 		await manager.#setSessionFile(filePath, loaded, {
 			throwIfMissing: options?.throwIfMissing,
 			newSession: { parentSession: options?.parentSession },
@@ -4955,6 +5222,88 @@ export class SessionManager {
 		manager.#ownershipPolicy = options?.ownershipPolicy ?? "branch";
 		manager.#ownershipReservation = options?.ownershipReservation;
 		return manager;
+	}
+
+	/**
+	 * Bind an existing legacy transcript to a root agent profile without
+	 * creating, forking, continuing, or relocating anything.
+	 *
+	 * The file, session id, and canonical cwd must all agree with a fresh read
+	 * taken under the session's strict ownership lease. A transcript already
+	 * bound to another profile is refused; rebinding the same profile is a
+	 * no-op. Any live, same-process, or unobservable owner refuses the bind
+	 * before bytes change.
+	 *
+	 * @returns `true` when the header gained the binding, `false` when it
+	 *   already held exactly that binding.
+	 */
+	static async bindLegacyProfile(
+		sessionPath: string,
+		sessionId: string,
+		cwd: string,
+		profile: string,
+		storage: FileSessionStorage = new FileSessionStorage(),
+	): Promise<boolean> {
+		if (!path.isAbsolute(sessionPath)) throw new TypeError("Session transcript path must be absolute");
+		if (!sessionId.trim()) throw new TypeError("Session id must be nonempty");
+		if (!path.isAbsolute(cwd)) throw new TypeError("Session working directory must be absolute");
+		const rootAgent = profile.trim();
+		if (!rootAgent) throw new TypeError("Root agent profile must be nonempty");
+
+		const held = isSessionLeaseHeld(sessionId);
+		if (held === null) {
+			throw new SessionReservationUnavailableError(sessionId, "the ownership lease could not be probed");
+		}
+		if (held) throw new SessionReservationBusyError(sessionId);
+		if (!storage.existsSync(sessionPath)) {
+			throw new SessionReservationUnavailableError(sessionId, `${sessionPath} does not exist`);
+		}
+
+		const reservation = storage.reserveSession(sessionId, sessionPath);
+		if (reservation.active !== true || isSessionLeaseHeld(sessionId) !== true) {
+			reservation.release();
+			throw new SessionReservationUnavailableError(sessionId, "the ownership lease is not observable");
+		}
+		let manager: SessionManager | undefined;
+		try {
+			let alreadyBound = false;
+			manager = await SessionManager.open(sessionPath, path.dirname(path.resolve(sessionPath)), storage, {
+				initialCwd: cwd,
+				throwIfMissing: true,
+				suppressBreadcrumb: true,
+				ownershipPolicy: "require-owner",
+				ownershipReservation: reservation,
+				validateHeader: header => {
+					if (!header) throw new Error(`Session transcript ${sessionPath} has no session header`);
+					if (header.id !== sessionId) {
+						throw new Error(`Session transcript ${sessionPath} identifies "${header.id}", not "${sessionId}"`);
+					}
+					if (!header.cwd || normalizePathForComparison(header.cwd) !== normalizePathForComparison(cwd)) {
+						throw new Error(`Session ${sessionId} is recorded in a different working directory`);
+					}
+					const bound = readRootAgentProfile(header);
+					if (bound !== undefined && bound !== rootAgent) {
+						throw new Error(`Session ${sessionId} is already bound to a different root agent profile`);
+					}
+					alreadyBound = bound === rootAgent;
+				},
+			});
+			if (!alreadyBound) await manager.setRootAgent(rootAgent);
+			if (
+				manager.getSessionId() !== sessionId ||
+				manager.getSessionFile() !== path.resolve(sessionPath) ||
+				!manager.hasSessionOwnership()
+			) {
+				throw new Error(`Session ${sessionId} lost its exact transcript or ownership lease during binding`);
+			}
+			return !alreadyBound;
+		} finally {
+			try {
+				await manager?.close();
+			} finally {
+				reservation.release();
+			}
+		}
 	}
 
 	/**

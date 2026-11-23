@@ -1,0 +1,7 @@
+Send and read cross-session agent mail over the native session sockets.
+
+Peers are other omp sessions. Address one by canonical session UUID, unique id prefix, or actor handle; the recipient must be live — offline peers cannot receive mail and no queue persists for them. Discover peers (ids, handles, proven availability) with the `agent_sessions` tool.
+
+`op: "send"` delivers `message` to `to`. `delivery` picks the recipient-side path explicitly: `"queue"` (default) waits behind the recipient's current run; `"steer"` interrupts it at the next boundary. Sender identity is owner-attested: the recipient verifies a per-send capability with the sender's own session before admitting, so forged sender fields are refused. The receipt is truthful — it reports the recipient owner recorded the mail and which input path its admission actually took (admitted, queued, or steering), never that the recipient's model has read or answered it. A send whose answer does not arrive is reported UNKNOWN (it may or may not have been delivered) and is never resent automatically. `reply_to` (a prior message id) and `thread` (a thread id) continue an existing conversation; both ids come from a receipt or an inbox read.
+
+`op: "read"` returns this session's own admitted inbox, newest last, bounded by `limit` (default 20, max 100); `thread` narrows it to one thread. History derives from the session's durable journal, so it survives reconnects and owner restarts, and a session switch never shows another conversation's mail.

@@ -24,8 +24,18 @@ import type {
 	WordCompletionMethod,
 	WordCompletionQuery,
 } from "@oh-my-pi/pi-tui/prompt/word-completion";
-import { isRecord, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, Snowflake, toError } from "@oh-my-pi/pi-utils";
 import * as fs from "node:fs/promises";
+import {
+	agentMailEnvelopeError,
+	AgentMailTargetMismatchError,
+	parseAgentMailVerification,
+	isAgentMailIncarnation,
+	sameAgentMailIncarnation,
+	type AgentMailVerification,
+} from "../../session/session-mail";
+import { sessionAttachEndpoint } from "../../launch/session-attach";
+import { RpcClient } from "./rpc-client";
 import * as path from "node:path";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { readRuntimeGeneration } from "../../launch/runtime-generation";
@@ -51,6 +61,7 @@ import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
 import { findCompactMode } from "../../session/compact-modes";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { findMostRecentNonEmptySession, findRecentSessionContinuation } from "../../session/session-listing";
+import { assignSessionIdentity } from "../../session/session-identity";
 import { isSessionSettled } from "../../session/session-settle";
 import { probeSessionLeases } from "../../session/session-storage";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
@@ -102,8 +113,11 @@ import {
 	getRpcRefreshPreflight,
 	getRpcRuntimeRestartReceipt,
 	isGracefulRestartSettled,
+	isRpcRuntimeRestartOwner,
+	isSessionExitIdle,
 } from "./rpc-refresh-preflight";
 import type { AgentSessionEvent } from "../../session/agent-session-events";
+import { NativeSessionService } from "../../session/session-service";
 import type { EventBus } from "../../utils/event-bus";
 import { RpcSubagentRegistry, readRpcSubagentTranscript, resolveOwnedLiveSubagent } from "./rpc-subagents";
 import type {
@@ -770,6 +784,10 @@ export const SESSION_CHANGE_TYPES: Readonly<Record<string, true>> = {
 	open_session: true,
 };
 
+/** Sender-capability verification bounds on the recipient side. */
+const VERIFY_CONNECT_TIMEOUT_MS = 4_000;
+const VERIFY_RESPONSE_TIMEOUT_MS = 10_000;
+
 /**
  * Commands only the process that owns the session's RPC runner can serve:
  * session transitions it must coordinate with the goal/dictation/socket
@@ -820,6 +838,11 @@ export class RpcUserInputGate {
 	#sequence = 0;
 	#validFrom = 0;
 	#acceptedAt = new WeakMap<object, number>();
+	#pendingWork = 0;
+
+	get hasPendingWork(): boolean {
+		return this.#pendingWork > 0;
+	}
 
 	/** Call from {@link RpcInputDispatcher.dispatch} before the handler is queued. */
 	accept(command: RpcCommand): void {
@@ -851,10 +874,15 @@ export class RpcUserInputGate {
 
 	/** Run user-input work in accept order. The tail releases when `work` settles, not when a model turn ends. */
 	enqueue<T>(work: () => Promise<T>): Promise<T> {
+		this.#pendingWork++;
 		const run = this.#tail.then(work, work);
 		this.#tail = run.then(
-			() => {},
-			() => {},
+			() => {
+				this.#pendingWork--;
+			},
+			() => {
+				this.#pendingWork--;
+			},
 		);
 		return run;
 	}
@@ -939,6 +967,8 @@ export interface RpcCommandSurfaceOptions {
 		options?: RuntimeRestartOptions,
 	) => void;
 	modelRuntimeUpgrade?: ModelRuntimeUpgrade;
+	/** Cooperative idle exit, implemented by the current process owner; never an external PID signal. */
+	exitSession?: (canExit: () => boolean) => Promise<boolean>;
 	/**
 	 * Subagent registry owned by this surface's transport when it has no RPC
 	 * runner (a terminal-hosted publication). The stdio runner supplies its own
@@ -973,6 +1003,8 @@ export class RpcCommandSurface {
 	readonly #subagents: RpcSubagentRegistry | undefined;
 	readonly #mcpManager: MCPManager | undefined;
 	readonly #upgradeRuntime: RpcCommandSurfaceOptions["upgradeRuntime"];
+	readonly #exitSession: RpcCommandSurfaceOptions["exitSession"];
+	#exitPending = false;
 	readonly #modelRuntimeUpgrade: ModelRuntimeUpgrade | undefined;
 	#unbindModelRuntimeUpgrade: (() => void) | undefined;
 	#pendingGracefulUpgrade: { id: string; acknowledge: () => RpcUpgradeRuntimeResult } | undefined;
@@ -1008,6 +1040,7 @@ export class RpcCommandSurface {
 		this.#subagents = options.subagents;
 		this.#mcpManager = options.mcpManager ?? options.host?.mcpManager;
 		this.#upgradeRuntime = options.upgradeRuntime;
+		this.#exitSession = options.exitSession;
 		this.#modelRuntimeUpgrade = options.modelRuntimeUpgrade;
 		this.#unbindModelRuntimeUpgrade = options.modelRuntimeUpgrade?.bind(this.#session, request => {
 			const pending = this.#pendingGracefulUpgrade;
@@ -1041,9 +1074,15 @@ export class RpcCommandSurface {
 		this.#mcpControl = undefined;
 	}
 
+	/** Accepted RPC input still preparing or executing before the session admits it. */
+	get hasPendingInputWork(): boolean {
+		return this.#inputGate.hasPendingWork;
+	}
+
 	/** Number an accepted frame at read time so a later abort can invalidate it. */
 	acceptInput(command: RpcCommand): void {
 		this.#inputGate.accept(command);
+		if (Object.hasOwn(USER_INPUT_TYPES, command.type)) this.#session.recordIdleActivity();
 	}
 
 	/** Route one session event to the parts of the surface that read it. */
@@ -1165,8 +1204,13 @@ export class RpcCommandSurface {
 		}
 		const sessionId = this.#session.sessionId;
 		const sessionFile = this.#session.sessionFile;
+		const sessionManager = this.#session.sessionManager;
+		const expectedBootId = command.expectedBootId;
 		const requestEpoch = this.#upgradeEpoch;
-		const hasExpectedTarget = command.expectedSessionId !== undefined || command.expectedSessionFile !== undefined;
+		const hasExpectedTarget =
+			command.expectedSessionId !== undefined ||
+			command.expectedSessionFile !== undefined ||
+			expectedBootId !== undefined;
 		if (
 			hasExpectedTarget &&
 			(command.expectedSessionId !== sessionId ||
@@ -1181,9 +1225,19 @@ export class RpcCommandSurface {
 			);
 		}
 		let target: SessionRestartTarget | undefined;
+		const matchesExpectedOwner = () =>
+			!hasExpectedTarget ||
+			(target !== undefined &&
+				typeof expectedBootId === "string" &&
+				this.#session.sessionManager === sessionManager &&
+				isRpcRuntimeRestartOwner(this.#session, target, expectedBootId));
 		const upgrade = () => {
-			// A deferred request belongs to the exact conversation that accepted it.
-			if (this.#session.sessionId !== sessionId || this.#session.sessionFile !== sessionFile) return;
+			if (
+				this.#session.sessionId !== sessionId ||
+				this.#session.sessionFile !== sessionFile ||
+				!matchesExpectedOwner()
+			)
+				return;
 			const epoch = this.#upgradeEpoch;
 			restart(
 				target,
@@ -1192,6 +1246,7 @@ export class RpcCommandSurface {
 						epoch !== this.#upgradeEpoch ||
 						this.#session.sessionId !== sessionId ||
 						this.#session.sessionFile !== sessionFile ||
+						!matchesExpectedOwner() ||
 						!this.#hasUpgradeTarget(refresh)
 					) {
 						return false;
@@ -1240,6 +1295,22 @@ export class RpcCommandSurface {
 				"upgrade_runtime",
 				"The expected canonical transcript does not match the current conversation.",
 				"session_target_mismatch",
+			);
+		}
+		if (hasExpectedTarget && (typeof expectedBootId !== "string" || expectedBootId.length === 0)) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"Exact-session restart requires the owner bootId from refresh preflight.",
+				"owner_target_required",
+			);
+		}
+		if (!matchesExpectedOwner()) {
+			return rpcError(
+				command.id,
+				"upgrade_runtime",
+				"The expected owner incarnation or journal ownership no longer matches.",
+				"owner_target_mismatch",
 			);
 		}
 		if (requestEpoch !== this.#upgradeEpoch) {
@@ -1349,6 +1420,96 @@ export class RpcCommandSurface {
 		this.#scheduleUpgrade(upgrade, command.force === true, refresh);
 		const result: RpcUpgradeRuntimeResult = { upgraded: true, scheduled: false, ...observed };
 		return rpcSuccess(command.id, "upgrade_runtime", result);
+	}
+
+	async #exitOwnedSession(command: Extract<RpcCommand, { type: "exit_session" }>): Promise<RpcResponse> {
+		if (
+			Object.keys(command).some(
+				key => !["id", "type", "expectedSessionId", "expectedSessionFile", "expectedBootId", "force"].includes(key),
+			)
+		)
+			return rpcError(command.id, command.type, "Unsupported cooperative exit fields.", "invalid_exit_request");
+		if (command.force !== undefined && command.force !== false)
+			return rpcError(
+				command.id,
+				command.type,
+				"Force termination requires an unavailable native supervisor stable handle.",
+				"force_termination_unavailable",
+			);
+		const exitSession = this.#exitSession;
+		if (!exitSession)
+			return rpcError(
+				command.id,
+				command.type,
+				"This transport has no cooperative owner exit.",
+				"owner_exit_unavailable",
+			);
+		if (this.#exitPending)
+			return rpcError(command.id, command.type, "An owner exit is already pending.", "owner_exit_pending");
+		if (
+			![command.expectedSessionId, command.expectedSessionFile, command.expectedBootId].every(
+				value => typeof value === "string" && value.length > 0,
+			)
+		)
+			return rpcError(
+				command.id,
+				command.type,
+				"Exact session, canonical journal, and bootId are required.",
+				"owner_target_required",
+			);
+		const session = this.#session;
+		const manager = session.sessionManager;
+		const epoch = this.#upgradeEpoch;
+		const expectedBootId = command.expectedBootId;
+		const expected = { sessionId: command.expectedSessionId, sessionFile: command.expectedSessionFile };
+		const receipt = await getRpcRuntimeRestartReceipt(session);
+		const matches = () =>
+			epoch === this.#upgradeEpoch &&
+			!session.isDisposed &&
+			session.sessionManager === manager &&
+			isRpcRuntimeRestartOwner(session, expected, expectedBootId) &&
+			manager.getCanonicalSessionFile() === expected.sessionFile;
+		if (!receipt || !matches())
+			return rpcError(
+				command.id,
+				command.type,
+				"The current journal owner no longer matches the expected incarnation.",
+				"owner_target_mismatch",
+			);
+		if (this.#exitPending)
+			return rpcError(command.id, command.type, "An owner exit is already pending.", "owner_exit_pending");
+		const canExit = () =>
+			matches() &&
+			!this.#host?.isShuttingDown() &&
+			!this.#host?.isSessionChanging() &&
+			!this.#inputGate.hasPendingWork &&
+			!this.#host?.scheduledTurnPending() &&
+			isSessionExitIdle(session);
+		if (!canExit())
+			return rpcError(
+				command.id,
+				command.type,
+				"Cooperative exit requires fully observed idle owner work.",
+				"session_busy",
+			);
+		this.#exitPending = true;
+		setImmediate(() => {
+			void (async () => (canExit() ? exitSession(canExit) : false))()
+				.then(exited => {
+					if (!exited)
+						this.#output({
+							type: "notice",
+							level: "warning",
+							source: "exit_session",
+							message: "Cooperative owner exit was refused or failed; no force fallback was attempted.",
+						});
+				})
+				.catch(error => logger.warn("Cooperative owner exit failed", { error: String(error) }))
+				.finally(() => {
+					this.#exitPending = false;
+				});
+		});
+		return rpcSuccess(command.id, command.type, { scheduled: true as const, owner: receipt });
 	}
 
 	/** Builtin work that outlives its prompt response; aborted on host abort and disconnect. */
@@ -1761,6 +1922,54 @@ export class RpcCommandSurface {
 				await session.abort({ reason: USER_INTERRUPT_LABEL });
 				return rpcSuccess(id, "abort");
 			}
+			case "session_control": {
+				if (
+					(command.action !== "abort" && command.action !== "compact") ||
+					![command.expectedSessionId, command.expectedSessionFile, command.expectedBootId].every(
+						value => typeof value === "string" && value.length > 0,
+					)
+				) {
+					return rpcError(
+						id,
+						command.type,
+						"Exact session control requires an action and UUID/journal/boot target.",
+						"invalid_session_control",
+					);
+				}
+				const manager = session.sessionManager;
+				const receipt = await getRpcRuntimeRestartReceipt(session);
+				if (
+					!receipt ||
+					session.sessionManager !== manager ||
+					!isRpcRuntimeRestartOwner(
+						session,
+						{
+							sessionId: command.expectedSessionId,
+							sessionFile: command.expectedSessionFile,
+						},
+						command.expectedBootId,
+					)
+				) {
+					return rpcError(
+						id,
+						command.type,
+						"Session owner changed before control was admitted.",
+						"session_target_mismatch",
+					);
+				}
+				const response = await this.#handleCommandImpl(
+					command.action === "abort"
+						? { id, type: "abort" }
+						: { id, type: "compact", ...(command.mode === undefined ? {} : { mode: command.mode }) },
+					conn,
+				);
+				if (!response.success) return rpcError(id, command.type, response.error, response.code);
+				return rpcSuccess(id, command.type, {
+					action: command.action,
+					owner: receipt,
+					...(command.action === "compact" && "data" in response ? { compaction: response.data } : {}),
+				});
+			}
 
 			case "abort_and_restore_queue": {
 				// Mirrors the TUI Esc restore: withdraw queued user input (including input the run
@@ -1953,9 +2162,75 @@ export class RpcCommandSurface {
 					},
 				});
 			}
+			case "list_sessions": {
+				const limit = command.limit ?? 25;
+				if (
+					!Number.isInteger(limit) ||
+					limit < 1 ||
+					limit > 1000 ||
+					(command.query !== undefined && (typeof command.query !== "string" || command.query.length > 256))
+				) {
+					return rpcError(
+						id,
+						command.type,
+						"Catalog limit must be 1–1000 and query at most 256 characters.",
+						"invalid_catalog_query",
+					);
+				}
+				return rpcSuccess(
+					id,
+					command.type,
+					await new NativeSessionService().list({
+						query: command.query,
+						limit,
+						offset: command.offset,
+						probe: false,
+					}),
+				);
+			}
+			case "resolve_session":
+				if (typeof command.reference !== "string" || command.reference.length > 256)
+					return rpcError(
+						id,
+						command.type,
+						"A bounded session reference is required.",
+						"invalid_session_reference",
+					);
+				return rpcSuccess(id, command.type, await new NativeSessionService().resolve(command.reference));
+			case "wake_session": {
+				if (typeof command.expectedSessionId !== "string" || typeof command.expectedSessionFile !== "string")
+					return rpcError(id, command.type, "Wake requires the selected UUID and journal.", "invalid_wake_target");
+				const service = new NativeSessionService();
+				const selected = await service.resolve(command.expectedSessionId);
+				if (
+					selected.sessionId !== command.expectedSessionId ||
+					selected.sessionFile !== command.expectedSessionFile
+				)
+					return rpcError(id, command.type, "Saved session changed before wake.", "session_target_mismatch");
+				return rpcSuccess(
+					id,
+					command.type,
+					await service.wake(selected.sessionId, { expectedSessionFile: command.expectedSessionFile }),
+				);
+			}
+			case "agent_mail_send":
+				return rpcSuccess(
+					id,
+					command.type,
+					await session.sendAgentMail({
+						to: command.to,
+						message: command.message,
+						...(command.threadId === undefined ? {} : { threadId: command.threadId }),
+						...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
+						...(command.delivery === undefined ? {} : { delivery: command.delivery }),
+					}),
+				);
 
 			case "upgrade_runtime":
 				return this.#upgradeRuntimeGeneration(command);
+
+			case "exit_session":
+				return this.#exitOwnedSession(command);
 
 			case "set_fast_mode": {
 				const supported = session.setFastMode(command.enabled);
@@ -2431,6 +2706,17 @@ export class RpcCommandSurface {
 				return rpcSuccess(id, "set_session_name");
 			}
 
+			case "set_session_identity": {
+				if (typeof command.expectedSessionId !== "string" || typeof command.expectedSessionFile !== "string") {
+					return rpcError(id, command.type, "An exact session UUID and canonical journal are required");
+				}
+				const identity = await assignSessionIdentity(session.sessionManager, command.patch, {
+					expected: { sessionId: command.expectedSessionId, sessionFile: command.expectedSessionFile },
+				});
+				session.refreshIdleMaintenance();
+				return rpcSuccess(id, command.type, identity);
+			}
+
 			case "handoff": {
 				// Resetting the agent mid-stream lets the live turn keep emitting into a
 				// session that handoff has already torn down. Refuse while a prompt is in
@@ -2440,6 +2726,220 @@ export class RpcCommandSurface {
 				}
 				const result = await session.handoff(command.customInstructions);
 				return rpcSuccess(id, "handoff", result ? { savedPath: result.savedPath } : null);
+			}
+
+			// =================================================================
+			// Agent Mail
+			// =================================================================
+
+			case "agent_mail_deliver": {
+				// Strict validation first: a malformed frame reaches neither
+				// capability state nor admission.
+				const envelopeError = agentMailEnvelopeError(command);
+				if (envelopeError) return rpcError(id, "agent_mail_deliver", envelopeError);
+				if (typeof command.senderSessionId !== "string" || !command.senderSessionId) {
+					return rpcError(id, "agent_mail_deliver", "A claimed sender session id is required");
+				}
+				if (typeof command.capabilityToken !== "string" || !command.capabilityToken) {
+					return rpcError(id, "agent_mail_deliver", "A send capability token is required");
+				}
+				if (command.senderSessionId === session.sessionId) {
+					return rpcError(
+						id,
+						"agent_mail_deliver",
+						"Agent mail cannot be addressed to the sending session itself.",
+						"mail_target_mismatch",
+					);
+				}
+				if (command.recipientSessionId !== session.sessionId) {
+					return rpcError(
+						id,
+						"agent_mail_deliver",
+						`Mail addressed to session "${command.recipientSessionId}" reached owner "${session.sessionId}".`,
+						"mail_target_mismatch",
+					);
+				}
+				const target = session.agentMailIncarnation();
+				const expectedTarget = {
+					sessionId: command.recipientSessionId,
+					sessionFile: command.recipientSessionFile,
+					bootId: command.recipientBootId,
+				};
+				if (!sameAgentMailIncarnation(target, expectedTarget))
+					return rpcError(id, command.type, "Recipient journal or boot changed.", "mail_target_mismatch");
+				const expectedSource = {
+					sessionId: command.senderSessionId,
+					sessionFile: command.senderSessionFile,
+					bootId: command.senderBootId,
+				};
+				if (!isAgentMailIncarnation(expectedSource))
+					return rpcError(id, command.type, "Malformed source incarnation.", "mail_sender_unverified");
+				// Sender identity is never taken from this command's fields: the
+				// capability is verified with the claimed source owner's own
+				// native socket before anything is admitted.
+				let sourceClient: RpcClient;
+				try {
+					sourceClient = await RpcClient.connectSessionSocket({
+						endpoint: sessionAttachEndpoint(command.senderSessionId),
+						connectTimeoutMs: VERIFY_CONNECT_TIMEOUT_MS,
+					});
+				} catch {
+					return rpcError(
+						id,
+						"agent_mail_deliver",
+						`The claimed sender session "${command.senderSessionId}" is not reachable for verification.`,
+						"mail_sender_unverified",
+					);
+				}
+				let verification: AgentMailVerification | undefined;
+				try {
+					if (!sameAgentMailIncarnation(target, session.agentMailIncarnation()))
+						return rpcError(
+							id,
+							command.type,
+							"Recipient changed during verification setup.",
+							"mail_target_mismatch",
+						);
+					const response = await sourceClient.send(
+						{
+							type: "agent_mail_verify_send",
+							capabilityToken: command.capabilityToken,
+							recipientSessionId: command.recipientSessionId,
+							recipientSessionFile: target.sessionFile,
+							recipientBootId: target.bootId,
+							messageId: command.messageId,
+							senderSessionId: expectedSource.sessionId,
+							senderSessionFile: expectedSource.sessionFile,
+							senderBootId: expectedSource.bootId,
+							message: command.message,
+							...(command.threadId === undefined ? {} : { threadId: command.threadId }),
+							...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
+							delivery: command.delivery,
+							sentAt: command.sentAt,
+						},
+						VERIFY_RESPONSE_TIMEOUT_MS,
+					);
+					if (!response.success) {
+						return rpcError(
+							id,
+							"agent_mail_deliver",
+							"The claimed sender refused or could not verify the send capability.",
+							"mail_sender_unverified",
+						);
+					}
+					verification = parseAgentMailVerification("data" in response ? response.data : undefined);
+				} catch {
+					return rpcError(
+						id,
+						"agent_mail_deliver",
+						"The claimed sender did not answer the capability verification.",
+						"mail_sender_unverified",
+					);
+				} finally {
+					await sourceClient.stop();
+				}
+				if (
+					!verification ||
+					!verification.valid ||
+					!verification.sender ||
+					!verification.source ||
+					!verification.target
+				) {
+					return rpcError(
+						id,
+						"agent_mail_deliver",
+						`Sender capability verification failed${verification?.reason ? `: ${verification.reason}` : ""}.`,
+						"mail_sender_unverified",
+					);
+				}
+				if (verification.sender.sessionId !== command.senderSessionId) {
+					return rpcError(
+						id,
+						"agent_mail_deliver",
+						"The verifying owner is not the claimed sender session.",
+						"mail_sender_unverified",
+					);
+				}
+				if (
+					!sameAgentMailIncarnation(verification.source, expectedSource) ||
+					!sameAgentMailIncarnation(verification.target, target)
+				)
+					return rpcError(
+						id,
+						command.type,
+						"Verified source or target incarnation changed.",
+						"mail_sender_unverified",
+					);
+				try {
+					if (!sameAgentMailIncarnation(target, session.agentMailIncarnation()))
+						return rpcError(id, command.type, "Recipient changed before admission.", "mail_target_mismatch");
+					const receipt = await session.deliverAgentMail({
+						envelope: {
+							recipientSessionId: command.recipientSessionId,
+							recipientSessionFile: target.sessionFile,
+							recipientBootId: target.bootId,
+							messageId: command.messageId,
+							message: command.message,
+							...(command.threadId === undefined ? {} : { threadId: command.threadId }),
+							...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
+							delivery: command.delivery,
+							sentAt: command.sentAt,
+						},
+						sender: verification.sender,
+						source: verification.source,
+						target,
+					});
+					return rpcSuccess(id, "agent_mail_deliver", receipt);
+				} catch (mailError) {
+					if (mailError instanceof AgentMailTargetMismatchError) {
+						return rpcError(id, "agent_mail_deliver", mailError.message, "mail_target_mismatch");
+					}
+					return rpcError(id, "agent_mail_deliver", toError(mailError).message);
+				}
+			}
+
+			case "agent_mail_verify_send": {
+				if (typeof command.capabilityToken !== "string" || !command.capabilityToken) {
+					return rpcError(id, "agent_mail_verify_send", "A capability token is required");
+				}
+				const envelopeError = agentMailEnvelopeError(command);
+				if (envelopeError) return rpcError(id, "agent_mail_verify_send", `Malformed envelope: ${envelopeError}`);
+				return rpcSuccess(
+					id,
+					"agent_mail_verify_send",
+					session.verifyAgentMailSendCapability({
+						token: command.capabilityToken,
+						envelope: command,
+						source: {
+							sessionId: command.senderSessionId,
+							sessionFile: command.senderSessionFile,
+							bootId: command.senderBootId,
+						},
+						target: {
+							sessionId: command.recipientSessionId,
+							sessionFile: command.recipientSessionFile,
+							bootId: command.recipientBootId,
+						},
+					}),
+				);
+			}
+
+			case "agent_mail_read": {
+				if (command.threadId !== undefined && (typeof command.threadId !== "string" || !command.threadId.trim())) {
+					return rpcError(id, "agent_mail_read", "threadId must be a non-empty string");
+				}
+				try {
+					return rpcSuccess(
+						id,
+						"agent_mail_read",
+						session.readAgentMail({
+							...(command.threadId ? { threadId: command.threadId } : {}),
+							...(command.limit === undefined ? {} : { limit: command.limit }),
+						}),
+					);
+				} catch (readError) {
+					return rpcError(id, "agent_mail_read", toError(readError).message);
+				}
 			}
 
 			// =================================================================
@@ -2620,7 +3120,7 @@ export class RpcCommandSurface {
 
 			default: {
 				const unknownCommand = command as { type: string };
-				return rpcError(id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
+				return rpcError(id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`, "unsupported_command");
 			}
 		}
 	}
@@ -2697,6 +3197,7 @@ function terminalRefreshFrame(frame: unknown): InteractiveTerminalRefreshFrame |
 
 export interface ServedSessionSocket {
 	readonly surface: RpcCommandSurface;
+	readonly socket: RpcSessionSocket;
 	/** Detach the listener and unsubscribe the surface from the session. */
 	close(): Promise<void>;
 }
@@ -2776,8 +3277,11 @@ export async function serveInteractiveSessionSocket(options: {
 	firstResponder?: DialogFirstResponder;
 	/** The terminal's shutdown state; `new_session`-free surfaces report it verbatim. */
 	isShuttingDown?: () => boolean;
+	/** Borrowed owner predicate; terminal input and continuations are not socket-owned state. */
+	hasPendingHostWork?: () => boolean;
 	/** Restart this owner onto `generations/current`; wires `upgrade_runtime`. */
 	upgradeRuntime?: RpcCommandSurfaceOptions["upgradeRuntime"];
+	exitSession?: RpcCommandSurfaceOptions["exitSession"];
 	modelRuntimeUpgrade?: ModelRuntimeUpgrade;
 }): Promise<ServedSessionSocket> {
 	const session = options.session;
@@ -2906,6 +3410,7 @@ export async function serveInteractiveSessionSocket(options: {
 		subagents,
 		mcpManager: options.mcpManager,
 		upgradeRuntime: options.upgradeRuntime,
+		exitSession: options.exitSession,
 		modelRuntimeUpgrade: options.modelRuntimeUpgrade,
 		refusedCommands: SHARED_SESSION_REFUSED_COMMANDS,
 		eventFilter: (conn, events, messageUpdates) => eventView(conn ?? defaultConn).setFilter(events, messageUpdates),
@@ -2917,7 +3422,7 @@ export async function serveInteractiveSessionSocket(options: {
 			dictation,
 			subagents,
 			mcpManager: options.mcpManager,
-			scheduledTurnPending: goalTurnScheduled,
+			scheduledTurnPending: () => goalTurnScheduled() || options.hasPendingHostWork?.() === true,
 			isSessionChanging: () => sessionChanges > 0,
 			isShuttingDown: options.isShuttingDown ?? (() => false),
 			stopDictationForSessionChange: async () => {
@@ -2986,6 +3491,7 @@ export async function serveInteractiveSessionSocket(options: {
 	});
 	return {
 		surface,
+		socket: options.socket,
 		close: async () => {
 			unsubscribeIdentity();
 			detachWake();

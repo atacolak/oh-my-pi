@@ -32,6 +32,7 @@ import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
 import type { SkillLoadPolicy } from "../extensibility/skill-load-policy";
 import type { MCPRequestIdFormat } from "../mcp/types";
+import { validateIdleSleepSeconds } from "../session/idle-sleep-policy";
 import type { AgentMemoryPolicy, AutomationAuthorPolicy } from "../task/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { type AgentCompactionPolicy, parseAgentCompaction } from "../task/agent-compaction";
@@ -339,6 +340,8 @@ export interface ParsedAgentFields {
 	structured?: boolean;
 	/** Root-only Hindsight policy: kebab-case keys inside `memory` are accepted. */
 	memory?: AgentMemoryPolicy;
+	/** Root-only idle sleep seconds; `0` disables it. Malformed values are refused. */
+	idleSleepSeconds?: number;
 	/** `true` = prewalk into the default target; string = prewalk into that model pattern. */
 	prewalk?: boolean | string;
 	/** `true` = advise with the default advisor-role model; string = advise with that model pattern. */
@@ -412,6 +415,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 	const structured = parseBoolean(frontmatter.structured);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
 	const memory = parseAgentMemoryPolicy(frontmatter.memory);
+	const idleSleepSeconds = parseIdleSleepSeconds(frontmatter.idleSleepSeconds);
 	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
 	let prewalk: boolean | string | undefined = parseBoolean(frontmatter.prewalk);
 	if (prewalk === undefined && typeof frontmatter.prewalk === "string") {
@@ -460,6 +464,7 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 		output,
 		thinkingLevel,
 		memory,
+		idleSleepSeconds,
 		blocking,
 		hide,
 		structured,
@@ -474,6 +479,10 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 	};
 }
 
+function parseIdleSleepSeconds(value: unknown): number | undefined {
+	if (value === undefined || value === null) return undefined;
+	return validateIdleSleepSeconds(value);
+}
 function parseAgentMemoryPolicy(value: unknown): AgentMemoryPolicy | undefined {
 	if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
 		return undefined;

@@ -445,6 +445,10 @@ export class EventController {
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
 			irc_message: e => this.#handleIrcMessage(e),
+			// Mail lands on the normal input queues; the queue display covers its chip.
+			agent_mail: async () => {
+				this.ctx.updatePendingMessagesDisplay();
+			},
 			notice: e => this.#handleNotice(e),
 			model_changed: async () => {
 				this.ctx.statusLine.invalidate();

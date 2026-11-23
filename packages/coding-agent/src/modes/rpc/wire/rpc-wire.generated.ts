@@ -377,6 +377,85 @@ export interface ModelInfo {
 	compat?: Record<string, unknown>;
 }
 
+export interface NativeSessionTerminal {
+	protocolVersion: 1;
+	projectDir: string;
+	name: string;
+	id: string;
+}
+
+export interface NativeSessionInfo {
+	sessionId: string;
+	handle: string | null;
+	title: string | null;
+	rootAgent: string | null;
+	generation: string | null;
+	assignments: SessionIdentityAssignment[];
+	cwd: string | null;
+	sessionFile: string | null;
+	pid: number | null;
+	startedAt: number | null;
+	model: string | null;
+	availability: "live" | "offline" | "unavailable";
+	state: "working" | "idle" | "sleeping" | "unknown";
+	terminal: NativeSessionTerminal | null;
+	rootAgentCwd?: string;
+	idleSleepSeconds?: number | null;
+	modifiedAt?: number;
+	owner?: RuntimeRestartReceipt;
+}
+
+export interface NativeSessionList {
+	sessions: NativeSessionInfo[];
+	total: number;
+	truncated: boolean;
+	nextOffset?: number;
+	attachableSockets?: number;
+	unverifiedSockets?: number;
+	omittedUnnamed?: number;
+}
+
+export interface NativeSessionWakeResult {
+	sessionId: string;
+	handle: string | null;
+	title: string | null;
+	rootAgent: string | null;
+	generation: string | null;
+	assignments: SessionIdentityAssignment[];
+	cwd: string | null;
+	sessionFile: string | null;
+	pid: number | null;
+	startedAt: number | null;
+	model: string | null;
+	availability: "live" | "offline" | "unavailable";
+	state: "working" | "idle" | "sleeping" | "unknown";
+	terminal: NativeSessionTerminal | null;
+	revived: boolean;
+	rootAgentCwd?: string;
+	idleSleepSeconds?: number | null;
+	modifiedAt?: number;
+	owner?: RuntimeRestartReceipt;
+}
+
+export interface AgentMailAcceptedResult {
+	status: "accepted";
+	receipt: AgentMailReceipt;
+	target: string;
+}
+
+export interface AgentMailRefusedResult {
+	status: "refused";
+	error: string;
+	code?: string;
+}
+
+export interface AgentMailUnknownResult {
+	status: "unknown";
+	error: string;
+}
+
+export type AgentMailSendResult = AgentMailAcceptedResult | AgentMailRefusedResult | AgentMailUnknownResult;
+
 export type QueueMode = "all" | "one-at-a-time";
 
 export type InterruptMode = "immediate" | "wait";
@@ -408,6 +487,103 @@ export type SubagentSubscriptionLevel = "off" | "progress" | "events";
 export type AgentSource = "bundled" | "user" | "project";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "aborted";
+
+export interface SessionIdentityAssignment {
+	kind: string;
+	target: string;
+}
+
+export interface SessionIdentityPatch {
+	actorHandle?: string | null;
+	assignments?: SessionIdentityAssignment[];
+	generation?: string | null;
+	/** Actor override in seconds; zero disables, null inherits profile/config. */
+	idleSleepSeconds?: number | null;
+}
+
+export interface SessionIdentityRecord {
+	sessionId: string;
+	sessionFile: string;
+	cwd: string;
+	actorHandle: string | null;
+	assignments: SessionIdentityAssignment[];
+	rootAgent?: string;
+	generation?: string;
+	idleSleepSeconds?: number | null;
+	modifiedAt?: number;
+}
+
+/** Recipient-side input path the sender chose: queue behind the run, or steer into it. */
+export type AgentMailDelivery = "queue" | "steer";
+
+export type AgentMailAdmission = "admitted" | "queued" | "steering";
+
+/** Native addressability of one session end at mail time. */
+export interface AgentMailEndpointIdentity {
+	sessionId: string;
+	/** Mutable actor handle at capture time; not a role, title or permission. */
+	handle: string | null;
+	/** Provider/model string at capture time; distinct from any agent profile. */
+	model: string | null;
+}
+
+/** Exact incarnation of one session owner; a change invalidates bound capabilities. */
+export interface AgentMailIncarnation {
+	sessionId: string;
+	/** Owned canonical session journal. */
+	sessionFile: string;
+	/** Native per-boot owner identity; not a runtime generation. */
+	bootId: string;
+}
+
+/** Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself. */
+export interface AgentMailVerification {
+	valid: boolean;
+	/** Why the capability was refused; absent when valid. */
+	reason?: string;
+	/** Owner-attested sender identity; present when valid. */
+	sender?: AgentMailEndpointIdentity;
+	/** Source owner incarnation; present when valid. */
+	source?: AgentMailIncarnation;
+	/** Exact recipient incarnation bound into the proof. */
+	target?: AgentMailIncarnation;
+}
+
+/** Bounded inbox read derived from the current journal; newest last. */
+export interface AgentMailReadResult {
+	messages: AgentMailRecord[];
+	/** Admitted records matching the read filter. */
+	total: number;
+	/** True when `total` exceeds the returned messages. */
+	truncated: boolean;
+}
+
+/** Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it. */
+export interface AgentMailReceipt {
+	messageId: string;
+	threadId: string;
+	admission: AgentMailAdmission;
+	/** Whether a run was streaming on the recipient when the mail was admitted. */
+	busy: boolean;
+	recipient: AgentMailEndpointIdentity;
+	target: AgentMailIncarnation;
+}
+
+/** One delivered mail record with full sender/recipient/thread provenance. */
+export interface AgentMailRecord {
+	messageId: string;
+	threadId: string;
+	sender: AgentMailEndpointIdentity;
+	recipient: AgentMailEndpointIdentity;
+	source: AgentMailIncarnation;
+	target: AgentMailIncarnation;
+	body: string;
+	sentAt: number;
+	receivedAt: number;
+	delivery: AgentMailDelivery;
+	admission: AgentMailAdmission;
+	replyTo?: string;
+}
 
 export interface TodoItem {
 	content: string;
@@ -548,9 +724,15 @@ export interface RefreshModes {
 export interface RuntimeRestartReceipt {
 	sessionId: string;
 	sessionFile: string;
+	/** Loaded owner incarnation; echo as expectedBootId on exact-session restart, then require a different bootId in the reopened owner's receipt. */
 	bootId: string;
 	importedGeneration: string | null;
 	basePromptDigest: string;
+}
+
+export interface ExitSessionResult {
+	scheduled: boolean;
+	owner: RuntimeRestartReceipt;
 }
 
 export interface RefreshPreflight {
@@ -577,6 +759,7 @@ export interface SessionExecution {
 	profile: string | null;
 	cwd: string;
 	memory: SessionExecutionMemory | null;
+	profileBinding?: string | null;
 }
 
 export interface SessionDiagnostics {
@@ -1187,6 +1370,12 @@ export interface IrcMessageEvent {
 	message: CustomMessage;
 }
 
+/** A cross-session mail record was accepted by this owner and admitted into its input path. */
+export interface AgentMailEvent {
+	type: "agent_mail";
+	mail: AgentMailRecord;
+}
+
 export interface NoticeEvent {
 	type: "notice";
 	level: NotifyType;
@@ -1221,7 +1410,7 @@ export interface QueueUpdateEvent {
 }
 
 /** A session event, discriminated by `type`; `set_event_filter` selects which are sent. */
-export type RpcAgentEvent = AgentStartEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | ManualCompactionStartEvent | ManualCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent;
+export type RpcAgentEvent = AgentStartEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | ManualCompactionStartEvent | ManualCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | AgentMailEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent;
 
 /** First frame after startup; transport fields are absent on servers without protocol v2. */
 export interface ReadyEvent {
@@ -1741,6 +1930,20 @@ export interface PromoteQueuedMessageParams {
 	message: string;
 }
 
+export interface SessionControlParams {
+	action: "abort" | "compact";
+	expectedSessionId: string;
+	expectedSessionFile: string;
+	expectedBootId: string;
+	mode?: CompactMode;
+}
+
+export interface SessionControlResult {
+	action: "abort" | "compact";
+	owner: RuntimeRestartReceipt;
+	compaction?: CompactionResult;
+}
+
 export interface AbortAndPromptParams {
 	message: string;
 	/** Images attached to the message. */
@@ -1757,19 +1960,57 @@ export interface OpenSessionParams {
 	modelId?: string;
 }
 
+export interface ListSessionsParams {
+	query?: string;
+	limit?: number;
+	offset?: number;
+}
+
+export interface ResolveSessionParams {
+	reference: string;
+}
+
+export interface WakeSessionParams {
+	expectedSessionId: string;
+	expectedSessionFile: string;
+}
+
+export interface AgentMailSendParams {
+	to: string;
+	message: string;
+	threadId?: string;
+	replyTo?: string;
+	delivery?: AgentMailDelivery;
+}
+
+export interface SetSessionIdentityParams {
+	expectedSessionId: string;
+	expectedSessionFile: string;
+	patch: SessionIdentityPatch;
+}
+
+export interface ExitSessionParams {
+	expectedSessionId: string;
+	expectedSessionFile: string;
+	expectedBootId: string;
+	force?: boolean;
+}
+
 export interface UpgradeRuntimeParams {
 	whenIdle?: boolean;
 	force?: boolean;
-	/** Refresh policy and extensions even on the same generation; requires both exact session target fields. Force is unsupported. */
+	/** Refresh policy and extensions even on the same generation; requires expectedSessionId, expectedSessionFile, and expectedBootId from preflight. Force is unsupported. */
 	refresh?: boolean;
-	/** Ask the model to checkpoint, then wait for all session-owned work. Requires both exact target fields; force is unsupported. */
+	/** Ask the model to checkpoint, then wait for all session-owned work. Requires all three expected owner fields; force is unsupported. */
 	graceful?: boolean;
 	/** Compact before teardown; failure preserves the running owner. */
 	compactBeforeRestart?: boolean;
-	/** Full selected session id; supply together with expectedSessionFile. */
+	/** Full selected session id; supply with expectedSessionFile and expectedBootId. */
 	expectedSessionId?: string;
-	/** Canonical absolute transcript path; supply together with expectedSessionId. */
+	/** Canonical absolute transcript path; supply with expectedSessionId and expectedBootId. */
 	expectedSessionFile?: string;
+	/** Owner incarnation from get_refresh_preflight.restartReceipt.bootId, not a generation SHA. Required with either expected session field and for refresh, graceful, or compactBeforeRestart. Rechecked before scheduling and execution. */
+	expectedBootId?: string;
 }
 
 export interface SetFastModeParams {
@@ -2132,6 +2373,46 @@ export interface GetBtwHistoryResult {
 	records: BtwHistoryRecord[];
 }
 
+export interface AgentMailDeliverParams {
+	/** Exact session UUID the sender captured; a mismatch refuses delivery. */
+	recipientSessionId: string;
+	recipientSessionFile: string;
+	recipientBootId: string;
+	messageId: string;
+	message: string;
+	delivery: AgentMailDelivery;
+	sentAt: number;
+	/** Claimed source owner; verified through its own socket before admitting. */
+	senderSessionId: string;
+	senderSessionFile: string;
+	senderBootId: string;
+	/** Owner-issued single-use capability bound to exactly this envelope. */
+	capabilityToken: string;
+	threadId?: string;
+	replyTo?: string;
+}
+
+export interface AgentMailVerifySendParams {
+	capabilityToken: string;
+	recipientSessionId: string;
+	recipientSessionFile: string;
+	recipientBootId: string;
+	messageId: string;
+	message: string;
+	delivery: AgentMailDelivery;
+	sentAt: number;
+	senderSessionId: string;
+	senderSessionFile: string;
+	senderBootId: string;
+	threadId?: string;
+	replyTo?: string;
+}
+
+export interface AgentMailReadParams {
+	threadId?: string;
+	limit?: number;
+}
+
 /** Every RPC command's parameters and successful response `data`. */
 export interface RpcWireCommands {
 	negotiate_protocol: { params: NegotiateProtocolParams; result: NegotiateProtocolResult };
@@ -2141,12 +2422,19 @@ export interface RpcWireCommands {
 	remove_queued_message: { params: RemoveQueuedMessageParams; result: RemoveQueuedMessageResult };
 	promote_queued_message: { params: PromoteQueuedMessageParams; result: PromoteQueuedMessageResult };
 	abort: { params: undefined; result: undefined };
+	session_control: { params: SessionControlParams; result: SessionControlResult };
 	abort_and_prompt: { params: AbortAndPromptParams; result: undefined };
 	abort_and_restore_queue: { params: undefined; result: AbortAndRestoreQueueResult };
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
 	get_state: { params: undefined; result: SessionState };
+	list_sessions: { params: ListSessionsParams; result: NativeSessionList };
+	resolve_session: { params: ResolveSessionParams; result: NativeSessionInfo };
+	wake_session: { params: WakeSessionParams; result: NativeSessionWakeResult };
+	agent_mail_send: { params: AgentMailSendParams; result: AgentMailSendResult };
+	set_session_identity: { params: SetSessionIdentityParams; result: SessionIdentityRecord };
 	get_refresh_preflight: { params: undefined; result: RefreshPreflight };
+	exit_session: { params: ExitSessionParams; result: ExitSessionResult };
 	upgrade_runtime: { params: UpgradeRuntimeParams; result: UpgradeRuntimeResult };
 	set_fast_mode: { params: SetFastModeParams; result: FastModeResult };
 	set_slow_mode: { params: SetSlowModeParams; result: SetSlowModeResult };
@@ -2215,4 +2503,7 @@ export interface RpcWireCommands {
 	btw: { params: BtwParams; result: BtwResult };
 	btw_cancel: { params: BtwCancelParams; result: BtwCancelResult };
 	get_btw_history: { params: undefined; result: GetBtwHistoryResult };
+	agent_mail_deliver: { params: AgentMailDeliverParams; result: AgentMailReceipt };
+	agent_mail_verify_send: { params: AgentMailVerifySendParams; result: AgentMailVerification };
+	agent_mail_read: { params: AgentMailReadParams; result: AgentMailReadResult };
 }

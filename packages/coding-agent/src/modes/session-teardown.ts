@@ -53,8 +53,10 @@ export interface SessionTeardownDeps {
  * promise. The optional `reason` is the postmortem reason that triggered the
  * teardown (`sigterm`, `sighup`, `uncaught_exception`, …); only the FIRST
  * call's reason is used — later callers await the same settled promise.
+ * `canDispose` selects cooperative close: draft persistence and a fresh admission
+ * check must succeed before disposal begins; a refusal remains retryable.
  */
-export type SessionTeardown = (reason?: postmortem.Reason) => Promise<void>;
+export type SessionTeardown = (reason?: postmortem.Reason, canDispose?: () => boolean) => Promise<boolean>;
 
 /**
  * Build a promise-memoized teardown function. The first call snapshots the
@@ -72,31 +74,42 @@ export type SessionTeardown = (reason?: postmortem.Reason) => Promise<void>;
  * keypress-initiated teardown awaits the in-flight promise and its reason is
  * dropped — by then the exit entry is already being written as a normal exit.
  *
- * `saveDraft` failures are logged but never abort the disposal chain — a
- * draft-write error must not leak background bash/task jobs or skip the
- * extension `session_shutdown` event.
+ * Forced/signal closes log draft-write failures and still reap owned work.
+ * Cooperative closes propagate save failures and refuse changed draft snapshots.
  */
 export function createSessionTeardown(deps: SessionTeardownDeps): SessionTeardown {
-	let pending: Promise<void> | undefined;
-	const run = async (reason?: postmortem.Reason): Promise<void> => {
-		const draftText = deps.getDraftText();
-		deps.beginDispose();
-		if (deps.stopCollab) {
-			try {
-				await deps.stopCollab();
-			} catch (err) {
-				logger.warn("Failed to stop collab host during teardown", { error: String(err) });
-			}
-		}
+	let pending: Promise<boolean> | undefined;
+	const finish = async (reason?: postmortem.Reason): Promise<boolean> => {
 		try {
-			await deps.saveDraft(draftText);
-		} catch (err) {
-			logger.warn("Failed to save session draft during teardown", { error: String(err) });
+			await deps.stopCollab?.();
+		} catch (error) {
+			logger.warn("Failed to stop collab host during teardown", { error: String(error) });
 		}
 		await deps.disposeSession(reason);
+		return true;
 	};
-	return (reason?: postmortem.Reason) => {
-		if (!pending) pending = run(reason);
+	return async (reason?: postmortem.Reason, canDispose?: () => boolean) => {
+		if (pending) return pending;
+		const draftText = deps.getDraftText();
+		if (canDispose) {
+			if (!canDispose()) return false;
+			await deps.saveDraft(draftText);
+			// A forced close can win while persistence awaits.
+			if (pending) return pending;
+			if (!canDispose() || deps.getDraftText() !== draftText) return false;
+			deps.beginDispose();
+			pending = finish(reason);
+		} else {
+			deps.beginDispose();
+			pending = (async () => {
+				try {
+					await deps.saveDraft(draftText);
+				} catch (err) {
+					logger.warn("Failed to save session draft during teardown", { error: String(err) });
+				}
+				return finish(reason);
+			})();
+		}
 		return pending;
 	};
 }

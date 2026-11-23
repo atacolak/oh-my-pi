@@ -44,10 +44,11 @@ interface FakeBroker {
 	readonly sinks: Map<string, Sink>;
 	closed: boolean;
 	emit(frame: DaemonTerminalNotification): void;
+	disconnect(): void;
 	waitForOperation(predicate: (operation: DaemonOperation) => boolean, message: string): Promise<DaemonOperation>;
 }
 
-function fakeBroker(options: { rejectSend?: boolean } = {}): FakeBroker {
+function fakeBroker(options: { rejectSend?: boolean; detachGate?: Promise<void> } = {}): FakeBroker {
 	const operations: DaemonOperation[] = [];
 	const sinks = new Map<string, Sink>();
 	const waiters: Array<{ predicate: (operation: DaemonOperation) => boolean; resolve: () => void }> = [];
@@ -59,6 +60,7 @@ function fakeBroker(options: { rejectSend?: boolean } = {}): FakeBroker {
 		}
 	};
 	const state = { closed: false };
+	const disconnects = new Set<() => void>();
 	const client = {
 		subscribeTerminal(subscriptionId: string, sink: Sink) {
 			sinks.set(subscriptionId, sink);
@@ -82,6 +84,7 @@ function fakeBroker(options: { rejectSend?: boolean } = {}): FakeBroker {
 						rows: operation.rows,
 					};
 				case "terminal_detach":
+					await options.detachGate;
 					return {
 						op: "terminal_detach",
 						subscriptionId: operation.subscriptionId,
@@ -102,8 +105,15 @@ function fakeBroker(options: { rejectSend?: boolean } = {}): FakeBroker {
 					throw new Error(`unexpected fake broker operation ${operation.op}`);
 			}
 		},
+		onDisconnect(listener: () => void) {
+			disconnects.add(listener);
+			return () => {
+				disconnects.delete(listener);
+			};
+		},
 		close() {
 			state.closed = true;
+			for (const listener of [...disconnects]) listener();
 		},
 	};
 	return {
@@ -112,6 +122,10 @@ function fakeBroker(options: { rejectSend?: boolean } = {}): FakeBroker {
 		sinks,
 		emit(frame: DaemonTerminalNotification) {
 			for (const sink of sinks.values()) sink(frame);
+		},
+		disconnect() {
+			state.closed = true;
+			for (const listener of [...disconnects]) listener();
 		},
 		waitForOperation(predicate, message) {
 			const observed = operations.find(predicate);
@@ -402,9 +416,9 @@ describe("a terminal mirror", () => {
 		const running = startMirror(terminal, broker.client);
 		await broker.waitForOperation(operation => operation.op === "terminal_attach", "mirror never attached");
 
-		terminal.type("\u0003λ");
+		terminal.type("\u001b[Aλ");
 		const sent = await broker.waitForOperation(operation => operation.op === "send", "input was never forwarded");
-		expect(sent).toEqual({ op: "send", name: NAME, id: ID, data: "\u0003λ" });
+		expect(sent).toEqual({ op: "send", name: NAME, id: ID, data: "\u001b[Aλ" });
 
 		terminal.resize();
 		const resized = await broker.waitForOperation(
@@ -433,6 +447,89 @@ describe("a terminal mirror", () => {
 		expect(terminal.pauses).toBe(1);
 		expect(broker.closed).toBe(true);
 		expect(broker.operations.some(operation => operation.op === "stop")).toBe(false);
+	});
+
+	for (const [label, data] of [
+		["a raw Ctrl-C byte", "\u0003"],
+		["Ctrl-C coalesced with other input", "draft\u0003suffix"],
+	] as const) {
+		it(`detaches locally for ${label} without forwarding it or later input to the owner`, async () => {
+			const broker = fakeBroker();
+			const terminal = new FakeTerminal();
+			const running = startMirror(terminal, broker.client);
+			await broker.waitForOperation(operation => operation.op === "terminal_attach", "mirror never attached");
+			try {
+				terminal.type(data);
+				terminal.type("must not reach owner after detach");
+				terminal.resize();
+				expect(await withTimeout(running, 500, "Ctrl-C did not detach the viewer")).toEqual({ detached: true });
+				expect(broker.operations.filter(operation => operation.op === "send")).toEqual([]);
+				expect(broker.operations.filter(operation => operation.op === "terminal_resize")).toEqual([]);
+				expect(broker.operations.filter(operation => operation.op === "terminal_detach")).toHaveLength(1);
+				expect(broker.operations.some(operation => operation.op === "stop")).toBe(false);
+				expect(terminal.rawModes).toEqual([true, false]);
+				expect(terminal.restores).toBe(1);
+			} finally {
+				terminal.signal("SIGHUP");
+				await running;
+			}
+		});
+	}
+
+	it("Ctrl-C detaches during strict refresh without waiting for verification or forwarding input", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		const refreshing = Promise.withResolvers<void>();
+		const refresh = Promise.withResolvers<void>();
+		const running = startMirror(terminal, broker.client, {
+			inputAfterRefresh: true,
+			refresh: () => {
+				refreshing.resolve();
+				return refresh.promise;
+			},
+		});
+		await refreshing.promise;
+		try {
+			terminal.type("\u0003");
+			expect(await withTimeout(running, 500, "Ctrl-C waited for refresh")).toEqual({ detached: true });
+			expect(broker.operations.filter(operation => operation.op === "send")).toEqual([]);
+			expect(broker.operations.filter(operation => operation.op === "terminal_detach")).toHaveLength(1);
+		} finally {
+			refresh.resolve();
+			terminal.signal("SIGHUP");
+			await running;
+		}
+	});
+
+	it("does not reopen input or resize when refresh finishes before detach acknowledgement", async () => {
+		const detachAck = Promise.withResolvers<void>();
+		const broker = fakeBroker({ detachGate: detachAck.promise });
+		const terminal = new FakeTerminal();
+		const refreshing = Promise.withResolvers<void>();
+		const refresh = Promise.withResolvers<void>();
+		const running = startMirror(terminal, broker.client, {
+			inputAfterRefresh: true,
+			refresh: () => {
+				refreshing.resolve();
+				return refresh.promise;
+			},
+		});
+		await refreshing.promise;
+		try {
+			terminal.type("\u0003");
+			await broker.waitForOperation(operation => operation.op === "terminal_detach", "detach never started");
+			refresh.resolve();
+			await nextImmediate();
+			terminal.resize();
+			terminal.type("must not reach owner");
+			expect(broker.operations.filter(operation => operation.op === "terminal_resize")).toEqual([]);
+			expect(broker.operations.filter(operation => operation.op === "send")).toEqual([]);
+		} finally {
+			refresh.resolve();
+			detachAck.resolve();
+			terminal.signal("SIGHUP");
+			expect(await running).toEqual({ detached: true });
+		}
 	});
 
 	it("detaches only itself when its renderer refresh fails", async () => {
@@ -479,5 +576,51 @@ describe("a terminal mirror", () => {
 		expect(broker.operations.filter(operation => operation.op === "terminal_detach")).toHaveLength(1);
 		expect(terminal.rawModes.at(-1)).toBe(false);
 		expect(broker.closed).toBe(true);
+	});
+
+	it("never reports success when the owner exits before the attach verification", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		const verification = Promise.withResolvers<void>();
+		const running = startMirror(terminal, broker.client, {
+			inputAfterRefresh: true,
+			refresh: () => verification.promise,
+		});
+		await broker.waitForOperation(operation => operation.op === "terminal_attach", "mirror never attached");
+
+		broker.emit(exitFrame(0));
+		expect(await running).toEqual({
+			detached: false,
+			exitCode: 1,
+			reason: "exited before the attachment was verified",
+		});
+		verification.resolve();
+	});
+
+	it("reports the owner's own exit code once the attach verification passed", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		const verification = Promise.withResolvers<void>();
+		const running = startMirror(terminal, broker.client, {
+			inputAfterRefresh: true,
+			refresh: () => verification.promise,
+		});
+		await broker.waitForOperation(operation => operation.op === "terminal_attach", "mirror never attached");
+		verification.resolve();
+		await nextImmediate();
+
+		broker.emit(exitFrame(0));
+		expect(await running).toEqual({ detached: false, exitCode: 0, reason: "exit" });
+	});
+
+	it("settles instead of waiting forever when the broker disconnects without an exit", async () => {
+		const broker = fakeBroker();
+		const terminal = new FakeTerminal();
+		const running = startMirror(terminal, broker.client);
+		await broker.waitForOperation(operation => operation.op === "terminal_attach", "mirror never attached");
+
+		broker.disconnect();
+		expect(await running).toEqual({ detached: false, exitCode: 1, reason: "broker connection closed" });
+		expect(terminal.rawModes.at(-1)).toBe(false);
 	});
 });

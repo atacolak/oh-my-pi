@@ -53,6 +53,7 @@ import {
 	RESTART_RECEIVER_PROTOCOL,
 	type RestartReceiverProbe,
 } from "./launch/restart-receiver-probe";
+import { readRuntimeBootIdentity } from "./launch/runtime-generation";
 import { startParentWatchdog } from "./subprocess/parent-watchdog";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
@@ -562,6 +563,8 @@ export async function runCli(argv: string[]): Promise<void> {
 			protocol: RESTART_RECEIVER_PROTOCOL,
 			nonce,
 			version: VERSION,
+			generation: readRuntimeBootIdentity().importedGeneration,
+			nativeSessionIdentity: true,
 		};
 		process.stdout.write(`${JSON.stringify(probe)}\n`);
 		return;

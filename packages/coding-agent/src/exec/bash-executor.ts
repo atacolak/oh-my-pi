@@ -293,6 +293,42 @@ const NATIVE_TIMEOUT_FALLBACK_GRACE_MS = 5_000;
 // leaking the session key in `brokenShellSessions`/`shellSessionQuarantines`
 // (#10308). The backing timer is unref'd so it never keeps the process alive.
 const QUARANTINE_CLEANUP_TIMEOUT_MS = 30_000;
+// Keep cancellation's native TERM→KILL cleanup alive through owner disposal.
+const abortedShells = new Map<string, Set<Promise<void>>>();
+const ABORT_KILL_GRACE_MS = 1_250;
+const ABORT_CLEANUP_LIMIT_MS = 5_000;
+
+function trackAbortedShell(
+	agentSessionKey: string | undefined,
+	runPromise: Promise<ShellRunResult>,
+	abortPromise: Promise<void>,
+): void {
+	if (!agentSessionKey) return;
+	const pending = abortedShells.get(agentSessionKey) ?? new Set<Promise<void>>();
+	abortedShells.set(agentSessionKey, pending);
+	const deadline = Promise.withResolvers<void>();
+	const timer = setTimeout(deadline.resolve, ABORT_CLEANUP_LIMIT_MS);
+	timer.unref?.();
+	const cleanup = Promise.race([
+		Promise.allSettled([runPromise, abortPromise]).then(() => Bun.sleep(ABORT_KILL_GRACE_MS)),
+		deadline.promise,
+	]).finally(() => clearTimeout(timer));
+	pending.add(cleanup);
+	void cleanup.then(() => {
+		pending.delete(cleanup);
+		if (pending.size === 0 && abortedShells.get(agentSessionKey) === pending) abortedShells.delete(agentSessionKey);
+	});
+}
+
+/** Wait for the existing executor's cancelled commands before owner exit. */
+export async function drainAbortedShells(agentSessionKey: string | undefined): Promise<void> {
+	if (!agentSessionKey) return;
+	const pending = [...(abortedShells.get(agentSessionKey) ?? [])];
+	for (const [key, cleanups] of abortedShells) {
+		if (key.startsWith(`${agentSessionKey}:async:`)) pending.push(...cleanups);
+	}
+	await Promise.all(pending);
+}
 
 async function retainShellWithLiveBackgroundJobs(shell: Shell): Promise<void> {
 	let live: number;
@@ -858,6 +894,9 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				quarantineShellSession(sessionKey, runPromise, cleanupPromise);
 			} else {
 				void Promise.allSettled([runPromise, cleanupPromise]);
+			}
+			if (winner.kind === "abort") {
+				trackAbortedShell(options?.sessionKey, runPromise, cleanupPromise);
 			}
 			let notice = "Command cancelled";
 			if (winner.kind === "timeout" && deadlineTimeoutMs !== undefined) {

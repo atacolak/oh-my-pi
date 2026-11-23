@@ -164,6 +164,10 @@ export const eventDefs = {
 	},
 	TodoAutoClearEvent: { type: "'todo_auto_clear'" },
 	IrcMessageEvent: { type: "'irc_message'", message: "CustomMessage" },
+	AgentMailEvent: doc(
+		{ type: "'agent_mail'", mail: "AgentMailRecord" },
+		"A cross-session mail record was accepted by this owner and admitted into its input path.",
+	),
 	NoticeEvent: { type: "'notice'", level: "NotifyType", message: "string", "source?": "string" },
 	ThinkingLevelChangedEvent: doc(
 		{
@@ -225,6 +229,7 @@ export const eventDefs = {
 			"TodoReminderEvent",
 			"TodoAutoClearEvent",
 			"IrcMessageEvent",
+			"AgentMailEvent",
 			"NoticeEvent",
 			"ThinkingLevelChangedEvent",
 			"GoalUpdatedEvent",

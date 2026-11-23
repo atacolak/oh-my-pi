@@ -8,10 +8,12 @@ import {
 	SessionReservationBusyError,
 	SessionReservationUnavailableError,
 } from "../session/session-storage";
-import { resolveCliEntryCmd } from "../subprocess/worker-client";
+import { attestCliRestartReceiver, resolveCliEntryCmd } from "../subprocess/worker-client";
+import { resolvePinnedCliEntryCmd } from "./runtime-generation";
 import {
 	decideSessionAttach,
 	probeSessionAttach,
+	type SessionAttachDecision,
 	type SessionAttachProbe,
 	type SessionAttachRefusalCode,
 	type SessionAttachTerminal,
@@ -20,9 +22,19 @@ import {
 
 /** Private launch metadata the broker injects into a session-owner child. */
 export const SESSION_OWNER_CONTEXT_ENV = "OMP_SESSION_OWNER_CONTEXT";
+/** Exact saved-session wake target, passed only to the brokered session owner. */
+export const SESSION_OWNER_WAKE_TARGET_ENV = "OMP_SESSION_OWNER_WAKE_TARGET";
+
+export interface SessionActorWakeTarget extends SessionRestartTarget {
+	profile: string | null;
+	profileCwd?: string;
+	generation?: string;
+}
 
 /** Variables hcom derives an owner's identity from; a spec that declares identity owns all of them. */
 export const SESSION_OWNER_IDENTITY_KEYS = [
+	"ACTOR_NAME",
+	SESSION_OWNER_WAKE_TARGET_ENV,
 	"HCOM_PROCESS_ID",
 	"HCOM_INSTANCE_NAME",
 	"HCOM_NAME",
@@ -37,9 +49,12 @@ export const SESSION_OWNER_IDENTITY_KEYS = [
  * nothing, and the nested-owner latch never crosses.
  */
 export function sessionOwnerIdentity(env: Record<string, string | undefined>): Record<string, string> {
+	const identity: Record<string, string> = {};
+	if (env.ACTOR_NAME) identity.ACTOR_NAME = env.ACTOR_NAME;
 	const processId = env.HCOM_PROCESS_ID;
-	if (processId === undefined || processId.length === 0) return {};
-	const identity: Record<string, string> = { HCOM_PROCESS_ID: processId, HCOM_LAUNCHED: "1" };
+	if (processId === undefined || processId.length === 0) return identity;
+	identity.HCOM_PROCESS_ID = processId;
+	identity.HCOM_LAUNCHED = "1";
 	const instanceName = env.HCOM_INSTANCE_NAME;
 	if (instanceName !== undefined && instanceName.length > 0) identity.HCOM_INSTANCE_NAME = instanceName;
 	return identity;
@@ -48,10 +63,14 @@ export function sessionOwnerIdentity(env: Record<string, string | undefined>): R
 /** Broker coordinates of the PTY that hosts this session owner. */
 export interface SessionOwnerContext {
 	projectDir: string;
+	/** Exact broker transport directory; legacy launch contexts use the canonical project broker. */
+	runtimeDir?: string;
 	name: string;
 	id: string;
 	/** Exact conversation selected before an in-place restart; never a resume hint. */
 	restartTarget?: SessionRestartTarget;
+	/** Exact named-actor wake target, never a general resume hint. */
+	wakeTarget?: SessionActorWakeTarget;
 }
 
 export interface SessionOwnerLaunchOptions {
@@ -61,6 +80,8 @@ export interface SessionOwnerLaunchOptions {
 	/** Identity the launcher declares; the owner carries exactly these values. */
 	identity: Record<string, string>;
 	env?: Record<string, string>;
+	/** Exact generation pinned in the authoritative session journal. */
+	generation?: string;
 }
 
 let activeContext: SessionOwnerContext | undefined;
@@ -75,9 +96,12 @@ function parseSessionOwnerContext(raw: string): SessionOwnerContext {
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new TypeError("Session owner launch context is not an object");
 	}
-	const { projectDir, name, id, restartTarget } = parsed as Partial<SessionOwnerContext>;
+	const { projectDir, runtimeDir, name, id, restartTarget } = parsed as Partial<SessionOwnerContext>;
 	if (typeof projectDir !== "string" || projectDir.length === 0) {
 		throw new TypeError("Session owner launch context has no project directory");
+	}
+	if (runtimeDir !== undefined && (typeof runtimeDir !== "string" || !path.isAbsolute(runtimeDir))) {
+		throw new TypeError("Session owner launch context requires an absolute broker runtime directory");
 	}
 	if (typeof name !== "string" || name.length === 0) {
 		throw new TypeError("Session owner launch context has no daemon name");
@@ -96,7 +120,13 @@ function parseSessionOwnerContext(raw: string): SessionOwnerContext {
 	) {
 		throw new TypeError("Session owner restart target requires a full session id and absolute transcript");
 	}
-	return { projectDir, name, id, ...(restartTarget === undefined ? {} : { restartTarget }) };
+	return {
+		projectDir,
+		...(runtimeDir === undefined ? {} : { runtimeDir }),
+		name,
+		id,
+		...(restartTarget === undefined ? {} : { restartTarget }),
+	};
 }
 
 /**
@@ -105,9 +135,49 @@ function parseSessionOwnerContext(raw: string): SessionOwnerContext {
  */
 export function consumeSessionOwnerContext(env: Record<string, string | undefined>): SessionOwnerContext | undefined {
 	const raw = env[SESSION_OWNER_CONTEXT_ENV];
+	const wake = env[SESSION_OWNER_WAKE_TARGET_ENV];
 	delete env[SESSION_OWNER_CONTEXT_ENV];
-	if (raw === undefined) return undefined;
+	delete env[SESSION_OWNER_WAKE_TARGET_ENV];
+	if (raw === undefined) {
+		if (wake !== undefined) throw new TypeError("Actor wake requires a brokered session owner");
+		return undefined;
+	}
 	const context = parseSessionOwnerContext(raw);
+	if (wake !== undefined) {
+		let target: unknown;
+		try {
+			target = JSON.parse(wake);
+		} catch {
+			throw new TypeError("Actor wake target is not valid JSON");
+		}
+		if (
+			typeof target !== "object" ||
+			target === null ||
+			!("sessionId" in target) ||
+			typeof target.sessionId !== "string" ||
+			!target.sessionId ||
+			!("sessionFile" in target) ||
+			typeof target.sessionFile !== "string" ||
+			!path.isAbsolute(target.sessionFile) ||
+			!("profile" in target) ||
+			(target.profile !== null && (typeof target.profile !== "string" || !target.profile.trim())) ||
+			("profileCwd" in target &&
+				target.profileCwd !== undefined &&
+				(typeof target.profileCwd !== "string" || !path.isAbsolute(target.profileCwd))) ||
+			("generation" in target &&
+				target.generation !== undefined &&
+				(typeof target.generation !== "string" || !target.generation)) ||
+			context.restartTarget !== undefined
+		)
+			throw new TypeError("Session wake target requires an exact session and explicit profile binding");
+		context.wakeTarget = {
+			sessionId: target.sessionId,
+			sessionFile: target.sessionFile,
+			profile: target.profile,
+			...("profileCwd" in target && typeof target.profileCwd === "string" ? { profileCwd: target.profileCwd } : {}),
+			...("generation" in target && typeof target.generation === "string" ? { generation: target.generation } : {}),
+		};
+	}
 	activeContext = context;
 	return context;
 }
@@ -175,7 +245,14 @@ export async function reserveSessionOwnerTarget(
 	// that appeared in the window may divert: a reachable owner is attached to
 	// and an unreachable or ambiguous one is refused rather than shadowed.
 	// Anything else is this reservation, which the caller keeps.
-	const after = decideSessionAttach(await probe(sessionId));
+	let after: SessionAttachDecision;
+	try {
+		after = decideSessionAttach(await probe(sessionId));
+	} catch (error) {
+		// A probe that fails after the reservation was taken must not strand it.
+		reservation.release();
+		throw error;
+	}
 	if (after.kind === "attach" || (after.kind === "refuse" && after.code !== "owner-busy")) {
 		reservation.release();
 		return after;
@@ -184,8 +261,16 @@ export async function reserveSessionOwnerTarget(
 }
 
 /** Build the persistent PTY specification that re-enters the CLI as a session owner. */
-export function sessionOwnerSpec(options: SessionOwnerLaunchOptions): DaemonSpec {
-	const [application, ...entryArgs] = resolveCliEntryCmd();
+export async function sessionOwnerSpec(options: SessionOwnerLaunchOptions): Promise<DaemonSpec> {
+	let entryCmd = resolveCliEntryCmd();
+	if (options.generation !== undefined) {
+		entryCmd = resolvePinnedCliEntryCmd(entryCmd, options.generation);
+		const receiver = await attestCliRestartReceiver(entryCmd);
+		if (receiver.nativeSessionIdentity !== true || receiver.generation !== options.generation) {
+			throw new Error("Pinned generation cannot attest native session identity ownership");
+		}
+	}
+	const [application, ...entryArgs] = entryCmd;
 	if (application === undefined) throw new Error("CLI entry command is empty");
 	const env = { ...options.env };
 	delete env[SESSION_OWNER_CONTEXT_ENV];

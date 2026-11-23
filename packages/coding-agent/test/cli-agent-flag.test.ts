@@ -1,11 +1,16 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
-import { restartArgv, STRING_VALUE_FLAGS } from "@oh-my-pi/pi-coding-agent/cli/flag-tables";
+import {
+	actorProfileResumeArgv,
+	assertActorProfileBinding,
+	restartArgv,
+	STRING_VALUE_FLAGS,
+} from "@oh-my-pi/pi-coding-agent/cli/flag-tables";
 import {
 	resolveLaunchAgent,
 	rootAgentModelSelector,
@@ -27,6 +32,7 @@ import {
 	cfgCompactionThresholdPercent,
 	cfgCompactionThresholdTokens,
 } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -96,6 +102,21 @@ async function writeProjectAgentInto(cwd: string, content: string): Promise<void
 }
 
 describe("parseArgs — --agent flag", () => {
+	it("prepares a named wake that the CLI resolves to the exact profile and session", () => {
+		const result = parseArgs(actorProfileResumeArgv("flag-probe", "/roles", "/sessions/exact.jsonl"));
+		expect(result.agent).toBe("flag-probe");
+		expect(result.agentCwd).toBe("/roles");
+		expect(result.resume).toBe("/sessions/exact.jsonl");
+		expect(result.messages).toEqual([]);
+		expect(() => actorProfileResumeArgv("", "/roles", "/sessions/exact.jsonl")).toThrow(CliUsageError);
+	});
+
+	it("resumes an ordinary saved session without injecting a named profile", () => {
+		const result = parseArgs(actorProfileResumeArgv(null, "/roles", "/sessions/plain.jsonl"));
+		expect(result.resume).toBe("/sessions/plain.jsonl");
+		expect(result.agent).toBeUndefined();
+		expect(result.agentCwd).toBeUndefined();
+	});
 	it("parses --agent as a string flag", () => {
 		const result = parseArgs(["--agent", "navigator"]);
 		expect(result.agent).toBe("navigator");
@@ -287,6 +308,39 @@ describe("buildSessionOptions — --agent", () => {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}
 	});
+	it.each(["tools: []", "tools: [yield]"])(
+		"does not grant execution tools for an empty root allowlist (%s)",
+		async tools => {
+			const cwd = await writeProjectAgent(
+				["---", "name: limited", "description: restricted", tools, "---", "restricted"].join("\n"),
+			);
+			let session: AgentSession | undefined;
+			try {
+				const { options } = await optionsFor(["--agent", "limited"], cwd);
+				if (!authStorage) throw new Error("missing fixture auth store");
+				({ session } = await createAgentSession({
+					...options,
+					cwd,
+					agentDir: cwd,
+					authStorage,
+					modelRegistry: new ModelRegistry(authStorage, path.join(cwd, "models.yml")),
+					settings: Settings.isolated({ "memory.backend": "local" }),
+					enableMCP: false,
+					enableLsp: false,
+					disableExtensionDiscovery: true,
+					contextFiles: [],
+					rules: [],
+					promptTemplates: [],
+					slashCommands: [],
+				}));
+				expect(session.getEnabledToolNames()).not.toContain("bash");
+				expect(session.getEnabledToolNames()).not.toContain("write");
+			} finally {
+				await session?.dispose();
+				await fs.rm(cwd, { recursive: true, force: true });
+			}
+		},
+	);
 
 	it("named root profile skill policy reaches the real prompt, autoloads and read tool", async () => {
 		const cwd = await writeProjectAgent(
@@ -358,6 +412,45 @@ describe("buildSessionOptions — --agent", () => {
 		}
 	});
 
+	it("keeps the active root profile after a new session and a fork", async () => {
+		const cwd = await writeProjectAgent(FLAG_PROBE_MD);
+		let manager: SessionManager | undefined;
+		let fork: SessionManager | undefined;
+		try {
+			manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
+			await manager.setRootAgent("flag-probe");
+			await manager.ensureOnDisk();
+			const original = manager.getSessionFile();
+			if (!original) throw new Error("missing source transcript");
+			fork = await SessionManager.forkFrom(original, cwd, path.join(cwd, "forks"));
+			await manager.newSession();
+			const freshFile = manager.getSessionFile();
+			const forkFile = fork.getSessionFile();
+			if (!freshFile || !forkFile) throw new Error("missing resulting transcript");
+			await manager.close();
+			await fork.close();
+			manager = await SessionManager.open(freshFile);
+			fork = await SessionManager.open(forkFile);
+			expect(manager.getHeader()?.rootAgent).toBe("flag-probe");
+			expect(fork.getHeader()?.rootAgent).toBe("flag-probe");
+			authStorage = await AuthStorage.create(":memory:");
+			const parsed = parseArgs(["--fork", original]);
+			parsed.cwd = cwd;
+			const options = await buildSessionOptions(
+				parsed,
+				[],
+				fork,
+				new ModelRegistry(authStorage),
+				Settings.isolated(),
+			);
+			expect(options.agentName).toBe("flag-probe");
+			expect(options.toolNames).toEqual(["cloak", "read", "grep", "glob", "bash", "write"]);
+		} finally {
+			await manager?.close();
+			await fork?.close();
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
 	it("resolves role metadata from --agent-cwd while keeping execution cwd", async () => {
 		const roleRoot = await writeProjectAgent(HIDDEN_PROBE_MD);
 		const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-agent-work-"));
@@ -554,6 +647,12 @@ describe("buildSessionOptions — --agent", () => {
 		},
 	);
 
+	it("rejects missing or mismatched saved profiles for a named wake", () => {
+		expect(() => assertActorProfileBinding("flag-probe", undefined)).toThrow(CliUsageError);
+		expect(() => assertActorProfileBinding("flag-probe", "other")).toThrow(CliUsageError);
+		expect(() => assertActorProfileBinding(null, "other")).toThrow(CliUsageError);
+		assertActorProfileBinding("flag-probe", "flag-probe");
+	});
 	it("switches the profile when a restore names a different --agent", async () => {
 		// An explicit `--agent` on a resume is how an actor's `<agent>.md` is changed across
 		// a recycle: the new profile mounts and is recorded, so the next resume keeps it.

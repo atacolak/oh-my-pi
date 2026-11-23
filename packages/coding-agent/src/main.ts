@@ -6,6 +6,7 @@
  */
 import * as fsSync from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { getModelPricingStatus } from "@oh-my-pi/pi-catalog/models";
@@ -38,6 +39,7 @@ import {
 	validateToolNames,
 } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
+import { assertActorProfileBinding } from "./cli/flag-tables";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
 import { resolveLaunchAgent, rootAgentModelSelector, rootAgentToolNames } from "./cli/launch-agent";
@@ -81,8 +83,10 @@ import {
 	scheduleMarketplaceAutoUpdate,
 	type MarketplaceAutoUpdateOptions,
 } from "./extensibility/plugins/marketplace-auto-update";
+import { runNamedSessionAttach } from "./launch/named-session-attach";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import { sanitizeTerminalGeometry } from "./launch/protocol";
+import { readRuntimeBootIdentity } from "./launch/runtime-generation";
 import {
 	decideRpcSessionAttach,
 	matchesSessionPath,
@@ -96,7 +100,7 @@ import {
 	resolveStartupSessionGate,
 	type ResolvedSessionTarget,
 } from "./launch/session-attach-gate";
-import { runAttachOnly, runLiveSessionAttach } from "./launch/session-attach-run";
+import { runLiveSessionAttach } from "./launch/session-attach-run";
 import {
 	type BrokeredLaunchSelection,
 	ownerArgvForSession,
@@ -148,6 +152,7 @@ import {
 	persistForeignSession,
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
+import type { SessionHeader } from "./session/session-entries";
 import {
 	findSessionContinuation,
 	type PickerListing,
@@ -175,9 +180,9 @@ import {
 } from "./system-prompt";
 import { applyAgentCompactionPolicy } from "./task/agent-compaction";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
+import type { AgentDefinition } from "./task/types";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { mcpLoadForNamedProfile } from "./task/tool-load-spec";
-import type { AgentDefinition } from "./task/types";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
 import { registerLocalInferenceApi } from "./tiny/local-inference-api";
@@ -1339,20 +1344,28 @@ export async function createSessionManager(
 		ownerAttach?: SessionOwnerAttachSelection;
 	} = {},
 ): Promise<SessionManager | undefined> {
-	const selectedRestartTarget = sessionOwnerContext()?.restartTarget;
+	const ownerContext = sessionOwnerContext();
+	const wakeTarget = ownerContext?.wakeTarget;
+	const selectedRestartTarget = ownerContext?.restartTarget ?? wakeTarget;
 	const restartTarget = selectedRestartTarget && {
 		sessionId: selectedRestartTarget.sessionId,
 		sessionFile: selectedRestartTarget.sessionFile,
 	};
 	if (restartTarget) {
 		if (
-			!parsed.restore ||
+			(wakeTarget ? parsed.restore || parsed.agent !== (wakeTarget.profile ?? undefined) : !parsed.restore) ||
 			parsed.resume !== restartTarget.sessionFile ||
 			parsed.noSession ||
 			parsed.fork ||
 			!(await matchesSessionPath(restartTarget.sessionFile, restartTarget.sessionFile))
 		) {
 			throw new SessionResolutionError("Exact restart receiver refused a different or unavailable transcript");
+		}
+		if (
+			wakeTarget?.generation !== undefined &&
+			readRuntimeBootIdentity().importedGeneration !== wakeTarget.generation
+		) {
+			throw new SessionResolutionError("Exact actor receiver does not match its pinned generation");
 		}
 		const storage = new FileSessionStorage();
 		const reservation = storage.reserveSession(restartTarget.sessionId, restartTarget.sessionFile);
@@ -1363,6 +1376,19 @@ export async function createSessionManager(
 				suppressBreadcrumb: true,
 				ownershipPolicy: "require-owner",
 				ownershipReservation: reservation,
+				...(wakeTarget
+					? {
+							validateHeader: (header: SessionHeader | undefined) => {
+								if (header?.id !== wakeTarget.sessionId)
+									throw new SessionResolutionError("Exact actor session identity changed");
+								if (!header.cwd || normalizePathForComparison(header.cwd) !== normalizePathForComparison(cwd))
+									throw new SessionResolutionError("Exact actor working directory does not match its session");
+								assertActorProfileBinding(wakeTarget.profile, header.rootAgent);
+								if (wakeTarget.profileCwd !== undefined && header.rootAgentCwd !== wakeTarget.profileCwd)
+									throw new SessionResolutionError("Exact agent definition directory changed before wake");
+							},
+						}
+					: {}),
 			});
 			if (
 				manager.getSessionId() !== restartTarget.sessionId ||
@@ -1370,6 +1396,12 @@ export async function createSessionManager(
 				!(await matchesSessionPath(restartTarget.sessionFile, restartTarget.sessionFile))
 			) {
 				throw new SessionResolutionError("Exact restart receiver no longer identifies the selected conversation");
+			}
+			if (
+				wakeTarget !== undefined &&
+				(manager.getSessionIdentityMetadata()?.generation ?? undefined) !== wakeTarget.generation
+			) {
+				throw new SessionResolutionError("Exact actor journal generation changed before wake");
 			}
 			return manager;
 		} catch (error) {
@@ -1637,16 +1669,22 @@ export async function buildSessionOptions(
 		}
 	}
 
-	const persistedRootAgent = restoringSession ? sessionManager?.getHeader()?.rootAgent : undefined;
+	const persistedRootAgent = restoringSession || parsed.fork ? sessionManager?.getHeader()?.rootAgent : undefined;
 	// An explicit `--agent` on a resume is a deliberate profile switch, not a mistake: it
 	// is how an actor's `<agent>.md` is changed across a recycle. The new profile is
 	// recorded on the session below, so the following resume mounts the same one. Omitting
 	// `--agent` still resumes the persisted profile.
 	const switchedAgent = Boolean(parsed.agent && parsed.agent !== persistedRootAgent);
 	const launchAgentName = parsed.agent ?? persistedRootAgent;
+	const launchAgentCwd = path.resolve(
+		parsed.agentCwd ??
+			(!switchedAgent ? sessionManager?.getHeader()?.rootAgentCwd : undefined) ??
+			options.cwd ??
+			getProjectDir(),
+	);
 	let launchAgent: AgentDefinition | undefined;
 	try {
-		launchAgent = await resolveLaunchAgent(launchAgentName, parsed.agentCwd ?? options.cwd);
+		launchAgent = await resolveLaunchAgent(launchAgentName, launchAgentCwd);
 	} catch (error) {
 		if (persistedRootAgent && !parsed.agent) {
 			throw new CliUsageError(`Persisted root agent "${persistedRootAgent}" is missing and cannot be restored.`);
@@ -1658,7 +1696,7 @@ export async function buildSessionOptions(
 	}
 
 	if (launchAgent && (!restoringSession || switchedAgent)) {
-		await sessionManager?.setRootAgent(launchAgent.name);
+		await sessionManager?.setRootAgent(launchAgent.name, launchAgentCwd);
 	}
 
 	// Model from CLI
@@ -1952,6 +1990,9 @@ export async function buildSessionOptions(
 			options.agentMemory = launchAgent.memory;
 			applyAgentMemoryPolicy(activeSettings, launchAgent.memory);
 		}
+		if (launchAgent.idleSleepSeconds !== undefined) {
+			options.agentIdleSleepSeconds = launchAgent.idleSleepSeconds;
+		}
 		if (launchAgent.modelFallback === false) {
 			options.disableModelFallback = true;
 			options.disableServerSideFallback = true;
@@ -2083,7 +2124,7 @@ export async function runRootCommand(
 	deps: RunRootCommandDependencies = DEFAULT_RUN_ROOT_DEPENDENCIES,
 ): Promise<void> {
 	if (parsed.attach !== undefined) {
-		await runAttachOnly(parsed.attach);
+		await runNamedSessionAttach(parsed.attach);
 		return;
 	}
 	logger.startTiming();
@@ -2545,7 +2586,7 @@ export async function runRootCommand(
 				}
 				// Initial native owners need the same cold reservation as direct
 				// sessions. Exact restart receivers reserve their pinned target below.
-				if (!sessionOwnerContext()?.restartTarget) {
+				if (!sessionOwnerContext()?.restartTarget && !sessionOwnerContext()?.wakeTarget) {
 					const gate = await logger.time("resolveStartupSessionGate", resolveStartupSessionGate, {
 						cwd,
 						sessionDir: parsedArgs.sessionDir,

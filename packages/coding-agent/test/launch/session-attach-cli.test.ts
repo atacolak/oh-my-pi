@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { IpcConnection, IpcServer, ipcEndpoint } from "@oh-my-pi/pi-natives";
-import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
+import { getSessionsDir, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
 import { probeSessionAttach } from "../../src/launch/session-attach";
 import { readSessionInfo } from "../../src/session/session-listing";
@@ -14,6 +14,7 @@ import { SessionManager } from "../../src/session/session-manager";
 import { FileSessionStorage } from "../../src/session/session-storage";
 
 const CLI_ENTRY = path.join(import.meta.dir, "../../src/cli.ts");
+const CLI_COMMAND = process.env.OMP_TEST_CLI_BINARY ? [process.env.OMP_TEST_CLI_BINARY] : [process.execPath, CLI_ENTRY];
 const LAUNCHER = path.join(import.meta.dir, "../fixtures/session-attach-cli-broker.ts");
 const CLI_TIMEOUT_MS = 45_000;
 const SINGLETON_BROKER_CLI = process.env.OMP_TEST_SINGLETON_BROKER_CLI;
@@ -39,10 +40,16 @@ function sessionDirNames(dir: string): string[] {
 		.sort();
 }
 
-async function createSession(sessionsDir: string, cwd: string): Promise<{ sessionId: string; sessionPath: string }> {
+async function createSession(
+	sessionsDir: string,
+	cwd: string,
+	identity?: { actorHandle: string; rootAgent?: string },
+): Promise<{ sessionId: string; sessionPath: string }> {
 	const manager = SessionManager.create(cwd, sessionsDir, new FileSessionStorage());
+	if (identity?.rootAgent) await manager.setRootAgent(identity.rootAgent);
 	await manager.ensureOnDisk();
 	manager.appendMessage({ role: "user", content: "before", timestamp: Date.now() });
+	if (identity) manager.appendSessionIdentityMetadata({ version: 1, actorHandle: identity.actorHandle });
 	await manager.flush();
 	const sessionPath = manager.getSessionFile();
 	if (!sessionPath) throw new Error("expected a session file");
@@ -90,7 +97,7 @@ async function runCli(homeDir: string, agentDir: string, projectDir: string, arg
 			chunks.push(data);
 		},
 	});
-	const child = Bun.spawn([process.execPath, CLI_ENTRY, ...args], {
+	const child = Bun.spawn([...CLI_COMMAND, ...args], {
 		cwd: projectDir,
 		env: cliEnvironment(homeDir, agentDir),
 		terminal,
@@ -113,7 +120,7 @@ class CliViewer {
 	readonly #chunks: Uint8Array[] = [];
 	readonly #listeners = new Set<() => void>();
 
-	constructor(homeDir: string, agentDir: string, projectDir: string, sessionPath: string) {
+	constructor(homeDir: string, agentDir: string, projectDir: string, sessionPath: string, nativeSock = false) {
 		this.terminal = new Bun.Terminal({
 			cols: 120,
 			rows: 40,
@@ -122,11 +129,14 @@ class CliViewer {
 				for (const listener of this.#listeners) listener();
 			},
 		});
-		this.child = Bun.spawn([process.execPath, CLI_ENTRY, "--attach", sessionPath], {
-			cwd: projectDir,
-			env: cliEnvironment(homeDir, agentDir),
-			terminal: this.terminal,
-		});
+		this.child = Bun.spawn(
+			[...CLI_COMMAND, ...(nativeSock ? ["sock", "attach", sessionPath] : ["--attach", sessionPath])],
+			{
+				cwd: projectDir,
+				env: cliEnvironment(homeDir, agentDir),
+				terminal: this.terminal,
+			},
+		);
 		void this.child.exited.then(() => {
 			for (const listener of this.#listeners) listener();
 		});
@@ -167,7 +177,7 @@ function serveSessionEndpoint(
 	sessionId: string,
 	generation: string,
 	onRefresh: () => void,
-	options: { sessionPath?: string; beforeState?: () => Promise<void> } = {},
+	options: { sessionPath?: string; beforeState?: () => Promise<void>; execution?: () => object } = {},
 ): Promise<RefreshEndpoint> {
 	const frames: Array<Record<string, unknown>> = [];
 	const connections = new Set<IpcConnection>();
@@ -190,7 +200,12 @@ function serveSessionEndpoint(
 							id: frame.id,
 							command: "get_state",
 							success: true,
-							data: { sessionId, sessionFile: options.sessionPath, isStreaming: false },
+							data: {
+								sessionId,
+								sessionFile: options.sessionPath,
+								isStreaming: false,
+								sessionDiagnostics: { execution: options.execution?.() },
+							},
 						}),
 					);
 					return;
@@ -330,6 +345,10 @@ describe("CLI --attach without a live owner", () => {
 		const malformed = path.join(sessionsDir, "malformed.jsonl");
 		fs.writeFileSync(empty, "");
 		fs.writeFileSync(malformed, "not a session\n");
+		// A compiled CLI extracts its native payload on first native use.
+		// The worker-host smoke warms that cache without opening an owner.
+		const smoke = await runCli(homeDir, agentDir, projectDir, ["--smoke-test"]);
+		expect(smoke.exitCode, smoke.output).toBe(0);
 		const before = fs.readFileSync(sessionPath, "utf8");
 		const files = fs.readdirSync(tempDir.path(), { recursive: true }).sort();
 
@@ -342,7 +361,7 @@ describe("CLI --attach without a live owner", () => {
 			["--attach", empty],
 			["--attach", malformed],
 			["--attach"],
-			["--attach", "relative.jsonl"],
+			["--attach", "relative/path.jsonl"],
 			["--attach", sessionPath, "--model", "unavailable-provider/no-model"],
 			["--attach", sessionPath, "--resume", sessionPath],
 			["--attach", sessionPath, "--session-dir", sessionsDir],
@@ -359,6 +378,44 @@ describe("CLI --attach without a live owner", () => {
 		expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
 		expect(fs.readdirSync(tempDir.path(), { recursive: true }).sort()).toEqual(files);
 	}, 60_000);
+
+	it("refuses a saved session whose named profile is unavailable without changing or publishing its transcript", async () => {
+		using tempDir = TempDir.createSync("@omp-cli-named-sleep-");
+		const homeDir = path.join(tempDir.path(), "home");
+		const agentDir = path.join(homeDir, "agent");
+		const projectDir = path.join(tempDir.path(), "project");
+		const sessionsDir = getSessionsDir(agentDir);
+		for (const dir of [agentDir, projectDir, sessionsDir, path.join(homeDir, ".omp")])
+			fs.mkdirSync(dir, { recursive: true });
+		const { sessionId, sessionPath } = await createSession(sessionsDir, projectDir, {
+			actorHandle: "worker",
+			rootAgent: "missing-native-profile",
+		});
+		const before = fs.readFileSync(sessionPath, "utf8");
+		const runtimeDir = path.join(
+			homeDir,
+			".omp",
+			"run",
+			"daemons",
+			Bun.hash.wyhash(path.resolve(projectDir)).toString(16).padStart(16, "0"),
+		);
+		try {
+			const result = await runCli(homeDir, agentDir, projectDir, ["--attach", "worker"]);
+			expect(result.exitCode, result.output).toBe(2);
+			expect(result.output).toContain("missing-native-profile");
+			expect(fs.readFileSync(sessionPath, "utf8")).toBe(before);
+			expect(fs.existsSync(path.join(homeDir, ".omp", "run", `${sessionId}.json`))).toBe(false);
+		} finally {
+			if (fs.existsSync(runtimeDir)) {
+				const broker = await createDaemonBrokerClient(projectDir, { runtimeDir, existingOnly: true });
+				try {
+					await broker.request({ op: "shutdown" });
+				} finally {
+					broker.close();
+				}
+			}
+		}
+	}, 60_000);
 });
 
 describe("CLI --attach exact live owner", () => {
@@ -367,12 +424,15 @@ describe("CLI --attach exact live owner", () => {
 		const homeDir = path.join(tempDir.path(), "home");
 		const agentDir = path.join(homeDir, "agent");
 		const projectDir = path.join(tempDir.path(), "project");
-		const sessionsDir = path.join(tempDir.path(), "sessions");
+		const sessionsDir = getSessionsDir(agentDir);
 		const runDir = path.join(homeDir, ".omp", "run");
 		for (const dir of [agentDir, projectDir, sessionsDir, runDir]) fs.mkdirSync(dir, { recursive: true });
 		fs.writeFileSync(path.join(agentDir, "config.yml"), "modelRoles:\n  default: unavailable-provider/no-model\n");
 		const project = fs.realpathSync(projectDir);
-		const { sessionId, sessionPath } = await createSession(sessionsDir, project);
+		const { sessionId, sessionPath } = await createSession(sessionsDir, project, {
+			actorHandle: "worker",
+			rootAgent: "lead",
+		});
 		const before = fs.readFileSync(sessionPath, "utf8");
 		const reportFile = path.join(tempDir.path(), "owner.json");
 		const stopFile = path.join(tempDir.path(), "stop");
@@ -395,6 +455,8 @@ describe("CLI --attach exact live owner", () => {
 			inspectionClient = client;
 			let disappearBeforeState = false;
 			let rebindBeforeState = false;
+			let changeIdentityBeforeFinalProbe = false;
+			let execution = { profile: "lead" as string | null, profileBinding: "lead" as string | null, cwd: project };
 			let stateCalls = 0;
 			const publication = path.join(runDir, `${sessionId}.json`);
 			const metadata = {
@@ -410,8 +472,13 @@ describe("CLI --attach exact live owner", () => {
 				() => process.kill(owner.pid, "SIGUSR1"),
 				{
 					sessionPath,
+					execution: () => execution,
 					beforeState: async () => {
 						stateCalls++;
+						if (changeIdentityBeforeFinalProbe && stateCalls === 2) {
+							changeIdentityBeforeFinalProbe = false;
+							execution = { ...execution, profileBinding: null };
+						}
 						if (rebindBeforeState && stateCalls === 2) {
 							rebindBeforeState = false;
 							fs.writeFileSync(
@@ -459,6 +526,38 @@ describe("CLI --attach exact live owner", () => {
 			expect(await second.close()).toBe(143);
 			expect(web.closed).toBe(false);
 
+			const named = new CliViewer(homeDir, agentDir, project, "worker", true);
+			viewers.push(named);
+			await named.waitForText("OWNER-REFRESH");
+			named.terminal.write("\u0003");
+			expect(await withTimeout(named.child.exited, 8_000, "named attach Ctrl-C did not detach")).toBe(0);
+			expect(web.closed).toBe(false);
+			expect((await probeSessionAttach(sessionId, { endpointDir: runDir, sessionPath })).status).toBe("live");
+			stateCalls = 0;
+			changeIdentityBeforeFinalProbe = true;
+			const raced = new CliViewer(homeDir, agentDir, project, "worker", true);
+			viewers.push(raced);
+			try {
+				expect(await withTimeout(raced.child.exited, 8_000, "identity change was admitted")).toBe(2);
+			} finally {
+				await raced.close();
+				execution = { profile: "lead", profileBinding: "lead", cwd: project };
+			}
+			for (const invalid of [
+				{ ...execution, profile: "other" },
+				{ ...execution, profileBinding: null },
+				{ ...execution, cwd: tempDir.path() },
+			]) {
+				execution = invalid;
+				const refused = await runCli(homeDir, agentDir, project, ["--attach", "worker"]);
+				expect(refused.exitCode, refused.output).toBe(2);
+			}
+			execution = { profile: "lead", profileBinding: "lead", cwd: project };
+			const prefix = new CliViewer(homeDir, agentDir, project, sessionId.slice(0, 8));
+			viewers.push(prefix);
+			await prefix.waitForText("OWNER-REFRESH");
+			expect(await prefix.close()).toBe(143);
+
 			const copy = path.join(sessionsDir, "distinct-copy.jsonl");
 			fs.copyFileSync(sessionPath, copy);
 			const copied = await runCli(homeDir, agentDir, project, ["--attach", copy]);
@@ -501,7 +600,7 @@ describe("CLI --attach exact live owner", () => {
 			expect(endpoint.frames.every(frame => frame.type === "get_state" || frame.type === "terminal_refresh")).toBe(
 				true,
 			);
-			expect(fs.readdirSync(agentDir)).toEqual(["config.yml"]);
+			expect(fs.readdirSync(agentDir).sort()).toEqual(["config.yml", "history.db", "sessions"]);
 		} finally {
 			inspectionClient?.close();
 			await Promise.all(viewers.map(viewer => viewer.close().catch(() => -1)));

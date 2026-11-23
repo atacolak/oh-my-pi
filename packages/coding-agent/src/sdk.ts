@@ -217,6 +217,7 @@ import {
 	DateCwdReminderInjector,
 } from "./session/date-cwd-reminder";
 import { createInterruptedToolResults, createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
+import { applyAgentIdleSleepPolicy } from "./session/idle-sleep-policy";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
 	type CustomMessage,
@@ -920,6 +921,12 @@ export interface CreateAgentSessionOptions {
 	 * session (`taskDepth === 0`, no parent task); `HINDSIGHT_AUTO_*` wins over it.
 	 */
 	agentMemory?: AgentMemoryPolicy;
+	/**
+	 * Root agent idle sleep after this many seconds without activity; `0` disables it.
+	 * Applied as a runtime override when this is a root session (`taskDepth === 0`, no
+	 * parent task); subagents inherit the parent's scheduling untouched.
+	 */
+	agentIdleSleepSeconds?: number;
 	/**
 	 * Agent definition name used to evaluate rule `agents` scoping. Defaults to
 	 * "main" for a top-level session / "sub" for a subagent.
@@ -2001,6 +2008,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		logger.time("settings", Settings.init, { cwd, agentDir }));
 	if (!options.parentTaskPrefix && !options.taskDepth) {
 		applyAgentMemoryPolicy(settings, options.agentMemory);
+		applyAgentIdleSleepPolicy(settings, options.agentIdleSleepSeconds);
 	}
 	// Discovery provider toggles and process-wide setting effects (theme, request limits, …)
 	// follow the newest holder: each top-level session holds both on its settings until disposed,
@@ -2697,6 +2705,20 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getSessionFile: () => sessionManager.getSessionFile() ?? null,
 			sessionManager,
 			getEvalKernelOwnerId: () => evalKernelOwnerId,
+			agentMail: {
+				send: (params, options) =>
+					session
+						? session.sendAgentMail(params, options)
+						: Promise.reject(new Error("Session unavailable for agent mail")),
+				read: (options?: { threadId?: string; limit?: number }) => {
+					if (!session) throw new Error("Session unavailable for agent mail");
+					return session.readAgentMail(options);
+				},
+				discover: (options?: { query?: string; liveOnly?: boolean; limit?: number }) =>
+					session
+						? session.discoverAgentMailSessions(options)
+						: Promise.reject(new Error("Session unavailable for agent mail")),
+			},
 			getEvalSessionId: () => session?.getEvalSessionId() ?? defaultEvalSessionId(toolSession),
 			assertEvalExecutionAllowed: () => session?.assertEvalExecutionAllowed(),
 			trackEvalExecution: (execution, abortController) =>
@@ -5323,6 +5345,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
+			rootAgentName: options.rootAgentName,
 			agentKind,
 			agentProfile: options.agentName,
 			agentRegistry,
@@ -6110,6 +6133,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		startDeferredMCPDiscovery?.(session);
 
 		startupCleanup.move();
+		// Exclusive actor identity belongs to this journal, never to ambient
+		// launch environment or a separate roster. Keep its owner on this transcript.
+		const identity = sessionManager.getSessionIdentityMetadata();
+		if (identity?.actorHandle || identity?.assignments?.length) {
+			if (!sessionManager.getCanonicalSessionFile() || !sessionManager.hasSessionOwnership()) {
+				throw new Error("Named session has no durable journal ownership");
+			}
+		}
 		return {
 			session,
 			extensionsResult,

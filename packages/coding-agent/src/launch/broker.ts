@@ -27,6 +27,7 @@ import type { DaemonReadySpec, DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-t
 import { hasLiveDaemonProjectPresence, pruneDeadDaemonRuntimeDirs } from "./presence";
 import {
 	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_PROCESS_CONTROL_VERSION,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_PTY_COLUMNS,
 	DAEMON_PTY_ROWS,
@@ -104,6 +105,8 @@ interface ManagedDaemon {
 	dir: string;
 	log?: DaemonLog;
 	process?: ManagedProcess;
+	/** Native reference captured at this broker's own launch of the current generation. */
+	processRef?: Process;
 	input?: Bun.FileSink;
 	pty?: PtySession;
 	terminalColumns?: number;
@@ -145,6 +148,13 @@ interface TerminalSubscription {
 	ackedSequence: number;
 	outstandingBytes: number;
 	readonly pending: { sequence: number; bytes: number }[];
+}
+
+interface TerminalIdleLease {
+	/** `DaemonSnapshot.id` of the exact generation that asked to retire. */
+	readonly id: string;
+	/** Opaque token handed to that owner; only it can release the fence. */
+	readonly lease: string;
 }
 
 interface DaemonLogRead {
@@ -516,6 +526,13 @@ class DaemonBroker {
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
 	readonly #terminalSubscriptions = new Map<string, Map<string, TerminalSubscription>>();
+	/**
+	 * Pending cooperative-retirement fences, one per daemon name, pinned to the
+	 * generation that asked for it. While one exists, new viewers must not attach
+	 * to that generation. Only an explicit matching cancel, that generation's
+	 * settlement, or its replacement removes it; a mode change does not.
+	 */
+	readonly #terminalIdleLeases = new Map<string, TerminalIdleLease>();
 	readonly #finished = Promise.withResolvers<void>();
 	readonly #sockets = new Set<IpcConnection>();
 	/** Abortable `wait`/follow-`logs` requests, keyed by wire request id, so a client can cancel its own poll. */
@@ -574,6 +591,7 @@ class DaemonBroker {
 		}
 		this.#ownerSockets.clear();
 		this.#terminalSubscriptions.clear();
+		this.#terminalIdleLeases.clear();
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
 		this.#clients.clear();
@@ -725,6 +743,7 @@ class DaemonBroker {
 					op: "ping",
 					projectDir: this.#projectDir,
 					terminalProtocolVersion: DAEMON_TERMINAL_PROTOCOL_VERSION,
+					processControlVersion: DAEMON_PROCESS_CONTROL_VERSION,
 				};
 			case "start":
 				return this.#start(operation.spec, operation.owner, operation.replace, operation.awaitReady);
@@ -750,6 +769,7 @@ class DaemonBroker {
 				return this.#send(operation);
 			case "stop": {
 				const record = this.#record(operation.name);
+				if (operation.requireProcessHandle === true) return this.#guardedStop(record, operation);
 				if (operation.id === undefined || operation.id === record.snapshot.id) {
 					await this.#stopRecord(record, operation.timeoutMs);
 				}
@@ -768,6 +788,10 @@ class DaemonBroker {
 				return this.#terminalStart(operation, socket);
 			case "terminal_attach":
 				return this.#terminalAttach(operation, socket);
+			case "terminal_idle_prepare":
+				return this.#terminalIdlePrepare(operation);
+			case "terminal_idle_cancel":
+				return this.#terminalIdleCancel(operation);
 			case "terminal_resize":
 				return this.#terminalResize(operation, socket);
 			case "terminal_detach":
@@ -885,7 +909,9 @@ class DaemonBroker {
 	async #launch(record: ManagedDaemon): Promise<void> {
 		record.generation++;
 		const generation = record.generation;
+		this.#supersedeTerminalIdleLease(record);
 		record.stopRequested = false;
+		record.processRef = undefined;
 		record.terminalSettled = undefined;
 		record.snapshot.state = record.spec.ready ? "starting" : "running";
 		record.snapshot.persist = record.spec.persist;
@@ -935,11 +961,13 @@ class DaemonBroker {
 		}
 		let installed: TerminalSubscription | undefined;
 		const started = await this.#start(spec, undefined, false, true, record => {
-			record.spec.env[SESSION_OWNER_CONTEXT_ENV] = JSON.stringify({
+			const ownerContext: SessionOwnerContext = {
 				projectDir: record.spec.cwd,
 				name: record.spec.name,
 				id: record.snapshot.id,
-			} satisfies SessionOwnerContext);
+				runtimeDir: this.#runtimeDir,
+			};
+			record.spec.env[SESSION_OWNER_CONTEXT_ENV] = JSON.stringify(ownerContext);
 			installed = this.#subscribeTerminal(
 				record,
 				socket,
@@ -965,6 +993,9 @@ class DaemonBroker {
 		if (record.snapshot.id !== operation.id) {
 			throw new Error(`Daemon ${operation.name} is generation ${record.snapshot.id}, not ${operation.id}`);
 		}
+		if (this.#terminalIdleLeases.get(operation.name)?.id === operation.id) {
+			throw new Error(`Daemon ${operation.name} generation ${operation.id} is retiring; attach refused`);
+		}
 		if (!record.spec.pty || !record.pty) {
 			throw new Error(`Daemon ${operation.name} has no PTY to attach`);
 		}
@@ -987,6 +1018,44 @@ class DaemonBroker {
 			columns: operation.columns,
 			rows: operation.rows,
 		};
+	}
+
+	#terminalIdlePrepare(operation: Extract<DaemonOperation, { op: "terminal_idle_prepare" }>): DaemonRpcResult {
+		const record = this.#record(operation.name);
+		if (record.snapshot.id !== operation.id) {
+			throw new Error(`Daemon ${operation.name} is generation ${record.snapshot.id}, not ${operation.id}`);
+		}
+		const pending = this.#terminalIdleLeases.get(operation.name);
+		if (pending) {
+			// A retried prepare is the same acquisition when it carries the same
+			// generation and nonce; answering it before the eligibility checks keeps
+			// an owner able to recover its handle even after the owner's own mode
+			// changed. Anything else is another caller's fence.
+			if (pending.id === operation.id && operation.lease !== undefined && pending.lease === operation.lease) {
+				return { op: "terminal_idle_prepare", name: operation.name, id: operation.id, lease: pending.lease };
+			}
+			throw new Error(`Daemon ${operation.name} already has a pending retirement lease`);
+		}
+		if (!record.spec.pty || !record.spec.persist || record.spec.detached) {
+			throw new Error(`Daemon ${operation.name} is not a persistent terminal owner`);
+		}
+		if (record.snapshot.state !== "running" && record.snapshot.state !== "ready") {
+			throw new Error(`Daemon ${operation.name} is ${record.snapshot.state}`);
+		}
+		if (!record.pty) throw new Error(`Daemon ${operation.name} has no PTY to retire`);
+		if ((this.#terminalSubscriptions.get(operation.id)?.size ?? 0) > 0) {
+			throw new Error(`Daemon ${operation.name} still has an attached terminal viewer`);
+		}
+		const lease = operation.lease ?? crypto.randomUUID();
+		this.#terminalIdleLeases.set(operation.name, { id: operation.id, lease });
+		return { op: "terminal_idle_prepare", name: operation.name, id: operation.id, lease };
+	}
+
+	#terminalIdleCancel(operation: Extract<DaemonOperation, { op: "terminal_idle_cancel" }>): DaemonRpcResult {
+		const lease = this.#terminalIdleLeases.get(operation.name);
+		const released = lease?.id === operation.id && lease.lease === operation.lease;
+		if (released) this.#terminalIdleLeases.delete(operation.name);
+		return { op: "terminal_idle_cancel", name: operation.name, id: operation.id, released };
 	}
 
 	#terminalResize(
@@ -1095,6 +1164,19 @@ class DaemonBroker {
 		return subscription;
 	}
 
+	#clearTerminalIdleLease(record: ManagedDaemon): void {
+		// Settlement withdraws only the fence pinned to the generation that settled;
+		// a replacement already running under the same name keeps its own fence.
+		const lease = this.#terminalIdleLeases.get(record.snapshot.name);
+		if (lease?.id === record.snapshot.id) this.#terminalIdleLeases.delete(record.snapshot.name);
+	}
+
+	#supersedeTerminalIdleLease(record: ManagedDaemon): void {
+		// Launching a generation invalidates any fence granted to the one it replaces,
+		// including a fence whose generation was already stopped.
+		this.#terminalIdleLeases.delete(record.snapshot.name);
+	}
+
 	#dropTerminalSubscription(
 		subscription: TerminalSubscription,
 		notification?: { exitCode?: number; reason?: string },
@@ -1188,14 +1270,18 @@ class DaemonBroker {
 			this.#publishTerminalOutput(record, generation, chunk);
 			this.#onOutput(record, generation, chunk);
 		};
-		const started = Promise.withResolvers<number | undefined>();
+		const started = Promise.withResolvers<{ pid: number; processRef: Process | null } | undefined>();
 		const onStart = (error: Error | null, pid: number): void => {
 			if (error) {
 				record.log?.append(`PTY startup callback failed: ${error.message}\n`);
 				started.resolve(undefined);
 				return;
 			}
-			started.resolve(Number.isSafeInteger(pid) && pid > 0 ? pid : undefined);
+			if (!Number.isSafeInteger(pid) || pid <= 0) {
+				started.resolve(undefined);
+				return;
+			}
+			started.resolve({ pid, processRef: Process.fromPid(pid) });
 		};
 		let run: Promise<PtyRunResult>;
 		if (process.platform === "win32") {
@@ -1226,9 +1312,10 @@ class DaemonBroker {
 			},
 		);
 
-		const pid = await started.promise;
-		if (pid !== undefined && generation === record.generation) {
-			record.snapshot.pid = pid;
+		const captured = await started.promise;
+		if (captured && generation === record.generation && !settledState(record.snapshot.state)) {
+			record.snapshot.pid = captured.pid;
+			record.processRef = captured.processRef ?? undefined;
 			this.#persist(record);
 		}
 	}
@@ -1243,6 +1330,7 @@ class DaemonBroker {
 			...DAEMON_SPAWN_OPTIONS,
 		});
 		record.process = process;
+		record.processRef = Process.fromPid(process.pid) ?? undefined;
 		record.input = process.stdin;
 		record.snapshot.pid = process.pid;
 		this.#persist(record);
@@ -1266,6 +1354,7 @@ class DaemonBroker {
 				...DAEMON_SPAWN_OPTIONS,
 			});
 			record.process = process;
+			record.processRef = Process.fromPid(process.pid) ?? undefined;
 			record.snapshot.pid = process.pid;
 			this.#persist(record);
 			process.unref();
@@ -1402,6 +1491,7 @@ class DaemonBroker {
 		// The output read yields, so a concurrent refresh may settle this generation first.
 		if (generation !== record.generation || settledState(record.snapshot.state)) return;
 		record.process = undefined;
+		record.processRef = undefined;
 		record.input = undefined;
 		record.pty = undefined;
 		record.snapshot.pid = undefined;
@@ -1409,6 +1499,7 @@ class DaemonBroker {
 		record.snapshot.exitCode = exitCode;
 		record.snapshot.exitReason = error;
 		record.snapshot.readyPending = undefined;
+		this.#clearTerminalIdleLease(record);
 		const terminalSubscriptions = this.#terminalSubscriptions.get(record.snapshot.id);
 		if (terminalSubscriptions) {
 			for (const subscription of terminalSubscriptions.values()) {
@@ -1619,6 +1710,45 @@ class DaemonBroker {
 		return { op: "send", daemon: record.snapshot };
 	}
 
+	async #guardedStop(
+		record: ManagedDaemon,
+		operation: Extract<DaemonOperation, { op: "stop" }>,
+	): Promise<DaemonRpcResult> {
+		const id = operation.id;
+		const expectedPid = operation.expectedPid;
+		if (id === undefined || expectedPid === undefined) {
+			throw new Error("Guarded daemon stop requires an exact generation id and expected pid");
+		}
+		if (record.snapshot.id !== id) {
+			throw new Error(`Daemon ${operation.name} is generation ${record.snapshot.id}, not ${id}`);
+		}
+		const processRef = record.processRef;
+		if (!processRef) {
+			throw new Error(`Daemon ${operation.name} has no stable process handle for generation ${id}`);
+		}
+		if (processRef.pid !== expectedPid || record.snapshot.pid !== expectedPid) {
+			throw new Error(
+				`Daemon ${operation.name} pid ${record.snapshot.pid ?? processRef.pid} does not match expected pid ${expectedPid}`,
+			);
+		}
+		if (terminalState(record.snapshot.state) || record.snapshot.state === "stopping") {
+			throw new Error(`Daemon ${operation.name} is ${record.snapshot.state}`);
+		}
+		record.stopRequested = true;
+		record.snapshot.state = "stopping";
+		this.#persist(record);
+		const generation = record.generation;
+		const timeoutMs = Math.max(0, operation.timeoutMs);
+		await processRef.terminate({ group: true, gracefulMs: timeoutMs, timeoutMs: timeoutMs + 1_000 });
+		const settled = await this.#waitUntil(
+			record,
+			() => record.generation !== generation || terminalState(record.snapshot.state),
+			timeoutMs + 1_000,
+		);
+		if (!settled) await processRef.terminate({ group: true, gracefulMs: 0, timeoutMs: 1_000 });
+		return { op: "stop", daemon: record.snapshot };
+	}
+
 	async #stopRecord(record: ManagedDaemon, timeoutMs: number): Promise<void> {
 		await this.#refreshDetached(record);
 		if (terminalState(record.snapshot.state)) return;
@@ -1634,7 +1764,13 @@ class DaemonBroker {
 		}
 		record.snapshot.state = "stopping";
 		this.#persist(record);
-		const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
+		const held = record.processRef;
+		const processRef =
+			held && held.pid === record.snapshot.pid
+				? held
+				: record.snapshot.pid === undefined
+					? null
+					: Process.fromPid(record.snapshot.pid);
 		if (processRef) await processRef.terminate({ group: true, gracefulMs: timeoutMs, timeoutMs: timeoutMs + 1_000 });
 		else record.pty?.kill();
 		const settled = await this.#waitUntil(record, () => terminalState(record.snapshot.state), timeoutMs + 1_000);

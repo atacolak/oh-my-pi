@@ -37,9 +37,8 @@ export async function resolveLaunchAgent(
 
 /** Explicit tool list for a root session: keep custom names, drop subagent-only `yield`. */
 export function rootAgentToolNames(agent: AgentDefinition): string[] | undefined {
-	if (!agent.tools || agent.tools.length === 0) return undefined;
-	const tools = agent.tools.filter(toolName => toolName !== "yield");
-	return tools.length > 0 ? tools : undefined;
+	if (agent.tools === undefined) return undefined;
+	return agent.tools.filter(toolName => toolName !== "yield");
 }
 
 /** First agent model selector, or `undefined` when the yaml means "inherit session model". */

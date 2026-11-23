@@ -40,6 +40,16 @@ interface PendingRequest {
 	removeAbort?: () => void;
 }
 
+type IdleCancellation = Extract<DaemonOperation, { op: "terminal_idle_cancel" }>;
+
+function idleLeaseKey(name: string, id: string, lease: string): string {
+	return `${name}\u0000${id}\u0000${lease}`;
+}
+
+function idleCancellationKey(operation: IdleCancellation): string {
+	return idleLeaseKey(operation.name, operation.id, operation.lease);
+}
+
 /** Broker location and lifecycle overrides used by smoke tests and isolated consumers. */
 export interface DaemonBrokerClientOptions {
 	/** Runtime directory override; defaults to the project-scoped config path. */
@@ -65,6 +75,8 @@ export interface DaemonBrokerClient {
 	 * Returns an unsubscribe; dropping a sink never sends a detach, so losing a mirror leaks nothing.
 	 */
 	subscribeTerminal(subscriptionId: string, sink: (notification: DaemonTerminalNotification) => void): () => void;
+	/** Hear that the broker connection dropped, so a terminal mirror can stop waiting for frames. */
+	onDisconnect?(listener: () => void): () => void;
 	/** Canonical project directory or synthetic directory identifying a global scope. */
 	readonly projectDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
@@ -143,6 +155,12 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #idleGraceMs: number | undefined;
 	readonly #existingOnly: boolean;
 	readonly #pending = new Map<string, PendingRequest>();
+	/**
+	 * Retirement cancellations whose reply was lost with the connection. They are
+	 * transport operations, never lease facts: retried on the next restored
+	 * connection until the broker answers, and discarded as soon as it does.
+	 */
+	readonly #pendingIdleCancellations = new Map<string, IdleCancellation>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
 	readonly #terminalSinks = new Map<string, (notification: DaemonTerminalNotification) => void>();
 	readonly #completionUnsubscribes = new Set<string>();
@@ -154,6 +172,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	#connectPromise: Promise<void> | undefined;
 	#closed = false;
 	#completionReconnectTimer: NodeJS.Timeout | undefined;
+	readonly #disconnectListeners = new Set<() => void>();
 
 	constructor(projectDir: string, runtimeDir: string, token: string, options: DaemonBrokerClientOptions) {
 		this.projectDir = projectDir;
@@ -167,9 +186,50 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	async request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
 		if (this.#closed) throw new Error("Daemon broker client is closed");
 		if (signal?.aborted) throw new Error("Daemon broker request aborted");
-		await this.#connect();
+		if (operation.op === "terminal_idle_cancel") {
+			// Queue before connecting: a cancellation whose reply is lost, or that
+			// cannot even reach the broker yet, must stay retryable.
+			this.#pendingIdleCancellations.set(idleCancellationKey(operation), operation);
+		} else if (operation.op === "terminal_idle_prepare" && operation.lease !== undefined) {
+			// An acknowledged acquisition supersedes a queued cancellation for the
+			// same identity; resending it later would withdraw the renewed fence.
+			this.#pendingIdleCancellations.delete(idleLeaseKey(operation.name, operation.id, operation.lease));
+		}
+		try {
+			// Retirement addresses an already running generation; it must never bootstrap a replacement broker.
+			await this.#connect(operation.op === "terminal_idle_prepare" || operation.op === "terminal_idle_cancel");
+			// Drain old cancellations before the current frame on this same transport.
+			this.#retryPendingIdleCancellations(
+				operation.op === "terminal_idle_cancel" ? idleCancellationKey(operation) : undefined,
+			);
+			return await this.#dispatch(operation, signal);
+		} catch (error) {
+			if (this.#pendingIdleCancellations.size > 0) this.#scheduleCompletionReconnect();
+			throw error;
+		}
+	}
+
+	/** Ride the connection this request just established to settle cancellations left unresolved. */
+	#retryPendingIdleCancellations(skipped: string | undefined): void {
+		if (this.#pendingIdleCancellations.size === 0) return;
+		const inFlight = new Set<string>();
+		for (const pending of this.#pending.values()) {
+			if (pending.operation.op === "terminal_idle_cancel") {
+				inFlight.add(idleCancellationKey(pending.operation));
+			}
+		}
+		for (const [key, operation] of this.#pendingIdleCancellations) {
+			if (key === skipped || inFlight.has(key)) continue;
+			void this.#dispatch(operation).catch(() => this.#scheduleCompletionReconnect());
+		}
+	}
+
+	async #dispatch(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
 		const socket = this.#socket;
 		if (!socket || socket.closed) throw new Error("Daemon broker socket is unavailable");
+		if (operation.op === "terminal_idle_cancel") {
+			this.#pendingIdleCancellations.set(idleCancellationKey(operation), operation);
+		}
 
 		const completionUnsubscribes = [...this.#completionUnsubscribes];
 		const completionReplays = [...this.#completionReplays];
@@ -237,8 +297,16 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#terminalSinks.clear();
 		this.#preservedCompletionOwners.clear();
 		this.#completionReplays.clear();
+		this.#pendingIdleCancellations.clear();
 		this.#socket = undefined;
 		this.#rejectPending(new Error("Daemon broker client closed"));
+	}
+
+	onDisconnect(listener: () => void): () => void {
+		this.#disconnectListeners.add(listener);
+		return () => {
+			this.#disconnectListeners.delete(listener);
+		};
 	}
 
 	subscribeTerminal(subscriptionId: string, sink: (notification: DaemonTerminalNotification) => void): () => void {
@@ -267,7 +335,11 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				this.#preservedCompletionOwners.delete(owner);
 				this.#completionUnsubscribes.add(owner);
 			}
-			if (this.#completionSinks.size === 0 && this.#completionReconnectTimer) {
+			if (
+				this.#completionSinks.size === 0 &&
+				this.#pendingIdleCancellations.size === 0 &&
+				this.#completionReconnectTimer
+			) {
 				clearTimeout(this.#completionReconnectTimer);
 				this.#completionReconnectTimer = undefined;
 			}
@@ -277,29 +349,35 @@ class SocketDaemonClient implements DaemonBrokerClient {
 
 	#publishCompletionOwners(): void {
 		if (this.#closed) return;
-		void this.request({ op: "ping" }).catch(() => this.#scheduleCompletionReconnect());
+		const cancellation = this.#pendingIdleCancellations.values().next().value;
+		const operation: DaemonOperation = cancellation ?? { op: "ping" };
+		void this.request(operation).catch(() => this.#scheduleCompletionReconnect());
 	}
 
 	#scheduleCompletionReconnect(): void {
 		if (
 			this.#closed ||
-			this.#completionSinks.size === 0 ||
+			(this.#completionSinks.size === 0 && this.#pendingIdleCancellations.size === 0) ||
 			this.#completionReconnectTimer !== undefined ||
-			(this.#socket !== undefined && !this.#socket.closed)
+			(this.#socket !== undefined && !this.#socket.closed && this.#pendingIdleCancellations.size === 0)
 		) {
 			return;
 		}
-		this.#completionReconnectTimer = setTimeout(() => {
-			this.#completionReconnectTimer = undefined;
-			this.#publishCompletionOwners();
-		}, CONNECT_RETRY_MS);
+		this.#completionReconnectTimer = setTimeout(
+			() => {
+				this.#completionReconnectTimer = undefined;
+				if (this.#completionSinks.size === 0 && this.#pendingIdleCancellations.size === 0) return;
+				this.#publishCompletionOwners();
+			},
+			this.#pendingIdleCancellations.size > 0 ? 1000 : CONNECT_RETRY_MS,
+		);
 		this.#completionReconnectTimer.unref();
 	}
 
-	async #connect(): Promise<void> {
+	async #connect(existingOnly = false): Promise<void> {
 		if (this.#socket && !this.#socket.closed) return;
 		if (this.#connectPromise) return this.#connectPromise;
-		this.#connectPromise = this.#connectOnce();
+		this.#connectPromise = this.#connectOnce(existingOnly);
 		try {
 			await this.#connectPromise;
 		} finally {
@@ -307,8 +385,8 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		}
 	}
 
-	async #connectOnce(): Promise<void> {
-		if (this.#existingOnly) {
+	async #connectOnce(existingOnly: boolean): Promise<void> {
+		if (this.#existingOnly || existingOnly) {
 			this.#bindSocket(await IpcConnection.connect(this.#endpoint, { framing: "lines", timeoutMs: 250 }));
 			return;
 		}
@@ -368,6 +446,15 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			() => {
 				// One stable error regardless of the close reason.
 				if (this.#socket === socket) this.#socket = undefined;
+				for (const listener of [...this.#disconnectListeners]) {
+					try {
+						listener();
+					} catch (error) {
+						logger.warn("Daemon broker disconnect listener failed", {
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
 				this.#rejectPending(new Error("Daemon broker connection closed"));
 				this.#scheduleCompletionReconnect();
 			},
@@ -416,6 +503,11 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#pending.delete(response.id);
 		clearTimeout(pending.timer);
 		pending.removeAbort?.();
+		// Any authoritative answer settles the cancellation; retrying a rejected
+		// cancel forever would outlive the operation it belongs to.
+		if (pending.operation.op === "terminal_idle_cancel") {
+			this.#pendingIdleCancellations.delete(idleCancellationKey(pending.operation));
+		}
 		if (!response.ok) {
 			pending.reject(new DaemonBrokerRejectedError(response.error));
 			return;
@@ -515,7 +607,139 @@ export async function createDaemonBrokerClient(
 /** Get the process-shared daemon broker client for one canonical project directory. */
 export async function daemonClientForProject(projectDir: string): Promise<DaemonBrokerClient> {
 	const canonical = await canonicalProjectDir(projectDir);
-	return sharedDaemonClient(`project:${canonical}`, () => createDaemonBrokerClient(canonical));
+	return sharedClientForRuntimeDir(canonical, daemonRuntimeDir(canonical));
+}
+
+/** Owner coordinates whose terminal generation a cooperative close wants to fence. */
+export interface SessionOwnerIdleRetirementTarget {
+	readonly projectDir: string;
+	readonly name: string;
+	readonly id: string;
+	/** Broker scope the owner was launched under; defaults to the project's canonical scope. */
+	readonly runtimeDir?: string;
+	/**
+	 * Caller-owned nonce naming this acquisition attempt. Retrying a prepare with
+	 * the same nonce after an ambiguous reply returns the same fence instead of
+	 * being refused as another caller's pending lease; keeping it also lets
+	 * {@link cancelSessionOwnerIdleRetirement} clear a fence whose handle was lost.
+	 */
+	readonly lease?: string;
+}
+
+/** One acquisition attempt by generation plus nonce, sufficient to withdraw its fence. */
+export interface SessionOwnerIdleRetirementFence extends SessionOwnerIdleRetirementTarget {
+	readonly lease: string;
+}
+
+/** Held fence over one owner generation; releasing it lets viewers attach again. */
+export interface SessionOwnerIdleRetirement extends AsyncDisposable {
+	readonly name: string;
+	readonly id: string;
+	readonly lease: string;
+	/**
+	 * Withdraw the fence. Resolves once the broker answered, whether it held the
+	 * fence or had already settled it; a failed attempt rejects and is not
+	 * remembered, so calling it again retries over a fresh connection.
+	 */
+	release(): Promise<void>;
+}
+
+async function sharedClientForRuntimeDir(projectDir: string, runtimeDir: string): Promise<DaemonBrokerClient> {
+	const canonical = await canonicalProjectDir(projectDir);
+	const scope = await fs.realpath(runtimeDir).catch(() => path.resolve(runtimeDir));
+	return sharedDaemonClient(`runtime:${scope}`, () => createDaemonBrokerClient(canonical, { runtimeDir: scope }));
+}
+
+function ownerBrokerClient(projectDir: string, runtimeDir: string | undefined): Promise<DaemonBrokerClient> {
+	return runtimeDir === undefined
+		? daemonClientForProject(projectDir)
+		: sharedClientForRuntimeDir(projectDir, runtimeDir);
+}
+
+function cancelIdleRetirement(
+	client: DaemonBrokerClient,
+	name: string,
+	id: string,
+	lease: string,
+): Promise<DaemonRpcResult> {
+	return client.request({ op: "terminal_idle_cancel", name, id, lease });
+}
+
+/**
+ * Withdraw a fence without a live retirement handle, for example after an
+ * acquisition whose reply was lost. Cancellation is pinned to the exact
+ * generation and nonce, so it can never reopen a newer generation.
+ */
+export async function cancelSessionOwnerIdleRetirement(fence: SessionOwnerIdleRetirementFence): Promise<void> {
+	const client = await ownerBrokerClient(fence.projectDir, fence.runtimeDir);
+	await cancelIdleRetirement(client, fence.name, fence.id, fence.lease);
+}
+
+/**
+ * Ask the owner's broker to refuse new terminal viewers for this exact persistent
+ * terminal generation while the owner closes cooperatively. `undefined` means the
+ * broker refused (a viewer is still attached, the generation is stale, or the
+ * terminal is not a running persistent owner) or stayed unreachable; a refusal
+ * never entitles the owner to exit. The returned fence is released by `release()`
+ * or by `await using`; a lost prepare reply is retried under the same nonce, and
+ * a failed release rejects instead of being remembered.
+ */
+export async function prepareSessionOwnerIdleRetirement(
+	owner: SessionOwnerIdleRetirementTarget,
+): Promise<SessionOwnerIdleRetirement | undefined> {
+	const lease = owner.lease ?? crypto.randomUUID();
+	let client: DaemonBrokerClient;
+	try {
+		client = await ownerBrokerClient(owner.projectDir, owner.runtimeDir);
+	} catch {
+		return undefined;
+	}
+	const prepare = (): Promise<DaemonRpcResult> =>
+		client.request({ op: "terminal_idle_prepare", name: owner.name, id: owner.id, lease });
+	const acquire = async (): Promise<Extract<DaemonRpcResult, { op: "terminal_idle_prepare" }> | undefined> => {
+		try {
+			const first = await prepare();
+			return first.op === "terminal_idle_prepare" ? first : undefined;
+		} catch (error) {
+			if (error instanceof DaemonBrokerRejectedError) return undefined;
+		}
+		try {
+			// The reply was lost, not necessarily the acquisition: the nonce makes
+			// this retry an acknowledgement of whichever attempt reached the broker.
+			const retried = await prepare();
+			return retried.op === "terminal_idle_prepare" ? retried : undefined;
+		} catch {
+			// The first reply is ambiguous, so the broker may already hold this nonce's
+			// fence even though the retry failed. Queue the withdrawal under the same
+			// nonce; it is retried over later connections instead of stranding the
+			// generation behind a fence nobody can release.
+			await cancelIdleRetirement(client, owner.name, owner.id, lease).catch(() => undefined);
+			return undefined;
+		}
+	};
+	const prepared = await acquire();
+	if (!prepared) return undefined;
+	let released = false;
+	let releasing: Promise<void> | undefined;
+	const release = (): Promise<void> => {
+		if (released) return Promise.resolve();
+		releasing ??= (async () => {
+			try {
+				await cancelIdleRetirement(client, prepared.name, prepared.id, prepared.lease);
+				released = true;
+			} finally {
+				releasing = undefined;
+			}
+		})();
+		return releasing;
+	};
+	return {
+		name: prepared.name,
+		id: prepared.id,
+		lease: prepared.lease,
+		release,
+		[Symbol.asyncDispose]: release,
+	};
 }
 
 /** Get the process-shared client that leases one profile-independent, machine-global daemon broker. */

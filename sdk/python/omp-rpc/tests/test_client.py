@@ -336,6 +336,7 @@ FAKE_SERVER = textwrap.dedent(
     auto_compaction_enabled = True
     auto_retry_enabled = True
     session_name = "Scratchpad"
+    identity_handle = "original"
     last_assistant_text = None
     last_ui_response = None
     goal_state = None
@@ -517,6 +518,17 @@ FAKE_SERVER = textwrap.dedent(
         elif command_type == "set_session_name":
             session_name = command["name"]
             respond(request_id, "set_session_name", {})
+        elif command_type == "set_session_identity":
+            patch = command["patch"]
+            if "actorHandle" in patch:
+                identity_handle = patch["actorHandle"]
+            respond(request_id, command_type, {
+                "sessionId": command["expectedSessionId"],
+                "sessionFile": command["expectedSessionFile"],
+                "cwd": "/fixture",
+                "actorHandle": identity_handle,
+                "assignments": patch.get("assignments", []),
+            })
         elif command_type in {"steer", "follow_up"}:
             queue_name = "steering" if command_type == "steer" else "followUp"
             queued_messages[queue_name].append(command["message"])
@@ -1148,6 +1160,21 @@ class RpcClientTests(unittest.TestCase):
             **kwargs,
         }
         return RpcClient(command=[sys.executable, "-u", "-c", server], **options)
+
+    def test_identity_patch_omission_preserves_handle_but_null_clears_it(self) -> None:
+        with self.make_client() as client:
+            assigned = client.set_session_identity(
+                "session-id",
+                Path("/tmp/native-session.jsonl"),
+                {"assignments": [{"kind": "project", "target": "fixture"}]},
+            )
+            self.assertEqual(assigned.actor_handle, "original")
+            self.assertEqual(assigned.session_file, "/tmp/native-session.jsonl")
+            self.assertEqual(assigned.assignments[0].target, "fixture")
+            cleared = client.set_session_identity(
+                assigned.session_id, assigned.session_file, {"actorHandle": None}
+            )
+            self.assertIsNone(cleared.actor_handle)
 
     def test_ask_answers_reach_the_wire_in_question_order(self) -> None:
         with self.make_client() as client:

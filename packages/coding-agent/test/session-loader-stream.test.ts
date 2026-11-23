@@ -76,6 +76,38 @@ function messageTexts(entries: FileEntry[]): string[] {
 }
 
 describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
+	it("parses only a checkpoint tail while hashing exactly the bounded raw file prefix", async () => {
+		const prefix = [
+			serializeTitleSlot({ title: "Checkpoint", source: "auto", updatedAt: ISO }),
+			JSON.stringify(HEADER),
+			JSON.stringify(msg("old", "s1", "Earlier conversation")),
+			"",
+		].join("\n");
+		const tail = JSON.stringify(msg("new", "old", "New conversation text")) + "\n";
+		const bounded = prefix + tail;
+		const file = await writeTemp(bounded + "{broken-record-outside-snapshot\n");
+		const visited: FileEntry[] = [];
+		const hash = new Bun.CryptoHasher("sha256");
+		let bytes = 0;
+		let malformed = 0;
+		await sessionLoader.visitEntriesFromFileStream(file, entry => void visited.push(entry), {
+			skipBytes: Buffer.byteLength(prefix),
+			maxBytes: Buffer.byteLength(bounded),
+			onChunk: chunk => {
+				hash.update(chunk);
+				bytes += chunk.byteLength;
+			},
+			onMalformedRecord: () => {
+				malformed++;
+			},
+		});
+		expect(messageTexts(visited)).toEqual(["New conversation text"]);
+		expect(entryIds(visited)).toEqual(["new"]);
+		expect(bytes).toBe(Buffer.byteLength(bounded));
+		expect(hash.digest("hex")).toBe(new Bun.CryptoHasher("sha256").update(bounded).digest("hex"));
+		expect(malformed).toBe(0);
+	});
+
 	it("visits entries incrementally while skipping malformed lines", async () => {
 		const slotLine = serializeTitleSlot({ title: "Visitor", source: "user", updatedAt: ISO });
 		const content = [
@@ -324,8 +356,12 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 	it("reads the session id of a pretty-printed header, including one past the first read window", async () => {
 		const trailing = `${JSON.stringify(msg("m1", "s1", "x".repeat(64 * 1024)))}\n`;
 		// Braces and escaped quotes inside a string value must not end the header early.
-		const pretty = await writeTemp(`${JSON.stringify({ ...HEADER, cwd: '/a}b"{' }, null, 2)}\n${trailing}`);
+		const slotLine = serializeTitleSlot({ title: "Current title", source: "user", updatedAt: ISO });
+		const pretty = await writeTemp(
+			`${slotLine}\n${JSON.stringify({ ...HEADER, cwd: '/a}b"{', rootAgent: "lead" }, null, 2)}\n${trailing}`,
+		);
 		expect(await sessionLoader.readSessionHeaderId(pretty)).toBe("s1");
+		expect((await sessionLoader.readSessionHeader(pretty))?.rootAgent).toBe("lead");
 
 		const wide = path.join(path.dirname(pretty), "wide.jsonl");
 		fs.writeFileSync(
@@ -333,6 +369,7 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 			`${JSON.stringify({ ...HEADER, cwd: `/${"d".repeat(40 * 1024)}` }, null, 2)}\n${trailing}`,
 		);
 		expect(await sessionLoader.readSessionHeaderId(wide)).toBe("s1");
+		expect((await sessionLoader.readSessionHeader(wide))?.rootAgent).toBeUndefined();
 	});
 
 	it("stops after the first chunk of a delimiter-free file when the record cap is zero", async () => {

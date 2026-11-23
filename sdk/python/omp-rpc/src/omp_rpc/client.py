@@ -28,6 +28,7 @@ from ._wire import (
     RpcAgentEvent,
     RpcNotification,
     SessionSettledEvent,
+    SessionIdentityRecord,
     StreamingBehavior,
     ThinkingLevel,
     TodoItem,
@@ -38,6 +39,7 @@ from ._wire import (
     parse_agent_message,
     parse_notification,
     parse_todo_phase,
+    parse_session_identity_record,
 )
 from ._wire_runtime import (
     JsonObject,
@@ -966,6 +968,23 @@ class RpcClient(WireClient):
 
     def get_todos(self) -> tuple[TodoPhase, ...]:
         return self.get_state().todo_phases
+
+    def set_session_identity(
+        self,
+        expected_session_id: str,
+        expected_session_file: str | Path,
+        patch: JsonObject,
+    ) -> SessionIdentityRecord:
+        """Change this owner's durable identity without starting a model turn."""
+        data = self._command(
+            "set_session_identity",
+            {
+                "expectedSessionId": expected_session_id,
+                "expectedSessionFile": str(expected_session_file),
+                "patch": patch,
+            },
+        )
+        return parse_session_identity_record(data, "set_session_identity")
 
     def set_todos(
         self, todos: Sequence[TodoSeed | TodoPhaseSeed]

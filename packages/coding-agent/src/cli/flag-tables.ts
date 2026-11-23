@@ -488,3 +488,19 @@ export function restartArgv(
 	if (restoreSessionSource !== undefined) kept.push("--restore", restoreSessionSource);
 	return kept;
 }
+
+/**
+ * Prepare arguments for a broker-fenced exact-session wake; null keeps a plain session plain.
+ * The session owner must verify the saved binding before opening the session.
+ */
+export function actorProfileResumeArgv(agent: string | null, cwd: string, sessionFile: string): string[] {
+	if ((agent !== null && !agent.trim()) || !cwd || !sessionFile)
+		throw new CliUsageError("Session wake requires an explicit profile binding, cwd and session");
+	return [...(agent === null ? [] : ["--agent", agent, "--agent-cwd", cwd]), "--resume", sessionFile];
+}
+
+/** Reject a changed saved profile, including a plain session unexpectedly becoming profiled. */
+export function assertActorProfileBinding(agent: string | null, saved: unknown): void {
+	if (agent === null ? saved !== undefined : !agent.trim() || typeof saved !== "string" || saved !== agent)
+		throw new CliUsageError("Session profile does not match its saved binding.");
+}

@@ -33,6 +33,7 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 	let sessionManager: SessionManager;
 	let tempDir: TempDir;
 	let sessionDir: string;
+	let persistedJournal: string;
 	let quitSpy: Mock<typeof postmortem.quit>;
 	let quitCalled: PromiseWithResolvers<void>;
 	let exitSpy: Mock<typeof postmortem.exitProcess>;
@@ -87,6 +88,7 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 		await sessionManager.ensureOnDisk();
 		const materializedFile = sessionManager.getSessionFile();
 		if (!materializedFile) throw new Error("expected a materialized session file");
+		persistedJournal = await Bun.file(materializedFile).text();
 		// Replace the session directory with a regular file: every later write
 		// (temp file, publish lock, append) fails for real, on every platform.
 		sessionDir = path.dirname(materializedFile);
@@ -168,7 +170,21 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 	});
 
 	it("a failed restart arms the same single-Ctrl+C escape hatch", async () => {
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("expected a materialized session file");
+		await fs.unlink(sessionDir);
+		await fs.mkdir(sessionDir);
+		await Bun.write(sessionFile, persistedJournal);
+		vi.spyOn(postmortem, "cleanup").mockRejectedValue(new Error("restart bypassed the persistence failure"));
+		disposeSpy.mockImplementationOnce(async options => {
+			await fs.rm(sessionDir, { recursive: true, force: true });
+			await Bun.write(sessionDir, BLOCKER);
+			await sessionManager.rewriteEntries().catch(() => undefined);
+			await AgentSession.prototype.dispose.call(session, options);
+		});
 		await mode.restart();
+		expect(disposeSpy).toHaveBeenCalledTimes(1);
+		expect(showErrorSpy).toHaveBeenCalled();
 		quitSpy.mockClear();
 
 		mode.lastSigintTime = 0;

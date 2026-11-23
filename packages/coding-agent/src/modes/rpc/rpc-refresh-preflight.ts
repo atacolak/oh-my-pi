@@ -1,4 +1,4 @@
-import * as fs from "node:fs/promises";
+import * as fs from "node:fs";
 import { type AsyncJob, AsyncJobManager } from "../../async/job-manager";
 import { readRuntimeBootIdentity } from "../../launch/runtime-generation";
 import { systemPromptDigest } from "../../session/session-tools";
@@ -17,6 +17,23 @@ export function isGracefulRestartSettled(preflight: RpcRefreshPreflight): boolea
 		work.inFlightTools === 0 &&
 		work.taskSubagents === 0 &&
 		work.backgroundJobs === 0
+	);
+}
+
+/** The native owner can retire only when every source of pending work is explicitly idle. */
+export function isSessionExitIdle(session: AgentSession): boolean {
+	return (
+		!session.isDisposed &&
+		!session.isSessionTransitioning &&
+		session.queuedMessageCount === 0 &&
+		!session.hasPendingAsyncWork() &&
+		!session.isRetrying &&
+		!session.isBashRunning &&
+		!session.isEvalRunning &&
+		!session.hasPendingBashMessages &&
+		!session.hasPendingPythonMessages &&
+		!session.isGeneratingHandoff &&
+		isGracefulRestartSettled(getRpcRefreshPreflight(session))
 	);
 }
 
@@ -109,7 +126,7 @@ export async function getRpcRuntimeRestartReceipt(session: AgentSession): Promis
 	if (!file || !session.sessionManager.hasSessionOwnership() || !Array.isArray(session.baseSystemPrompt)) return null;
 	let sessionFile: string;
 	try {
-		sessionFile = await fs.realpath(file);
+		sessionFile = await fs.promises.realpath(file);
 	} catch {
 		return null;
 	}
@@ -121,4 +138,23 @@ export async function getRpcRuntimeRestartReceipt(session: AgentSession): Promis
 		...readRuntimeBootIdentity(),
 		basePromptDigest: systemPromptDigest(session.baseSystemPrompt),
 	};
+}
+
+export function isRpcRuntimeRestartOwner(
+	session: AgentSession,
+	expected: Pick<RpcRuntimeRestartReceipt, "sessionId" | "sessionFile">,
+	bootId: string,
+): boolean {
+	if (
+		session.sessionId !== expected.sessionId ||
+		readRuntimeBootIdentity().bootId !== bootId ||
+		!session.sessionFile ||
+		!session.sessionManager.hasSessionOwnership()
+	)
+		return false;
+	try {
+		return fs.realpathSync(session.sessionFile) === expected.sessionFile;
+	} catch {
+		return false;
+	}
 }

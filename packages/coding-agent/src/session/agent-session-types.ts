@@ -377,6 +377,8 @@ export interface AgentSessionConfig {
 	asyncJobManager?: AsyncJobManagerApi;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
+	/** Resolved profile actually mounted on this session, not a registry or model label. */
+	rootAgentName?: string;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
 	/**
@@ -464,6 +466,19 @@ export interface PromptOptions {
 	 * reaching the agent, instead of resolving `true` (default: false).
 	 */
 	throwOnDrop?: boolean;
+	/**
+	 * Exact-target admission guard for externally addressed input. The owner
+	 * calls it before setup and again at queue/run commit boundaries, including
+	 * after deferred extension loading and maintenance. Throw to refuse stale
+	 * input; no separate queue or history repair is involved.
+	 */
+	assertInputTarget?: () => void;
+	/**
+	 * Called once input actually joins a queue or claims its normal agent run,
+	 * after idle setup/preflight succeeds but before inference completes.
+	 * Unlike onPromptAdmitted, this does not report an idle setup reservation.
+	 */
+	onPromptCommitted?: () => void;
 	/** Image attachments. */
 	images?: ImageContent[];
 	/** Queue behavior while streaming. `"aside"` is non-interrupting — it does not steer/follow-up

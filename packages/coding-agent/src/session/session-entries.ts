@@ -68,6 +68,8 @@ export interface SessionHeader {
 	providerPromptCacheKey?: string;
 	/** Resolved root `--agent` name for this session, if launched from a definition. */
 	rootAgent?: string;
+	/** Directory used to discover the root agent definition; may differ from the execution cwd. */
+	rootAgentCwd?: string;
 	/** Local-only Task candidate, gated by the actual request model's cache policy; omitted from shares and HTML. */
 	taskPromptCacheKey?: string;
 	/**
@@ -91,6 +93,7 @@ export interface NewSessionOptions {
 	additionalDirectories?: string[];
 	/** Resolved root `--agent` name to seed on the new session header. */
 	rootAgent?: string;
+	rootAgentCwd?: string;
 	/** Directory for the new session file (and later `/new` sessions); defaults to the current session directory. */
 	sessionDir?: string;
 }

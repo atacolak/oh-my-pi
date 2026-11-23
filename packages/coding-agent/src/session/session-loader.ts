@@ -106,6 +106,8 @@ export interface VisitEntriesFromFileStreamOptions {
 	maxRecords?: number;
 	/** Read at most this many bytes from the file's current prefix. */
 	maxBytes?: number;
+	/** Skip parsing a previously validated prefix; its bytes are still streamed and observed. */
+	skipBytes?: number;
 	/** Yield to the macrotask queue after this many bytes have been consumed. */
 	yieldEveryBytes?: number;
 	/** Yield to the macrotask queue after this many entries have been visited. */
@@ -119,6 +121,8 @@ export interface VisitEntriesFromFileStreamOptions {
 	 * callers derive the exact snapshot size without re-stating the file.
 	 */
 	onBytesConsumed?: (bytes: number) => void;
+	/** Observe the exact bounded raw bytes, including a skipped prefix (e.g. to verify a checkpoint hash). */
+	onChunk?: (chunk: Uint8Array) => void;
 }
 
 /** Controls how a missing session file is handled. */
@@ -187,24 +191,17 @@ const SESSION_HEADER_READ_LIMIT = 1024 * 1024;
 /** First read; holds the title slot and any real header, so the full limit is read only for outliers. */
 const SESSION_HEADER_FIRST_READ = 16 * 1024;
 
-/** {@link sessionHeaderIdFromPrefix} result when the window ends inside the first record. */
+/** Header-reader result when the window ends inside the first record. */
 const HEADER_INCOMPLETE = Symbol("header-incomplete");
 
-/**
- * The session id in `filePath`'s header, or `undefined` when there is no file
- * there or it does not start with a valid session header. Reads
- * {@link SESSION_HEADER_FIRST_READ} bytes, and up to
- * {@link SESSION_HEADER_READ_LIMIT} only when the first record runs past them.
- */
-export async function readSessionHeaderId(filePath: string): Promise<string | undefined> {
+/** Read the leading session header without loading the conversation. Missing or malformed headers return undefined. */
+export async function readSessionHeader(filePath: string): Promise<SessionHeader | undefined> {
 	try {
-		const id = await peekFile(filePath, SESSION_HEADER_FIRST_READ, prefix =>
-			sessionHeaderIdFromPrefix(prefix, prefix.length < SESSION_HEADER_FIRST_READ),
+		const header = await peekFile(filePath, SESSION_HEADER_FIRST_READ, prefix =>
+			sessionHeaderFromPrefix(prefix, prefix.length < SESSION_HEADER_FIRST_READ),
 		);
-		if (id !== HEADER_INCOMPLETE) return id;
-		const full = await peekFile(filePath, SESSION_HEADER_READ_LIMIT, prefix =>
-			sessionHeaderIdFromPrefix(prefix, true),
-		);
+		if (header !== HEADER_INCOMPLETE) return header;
+		const full = await peekFile(filePath, SESSION_HEADER_READ_LIMIT, prefix => sessionHeaderFromPrefix(prefix, true));
 		return full === HEADER_INCOMPLETE ? undefined : full;
 	} catch (err) {
 		if (isEnoent(err) || isEnotdir(err) || isEisdir(err)) return undefined;
@@ -212,13 +209,21 @@ export async function readSessionHeaderId(filePath: string): Promise<string | un
 	}
 }
 
+/** Read the session id through the same bounded header parser used by profile restoration. */
+export async function readSessionHeaderId(filePath: string): Promise<string | undefined> {
+	return (await readSessionHeader(filePath))?.id;
+}
+
 /**
- * The header id from a file's leading bytes, past the optional title slot
+ * The header from a file's leading bytes, past the optional title slot
  * line. Parses only the first record, which may span lines (a pretty-printed
  * header). {@link HEADER_INCOMPLETE} when that record runs past `prefix` and
  * `final` is false (more of the file can be read).
  */
-function sessionHeaderIdFromPrefix(prefix: Uint8Array, final: boolean): string | undefined | typeof HEADER_INCOMPLETE {
+function sessionHeaderFromPrefix(
+	prefix: Uint8Array,
+	final: boolean,
+): SessionHeader | undefined | typeof HEADER_INCOMPLETE {
 	let records = prefix;
 	const newline = prefix.indexOf(0x0a);
 	if (newline !== -1) {
@@ -240,7 +245,7 @@ function sessionHeaderIdFromPrefix(prefix: Uint8Array, final: boolean): string |
 	const end = jsonContainerEnd(text, 0);
 	if (end === -1) return final ? undefined : HEADER_INCOMPLETE;
 	const entry = tryParseJson<FileEntry>(text.slice(0, end)) ?? undefined;
-	return isValidSessionHeader(entry) ? entry.id : undefined;
+	return isValidSessionHeader(entry) ? entry : undefined;
 }
 
 /** Parse session JSONL and visit each entry without retaining prior entries. */
@@ -250,8 +255,11 @@ export async function visitEntriesFromFileStream(
 	options: VisitEntriesFromFileStreamOptions = {},
 ): Promise<SessionTitleUpdate | undefined> {
 	let titleSlot: SessionTitleUpdate | undefined;
-	let sawFirstLine = false;
-	let sawFirstEntry = false;
+	let bytesToSkip = options.skipBytes ?? 0;
+	if (!Number.isSafeInteger(bytesToSkip) || bytesToSkip < 0)
+		throw new RangeError("skipBytes must be a nonnegative safe integer");
+	let sawFirstLine = bytesToSkip > 0;
+	let sawFirstEntry = bytesToSkip > 0;
 	let bytesSinceYield = 0;
 	let entriesSinceYield = 0;
 	let recordsSeen = 0;
@@ -399,10 +407,21 @@ export async function visitEntriesFromFileStream(
 		let unread = maxBytes;
 		for await (const streamed of Bun.file(filePath).stream()) {
 			if (stopped) break;
-			const chunk = streamed.byteLength > unread ? streamed.subarray(0, unread) : streamed;
+			let chunk = streamed.byteLength > unread ? streamed.subarray(0, unread) : streamed;
 			unread -= chunk.byteLength;
 			bytesSinceYield += chunk.byteLength;
 			options.onBytesConsumed?.(chunk.byteLength);
+			options.onChunk?.(chunk);
+			if (bytesToSkip > 0) {
+				const skipped = Math.min(bytesToSkip, chunk.byteLength);
+				bytesToSkip -= skipped;
+				chunk = chunk.subarray(skipped);
+				if (chunk.byteLength === 0) {
+					await yieldToMacrotask();
+					if (unread === 0) break;
+					continue;
+				}
+			}
 			// Parsing before the chunk closes a line re-scans the unfinished record
 			// on every chunk, which is quadratic for large records.
 			if (chunk.lastIndexOf(0x0a) === -1) {

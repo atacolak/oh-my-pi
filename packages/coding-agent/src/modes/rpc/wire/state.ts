@@ -9,7 +9,44 @@ import { absentAs, doc, type WireDefs } from "./dsl";
 
 const JSON_OBJECT = "Record<string, unknown>";
 
+const NATIVE_SESSION_INFO = {
+	sessionId: "string",
+	handle: "string | null",
+	title: "string | null",
+	rootAgent: "string | null",
+	generation: "string | null",
+	"rootAgentCwd?": "string",
+	assignments: "SessionIdentityAssignment[]",
+	"idleSleepSeconds?": "number.integer | null",
+	cwd: "string | null",
+	sessionFile: "string | null",
+	pid: "number.integer | null",
+	startedAt: "number | null",
+	"modifiedAt?": "number",
+	model: "string | null",
+	availability: "'live' | 'offline' | 'unavailable'",
+	state: "'working' | 'idle' | 'sleeping' | 'unknown'",
+	terminal: "NativeSessionTerminal | null",
+	"owner?": "RuntimeRestartReceipt",
+} as const;
+
 export const stateDefs = {
+	NativeSessionTerminal: { protocolVersion: "1", projectDir: "string", name: "string", id: "string" },
+	NativeSessionInfo: NATIVE_SESSION_INFO,
+	NativeSessionList: {
+		sessions: "NativeSessionInfo[]",
+		total: "number.integer",
+		truncated: "boolean",
+		"nextOffset?": "number.integer",
+		"attachableSockets?": "number.integer",
+		"unverifiedSockets?": "number.integer",
+		"omittedUnnamed?": "number.integer",
+	},
+	NativeSessionWakeResult: { ...NATIVE_SESSION_INFO, revived: "boolean" },
+	AgentMailAcceptedResult: { status: "'accepted'", receipt: "AgentMailReceipt", target: "string" },
+	AgentMailRefusedResult: { status: "'refused'", error: "string", "code?": "string" },
+	AgentMailUnknownResult: { status: "'unknown'", error: "string" },
+	AgentMailSendResult: "AgentMailAcceptedResult | AgentMailRefusedResult | AgentMailUnknownResult",
 	QueueMode: "'all' | 'one-at-a-time'",
 	InterruptMode: "'immediate' | 'wait'",
 	StreamingBehavior: "'steer' | 'followUp'",
@@ -32,6 +69,94 @@ export const stateDefs = {
 	AgentSource: "'bundled' | 'user' | 'project'",
 	SubagentStatus: "'pending' | 'running' | 'completed' | 'failed' | 'aborted'",
 
+	SessionIdentityAssignment: { kind: "string", target: "string" },
+	SessionIdentityPatch: {
+		"actorHandle?": "string | null",
+		"assignments?": "SessionIdentityAssignment[]",
+		"generation?": "string | null",
+		"idleSleepSeconds?": doc(
+			"number.integer | null",
+			"Actor override in seconds; zero disables, null inherits profile/config.",
+		),
+	},
+	SessionIdentityRecord: {
+		sessionId: "string",
+		sessionFile: "string",
+		cwd: "string",
+		"rootAgent?": "string",
+		"generation?": "string",
+		"idleSleepSeconds?": "number.integer | null",
+		actorHandle: "string | null",
+		assignments: "SessionIdentityAssignment[]",
+		"modifiedAt?": "number",
+	},
+	AgentMailDelivery: doc(
+		"'queue' | 'steer'",
+		"Recipient-side input path the sender chose: queue behind the run, or steer into it.",
+	),
+	AgentMailAdmission: "'admitted' | 'queued' | 'steering'",
+	AgentMailEndpointIdentity: doc(
+		{
+			sessionId: "string",
+			handle: doc("string | null", "Mutable actor handle at capture time; not a role, title or permission."),
+			model: doc("string | null", "Provider/model string at capture time; distinct from any agent profile."),
+		},
+		"Native addressability of one session end at mail time.",
+	),
+	AgentMailIncarnation: doc(
+		{
+			sessionId: "string",
+			sessionFile: doc("string", "Owned canonical session journal."),
+			bootId: doc("string", "Native per-boot owner identity; not a runtime generation."),
+		},
+		"Exact incarnation of one session owner; a change invalidates bound capabilities.",
+	),
+	AgentMailVerification: doc(
+		{
+			valid: "boolean",
+			"reason?": doc("string", "Why the capability was refused; absent when valid."),
+			"sender?": doc("AgentMailEndpointIdentity", "Owner-attested sender identity; present when valid."),
+			"source?": doc("AgentMailIncarnation", "Source owner incarnation; present when valid."),
+			"target?": doc("AgentMailIncarnation", "Exact recipient incarnation bound into the proof."),
+		},
+		"Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself.",
+	),
+	AgentMailReadResult: doc(
+		{
+			messages: "AgentMailRecord[]",
+			total: doc("number.integer", "Admitted records matching the read filter."),
+			truncated: doc("boolean", "True when `total` exceeds the returned messages."),
+		},
+		"Bounded inbox read derived from the current journal; newest last.",
+	),
+	AgentMailReceipt: doc(
+		{
+			messageId: "string",
+			threadId: "string",
+			admission: "AgentMailAdmission",
+			busy: doc("boolean", "Whether a run was streaming on the recipient when the mail was admitted."),
+			recipient: "AgentMailEndpointIdentity",
+			target: "AgentMailIncarnation",
+		},
+		"Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it.",
+	),
+	AgentMailRecord: doc(
+		{
+			messageId: "string",
+			threadId: "string",
+			"replyTo?": "string",
+			sender: "AgentMailEndpointIdentity",
+			recipient: "AgentMailEndpointIdentity",
+			source: "AgentMailIncarnation",
+			target: "AgentMailIncarnation",
+			body: "string",
+			sentAt: "number.integer",
+			receivedAt: "number.integer",
+			delivery: "AgentMailDelivery",
+			admission: "AgentMailAdmission",
+		},
+		"One delivered mail record with full sender/recipient/thread provenance.",
+	),
 	TodoItem: {
 		content: "string",
 		status: "TodoStatus",
@@ -144,10 +269,14 @@ export const stateDefs = {
 	RuntimeRestartReceipt: {
 		sessionId: "string",
 		sessionFile: "string",
-		bootId: "string",
+		bootId: doc(
+			"string",
+			"Loaded owner incarnation; echo as expectedBootId on exact-session restart, then require a different bootId in the reopened owner's receipt.",
+		),
 		importedGeneration: "string | null",
 		basePromptDigest: "string",
 	},
+	ExitSessionResult: { scheduled: "boolean", owner: "RuntimeRestartReceipt" },
 	RefreshPreflight: {
 		sessionId: "string",
 		sessionFile: "string | null",
@@ -158,7 +287,12 @@ export const stateDefs = {
 	},
 	SessionDiagnosticModel: { provider: "string", id: "string" },
 	SessionExecutionMemory: { backend: "'hindsight'", scoping: "string", scopeTags: "string[] | null" },
-	SessionExecution: { profile: "string | null", cwd: "string", memory: "SessionExecutionMemory | null" },
+	SessionExecution: {
+		profile: "string | null",
+		"profileBinding?": "string | null",
+		cwd: "string",
+		memory: "SessionExecutionMemory | null",
+	},
 	SessionDiagnostics: {
 		version: "number.integer",
 		observedAt: "number",

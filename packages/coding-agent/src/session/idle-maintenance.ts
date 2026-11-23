@@ -26,6 +26,7 @@ import {
 	cfgCompactionIdleThresholdTokens,
 	cfgCompactionIdleTimeoutSeconds,
 } from "./context-settings";
+import { cfgSessionIdleSleepSeconds } from "./idle-sleep-policy";
 import { isSessionSettled, type SessionSettleHost, waitForSessionSettlement } from "./session-settle";
 
 /** Probes the owner of the session supplies. Both are re-read whenever work could start. */
@@ -36,6 +37,18 @@ export interface IdleMaintenanceOptions {
 	scheduledTurn?: () => boolean;
 	/** Receives each nonblank recap reply, after it has been journaled to the history database. */
 	onRecap?: (recap: string) => void;
+	/** Cooperative retirement of a session whose owner has been idle for too long. Omitted means never retire. */
+	sleep?: IdleSleepOptions;
+}
+
+/** Owner-supplied retirement policy. Every probe is re-read when a deadline expires or a close decision is awaited. */
+export interface IdleSleepOptions {
+	/** Idle seconds before retirement is attempted; `<= 0` disables retirement. */
+	seconds: () => number;
+	/** False while the session must not retire (a live turn, maintenance, a background job that can wake it, a different identity). */
+	canExit: () => boolean;
+	/** Cooperative teardown that resolves true when the session actually closed; it must consult the guard before closing. */
+	exit: (canExit: () => boolean) => Promise<boolean>;
 }
 
 /** The session surface idle maintenance reads and drives. */
@@ -69,6 +82,10 @@ const COMPACTION_MAX_SECONDS = 3600;
  * compaction request (not a one-token warm replay) reads the still-warm prefix.
  */
 const COMPACTION_CACHE_LEAD_MS = 5_000;
+/** A vetoed or contended retirement is rechecked at this cadence, so a long timeout cannot postpone the next check. */
+const SLEEP_RETRY_SECONDS = 60;
+/** `setTimeout` delays are signed 32-bit; a longer idle window wakes in stages and re-derives the remainder. */
+const SLEEP_TIMER_MAX_MS = 2_147_483_647;
 
 /** Only the idle-compaction inputs: unrelated `compaction.*` changes must not restart a deadline. */
 const cfgIdleCompaction = combine({
@@ -104,6 +121,18 @@ export class IdleMaintenance {
 	#recapRun: AbortController | undefined;
 	#recapTimer: NodeJS.Timeout | undefined;
 	#compactionTimer: NodeJS.Timeout | undefined;
+	/**
+	 * The retirement deadline. Independent of the maintenance stretch: an owner that is restored or never
+	 * prompted owes no recap yet must still retire, and completing maintenance must not lose the deadline.
+	 */
+	#sleepTimer: NodeJS.Timeout | undefined;
+	/** Start of the current idle window. Only real activity moves it; timers and policy refreshes never do. */
+	#idleSince: number | undefined;
+	/** The policy value the current deadline was armed from, so `refresh()` can observe a changed timeout. */
+	#sleepPolicySeconds = 0;
+	/** Bumped whenever the deadline or its policy is superseded; an older decision must never close. */
+	#sleepEpoch = 0;
+	#exitInFlight = false;
 	#disposed = false;
 
 	constructor(session: IdleMaintenanceSession, options: IdleMaintenanceOptions) {
@@ -113,7 +142,17 @@ export class IdleMaintenance {
 			session.subscribe(event => this.#observe(event)),
 			cfgRecap.listen(session.settings, () => this.refresh()),
 			cfgIdleCompaction.listen(session.settings, () => this.refresh()),
+			cfgSessionIdleSleepSeconds.listen(session.settings, () => this.refresh()),
 		];
+		this.#noteActivity();
+		this.#armSleep(this.#sleepSeconds());
+	}
+
+	/** Real terminal input: the idle window restarts and any pending retirement decision is superseded. */
+	recordActivity(): void {
+		if (this.#disposed) return;
+		this.#noteActivity();
+		this.#armSleep(this.#sleepSeconds());
 	}
 
 	/**
@@ -121,7 +160,12 @@ export class IdleMaintenance {
 	 * work that is no longer wanted and re-arm whatever the current stretch still owes, with a fresh delay.
 	 */
 	refresh(): void {
-		if (this.#disposed || !this.#pending) return;
+		if (this.#disposed) return;
+		// A changed timeout re-arms against the existing idle window: enabling starts counting from the last
+		// activity, disabling drops the pending decision, and a larger timeout invalidates an awaited close.
+		const seconds = this.#sleepSeconds();
+		if (seconds !== this.#sleepPolicySeconds) this.#armSleep(seconds);
+		if (!this.#pending) return;
 		if (this.#recapRun && !this.#recapWanted()) this.#cancelRecap();
 		this.#schedule();
 	}
@@ -135,6 +179,13 @@ export class IdleMaintenance {
 		this.#clearTimers();
 		this.#check++;
 		this.#cancelRecap();
+		if (this.#disposed) {
+			this.#idleSince = undefined;
+			this.#armSleep(0);
+			return;
+		}
+		this.#noteActivity();
+		this.#armSleep(this.#sleepSeconds());
 	}
 
 	dispose(): void {
@@ -192,6 +243,146 @@ export class IdleMaintenance {
 	#cancelRecap(): void {
 		this.#recapRun?.abort();
 		this.#recapRun = undefined;
+	}
+
+	/** Retire-after seconds from the owner's policy; a failing probe disables retirement instead of guessing. */
+	#sleepSeconds(): number {
+		const sleep = this.#options.sleep;
+		if (!sleep) return 0;
+		try {
+			return sleep.seconds();
+		} catch (error) {
+			logger.warn("Idle sleep policy failed", { error: String(error) });
+			return 0;
+		}
+	}
+
+	/**
+	 * Fail-closed retirement guard owned by the owner. `undefined` reports that the probe itself failed, which
+	 * is retried rather than treated as an idle session.
+	 */
+	#probeCanExit(): boolean | undefined {
+		const sleep = this.#options.sleep;
+		if (!sleep) return false;
+		try {
+			return sleep.canExit() === true;
+		} catch (error) {
+			logger.warn("Idle sleep guard failed", { error: String(error) });
+			return undefined;
+		}
+	}
+
+	#noteActivity(): void {
+		this.#idleSince = Date.now();
+	}
+
+	#sleepElapsedMs(): number {
+		return this.#idleSince === undefined ? 0 : Math.max(0, Date.now() - this.#idleSince);
+	}
+
+	/** True once the current policy's timeout has actually elapsed since the last activity. */
+	#sleepDue(): boolean {
+		if (!this.#options.sleep || this.#idleSince === undefined) return false;
+		const seconds = this.#sleepSeconds();
+		return Number.isFinite(seconds) && seconds > 0 && this.#sleepElapsedMs() >= seconds * 1000;
+	}
+
+	/**
+	 * Supersede the previous deadline and wake at whatever remains of the current idle window. Real activity has
+	 * already moved `#idleSince`; a policy change does not, so a longer timeout delays the wake instead of
+	 * restarting it, and an awaited close is invalidated because its guard re-reads the policy.
+	 */
+	#armSleep(seconds: number, capMs = 0): void {
+		clearTimeout(this.#sleepTimer);
+		this.#sleepTimer = undefined;
+		const epoch = ++this.#sleepEpoch;
+		this.#sleepPolicySeconds = seconds;
+		if (this.#disposed || !this.#options.sleep || !Number.isFinite(seconds) || seconds <= 0) return;
+		if (this.#idleSince === undefined) return;
+		this.#scheduleSleepWake(epoch, capMs);
+	}
+
+	/**
+	 * Wake at the remaining deadline, capped by `capMs` when a vetoed or contended decision must be rechecked
+	 * sooner. The delay is clamped to the native timer ceiling and re-derived on every wake, so an early or
+	 * clamped wake can only re-check the deadline, never retire before it.
+	 */
+	#scheduleSleepWake(epoch: number, capMs: number): void {
+		clearTimeout(this.#sleepTimer);
+		this.#sleepTimer = undefined;
+		if (this.#disposed || !this.#options.sleep || this.#idleSince === undefined) return;
+		const remainingMs = this.#sleepPolicySeconds * 1000 - this.#sleepElapsedMs();
+		const waitMs = remainingMs > 0 ? remainingMs : capMs;
+		const ceilingMs = capMs > 0 ? Math.min(capMs, SLEEP_TIMER_MAX_MS) : SLEEP_TIMER_MAX_MS;
+		const delayMs = Math.max(0, Math.ceil(Math.min(waitMs, ceilingMs)));
+		const timer = setTimeout(() => this.#onSleepDue(epoch), delayMs);
+		timer.unref?.();
+		this.#sleepTimer = timer;
+	}
+
+	/** Bounded recheck after a veto, a contended close or a failed decision: keeps the idle window, never forces. */
+	#retrySleep(): void {
+		const seconds = this.#sleepSeconds();
+		this.#armSleep(seconds, Math.min(seconds, SLEEP_RETRY_SECONDS) * 1000);
+	}
+
+	#onSleepDue(epoch: number): void {
+		this.#sleepTimer = undefined;
+		if (this.#disposed || epoch !== this.#sleepEpoch || !this.#options.sleep) return;
+		const seconds = this.#sleepSeconds();
+		if (seconds !== this.#sleepPolicySeconds) {
+			this.#armSleep(seconds);
+			return;
+		}
+		if (!Number.isFinite(seconds) || seconds <= 0) return;
+		if (this.#sleepElapsedMs() < seconds * 1000) {
+			this.#scheduleSleepWake(epoch, 0);
+			return;
+		}
+		// One close decision at a time; the attempt that is still awaited owns the next one.
+		if (this.#exitInFlight) {
+			this.#retrySleep();
+			return;
+		}
+		const allowed = this.#probeCanExit();
+		if (allowed === undefined) {
+			this.#retrySleep();
+			return;
+		}
+		if (!allowed) {
+			// Busy is activity: a settled session earns a fresh idle timeout instead of retiring the moment it ends.
+			this.#noteActivity();
+			this.#armSleep(this.#sleepSeconds());
+			return;
+		}
+		void this.#attemptSleep(epoch).catch(error => {
+			logger.warn("Idle retirement failed", { error: String(error) });
+			if (this.#disposed || epoch !== this.#sleepEpoch) return;
+			this.#retrySleep();
+		});
+	}
+
+	/**
+	 * Ask the owner to retire. The guard re-reads the elapsed idle time against the current policy and the
+	 * owner's fail-closed probe on every call, so activity, a longer timeout and disposal all supersede it.
+	 */
+	async #attemptSleep(epoch: number): Promise<void> {
+		const sleep = this.#options.sleep;
+		if (!sleep || this.#disposed || epoch !== this.#sleepEpoch) return;
+		const isCurrent = () => !this.#disposed && epoch === this.#sleepEpoch;
+		let open = true;
+		this.#exitInFlight = true;
+		try {
+			const exited = await sleep.exit(
+				() => open && isCurrent() && this.#sleepDue() && this.#probeCanExit() === true,
+			);
+			if (!isCurrent()) return;
+			if (exited) return;
+			this.#retrySleep();
+		} finally {
+			open = false;
+			this.#exitInFlight = false;
+		}
 	}
 
 	/** Compaction or a session transition is under way, or the owner does not want autonomous work. */

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated the Codex client version to 0.172.0 so discovery and inference expose GPT-6.2 Sol and Astra with their account-advertised service tiers and context windows.
+
 ## [18.18.6] - 2026-11-09
 
 ### Fixed

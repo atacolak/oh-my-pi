@@ -5254,7 +5254,7 @@
 				},
 				"messageId": {
 					"type": "string",
-					"description": "Shared by the start, updates, and end of one message; unique per process."
+					"description": "Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor."
 				}
 			},
 			"required": [
@@ -5276,7 +5276,7 @@
 				},
 				"messageId": {
 					"type": "string",
-					"description": "Shared by the start, updates, and end of one message; unique per process."
+					"description": "Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor."
 				}
 			},
 			"required": [
@@ -5296,7 +5296,7 @@
 				},
 				"messageId": {
 					"type": "string",
-					"description": "Shared by the start, updates, and end of one message; unique per process."
+					"description": "Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor."
 				}
 			},
 			"required": [
@@ -5316,9 +5316,12 @@
 				"toolName": {
 					"type": "string"
 				},
-				"args": {},
+				"args": {
+					"description": "Execution-start view, normally schema-normalized. Not an equality key for the completed assistant declaration."
+				},
 				"intent": {
-					"type": "string"
+					"type": "string",
+					"description": "Optional producer-supplied display intent, not an argument or call identity."
 				}
 			},
 			"required": [
@@ -5375,7 +5378,8 @@
 					"const": "tool_execution_end"
 				},
 				"toolCallId": {
-					"type": "string"
+					"type": "string",
+					"description": "Matches the call ID in its declaring assistant step; parallel calls may finish out of order."
 				},
 				"toolName": {
 					"type": "string"

@@ -1378,7 +1378,7 @@ class MessageStartEvent:
     type: Literal["message_start"] = "message_start"
     message: AgentMessage
     message_id: str | None = None
-    """Shared by the start, updates, and end of one message; unique per process."""
+    """Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1387,7 +1387,7 @@ class MessageUpdateEvent:
     message: AgentMessage
     assistant_message_event: AssistantMessageEvent
     message_id: str | None = None
-    """Shared by the start, updates, and end of one message; unique per process."""
+    """Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1395,7 +1395,7 @@ class MessageEndEvent:
     type: Literal["message_end"] = "message_end"
     message: AgentMessage
     message_id: str | None = None
-    """Shared by the start, updates, and end of one message; unique per process."""
+    """Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1404,7 +1404,9 @@ class ToolExecutionStartEvent:
     tool_call_id: str
     tool_name: str
     args: JsonValue | None = None
+    """Execution-start view, normally schema-normalized. Not an equality key for the completed assistant declaration."""
     intent: str | None = None
+    """Optional producer-supplied display intent, not an argument or call identity."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1428,6 +1430,7 @@ class ToolStreamUpdateEvent:
 class ToolExecutionEndEvent:
     type: Literal["tool_execution_end"] = "tool_execution_end"
     tool_call_id: str
+    """Matches the call ID in its declaring assistant step; parallel calls may finish out of order."""
     tool_name: str
     result: JsonValue | None = None
     is_error: bool | None = None

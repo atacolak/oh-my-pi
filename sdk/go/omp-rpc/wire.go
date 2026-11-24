@@ -4930,7 +4930,7 @@ func (v TurnEndEvent) MarshalJSON() ([]byte, error) {
 
 type MessageStartEvent struct {
 	Message AgentMessage `json:"message"`
-	// Shared by the start, updates, and end of one message; unique per process.
+	// Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor.
 	MessageID *string `json:"messageId,omitempty"`
 }
 
@@ -4959,7 +4959,7 @@ func (v MessageStartEvent) MarshalJSON() ([]byte, error) {
 type MessageUpdateEvent struct {
 	Message               AgentMessage          `json:"message"`
 	AssistantMessageEvent AssistantMessageEvent `json:"assistantMessageEvent"`
-	// Shared by the start, updates, and end of one message; unique per process.
+	// Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor.
 	MessageID *string `json:"messageId,omitempty"`
 }
 
@@ -4988,7 +4988,7 @@ func (v MessageUpdateEvent) MarshalJSON() ([]byte, error) {
 
 type MessageEndEvent struct {
 	Message AgentMessage `json:"message"`
-	// Shared by the start, updates, and end of one message; unique per process.
+	// Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor.
 	MessageID *string `json:"messageId,omitempty"`
 }
 
@@ -5015,10 +5015,12 @@ func (v MessageEndEvent) MarshalJSON() ([]byte, error) {
 }
 
 type ToolExecutionStartEvent struct {
-	ToolCallID string          `json:"toolCallId"`
-	ToolName   string          `json:"toolName"`
-	Args       json.RawMessage `json:"args,omitempty"`
-	Intent     *string         `json:"intent,omitempty"`
+	ToolCallID string `json:"toolCallId"`
+	ToolName   string `json:"toolName"`
+	// Execution-start view, normally schema-normalized. Not an equality key for the completed assistant declaration.
+	Args json.RawMessage `json:"args,omitempty"`
+	// Optional producer-supplied display intent, not an argument or call identity.
+	Intent *string `json:"intent,omitempty"`
 }
 
 func (v *ToolExecutionStartEvent) UnmarshalJSON(data []byte) error {
@@ -5106,6 +5108,7 @@ func (v ToolStreamUpdateEvent) MarshalJSON() ([]byte, error) {
 }
 
 type ToolExecutionEndEvent struct {
+	// Matches the call ID in its declaring assistant step; parallel calls may finish out of order.
 	ToolCallID string          `json:"toolCallId"`
 	ToolName   string          `json:"toolName"`
 	Result     json.RawMessage `json:"result,omitempty"`

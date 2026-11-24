@@ -1683,8 +1683,8 @@ describe("agentLoop with AgentMessage", () => {
 		expect(text).toContain("mcp__context_resolve_library_get");
 	});
 
-	it("injects and strips intent when intent tracing is enabled", async () => {
-		const toolSchema = type({ value: "string" });
+	it("keeps the declared call identity when intent and validation change execution-start arguments", async () => {
+		const toolSchema = type({ value: "string", "note?": "string", limit: "number = 5" });
 		const executedParams: Record<string, unknown>[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
 			name: "echo",
@@ -1710,7 +1710,7 @@ describe("agentLoop with AgentMessage", () => {
 							type: "toolCall",
 							id: "tool-1",
 							name: "echo",
-							arguments: { value: "hello", [INTENT_FIELD]: "Read one file" },
+							arguments: { value: "hello", note: null, [INTENT_FIELD]: "Read one file." },
 						},
 					],
 				},
@@ -1724,14 +1724,20 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const stream = agentLoop([createUserMessage("run")], context, config, undefined, mock.stream);
-		for await (const _ of stream) {
-			// drain
-		}
-		const messages = await stream.result();
-		const assistantWithToolCall = messages.find(
-			message => message.role === "assistant" && message.content.some(content => content.type === "toolCall"),
-		) as AssistantMessage | undefined;
-		const tracedToolCall = assistantWithToolCall?.content.find(content => content.type === "toolCall");
+		const events: AgentEvent[] = [];
+		for await (const event of stream) events.push(event);
+		const declaration = events.flatMap(event =>
+			event.type === "message_end" && event.message.role === "assistant"
+				? event.message.content.filter(block => block.type === "toolCall")
+				: [],
+		);
+		expect(declaration).toHaveLength(1);
+		const [call] = declaration;
+		expect(call.arguments).toEqual({ value: "hello", note: null, [INTENT_FIELD]: "Read one file." });
+		const starts = events.filter(event => event.type === "tool_execution_start");
+		expect(starts).toHaveLength(1);
+		expect(starts[0]).toMatchObject({ toolCallId: call.id, toolName: call.name, intent: "Read one file" });
+		expect(starts[0].args).toEqual({ value: "hello", limit: 5 });
 
 		const firstRequestToolSchema = mock.calls[0]?.context.tools?.[0]?.parameters as
 			| { properties?: Record<string, unknown>; required?: string[] }
@@ -1741,11 +1747,7 @@ describe("agentLoop with AgentMessage", () => {
 			[INTENT_FIELD]: { type: "string" },
 		});
 		expect(firstRequestToolSchema?.required).toEqual(expect.arrayContaining([INTENT_FIELD]));
-		expect(executedParams).toEqual([{ value: "hello" }]);
-		expect(tracedToolCall?.type).toBe("toolCall");
-		if (tracedToolCall?.type === "toolCall") {
-			expect(tracedToolCall.intent).toBe("Read one file");
-		}
+		expect(executedParams).toEqual([starts[0].args]);
 	});
 
 	it("normalizes trailing periods from intent at extraction site", async () => {

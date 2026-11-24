@@ -6,7 +6,10 @@
 import { absentAs, doc, type WireDefs } from "./dsl";
 
 const JSON_OBJECT = "Record<string, unknown>";
-const MESSAGE_ID = doc("string", "Shared by the start, updates, and end of one message; unique per process.");
+const MESSAGE_ID = doc(
+	"string",
+	"Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor.",
+);
 
 export const eventDefs = {
 	AutoCompactionReason: "'threshold' | 'overflow' | 'idle' | 'incomplete'",
@@ -52,8 +55,11 @@ export const eventDefs = {
 		type: "'tool_execution_start'",
 		toolCallId: "string",
 		toolName: "string",
-		"args?": "unknown",
-		"intent?": "string",
+		"args?": doc(
+			"unknown",
+			"Execution-start view, normally schema-normalized. Not an equality key for the completed assistant declaration.",
+		),
+		"intent?": doc("string", "Optional producer-supplied display intent, not an argument or call identity."),
 	},
 	ToolExecutionUpdateEvent: {
 		type: "'tool_execution_update'",
@@ -70,7 +76,10 @@ export const eventDefs = {
 	},
 	ToolExecutionEndEvent: {
 		type: "'tool_execution_end'",
-		toolCallId: "string",
+		toolCallId: doc(
+			"string",
+			"Matches the call ID in its declaring assistant step; parallel calls may finish out of order.",
+		),
 		toolName: "string",
 		"result?": "unknown",
 		"isError?": "boolean",

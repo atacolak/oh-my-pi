@@ -976,7 +976,7 @@ Extension runner errors are emitted separately as:
 
 `message_update` includes streaming deltas in `assistantMessageEvent` (text/thinking/toolcall deltas).
 
-`message_start`, `message_update`, and `message_end` carry a `messageId` string assigned by RPC mode. One message keeps the same id from its start through every update to its end; ids are unique within the process. Records injected mid-stream (advisor cards, IRC messages) get their own id and do not disturb the id of the reply streaming around them.
+`message_start`, `message_update`, and `message_end` carry a `messageId` assigned by the RPC event forwarder. One message keeps the same ID across its lifecycle on that view; do not compare these IDs across socket connections or owner restarts. Records injected mid-stream (advisor cards, IRC messages) get their own ID and do not disturb the ID of the reply streaming around them.
 
 `set_event_filter` restricts which session event frames are written: pass the event `type` strings to forward, or `null` to forward everything (the default). The response echoes the active selection as `{ events, messageUpdates }`. The filter applies to all events emitted through the session subscription, not just the common types listed above; every other outbound category (responses, `prompt_result`, `session_settled`, extension UI and host tool/URI requests, `extension_error`, `available_commands_update`, subagent frames, side-question frames, builtin slash-command side channels, and session-persistence and `btw-history` `notice` frames) is unaffected by this filter. Hosts that fail closed on unknown event kinds can pin the set they understand here instead of breaking when OMP adds an event.
 
@@ -1005,6 +1005,32 @@ no follow-up run occurs. The optional fields keep older frames terminal-compatib
 when `isTerminal` is absent. Use `yielded` for a prompt's yield and
 `session_settled` for quiescence, rather than assuming every non-terminal end
 guarantees another turn.
+
+### Tool lifecycle: declaration, execution, and replay
+
+The assistant declares a call; the executor reports what happened to it. These are different records of **one** call. Correlate by the completed tool-call **ID** in the same session and declaring assistant step, and verify the **tool name**. Never join by argument equality, position in a parallel batch, or the RPC `messageId` (a streaming message correlation ID, not a tool or journal ID).
+
+| Producer frame | What to retain |
+| --- | --- |
+| `message_end`, `message.role: "assistant"` | The final `content` blocks of type `toolCall`: `id`, `name`, and declared `arguments`. Use this declaration for transcript replay, not a partial `message_update`. OMP can repair missing/duplicate IDs, resolve aliases, or accept a pre-dispatch hook revision before publishing the final snapshot. |
+| `tool_execution_start` | `toolCallId` and `toolName` identify the call. `args` is the executor's view at start: normally prepared/validated arguments, not a copy of the declaration and not necessarily the final tool input after a host transform. Validation failures and synthetic starts can carry unvalidated arguments. `intent` is optional display metadata, not permission, identity, or a required argument. |
+| `tool_execution_update` / `tool_stream_update` | Partial execution output / streaming tool preview, respectively. Neither is a declaration nor a completion. A preview can precede dispatch. |
+| `tool_execution_end` | One logical terminal outcome for the matching call: `result` and optional `isError`. Do not append a second result when the same outcome appears as a `message_end` with `role: "toolResult"` or in `turn_end.toolResults`. The `toolResult` message, paired by `toolCallId` and `toolName`, is the conversation record. |
+
+For example, with intent tracing on, a declaration can contain `{"path":"notes","limit":null,"i":"Read notes."}` while the start reports `args: {"path":"notes"}` and `intent: "Read notes"`. Validation may remove optional null placeholders or supply defaults. The harness extracts `i` only when it owns that field; a tool that declares `i` keeps it. Intent may instead be tool-derived or absent. Preserve the two representations if needed; do not rewrite declared arguments to make them equal.
+
+**Ordering.** In ordinary agent-loop dispatch, the assistant's completed declaration precedes its execution starts. Parallel starts, updates and ends may interleave; ends report settlement order, while conversation result messages are released in declaration order. For calls `[A, B]`, `end(B), end(A)` and transcript results `[A, B]` are consistent. Do not require a single open call or universal declaration-before-live-start: provider-managed execution (e.g. Cursor), resumed calls, late attachment and filters can leave a viewer without that declaration in its current stream.
+
+**Reconnect and replay.** A socket attachment observes future events, subject to its filter; it does not replay earlier starts or reserve the run. Disconnecting a viewer is not an abort. Pin the session UUID and journal; recheck after reconnect or session switch. Reconcile a persistent mirror from the canonical session journal's selected branch (or use `get_messages_page` for a stable current message snapshot), not from the order that live notices happened to arrive. Diagnostic start entries may contain only a summary of arguments. Replay is read-only: never execute a tool to repair a missing result.
+
+**Failure meanings for consumers:**
+
+- Duplicate observation of the same start/end is idempotent for that call. A differing name for the same scoped ID, or conflicting terminal evidence, is a correlation conflict: retain the evidence and reconcile, rather than overwriting one call with another.
+- An end without a matching declaration/start in an observer's step is **unmatched**, not proof of an uninstalled tool, a failed tool or a new call in the next step. Buffer or omit it from that derived step until native history establishes the match. Do not fabricate a declaration or an error result. A start without a confirmed terminal record has an **unknown outcome** after a gap.
+- A mirror diagnostic such as “has no advertised tool lifecycle” describes its own unmatched event. It is not an OMP missing-tool error. Do not issue a synthetic failure to close the old step and then attach its late native end to a new step.
+- `isError: true` reports an error result, not proof that the implementation ran or that no side effect occurred. Native `details.__synthetic: true, executed: false` marks a placeholder for a call not executed; `details.__interrupted: true, execution: "started"` allows partial work. Human-readable error strings are not RPC error codes. For history paging, `session_busy` means wait for a stable snapshot; `stale_cursor` means discard that cursor and start the read again.
+
+Producer reference: [ordinary dispatch, normalization and result pairing at generation `8212929e48`](https://github.com/atacolak/oh-my-pi/blob/8212929e48a72a00df2e807ffc4263fdca44241e/packages/agent/src/agent-loop.ts#L3132-L3549); [native socket event fanout at the same revision](https://github.com/atacolak/oh-my-pi/blob/8212929e48a72a00df2e807ffc4263fdca44241e/packages/coding-agent/src/modes/rpc/rpc-socket.ts#L393-L411). This describes existing behavior, not a new protocol version.
 
 ### Progress events
 

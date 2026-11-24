@@ -4343,7 +4343,7 @@ pub struct TurnEndEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageStartEvent {
 	pub message: AgentMessage,
-	/// Shared by the start, updates, and end of one message; unique per process.
+	/// Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor.
 	#[serde(rename = "messageId", default, skip_serializing_if = "Option::is_none")]
 	pub message_id: Option<String>,
 }
@@ -4353,7 +4353,7 @@ pub struct MessageUpdateEvent {
 	pub message: AgentMessage,
 	#[serde(rename = "assistantMessageEvent")]
 	pub assistant_message_event: AssistantMessageEvent,
-	/// Shared by the start, updates, and end of one message; unique per process.
+	/// Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor.
 	#[serde(rename = "messageId", default, skip_serializing_if = "Option::is_none")]
 	pub message_id: Option<String>,
 }
@@ -4361,7 +4361,7 @@ pub struct MessageUpdateEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageEndEvent {
 	pub message: AgentMessage,
-	/// Shared by the start, updates, and end of one message; unique per process.
+	/// Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor.
 	#[serde(rename = "messageId", default, skip_serializing_if = "Option::is_none")]
 	pub message_id: Option<String>,
 }
@@ -4372,8 +4372,10 @@ pub struct ToolExecutionStartEvent {
 	pub tool_call_id: String,
 	#[serde(rename = "toolName")]
 	pub tool_name: String,
+	/// Execution-start view, normally schema-normalized. Not an equality key for the completed assistant declaration.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub args: Option<Value>,
+	/// Optional producer-supplied display intent, not an argument or call identity.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub intent: Option<String>,
 }
@@ -4402,6 +4404,7 @@ pub struct ToolStreamUpdateEvent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolExecutionEndEvent {
+	/// Matches the call ID in its declaring assistant step; parallel calls may finish out of order.
 	#[serde(rename = "toolCallId")]
 	pub tool_call_id: String,
 	#[serde(rename = "toolName")]

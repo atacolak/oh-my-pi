@@ -1152,7 +1152,7 @@ export interface TurnEndEvent {
 export interface MessageStartEvent {
 	type: "message_start";
 	message: AgentMessage;
-	/** Shared by the start, updates, and end of one message; unique per process. */
+	/** Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor. */
 	messageId?: string;
 }
 
@@ -1160,14 +1160,14 @@ export interface MessageUpdateEvent {
 	type: "message_update";
 	message: AgentMessage;
 	assistantMessageEvent: AssistantMessageEvent;
-	/** Shared by the start, updates, and end of one message; unique per process. */
+	/** Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor. */
 	messageId?: string;
 }
 
 export interface MessageEndEvent {
 	type: "message_end";
 	message: AgentMessage;
-	/** Shared by the start, updates, and end of one message; unique per process. */
+	/** Identifies one message's start, updates, and end on this RPC view; not a tool-call ID or replay cursor. */
 	messageId?: string;
 }
 
@@ -1175,7 +1175,9 @@ export interface ToolExecutionStartEvent {
 	type: "tool_execution_start";
 	toolCallId: string;
 	toolName: string;
+	/** Execution-start view, normally schema-normalized. Not an equality key for the completed assistant declaration. */
 	args?: unknown;
+	/** Optional producer-supplied display intent, not an argument or call identity. */
 	intent?: string;
 }
 
@@ -1196,6 +1198,7 @@ export interface ToolStreamUpdateEvent {
 
 export interface ToolExecutionEndEvent {
 	type: "tool_execution_end";
+	/** Matches the call ID in its declaring assistant step; parallel calls may finish out of order. */
 	toolCallId: string;
 	toolName: string;
 	result?: unknown;

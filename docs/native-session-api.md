@@ -141,6 +141,8 @@ const unsubscribe = api.observe(event => {
 
 `renderMail` is the application's renderer, not an OMP API. Use the host's existing event stream for core tool/message events and the native facade for its owned session events. Unknown event kinds stay unknown; do not forge success or idle.
 
+When building a tool mirror, follow the [native tool lifecycle and replay contract](./rpc.md#tool-lifecycle-declaration-execution-and-replay). Match the final declaration by call ID and tool name; an executor's normalized arguments or a gap in this viewer's stream must not invalidate the conversation.
+
 ## Context and the old `actor` CLI
 
 OMP now provides native session context inspection through `omp sock context`, `api.state()` and in-session `/context`, all backed by the session owner. `systemPrompt` is the effective text; `dumpTools` is the owner's mounted inventory. Keep inspection authenticated and session-scoped.

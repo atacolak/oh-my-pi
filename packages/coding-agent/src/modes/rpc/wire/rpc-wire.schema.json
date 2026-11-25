@@ -186,13 +186,24 @@
 				"clientOmit": []
 			},
 			{
-				"name": "agent_mail_send",
-				"doc": "Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried.",
-				"params": "AgentMailSendParams",
+				"name": "agent_mail_post_consented",
+				"doc": "Deposit quiet mail with existing recipient consent. RPC callers cannot grant consent or open a terminal dialog.",
+				"params": "AgentMailPostConsentedParams",
 				"result": "AgentMailSendResult",
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": 60000,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "agent_mail_restrict",
+				"doc": "Block a sender or reset its rule to default deny. Cannot authorize delivery.",
+				"params": "AgentMailRestrictParams",
+				"result": "AgentMailRestrictResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
 				"completion": null,
 				"clientOmit": []
 			},
@@ -958,9 +969,20 @@
 				"clientOmit": []
 			},
 			{
-				"name": "agent_mail_deliver",
-				"doc": "Deliver one cross-session mail to this owner; the sender capability is verified first.",
-				"params": "AgentMailDeliverParams",
+				"name": "agent_mail_policy",
+				"doc": "Read a recipient's rule for one sender without transmitting a message. A stale journal or boot refuses.",
+				"params": "AgentMailPolicyParams",
+				"result": "AgentMailPolicy",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "agent_mail_deliver_consented",
+				"doc": "Store quiet mail after verifying the exact sender proof and checking the recipient's current consent.",
+				"params": "AgentMailDeliverConsentedParams",
 				"result": "AgentMailReceipt",
 				"nullable": false,
 				"unwrap": null,
@@ -980,9 +1002,9 @@
 				"clientOmit": []
 			},
 			{
-				"name": "agent_mail_read",
-				"doc": "Read this session's agent-mail inbox, bounded, newest last.",
-				"params": "AgentMailReadParams",
+				"name": "agent_mail_list",
+				"doc": "Deliberately read this session's mail, bounded, newest last. The folder defaults to the inbox; requests are never included implicitly.",
+				"params": "AgentMailListParams",
 				"result": "AgentMailReadResult",
 				"nullable": false,
 				"unwrap": null,
@@ -3134,19 +3156,70 @@
 		},
 		"AgentMailDelivery": {
 			"enum": [
+				"inbox",
 				"queue",
 				"steer"
 			],
 			"type": "string",
-			"description": "Recipient-side input path the sender chose: queue behind the run, or steer into it."
+			"description": "Recorded delivery path. New mail is always `inbox`; `queue` and `steer` appear only in historical records."
+		},
+		"AgentMailInboxDelivery": {
+			"const": "inbox",
+			"description": "Only inbox storage is accepted; legacy queue/steer envelopes are refused."
 		},
 		"AgentMailAdmission": {
 			"enum": [
+				"stored",
 				"admitted",
 				"queued",
 				"steering"
 			],
-			"type": "string"
+			"type": "string",
+			"description": "Recorded admission. New mail is always `stored`; older input-admission values appear only in historical records."
+		},
+		"AgentMailFolder": {
+			"enum": [
+				"inbox",
+				"requests"
+			],
+			"type": "string",
+			"description": "New mail is stored only in inbox. The requests folder is historical."
+		},
+		"AgentMailContactRule": {
+			"enum": [
+				"allow",
+				"block",
+				"reset"
+			],
+			"type": "string",
+			"description": "Recipient-owned directional rule. Reset restores default deny."
+		},
+		"AgentMailPolicy": {
+			"type": "object",
+			"properties": {
+				"rule": {
+					"enum": [
+						"allow",
+						"block",
+						"unknown"
+					],
+					"type": "string"
+				},
+				"revision": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"rule",
+				"revision"
+			]
 		},
 		"AgentMailEndpointIdentity": {
 			"type": "object",
@@ -3206,6 +3279,35 @@
 			],
 			"description": "Exact incarnation of one session owner; a change invalidates bound capabilities."
 		},
+		"AgentMailTarget": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"type": "string",
+					"description": "Owned canonical session journal."
+				},
+				"bootId": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"description": "Exact owner boot; null only when a saved journal stored the mail without a live owner."
+				}
+			},
+			"required": [
+				"sessionId",
+				"sessionFile",
+				"bootId"
+			],
+			"description": "Mail destination: a live owner incarnation, or a saved journal with no live owner."
+		},
 		"AgentMailVerification": {
 			"type": "object",
 			"properties": {
@@ -3227,6 +3329,23 @@
 				"target": {
 					"$ref": "#/$defs/AgentMailIncarnation",
 					"description": "Exact recipient incarnation bound into the proof."
+				},
+				"approval": {
+					"enum": [
+						"once",
+						"always"
+					],
+					"type": "string"
+				},
+				"policyRevision": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
 				}
 			},
 			"required": [
@@ -3245,11 +3364,15 @@
 				},
 				"total": {
 					"type": "integer",
-					"description": "Admitted records matching the read filter."
+					"description": "All records matching the read folder/thread filter; stable across `before` pages."
 				},
 				"truncated": {
 					"type": "boolean",
-					"description": "True when `total` exceeds the returned messages."
+					"description": "True when older matches remain before the returned page."
+				},
+				"nextBefore": {
+					"type": "string",
+					"description": "Pass as `before` to read the next older page in the same folder/thread; absent when no older match exists."
 				}
 			},
 			"required": [
@@ -3257,7 +3380,7 @@
 				"total",
 				"truncated"
 			],
-			"description": "Bounded inbox read derived from the current journal; newest last."
+			"description": "Bounded mail read derived from the current journal; newest last."
 		},
 		"AgentMailReceipt": {
 			"type": "object",
@@ -3269,28 +3392,24 @@
 					"type": "string"
 				},
 				"admission": {
-					"$ref": "#/$defs/AgentMailAdmission"
-				},
-				"busy": {
-					"type": "boolean",
-					"description": "Whether a run was streaming on the recipient when the mail was admitted."
+					"const": "stored",
+					"description": "Always `stored`: durable journal admission, not a read or a run."
 				},
 				"recipient": {
 					"$ref": "#/$defs/AgentMailEndpointIdentity"
 				},
 				"target": {
-					"$ref": "#/$defs/AgentMailIncarnation"
+					"$ref": "#/$defs/AgentMailTarget"
 				}
 			},
 			"required": [
 				"messageId",
 				"threadId",
 				"admission",
-				"busy",
 				"recipient",
 				"target"
 			],
-			"description": "Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it."
+			"description": "Truthful receipt for one accepted mail: recorded in the recipient journal; never a claim the recipient read or acted on it."
 		},
 		"AgentMailRecord": {
 			"type": "object",
@@ -3311,7 +3430,7 @@
 					"$ref": "#/$defs/AgentMailIncarnation"
 				},
 				"target": {
-					"$ref": "#/$defs/AgentMailIncarnation"
+					"$ref": "#/$defs/AgentMailTarget"
 				},
 				"body": {
 					"type": "string"
@@ -3330,6 +3449,10 @@
 				},
 				"replyTo": {
 					"type": "string"
+				},
+				"folder": {
+					"$ref": "#/$defs/AgentMailFolder",
+					"description": "Absent in records saved before folders existed; those records count as `inbox`."
 				}
 			},
 			"required": [
@@ -3345,7 +3468,7 @@
 				"delivery",
 				"admission"
 			],
-			"description": "One delivered mail record with full sender/recipient/thread provenance."
+			"description": "One stored mail record with full sender/recipient/thread provenance."
 		},
 		"TodoItem": {
 			"type": "object",
@@ -7855,28 +7978,62 @@
 				"expectedSessionFile"
 			]
 		},
-		"AgentMailSendParams": {
+		"AgentMailPostConsentedParams": {
 			"type": "object",
 			"properties": {
 				"to": {
-					"type": "string"
+					"type": "string",
+					"description": "Recipient UUID, unique id prefix or actor handle, resolved by the sending owner."
 				},
 				"message": {
-					"type": "string"
+					"type": "string",
+					"description": "Bounded mail body."
 				},
 				"threadId": {
 					"type": "string"
 				},
 				"replyTo": {
 					"type": "string"
-				},
-				"delivery": {
-					"$ref": "#/$defs/AgentMailDelivery"
 				}
 			},
 			"required": [
 				"to",
 				"message"
+			]
+		},
+		"AgentMailRestrictParams": {
+			"type": "object",
+			"properties": {
+				"peer": {
+					"type": "string",
+					"description": "Exact UUID of another native session; the attached recipient decides."
+				},
+				"rule": {
+					"enum": [
+						"block",
+						"reset"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"peer",
+				"rule"
+			]
+		},
+		"AgentMailRestrictResult": {
+			"type": "object",
+			"properties": {
+				"peer": {
+					"type": "string"
+				},
+				"rule": {
+					"$ref": "#/$defs/AgentMailContactRule"
+				}
+			},
+			"required": [
+				"peer",
+				"rule"
 			]
 		},
 		"SetSessionIdentityParams": {
@@ -8982,7 +9139,30 @@
 				"records"
 			]
 		},
-		"AgentMailDeliverParams": {
+		"AgentMailPolicyParams": {
+			"type": "object",
+			"properties": {
+				"peer": {
+					"type": "string"
+				},
+				"recipientSessionId": {
+					"type": "string"
+				},
+				"recipientSessionFile": {
+					"type": "string"
+				},
+				"recipientBootId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"peer",
+				"recipientSessionId",
+				"recipientSessionFile",
+				"recipientBootId"
+			]
+		},
+		"AgentMailDeliverConsentedParams": {
 			"type": "object",
 			"properties": {
 				"recipientSessionId": {
@@ -9002,7 +9182,7 @@
 					"type": "string"
 				},
 				"delivery": {
-					"$ref": "#/$defs/AgentMailDelivery"
+					"$ref": "#/$defs/AgentMailInboxDelivery"
 				},
 				"sentAt": {
 					"type": "integer"
@@ -9064,7 +9244,7 @@
 					"type": "string"
 				},
 				"delivery": {
-					"$ref": "#/$defs/AgentMailDelivery"
+					"$ref": "#/$defs/AgentMailInboxDelivery"
 				},
 				"sentAt": {
 					"type": "integer"
@@ -9099,7 +9279,7 @@
 				"senderBootId"
 			]
 		},
-		"AgentMailReadParams": {
+		"AgentMailListParams": {
 			"type": "object",
 			"properties": {
 				"threadId": {
@@ -9107,6 +9287,13 @@
 				},
 				"limit": {
 					"type": "integer"
+				},
+				"folder": {
+					"$ref": "#/$defs/AgentMailFolder"
+				},
+				"before": {
+					"type": "string",
+					"description": "Exclusive message id from the same folder/thread; reads the next older page."
 				}
 			}
 		}

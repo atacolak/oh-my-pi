@@ -86,7 +86,8 @@ Three layers over one wire contract:
 | `set_session_identity` | `expectedSessionId`, `expectedSessionFile`, `patch` (`actorHandle`, `assignments`, `generation`, `idleSleepSeconds`) | `SessionIdentityRecord` |
 | `get_state` | — | attached owner's prompt, tools, queues, runtime state |
 | `get_refresh_preflight` | — | owner receipt (`sessionId`, `sessionFile`, `bootId`) and refresh capabilities |
-| `agent_mail_send` / `agent_mail_read` | mail params / read options | admission receipt / mail records |
+| `agent_mail_post_consented` / `agent_mail_list` | recipient and message / bounded inbox options | stored receipt / peer messages; neither starts a recipient turn |
+| `agent_mail_restrict` | peer UUID, `block` or `reset` | restrict or revoke recipient-side consent; never grants it |
 
 Invalid input is refused with a bounded code: `invalid_catalog_query`, `invalid_session_reference`, `invalid_wake_target`, `session_target_mismatch`. Both the socket and stdio dispatchers also map the typed identity failures to `session_identity_conflict`, `ambiguous_session_reference` and `session_not_found` instead of prose only.
 
@@ -138,6 +139,8 @@ Inside the existing OMP terminal:
 | `/name <name>` | Set or change the attach name, with visible confirmation. |
 | `/name clear` | Remove only the name; the same UUID, history, profile and memory access remain. `clear` is a reserved action, not a name argument. |
 | `/rename <title>` (`/title`) | Change the conversation title, not its attach name. |
+
+A new visible RPC chat (including an explicit fork with a fresh UUID) can opt into OMP's normal conversation titles with [`--auto-title`](./rpc.md#startup). Keep the stable attach name separate; a manual conversation title is not automatically replaced. Do not add the opt-in on attach, wake, or resume of an existing journal.
 
 Names differing only by case cannot belong to different sessions. Historical case-colliding claims are reported, refuse selection, and are never rewritten automatically. `/context` opens OMP's context browser, and `/restart` runs the ordinary local restart path; the explicit graceful API/CLI is the checkpoint handshake. Already-running owners need a controlled upgrade before new slash commands are available.
 
@@ -205,19 +208,38 @@ Do not replay interrupted side effects or automatically respawn historical child
 
 ## Mail and events
 
+Mail is pull-only. Sending requires the sender's mail capability and the recipient's consent. Unknown senders cannot leave requests or wake recipients. An interactive introduction uses the sender's native terminal selector, not an `ask` tool call.
+
 ```ts
-const sent = await api.sendMail({
-  to: "repository-owner", message: "Please inspect the saved patch.", delivery: "queue",
-});
-const inbox = await api.readMail({ limit: 20 });
-const unsubscribe = api.observe(event => {
-  if (event.type === "agent_mail") renderMail(event.mail);
-});
+// Send over the sender's connection. A raw RPC post cannot open a dialog.
+const sent = await senderApi.sendMail({ to: "repository-owner", message: "Please inspect the saved patch." });
+// Read or revoke through the recipient's connection.
+const inbox = await recipientApi.readMail({ limit: 20 });
+const older = inbox.nextBefore ? await recipientApi.readMail({ before: inbox.nextBefore }) : undefined;
+await recipientApi.setMailContact(senderUuid, "block");
 ```
 
-`queue` versus `steer` is explicit, not inferred from intent. Mail wakes the exact saved recipient where supported and records sender, recipient, message, thread and boot provenance. An accepted receipt means input admission, not model inference or a reply. `unknown` means delivery cannot be proved: **do not automatically resend**. Replies carry `threadId` and `replyTo`; render structured data/events, not text markers in a tool body.
+The same read is available from the terminal over the existing socket:
 
-`renderMail` is the application's renderer, not an OMP API. Use the host's existing event stream for core tool/message events and the native facade for its owned session events. Unknown event kinds stay unknown; do not forge success or idle.
+```sh
+omp sock raw atlas '{"type":"agent_mail_list"}'
+```
+
+To try a first send without contacting a real session, run `bun packages/coding-agent/test/fixtures/mail-consent-demo.ts` from this source checkout in a terminal. Type `send the release note to games`. The demo uses a mock model and a disposable, offline `games` mailbox. After your choice it prints the stored count and whether the recipient stayed offline.
+
+- **Live recipient:** the sender owner keeps the existing authenticated transport and completes the verified single-use capability handshake with the recipient owner before anything is stored. Do not add a second transport, a shadow inbox or a CLI subprocess wrapper.
+- **Saved recipient:** with no live owner, the sender temporarily reserves that exact canonical journal through the session owner and appends under the journal lease. No owner process is created; a sleeping session stays asleep.
+- **Receipt:** `{ messageId, threadId, admission: "stored", recipient, target }`. It means the journal holds the record. `target.bootId` is `null` only when there was no live owner; otherwise it is the exact storing owner incarnation. Acceptance never includes a wake, a read or a run.
+- **UNKNOWN:** when the answer does not arrive, the outcome is unproved; **do not automatically resend**. There is no retry loop.
+- **Read:** deliberate and bounded (`limit` default 20, max 100), newest last, optional `threadId`. Approved mail is in `inbox`. `requests` reads historical records only.
+- **Paging:** `total` counts every match for the folder/thread and is stable across pages; `truncated` means older matches remain before the returned page. When `nextBefore` is present, pass it as `before` with the same folder/thread. There is no unread cursor, watch loop or retry queue.
+- **Terminal introduction:** name the exact destination in a local editor submission. An `agent_mail` send to a new contact can then pause for review of the sender, recipient and message. Cancel stores nothing; send once approves that message only; always allow also saves a one-way grant between the session UUIDs. The model cannot supply the choice. A blocked contact cannot prompt. No interactive approval host means no introduction.
+- **RPC:** `agent_mail_post_consented` uses an existing recipient grant. `setMailContact(peerUuid, "block" | "reset")` restricts or revokes it; neither operation grants access. External hosts cannot impersonate a terminal click. Do not fall back to submitting operator input to deliver mail.
+- **Sender and authority:** show who sent the message. A peer can share observations or ask for work; the message does not grant operator permission.
+- **Version boundary:** the post and live delivery opcodes are distinct from pre-consent owners; unsupported means unavailable. Never fall back to `agent_mail_send`, `agent_mail_post`, `agent_mail_deliver` or a raw prompt.
+- **Scope:** this is mail, not a sandbox or an isolation boundary. Same-user processes can still reach files and sockets outside these APIs; do not claim otherwise.
+
+A post emits **no** live `agent_mail` event: do not wait for a notification, poll an event stream for arrival, or claim the recipient was notified. Histories written by older runtimes may replay `agent_mail` records; treat those as historical data, not as proof that new mail arrived. Read deliberately instead. Use the host's existing event stream for core tool/message events and the native facade for its owned session events. Unknown event kinds stay unknown; do not forge success or idle.
 
 ### Correlation, reconnect and replay
 
@@ -228,7 +250,7 @@ const unsubscribe = api.observe(event => {
 
 ## Context and the old `actor` CLI
 
-OMP provides native session context inspection through `omp sock context`, `api.state()` and in-session `/context`, all backed by the session owner. `systemPrompt` is the effective text; `dumpTools` is the owner's mounted inventory. Keep inspection authenticated and session-scoped.
+Use `omp sock context <session> --json`, `api.state()` or in-session `/context` to inspect the running session. `systemPrompt` is the effective text. `dumpTools` lists only top-level tools, with names, descriptions and parameter schemas. The agent calls `read({"path":"xd://"})` for its mounted devices and `read({"path":"xd://<device>"})` for a device's schema. These reads are tool calls, not RPC commands. See [`get_state` in the RPC reference](./rpc.md#get_state-payload). Keep inspection authenticated and session-scoped.
 
 A composition that also provides `get_context` can expose ordered **base-source** layer metadata. Feature-detect it; match session/boot/generation/effective revision before joining it to `get_state`. Base source character counts are not a partition of effective prompt size. Preserve partial/unattributed/unavailable states; do not parse prompt text or sum layer weights into invented token totals.
 

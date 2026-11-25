@@ -134,15 +134,28 @@ _SUBAGENT_STATUS_VALUES: Final[frozenset[str]] = frozenset({"pending", "running"
 _decode_subagent_status = cast("Decoder[SubagentStatus]", literal(_SUBAGENT_STATUS_VALUES))
 
 
-AgentMailDelivery: TypeAlias = Literal["queue", "steer"]
-"""Recipient-side input path the sender chose: queue behind the run, or steer into it."""
-_AGENT_MAIL_DELIVERY_VALUES: Final[frozenset[str]] = frozenset({"queue", "steer"})
+AgentMailDelivery: TypeAlias = Literal["inbox", "queue", "steer"]
+"""Recorded delivery path. New mail is always `inbox`; `queue` and `steer` appear only in historical records."""
+_AGENT_MAIL_DELIVERY_VALUES: Final[frozenset[str]] = frozenset({"inbox", "queue", "steer"})
 _decode_agent_mail_delivery = cast("Decoder[AgentMailDelivery]", literal(_AGENT_MAIL_DELIVERY_VALUES))
 
 
-AgentMailAdmission: TypeAlias = Literal["admitted", "queued", "steering"]
-_AGENT_MAIL_ADMISSION_VALUES: Final[frozenset[str]] = frozenset({"admitted", "queued", "steering"})
+AgentMailAdmission: TypeAlias = Literal["stored", "admitted", "queued", "steering"]
+"""Recorded admission. New mail is always `stored`; older input-admission values appear only in historical records."""
+_AGENT_MAIL_ADMISSION_VALUES: Final[frozenset[str]] = frozenset({"stored", "admitted", "queued", "steering"})
 _decode_agent_mail_admission = cast("Decoder[AgentMailAdmission]", literal(_AGENT_MAIL_ADMISSION_VALUES))
+
+
+AgentMailFolder: TypeAlias = Literal["inbox", "requests"]
+"""New mail is stored only in inbox. The requests folder is historical."""
+_AGENT_MAIL_FOLDER_VALUES: Final[frozenset[str]] = frozenset({"inbox", "requests"})
+_decode_agent_mail_folder = cast("Decoder[AgentMailFolder]", literal(_AGENT_MAIL_FOLDER_VALUES))
+
+
+AgentMailContactRule: TypeAlias = Literal["allow", "block", "reset"]
+"""Recipient-owned directional rule. Reset restores default deny."""
+_AGENT_MAIL_CONTACT_RULE_VALUES: Final[frozenset[str]] = frozenset({"allow", "block", "reset"})
+_decode_agent_mail_contact_rule = cast("Decoder[AgentMailContactRule]", literal(_AGENT_MAIL_CONTACT_RULE_VALUES))
 
 
 SlowModeScope: TypeAlias = Literal["session", "global"]
@@ -711,6 +724,12 @@ class SessionIdentityRecord:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailPolicy:
+    rule: Literal["allow", "block", "unknown"]
+    revision: str | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class AgentMailEndpointIdentity:
     """Native addressability of one session end at mail time."""
     session_id: str
@@ -731,6 +750,16 @@ class AgentMailIncarnation:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailTarget:
+    """Mail destination: a live owner incarnation, or a saved journal with no live owner."""
+    session_id: str
+    session_file: str
+    """Owned canonical session journal."""
+    boot_id: str | None
+    """Exact owner boot; null only when a saved journal stored the mail without a live owner."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class AgentMailVerification:
     """Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself."""
     valid: bool
@@ -742,45 +771,50 @@ class AgentMailVerification:
     """Source owner incarnation; present when valid."""
     target: AgentMailIncarnation | None = None
     """Exact recipient incarnation bound into the proof."""
+    approval: Literal["once", "always"] | None = None
+    policy_revision: str | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class AgentMailReadResult:
-    """Bounded inbox read derived from the current journal; newest last."""
+    """Bounded mail read derived from the current journal; newest last."""
     messages: tuple[AgentMailRecord, ...]
     total: int
-    """Admitted records matching the read filter."""
+    """All records matching the read folder/thread filter; stable across `before` pages."""
     truncated: bool
-    """True when `total` exceeds the returned messages."""
+    """True when older matches remain before the returned page."""
+    next_before: str | None = None
+    """Pass as `before` to read the next older page in the same folder/thread; absent when no older match exists."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class AgentMailReceipt:
-    """Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it."""
+    """Truthful receipt for one accepted mail: recorded in the recipient journal; never a claim the recipient read or acted on it."""
     message_id: str
     thread_id: str
-    admission: AgentMailAdmission
-    busy: bool
-    """Whether a run was streaming on the recipient when the mail was admitted."""
+    admission: Literal["stored"] = "stored"
+    """Always `stored`: durable journal admission, not a read or a run."""
     recipient: AgentMailEndpointIdentity
-    target: AgentMailIncarnation
+    target: AgentMailTarget
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class AgentMailRecord:
-    """One delivered mail record with full sender/recipient/thread provenance."""
+    """One stored mail record with full sender/recipient/thread provenance."""
     message_id: str
     thread_id: str
     sender: AgentMailEndpointIdentity
     recipient: AgentMailEndpointIdentity
     source: AgentMailIncarnation
-    target: AgentMailIncarnation
+    target: AgentMailTarget
     body: str
     sent_at: int
     received_at: int
     delivery: AgentMailDelivery
     admission: AgentMailAdmission
     reply_to: str | None = None
+    folder: AgentMailFolder | None = None
+    """Absent in records saved before folders existed; those records count as `inbox`."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2051,6 +2085,12 @@ class SessionControlResult:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class AgentMailRestrictResult:
+    peer: str
+    rule: AgentMailContactRule
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class LiveConnectResult:
     voice: str
     sdp_answer: str
@@ -2104,6 +2144,10 @@ RpcNotification: TypeAlias = ReadyEvent | PromptResultEvent | SessionSettledEven
 
 MessageContent: TypeAlias = str | list[UserContent]
 """Message content: plain text or content blocks."""
+
+
+AgentMailInboxDelivery: TypeAlias = Literal["inbox"]
+"""Only inbox storage is accepted; legacy queue/steer envelopes are refused."""
 
 
 parse_text_content = cast("Decoder[TextContent]", open_record("type", frozenset({"text"})))
@@ -2456,6 +2500,14 @@ def parse_session_identity_record(value: object, path: str = "SessionIdentityRec
     )
 
 
+def parse_agent_mail_policy(value: object, path: str = "AgentMailPolicy") -> AgentMailPolicy:
+    payload = expect_object(value, path)
+    return AgentMailPolicy(
+        rule=required(payload, "rule", cast('Decoder[Literal["allow", "block", "unknown"]]', literal(frozenset({"allow", "block", "unknown"}))), path),
+        revision=required(payload, "revision", nullable(decode_str), path),
+    )
+
+
 def parse_agent_mail_endpoint_identity(value: object, path: str = "AgentMailEndpointIdentity") -> AgentMailEndpointIdentity:
     payload = expect_object(value, path)
     return AgentMailEndpointIdentity(
@@ -2474,6 +2526,15 @@ def parse_agent_mail_incarnation(value: object, path: str = "AgentMailIncarnatio
     )
 
 
+def parse_agent_mail_target(value: object, path: str = "AgentMailTarget") -> AgentMailTarget:
+    payload = expect_object(value, path)
+    return AgentMailTarget(
+        session_id=required(payload, "sessionId", decode_str, path),
+        session_file=required(payload, "sessionFile", decode_str, path),
+        boot_id=required(payload, "bootId", nullable(decode_str), path),
+    )
+
+
 def parse_agent_mail_verification(value: object, path: str = "AgentMailVerification") -> AgentMailVerification:
     payload = expect_object(value, path)
     return AgentMailVerification(
@@ -2482,6 +2543,8 @@ def parse_agent_mail_verification(value: object, path: str = "AgentMailVerificat
         sender=optional(payload, "sender", parse_agent_mail_endpoint_identity, path),
         source=optional(payload, "source", parse_agent_mail_incarnation, path),
         target=optional(payload, "target", parse_agent_mail_incarnation, path),
+        approval=optional(payload, "approval", cast('Decoder[Literal["once", "always"]]', literal(frozenset({"once", "always"}))), path),
+        policy_revision=optional(payload, "policyRevision", nullable(decode_str), path),
     )
 
 
@@ -2491,18 +2554,18 @@ def parse_agent_mail_read_result(value: object, path: str = "AgentMailReadResult
         messages=required(payload, "messages", array(parse_agent_mail_record), path),
         total=required(payload, "total", decode_int, path),
         truncated=required(payload, "truncated", decode_bool, path),
+        next_before=optional(payload, "nextBefore", decode_str, path),
     )
 
 
 def parse_agent_mail_receipt(value: object, path: str = "AgentMailReceipt") -> AgentMailReceipt:
     payload = expect_object(value, path)
+    required(payload, "admission", cast('Decoder[Literal["stored"]]', literal(frozenset({"stored"}))), path)
     return AgentMailReceipt(
         message_id=required(payload, "messageId", decode_str, path),
         thread_id=required(payload, "threadId", decode_str, path),
-        admission=required(payload, "admission", _decode_agent_mail_admission, path),
-        busy=required(payload, "busy", decode_bool, path),
         recipient=required(payload, "recipient", parse_agent_mail_endpoint_identity, path),
-        target=required(payload, "target", parse_agent_mail_incarnation, path),
+        target=required(payload, "target", parse_agent_mail_target, path),
     )
 
 
@@ -2514,13 +2577,14 @@ def parse_agent_mail_record(value: object, path: str = "AgentMailRecord") -> Age
         sender=required(payload, "sender", parse_agent_mail_endpoint_identity, path),
         recipient=required(payload, "recipient", parse_agent_mail_endpoint_identity, path),
         source=required(payload, "source", parse_agent_mail_incarnation, path),
-        target=required(payload, "target", parse_agent_mail_incarnation, path),
+        target=required(payload, "target", parse_agent_mail_target, path),
         body=required(payload, "body", decode_str, path),
         sent_at=required(payload, "sentAt", decode_int, path),
         received_at=required(payload, "receivedAt", decode_int, path),
         delivery=required(payload, "delivery", _decode_agent_mail_delivery, path),
         admission=required(payload, "admission", _decode_agent_mail_admission, path),
         reply_to=optional(payload, "replyTo", decode_str, path),
+        folder=optional(payload, "folder", _decode_agent_mail_folder, path),
     )
 
 
@@ -3931,6 +3995,14 @@ def parse_session_control_result(value: object, path: str = "SessionControlResul
     )
 
 
+def parse_agent_mail_restrict_result(value: object, path: str = "AgentMailRestrictResult") -> AgentMailRestrictResult:
+    payload = expect_object(value, path)
+    return AgentMailRestrictResult(
+        peer=required(payload, "peer", decode_str, path),
+        rule=required(payload, "rule", _decode_agent_mail_contact_rule, path),
+    )
+
+
 def parse_live_connect_result(value: object, path: str = "LiveConnectResult") -> LiveConnectResult:
     payload = expect_object(value, path)
     return LiveConnectResult(
@@ -4201,8 +4273,8 @@ class WireClient:
         params["expectedSessionFile"] = expected_session_file
         return parse_native_session_wake_result(self._command("wake_session", params, timeout=60), "wake_session")
 
-    def agent_mail_send(self, to: str, message: str, *, thread_id: str | None = None, reply_to: str | None = None, delivery: AgentMailDelivery | None = None) -> AgentMailSendResult:
-        """Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried."""
+    def agent_mail_post_consented(self, to: str, message: str, *, thread_id: str | None = None, reply_to: str | None = None) -> AgentMailSendResult:
+        """Deposit quiet mail with existing recipient consent. RPC callers cannot grant consent or open a terminal dialog."""
         params: dict[str, object] = {}
         params["to"] = to
         params["message"] = message
@@ -4210,9 +4282,14 @@ class WireClient:
             params["threadId"] = thread_id
         if reply_to is not None:
             params["replyTo"] = reply_to
-        if delivery is not None:
-            params["delivery"] = delivery
-        return parse_agent_mail_send_result(self._command("agent_mail_send", params, timeout=60), "agent_mail_send")
+        return parse_agent_mail_send_result(self._command("agent_mail_post_consented", params, timeout=60), "agent_mail_post_consented")
+
+    def agent_mail_restrict(self, peer: str, rule: Literal["block", "reset"]) -> AgentMailRestrictResult:
+        """Block a sender or reset its rule to default deny. Cannot authorize delivery."""
+        params: dict[str, object] = {}
+        params["peer"] = peer
+        params["rule"] = rule
+        return parse_agent_mail_restrict_result(self._command("agent_mail_restrict", params), "agent_mail_restrict")
 
     def get_refresh_preflight(self) -> RefreshPreflight:
         """Observe refresh hazards and bounded mounted tools without restarting or starting a broker."""
@@ -4651,8 +4728,17 @@ class WireClient:
         params: dict[str, object] = {}
         return required(expect_object(self._command("get_btw_history", params), "get_btw_history"), "records", array(parse_btw_history_record), "get_btw_history")
 
-    def agent_mail_deliver(self, recipient_session_id: str, recipient_session_file: str, recipient_boot_id: str, message_id: str, message: str, delivery: AgentMailDelivery, sent_at: int, sender_session_id: str, sender_session_file: str, sender_boot_id: str, capability_token: str, *, thread_id: str | None = None, reply_to: str | None = None) -> AgentMailReceipt:
-        """Deliver one cross-session mail to this owner; the sender capability is verified first."""
+    def agent_mail_policy(self, peer: str, recipient_session_id: str, recipient_session_file: str, recipient_boot_id: str) -> AgentMailPolicy:
+        """Read a recipient's rule for one sender without transmitting a message. A stale journal or boot refuses."""
+        params: dict[str, object] = {}
+        params["peer"] = peer
+        params["recipientSessionId"] = recipient_session_id
+        params["recipientSessionFile"] = recipient_session_file
+        params["recipientBootId"] = recipient_boot_id
+        return parse_agent_mail_policy(self._command("agent_mail_policy", params), "agent_mail_policy")
+
+    def agent_mail_deliver_consented(self, recipient_session_id: str, recipient_session_file: str, recipient_boot_id: str, message_id: str, message: str, delivery: AgentMailInboxDelivery, sent_at: int, sender_session_id: str, sender_session_file: str, sender_boot_id: str, capability_token: str, *, thread_id: str | None = None, reply_to: str | None = None) -> AgentMailReceipt:
+        """Store quiet mail after verifying the exact sender proof and checking the recipient's current consent."""
         params: dict[str, object] = {}
         params["recipientSessionId"] = recipient_session_id
         params["recipientSessionFile"] = recipient_session_file
@@ -4669,9 +4755,9 @@ class WireClient:
             params["threadId"] = thread_id
         if reply_to is not None:
             params["replyTo"] = reply_to
-        return parse_agent_mail_receipt(self._command("agent_mail_deliver", params), "agent_mail_deliver")
+        return parse_agent_mail_receipt(self._command("agent_mail_deliver_consented", params), "agent_mail_deliver_consented")
 
-    def agent_mail_verify_send(self, capability_token: str, recipient_session_id: str, recipient_session_file: str, recipient_boot_id: str, message_id: str, message: str, delivery: AgentMailDelivery, sent_at: int, sender_session_id: str, sender_session_file: str, sender_boot_id: str, *, thread_id: str | None = None, reply_to: str | None = None) -> AgentMailVerification:
+    def agent_mail_verify_send(self, capability_token: str, recipient_session_id: str, recipient_session_file: str, recipient_boot_id: str, message_id: str, message: str, delivery: AgentMailInboxDelivery, sent_at: int, sender_session_id: str, sender_session_file: str, sender_boot_id: str, *, thread_id: str | None = None, reply_to: str | None = None) -> AgentMailVerification:
         """Verify (and consume) one send capability for exactly this envelope; reveals only validity and owner identity."""
         params: dict[str, object] = {}
         params["capabilityToken"] = capability_token
@@ -4691,14 +4777,18 @@ class WireClient:
             params["replyTo"] = reply_to
         return parse_agent_mail_verification(self._command("agent_mail_verify_send", params), "agent_mail_verify_send")
 
-    def agent_mail_read(self, *, thread_id: str | None = None, limit: int | None = None) -> AgentMailReadResult:
-        """Read this session's agent-mail inbox, bounded, newest last."""
+    def agent_mail_list(self, *, thread_id: str | None = None, limit: int | None = None, folder: AgentMailFolder | None = None, before: str | None = None) -> AgentMailReadResult:
+        """Deliberately read this session's mail, bounded, newest last. The folder defaults to the inbox; requests are never included implicitly."""
         params: dict[str, object] = {}
         if thread_id is not None:
             params["threadId"] = thread_id
         if limit is not None:
             params["limit"] = limit
-        return parse_agent_mail_read_result(self._command("agent_mail_read", params), "agent_mail_read")
+        if folder is not None:
+            params["folder"] = folder
+        if before is not None:
+            params["before"] = before
+        return parse_agent_mail_read_result(self._command("agent_mail_list", params), "agent_mail_list")
 
     def on_ready(self, listener: Callable[[ReadyEvent], None]) -> Callable[[], None]:
         """Subscribe to `ready`: First frame after startup; transport fields are absent on servers without protocol v2."""
@@ -4932,15 +5022,21 @@ __all__ = [
     "AgentEndEvent",
     "AgentMailAcceptedResult",
     "AgentMailAdmission",
+    "AgentMailContactRule",
     "AgentMailDelivery",
     "AgentMailEndpointIdentity",
     "AgentMailEvent",
+    "AgentMailFolder",
+    "AgentMailInboxDelivery",
     "AgentMailIncarnation",
+    "AgentMailPolicy",
     "AgentMailReadResult",
     "AgentMailReceipt",
     "AgentMailRecord",
     "AgentMailRefusedResult",
+    "AgentMailRestrictResult",
     "AgentMailSendResult",
+    "AgentMailTarget",
     "AgentMailUnknownResult",
     "AgentMailVerification",
     "AgentMessage",
@@ -5177,11 +5273,14 @@ __all__ = [
     "parse_agent_mail_endpoint_identity",
     "parse_agent_mail_event",
     "parse_agent_mail_incarnation",
+    "parse_agent_mail_policy",
     "parse_agent_mail_read_result",
     "parse_agent_mail_receipt",
     "parse_agent_mail_record",
     "parse_agent_mail_refused_result",
+    "parse_agent_mail_restrict_result",
     "parse_agent_mail_send_result",
+    "parse_agent_mail_target",
     "parse_agent_mail_unknown_result",
     "parse_agent_mail_verification",
     "parse_agent_message",

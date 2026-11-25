@@ -3159,9 +3159,11 @@ pub struct SessionIdentityRecord {
 	pub modified_at: Option<f64>,
 }
 
-/// Recipient-side input path the sender chose: queue behind the run, or steer into it.
+/// Recorded delivery path. New mail is always `inbox`; `queue` and `steer` appear only in historical records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AgentMailDelivery {
+	#[serde(rename = "inbox")]
+	Inbox,
 	#[serde(rename = "queue")]
 	Queue,
 	#[serde(rename = "steer")]
@@ -3172,14 +3174,21 @@ impl AgentMailDelivery {
 	/// Wire value.
 	pub fn as_str(self) -> &'static str {
 		match self {
+			Self::Inbox => "inbox",
 			Self::Queue => "queue",
 			Self::Steer => "steer",
 		}
 	}
 }
 
+/// Only inbox storage is accepted; legacy queue/steer envelopes are refused.
+pub type AgentMailInboxDelivery = LitInbox;
+
+/// Recorded admission. New mail is always `stored`; older input-admission values appear only in historical records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AgentMailAdmission {
+	#[serde(rename = "stored")]
+	Stored,
 	#[serde(rename = "admitted")]
 	Admitted,
 	#[serde(rename = "queued")]
@@ -3192,11 +3201,60 @@ impl AgentMailAdmission {
 	/// Wire value.
 	pub fn as_str(self) -> &'static str {
 		match self {
+			Self::Stored => "stored",
 			Self::Admitted => "admitted",
 			Self::Queued => "queued",
 			Self::Steering => "steering",
 		}
 	}
+}
+
+/// New mail is stored only in inbox. The requests folder is historical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentMailFolder {
+	#[serde(rename = "inbox")]
+	Inbox,
+	#[serde(rename = "requests")]
+	Requests,
+}
+
+impl AgentMailFolder {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Inbox => "inbox",
+			Self::Requests => "requests",
+		}
+	}
+}
+
+/// Recipient-owned directional rule. Reset restores default deny.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentMailContactRule {
+	#[serde(rename = "allow")]
+	Allow,
+	#[serde(rename = "block")]
+	Block,
+	#[serde(rename = "reset")]
+	Reset,
+}
+
+impl AgentMailContactRule {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Allow => "allow",
+			Self::Block => "block",
+			Self::Reset => "reset",
+		}
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailPolicy {
+	pub rule: AgentMailPolicyRule,
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub revision: Option<String>,
 }
 
 /// Native addressability of one session end at mail time.
@@ -3225,6 +3283,19 @@ pub struct AgentMailIncarnation {
 	pub boot_id: String,
 }
 
+/// Mail destination: a live owner incarnation, or a saved journal with no live owner.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailTarget {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	/// Owned canonical session journal.
+	#[serde(rename = "sessionFile")]
+	pub session_file: String,
+	/// Exact owner boot; null only when a saved journal stored the mail without a live owner.
+	#[serde(rename = "bootId", deserialize_with = "Deserialize::deserialize")]
+	pub boot_id: Option<String>,
+}
+
 /// Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentMailVerification {
@@ -3241,33 +3312,39 @@ pub struct AgentMailVerification {
 	/// Exact recipient incarnation bound into the proof.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub target: Option<AgentMailIncarnation>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub approval: Option<AgentMailVerificationApproval>,
+	#[serde(rename = "policyRevision", default, skip_serializing_if = "Option::is_none")]
+	pub policy_revision: Option<String>,
 }
 
-/// Bounded inbox read derived from the current journal; newest last.
+/// Bounded mail read derived from the current journal; newest last.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentMailReadResult {
 	pub messages: Vec<AgentMailRecord>,
-	/// Admitted records matching the read filter.
+	/// All records matching the read folder/thread filter; stable across `before` pages.
 	pub total: i64,
-	/// True when `total` exceeds the returned messages.
+	/// True when older matches remain before the returned page.
 	pub truncated: bool,
+	/// Pass as `before` to read the next older page in the same folder/thread; absent when no older match exists.
+	#[serde(rename = "nextBefore", default, skip_serializing_if = "Option::is_none")]
+	pub next_before: Option<String>,
 }
 
-/// Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it.
+/// Truthful receipt for one accepted mail: recorded in the recipient journal; never a claim the recipient read or acted on it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentMailReceipt {
 	#[serde(rename = "messageId")]
 	pub message_id: String,
 	#[serde(rename = "threadId")]
 	pub thread_id: String,
-	pub admission: AgentMailAdmission,
-	/// Whether a run was streaming on the recipient when the mail was admitted.
-	pub busy: bool,
+	/// Always `stored`: durable journal admission, not a read or a run.
+	pub admission: LitStored,
 	pub recipient: AgentMailEndpointIdentity,
-	pub target: AgentMailIncarnation,
+	pub target: AgentMailTarget,
 }
 
-/// One delivered mail record with full sender/recipient/thread provenance.
+/// One stored mail record with full sender/recipient/thread provenance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentMailRecord {
 	#[serde(rename = "messageId")]
@@ -3277,7 +3354,7 @@ pub struct AgentMailRecord {
 	pub sender: AgentMailEndpointIdentity,
 	pub recipient: AgentMailEndpointIdentity,
 	pub source: AgentMailIncarnation,
-	pub target: AgentMailIncarnation,
+	pub target: AgentMailTarget,
 	pub body: String,
 	#[serde(rename = "sentAt")]
 	pub sent_at: i64,
@@ -3287,6 +3364,9 @@ pub struct AgentMailRecord {
 	pub admission: AgentMailAdmission,
 	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
 	pub reply_to: Option<String>,
+	/// Absent in records saved before folders existed; those records count as `inbox`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub folder: Option<AgentMailFolder>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5954,15 +6034,28 @@ pub struct WakeSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentMailSendParams {
+pub struct AgentMailPostConsentedParams {
+	/// Recipient UUID, unique id prefix or actor handle, resolved by the sending owner.
 	pub to: String,
+	/// Bounded mail body.
 	pub message: String,
 	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
 	pub thread_id: Option<String>,
 	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
 	pub reply_to: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub delivery: Option<AgentMailDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailRestrictParams {
+	/// Exact UUID of another native session; the attached recipient decides.
+	pub peer: String,
+	pub rule: AgentMailRestrictParamsRule,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailRestrictResult {
+	pub peer: String,
+	pub rule: AgentMailContactRule,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6490,7 +6583,18 @@ pub struct GetBtwHistoryResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentMailDeliverParams {
+pub struct AgentMailPolicyParams {
+	pub peer: String,
+	#[serde(rename = "recipientSessionId")]
+	pub recipient_session_id: String,
+	#[serde(rename = "recipientSessionFile")]
+	pub recipient_session_file: String,
+	#[serde(rename = "recipientBootId")]
+	pub recipient_boot_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailDeliverConsentedParams {
 	/// Exact session UUID the sender captured; a mismatch refuses delivery.
 	#[serde(rename = "recipientSessionId")]
 	pub recipient_session_id: String,
@@ -6501,7 +6605,7 @@ pub struct AgentMailDeliverParams {
 	#[serde(rename = "messageId")]
 	pub message_id: String,
 	pub message: String,
-	pub delivery: AgentMailDelivery,
+	pub delivery: AgentMailInboxDelivery,
 	#[serde(rename = "sentAt")]
 	pub sent_at: i64,
 	/// Claimed source owner; verified through its own socket before admitting.
@@ -6533,7 +6637,7 @@ pub struct AgentMailVerifySendParams {
 	#[serde(rename = "messageId")]
 	pub message_id: String,
 	pub message: String,
-	pub delivery: AgentMailDelivery,
+	pub delivery: AgentMailInboxDelivery,
 	#[serde(rename = "sentAt")]
 	pub sent_at: i64,
 	#[serde(rename = "senderSessionId")]
@@ -6549,11 +6653,16 @@ pub struct AgentMailVerifySendParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentMailReadParams {
+pub struct AgentMailListParams {
 	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
 	pub thread_id: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub limit: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub folder: Option<AgentMailFolder>,
+	/// Exclusive message id from the same folder/thread; reads the next older page.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub before: Option<String>,
 }
 
 /// The constant `"image"`.
@@ -6874,6 +6983,87 @@ impl NativeSessionWakeResultState {
 	}
 }
 
+/// The constant `"inbox"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitInbox;
+
+impl Serialize for LitInbox {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("inbox")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitInbox {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("inbox") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"inbox\", got {value}")))
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentMailPolicyRule {
+	#[serde(rename = "allow")]
+	Allow,
+	#[serde(rename = "block")]
+	Block,
+	#[serde(rename = "unknown")]
+	Unknown,
+}
+
+impl AgentMailPolicyRule {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Allow => "allow",
+			Self::Block => "block",
+			Self::Unknown => "unknown",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentMailVerificationApproval {
+	#[serde(rename = "once")]
+	Once,
+	#[serde(rename = "always")]
+	Always,
+}
+
+impl AgentMailVerificationApproval {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Once => "once",
+			Self::Always => "always",
+		}
+	}
+}
+
+/// The constant `"stored"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitStored;
+
+impl Serialize for LitStored {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("stored")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitStored {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("stored") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"stored\", got {value}")))
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
@@ -7092,6 +7282,24 @@ impl SessionControlResultAction {
 		match self {
 			Self::Abort => "abort",
 			Self::Compact => "compact",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentMailRestrictParamsRule {
+	#[serde(rename = "block")]
+	Block,
+	#[serde(rename = "reset")]
+	Reset,
+}
+
+impl AgentMailRestrictParamsRule {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Block => "block",
+			Self::Reset => "reset",
 		}
 	}
 }
@@ -7502,26 +7710,44 @@ impl Command for WakeSessionCommand {
 	}
 }
 
-/// Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried.
+/// Deposit quiet mail with existing recipient consent. RPC callers cannot grant consent or open a terminal dialog.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentMailSendCommand {
+pub struct AgentMailPostConsentedCommand {
+	/// Recipient UUID, unique id prefix or actor handle, resolved by the sending owner.
 	pub to: String,
+	/// Bounded mail body.
 	pub message: String,
 	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
 	pub thread_id: Option<String>,
 	#[serde(rename = "replyTo", default, skip_serializing_if = "Option::is_none")]
 	pub reply_to: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub delivery: Option<AgentMailDelivery>,
 }
 
-impl Command for AgentMailSendCommand {
-	const NAME: &'static str = "agent_mail_send";
+impl Command for AgentMailPostConsentedCommand {
+	const NAME: &'static str = "agent_mail_post_consented";
 	const TIMEOUT_MS: Option<u64> = Some(60000);
 	type Output = AgentMailSendResult;
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<AgentMailSendResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Block a sender or reset its rule to default deny. Cannot authorize delivery.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailRestrictCommand {
+	/// Exact UUID of another native session; the attached recipient decides.
+	pub peer: String,
+	pub rule: AgentMailRestrictParamsRule,
+}
+
+impl Command for AgentMailRestrictCommand {
+	const NAME: &'static str = "agent_mail_restrict";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = AgentMailRestrictResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AgentMailRestrictResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 
@@ -8712,9 +8938,31 @@ impl Command for GetBtwHistoryCommand {
 	}
 }
 
-/// Deliver one cross-session mail to this owner; the sender capability is verified first.
+/// Read a recipient's rule for one sender without transmitting a message. A stale journal or boot refuses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentMailDeliverCommand {
+pub struct AgentMailPolicyCommand {
+	pub peer: String,
+	#[serde(rename = "recipientSessionId")]
+	pub recipient_session_id: String,
+	#[serde(rename = "recipientSessionFile")]
+	pub recipient_session_file: String,
+	#[serde(rename = "recipientBootId")]
+	pub recipient_boot_id: String,
+}
+
+impl Command for AgentMailPolicyCommand {
+	const NAME: &'static str = "agent_mail_policy";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = AgentMailPolicy;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AgentMailPolicy>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Store quiet mail after verifying the exact sender proof and checking the recipient's current consent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMailDeliverConsentedCommand {
 	/// Exact session UUID the sender captured; a mismatch refuses delivery.
 	#[serde(rename = "recipientSessionId")]
 	pub recipient_session_id: String,
@@ -8725,7 +8973,7 @@ pub struct AgentMailDeliverCommand {
 	#[serde(rename = "messageId")]
 	pub message_id: String,
 	pub message: String,
-	pub delivery: AgentMailDelivery,
+	pub delivery: AgentMailInboxDelivery,
 	#[serde(rename = "sentAt")]
 	pub sent_at: i64,
 	/// Claimed source owner; verified through its own socket before admitting.
@@ -8744,8 +8992,8 @@ pub struct AgentMailDeliverCommand {
 	pub reply_to: Option<String>,
 }
 
-impl Command for AgentMailDeliverCommand {
-	const NAME: &'static str = "agent_mail_deliver";
+impl Command for AgentMailDeliverConsentedCommand {
+	const NAME: &'static str = "agent_mail_deliver_consented";
 	const TIMEOUT_MS: Option<u64> = None;
 	type Output = AgentMailReceipt;
 
@@ -8768,7 +9016,7 @@ pub struct AgentMailVerifySendCommand {
 	#[serde(rename = "messageId")]
 	pub message_id: String,
 	pub message: String,
-	pub delivery: AgentMailDelivery,
+	pub delivery: AgentMailInboxDelivery,
 	#[serde(rename = "sentAt")]
 	pub sent_at: i64,
 	#[serde(rename = "senderSessionId")]
@@ -8793,17 +9041,22 @@ impl Command for AgentMailVerifySendCommand {
 	}
 }
 
-/// Read this session's agent-mail inbox, bounded, newest last.
+/// Deliberately read this session's mail, bounded, newest last. The folder defaults to the inbox; requests are never included implicitly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AgentMailReadCommand {
+pub struct AgentMailListCommand {
 	#[serde(rename = "threadId", default, skip_serializing_if = "Option::is_none")]
 	pub thread_id: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub limit: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub folder: Option<AgentMailFolder>,
+	/// Exclusive message id from the same folder/thread; reads the next older page.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub before: Option<String>,
 }
 
-impl Command for AgentMailReadCommand {
-	const NAME: &'static str = "agent_mail_read";
+impl Command for AgentMailListCommand {
+	const NAME: &'static str = "agent_mail_list";
 	const TIMEOUT_MS: Option<u64> = None;
 	type Output = AgentMailReadResult;
 

@@ -1,7 +1,7 @@
 > [!NOTE]
 > ## `cap/omp-daemon-socket` — Native sessions and shared socket APIs
 >
-> One journal owner, durable optional names, wake-before-mail, safe terminal attachment, idle sleep, owner-fenced lifecycle controls and a Node-compatible API over the host's existing connection.
+> One journal owner, durable optional names, pull-only mail without waking sleeping peers, safe terminal attachment, idle sleep, owner-fenced lifecycle controls and a Node-compatible API over the host's existing connection.
 >
 > - **API guide:** [Native session API cheatsheet](docs/native-session-api.md)
 > - **Daily composition:** [`runtime`](https://github.com/atacolak/oh-my-pi/tree/runtime)

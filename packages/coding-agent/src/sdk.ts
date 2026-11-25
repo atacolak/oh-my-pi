@@ -2696,7 +2696,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					session
 						? session.sendAgentMail(params, options)
 						: Promise.reject(new Error("Session unavailable for agent mail")),
-				read: (options?: { threadId?: string; limit?: number }) => {
+				read: options => {
 					if (!session) throw new Error("Session unavailable for agent mail");
 					return session.readAgentMail(options);
 				},

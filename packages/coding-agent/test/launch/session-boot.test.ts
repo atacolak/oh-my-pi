@@ -253,6 +253,7 @@ describe("bootBrokeredOwner", () => {
 			},
 		} as unknown as DaemonBrokerClient;
 		const previousIdentity = new Map(SESSION_OWNER_IDENTITY_KEYS.map(key => [key, process.env[key]]));
+		for (const key of previousIdentity.keys()) delete process.env[key];
 		process.env.HCOM_PROCESS_ID = "launcher-process-id";
 		process.env.HCOM_INSTANCE_NAME = "argon";
 		process.env.HCOM_LAUNCHED = "1";
@@ -280,6 +281,6 @@ describe("bootBrokeredOwner", () => {
 			HCOM_INSTANCE_NAME: "argon",
 			HCOM_LAUNCHED: "1",
 		});
-		expect(launched?.env).toEqual({ [SESSION_RUN_DIR_ENV]: endpointDir });
+		expect(launched?.env).toEqual({ [SESSION_RUN_DIR_ENV]: endpointDir, PI_NO_TITLE: process.env.PI_NO_TITLE ?? "" });
 	});
 });

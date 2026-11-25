@@ -99,6 +99,7 @@ export interface Args {
 	skills?: string[];
 	noRules?: boolean;
 	noContextFiles?: boolean;
+	autoTitle?: boolean;
 	noTitle?: boolean;
 	/** `--spinner-interval <ms>`: ephemeral `tui.spinnerInterval` override for every spinner (0 = static). */
 	spinnerInterval?: number;
@@ -401,6 +402,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.noRules = true;
 		} else if (arg === "--no-context-files") {
 			result.noContextFiles = true;
+		} else if (arg === "--auto-title") {
+			result.autoTitle = true;
 		} else if (arg === "--no-title") {
 			result.noTitle = true;
 		} else if (arg === "--no-ui") {

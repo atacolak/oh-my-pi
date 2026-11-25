@@ -303,7 +303,8 @@ export async function bootBrokeredOwner(options: BootBrokeredOwnerOptions): Prom
 		projectDir: options.projectDir,
 		argv: options.argv,
 		identity: options.identity ?? sessionOwnerIdentity(process.env),
-		env: { [SESSION_RUN_DIR_ENV]: endpointDir },
+		// A reused broker may have been started by a different (e.g. headless RPC) client.
+		env: { [SESSION_RUN_DIR_ENV]: endpointDir, PI_NO_TITLE: process.env.PI_NO_TITLE ?? "" },
 		...(options.generation === undefined ? {} : { generation: options.generation }),
 	});
 	const client = options.client ?? (await createDaemonBrokerClient(options.projectDir));

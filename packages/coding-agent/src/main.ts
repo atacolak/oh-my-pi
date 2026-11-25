@@ -153,6 +153,8 @@ import {
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
 import type { SessionHeader } from "./session/session-entries";
+import { withMailApprovalContext } from "./session/mail-approval-context";
+import type { AgentMailApproval, AgentMailApprovalRequest } from "./session/session-mail";
 import {
 	findSessionContinuation,
 	type PickerListing,
@@ -480,8 +482,15 @@ export async function submitInteractiveInput(
 		| "optimisticSkillMessagePending"
 		| "restoreDroppedPrompt"
 	> &
-		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">>,
-	session: Pick<AgentSession, "buildUserSkillPrompt" | "prompt" | "promptCustomMessage" | "resume" | "isStreaming">,
+		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">> & {
+			/** Only a real local TUI supplies this; other callers leave mail approval unavailable. */
+			requestMailSendApproval?(
+				request: AgentMailApprovalRequest,
+				signal?: AbortSignal,
+			): Promise<AgentMailApproval>;
+		},
+	session: Pick<AgentSession, "buildUserSkillPrompt" | "prompt" | "promptCustomMessage" | "resume" | "isStreaming"> &
+		Partial<Pick<AgentSession, "sessionId">>,
 	input: SubmittedUserInput,
 ): Promise<void> {
 	if (input.cancelled) {
@@ -541,11 +550,25 @@ export async function submitInteractiveInput(
 		} else {
 			let forwarded = false;
 			try {
-				forwarded = await session.prompt(input.text, {
-					images: input.images,
-					streamingBehavior,
-					followUps: input.followUps,
-				});
+				const promptTurn = () =>
+					session.prompt(input.text, {
+						images: input.images,
+						streamingBehavior,
+						followUps: input.followUps,
+					});
+				const operatorText = input.operatorText?.trim() ? input.operatorText : undefined;
+				const approve = mode.requestMailSendApproval;
+				const sourceSessionId = session.sessionId;
+				if (operatorText !== undefined && approve !== undefined && sourceSessionId !== undefined) {
+					forwarded = await withMailApprovalContext(
+						operatorText,
+						(request, signal) => approve.call(mode, request, signal),
+						promptTurn,
+						{ sourceSessionId },
+					);
+				} else {
+					forwarded = await promptTurn();
+				}
 			} catch (error: unknown) {
 				mode.showError(error instanceof Error ? error.message : "Unknown error occurred");
 			}
@@ -2200,6 +2223,7 @@ export async function runRootCommand(
 		// session-critical database connection picks the right busy timeout.
 		// See getDbBusyTimeoutMs().
 		const isProtocolMode = mode === "rpc" || mode === "rpc-ui" || mode === "acp";
+		const rpcAutoTitle = parsedArgs.autoTitle === true && (mode === "rpc" || mode === "rpc-ui");
 		// Protocol modes own stdin; treating it as prompt text would consume JSON-RPC frames before their transports start.
 		const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
 		// Without a terminal on stdin the TUI cannot run, so such a launch is always
@@ -2356,12 +2380,7 @@ export async function runRootCommand(
 		if (parsedArgs.noPty || parsedArgs.mode === "rpc-ui") {
 			Bun.env.PI_NO_PTY = "1";
 		}
-		if (
-			parsedArgs.noTitle ||
-			parsedArgs.mode === "rpc" ||
-			parsedArgs.mode === "rpc-ui" ||
-			parsedArgs.mode === "acp"
-		) {
+		if (parsedArgs.noTitle || (isProtocolMode && !rpcAutoTitle)) {
 			Bun.env.PI_NO_TITLE = "1";
 		}
 
@@ -2871,7 +2890,7 @@ export async function runRootCommand(
 			options.allowSessionModelFallback = isInteractive;
 			options.settingsApproval = isInteractive;
 			options.tuiTranscript = isInteractive;
-			options.autoTitle = isInteractive;
+			options.autoTitle = isInteractive || rpcAutoTitle;
 			options.deferSkillDescriptionCompression = isInteractive;
 			options.settings = settingsInstance;
 			options.telemetry = startupTelemetry;

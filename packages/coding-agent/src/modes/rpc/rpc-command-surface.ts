@@ -29,6 +29,10 @@ import * as fs from "node:fs/promises";
 import {
 	agentMailEnvelopeError,
 	AgentMailTargetMismatchError,
+	MailApprovalRequiredError,
+	MailPolicyChangedError,
+	MailContactBlockedError,
+	MailStoreUnknownError,
 	parseAgentMailVerification,
 	isAgentMailIncarnation,
 	sameAgentMailIncarnation,
@@ -995,6 +999,7 @@ export class RpcCommandSurface {
 	readonly #output: RpcOutput;
 	readonly #clients: RpcClientRegistry;
 	readonly #defaultConn: RpcClientConn;
+	readonly #mailAttachments = new WeakMap<RpcClientConn, string>();
 	readonly #maxResponseBytes: () => number;
 	readonly #pendingExtensionRequests: RpcPendingExtensionRequests;
 	readonly #host: RpcHostCommandServices | undefined;
@@ -1523,6 +1528,7 @@ export class RpcCommandSurface {
 	 */
 	createSocketSurface(conn: RpcClientConn): RpcSessionSocketSurface {
 		this.#clients.register(conn);
+		this.#mailAttachments.set(conn, this.#session.sessionId);
 		return {
 			dispatch: frame => {
 				if (isRpcHostToolResult(frame)) {
@@ -1854,6 +1860,39 @@ export class RpcCommandSurface {
 
 		if (this.#refusedCommands?.[command.type]) return this.#refuseSharedSessionCommand(command);
 		if (!host && Object.hasOwn(HOST_COMMANDS, command.type)) return this.#refuseHostCommand(command);
+		// Socket viewers survive a conversation switch; their old mailbox access does not.
+		if (
+			conn &&
+			(command.type === "agent_mail_post_consented" ||
+				command.type === "agent_mail_list" ||
+				command.type === "agent_mail_restrict")
+		) {
+			const attached = this.#mailAttachments.get(conn);
+			if (attached !== undefined && attached !== session.sessionId)
+				return rpcError(
+					id,
+					command.type,
+					"Mailbox attachment is stale. Reconnect to the selected session.",
+					"mail_target_mismatch",
+				);
+		}
+		// Compatibility fence for the retired bridge protocol, not authentication
+		// of arbitrary prompt text. Operator-input sockets remain privileged.
+		if (
+			(command.type === "prompt" ||
+				command.type === "steer" ||
+				command.type === "follow_up" ||
+				command.type === "abort_and_prompt") &&
+			typeof command.message === "string" &&
+			/^\s*<actor_mail\b[^>]*>[\s\S]*<\/actor_mail>\s*$/.test(command.message)
+		) {
+			return rpcError(
+				id,
+				command.type,
+				"Peer mail is not operator input. Post through the sending owner's mailbox.",
+				"mail_requires_mailbox",
+			);
+		}
 
 		switch (command.type) {
 			case "negotiate_protocol": {
@@ -2220,18 +2259,26 @@ export class RpcCommandSurface {
 					await service.wake(selected.sessionId, { expectedSessionFile: command.expectedSessionFile }),
 				);
 			}
-			case "agent_mail_send":
-				return rpcSuccess(
-					id,
-					command.type,
-					await session.sendAgentMail({
-						to: command.to,
-						message: command.message,
-						...(command.threadId === undefined ? {} : { threadId: command.threadId }),
-						...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
-						...(command.delivery === undefined ? {} : { delivery: command.delivery }),
-					}),
-				);
+			case "agent_mail_post_consented":
+				if ("approval" in command || "approve" in command || "policyRevision" in command)
+					return rpcError(id, command.type, "Mail approval is not a wire argument.", "mail_operator_required");
+				return rpcSuccess(id, command.type, await session.sendAgentMail(command));
+
+			case "agent_mail_restrict":
+				if (command.rule !== "block" && command.rule !== "reset")
+					return rpcError(id, command.type, "RPC cannot grant mail consent.", "mail_operator_required");
+				return rpcSuccess(id, command.type, await session.setAgentMailContact(command));
+
+			case "agent_mail_policy": {
+				const target = {
+					sessionId: command.recipientSessionId,
+					sessionFile: command.recipientSessionFile,
+					bootId: command.recipientBootId,
+				};
+				if (!sameAgentMailIncarnation(target, session.agentMailIncarnation()))
+					return rpcError(id, command.type, "Recipient journal or boot changed.", "mail_target_mismatch");
+				return rpcSuccess(id, command.type, session.getAgentMailPolicy(command.peer));
+			}
 
 			case "upgrade_runtime":
 				return this.#upgradeRuntimeGeneration(command);
@@ -2710,21 +2757,21 @@ export class RpcCommandSurface {
 			// Agent Mail
 			// =================================================================
 
-			case "agent_mail_deliver": {
+			case "agent_mail_deliver_consented": {
 				// Strict validation first: a malformed frame reaches neither
 				// capability state nor admission.
 				const envelopeError = agentMailEnvelopeError(command);
-				if (envelopeError) return rpcError(id, "agent_mail_deliver", envelopeError);
+				if (envelopeError) return rpcError(id, command.type, envelopeError);
 				if (typeof command.senderSessionId !== "string" || !command.senderSessionId) {
-					return rpcError(id, "agent_mail_deliver", "A claimed sender session id is required");
+					return rpcError(id, command.type, "A claimed sender session id is required");
 				}
 				if (typeof command.capabilityToken !== "string" || !command.capabilityToken) {
-					return rpcError(id, "agent_mail_deliver", "A send capability token is required");
+					return rpcError(id, command.type, "A send capability token is required");
 				}
 				if (command.senderSessionId === session.sessionId) {
 					return rpcError(
 						id,
-						"agent_mail_deliver",
+						command.type,
 						"Agent mail cannot be addressed to the sending session itself.",
 						"mail_target_mismatch",
 					);
@@ -2732,7 +2779,7 @@ export class RpcCommandSurface {
 				if (command.recipientSessionId !== session.sessionId) {
 					return rpcError(
 						id,
-						"agent_mail_deliver",
+						command.type,
 						`Mail addressed to session "${command.recipientSessionId}" reached owner "${session.sessionId}".`,
 						"mail_target_mismatch",
 					);
@@ -2764,7 +2811,7 @@ export class RpcCommandSurface {
 				} catch {
 					return rpcError(
 						id,
-						"agent_mail_deliver",
+						command.type,
 						`The claimed sender session "${command.senderSessionId}" is not reachable for verification.`,
 						"mail_sender_unverified",
 					);
@@ -2800,7 +2847,7 @@ export class RpcCommandSurface {
 					if (!response.success) {
 						return rpcError(
 							id,
-							"agent_mail_deliver",
+							command.type,
 							"The claimed sender refused or could not verify the send capability.",
 							"mail_sender_unverified",
 						);
@@ -2809,7 +2856,7 @@ export class RpcCommandSurface {
 				} catch {
 					return rpcError(
 						id,
-						"agent_mail_deliver",
+						command.type,
 						"The claimed sender did not answer the capability verification.",
 						"mail_sender_unverified",
 					);
@@ -2825,7 +2872,7 @@ export class RpcCommandSurface {
 				) {
 					return rpcError(
 						id,
-						"agent_mail_deliver",
+						command.type,
 						`Sender capability verification failed${verification?.reason ? `: ${verification.reason}` : ""}.`,
 						"mail_sender_unverified",
 					);
@@ -2833,7 +2880,7 @@ export class RpcCommandSurface {
 				if (verification.sender.sessionId !== command.senderSessionId) {
 					return rpcError(
 						id,
-						"agent_mail_deliver",
+						command.type,
 						"The verifying owner is not the claimed sender session.",
 						"mail_sender_unverified",
 					);
@@ -2866,13 +2913,23 @@ export class RpcCommandSurface {
 						sender: verification.sender,
 						source: verification.source,
 						target,
+						approval: verification.approval,
+						policyRevision: verification.policyRevision,
 					});
-					return rpcSuccess(id, "agent_mail_deliver", receipt);
+					return rpcSuccess(id, command.type, receipt);
 				} catch (mailError) {
+					if (mailError instanceof MailPolicyChangedError)
+						return rpcError(id, command.type, mailError.message, "mail_policy_changed");
+					if (mailError instanceof MailApprovalRequiredError)
+						return rpcError(id, command.type, mailError.message, "mail_approval_required");
+					if (mailError instanceof MailContactBlockedError)
+						return rpcError(id, command.type, mailError.message, "mail_contact_blocked");
+					if (mailError instanceof MailStoreUnknownError)
+						return rpcError(id, command.type, mailError.message, "mail_store_unknown");
 					if (mailError instanceof AgentMailTargetMismatchError) {
-						return rpcError(id, "agent_mail_deliver", mailError.message, "mail_target_mismatch");
+						return rpcError(id, command.type, mailError.message, "mail_target_mismatch");
 					}
-					return rpcError(id, "agent_mail_deliver", toError(mailError).message);
+					return rpcError(id, command.type, toError(mailError).message);
 				}
 			}
 
@@ -2902,21 +2959,23 @@ export class RpcCommandSurface {
 				);
 			}
 
-			case "agent_mail_read": {
+			case "agent_mail_list": {
 				if (command.threadId !== undefined && (typeof command.threadId !== "string" || !command.threadId.trim())) {
-					return rpcError(id, "agent_mail_read", "threadId must be a non-empty string");
+					return rpcError(id, "agent_mail_list", "threadId must be a non-empty string");
 				}
 				try {
 					return rpcSuccess(
 						id,
-						"agent_mail_read",
+						"agent_mail_list",
 						session.readAgentMail({
 							...(command.threadId ? { threadId: command.threadId } : {}),
+							...(command.folder === undefined ? {} : { folder: command.folder }),
+							...(command.before === undefined ? {} : { before: command.before }),
 							...(command.limit === undefined ? {} : { limit: command.limit }),
 						}),
 					);
 				} catch (readError) {
-					return rpcError(id, "agent_mail_read", toError(readError).message);
+					return rpcError(id, "agent_mail_list", toError(readError).message);
 				}
 			}
 

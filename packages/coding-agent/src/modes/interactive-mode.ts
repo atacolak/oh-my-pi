@@ -168,6 +168,12 @@ import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/promp
 import { formatQueueShorthand } from "@oh-my-pi/pi-tui/prompt/queue-input";
 import { isTranscriptEntry, type SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
+import { MAIL_APPROVAL_CONTEXT_TTL_MS } from "../session/mail-approval-context";
+import type {
+	AgentMailApproval,
+	AgentMailApprovalRequest,
+	AgentMailEndpointIdentity,
+} from "../session/session-mail";
 import { loadPinnedSessionIds } from "../session/session-pins";
 import { readSessionHeaderIdSync } from "../session/session-storage";
 import {
@@ -309,6 +315,11 @@ import type { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-executio
 import type { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
 import type { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
 import type { HookSelectorComponent, HookSelectorSlider } from "@oh-my-pi/pi-tui/overlays/hook-selector";
+import {
+	MailConsentDialogComponent,
+	type MailConsentDecision,
+	type MailConsentReview,
+} from "@oh-my-pi/pi-tui/overlays/mail-consent-dialog";
 import { type PlanReviewAnnotationState, PlanReviewOverlay } from "@oh-my-pi/pi-tui/overlays/plan-review-overlay";
 import { PlanSaveOverlay, type PlanSaveOverlayResult } from "@oh-my-pi/pi-tui/overlays/plan-save-overlay";
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
@@ -1392,6 +1403,12 @@ const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 /** Repaint cadence of the open jobs sheet: output tails, pids and list ages are polled, not pushed. */
 const JOBS_SHEET_REFRESH_MS = 250;
 
+function describeMailPeer(identity: AgentMailEndpointIdentity): string {
+	const handle = identity.handle?.trim() || "unnamed";
+	const model = identity.model?.trim() ? `, ${identity.model.trim()}` : "";
+	return `${handle} (${identity.sessionId}${model})`;
+}
+
 export class InteractiveMode implements InteractiveModeContext {
 	#ownsStartedUi: boolean;
 	session: AgentSession;
@@ -1861,6 +1878,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planModeHasEntered = false;
 	#planReviewOverlay: PlanReviewOverlay | undefined;
 	#planReviewOverlayHandle: OverlayHandle | undefined;
+	#mailConsentDialog: MailConsentDialogComponent | undefined;
 	#sessionInfoOverlayHandle: OverlayHandle | undefined;
 	#jobsSheetHandle: OverlayHandle | undefined;
 	#spotlightSheetHandle: OverlayHandle | undefined;
@@ -4108,6 +4126,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			display?: boolean;
 			streamingBehavior?: "steer" | "followUp";
 			followUps?: string[];
+			operatorText?: string;
 		},
 		options?: { preserveDraft?: boolean; clearEditor?: boolean },
 	): SubmittedUserInput {
@@ -4119,6 +4138,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			display: input.display,
 			streamingBehavior: input.streamingBehavior,
 			followUps: input.followUps,
+			operatorText: input.operatorText,
 			cancelled: false,
 			started: false,
 		};
@@ -4738,6 +4758,67 @@ export class InteractiveMode implements InteractiveModeContext {
 		open.component.dispose();
 		if (this.#scrollbackRebuildPending) this.rebuildTranscriptScrollback();
 		this.ui.requestRender();
+	}
+
+	/**
+	 * Put one outgoing first message to the local operator in the native
+	 * consent selector, in the composer's place. Only a trusted local
+	 * submission reaches this method; it denies when the request belongs to a
+	 * different session, when another consent dialog is already open, or when
+	 * the complete review cannot be shown.
+	 */
+	async requestMailSendApproval(
+		request: AgentMailApprovalRequest,
+		signal?: AbortSignal,
+	): Promise<AgentMailApproval> {
+		if (request.sender.sessionId !== this.sessionManager.getSessionId()) return "cancel";
+		if (this.#mailConsentDialog !== undefined) return "cancel";
+		const review: MailConsentReview = {
+			sender: describeMailPeer(request.sender),
+			recipient: describeMailPeer(request.recipient),
+			reference: request.reference,
+			messageId: request.messageId,
+			message: request.message,
+		};
+		const { promise, resolve } = Promise.withResolvers<AgentMailApproval>();
+		let dialog: MailConsentDialogComponent | undefined;
+		let settled = false;
+		const finish = (decision: MailConsentDecision): void => {
+			if (settled) return;
+			settled = true;
+			this.#mailConsentDialog = undefined;
+			dialog?.dispose();
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+			resolve(decision);
+		};
+		dialog = new MailConsentDialogComponent(
+			review,
+			{
+				tui: this.ui,
+				columns: this.ui.terminal.columns,
+				rows: this.ui.terminal.rows,
+				timeoutMs: MAIL_APPROVAL_CONTEXT_TTL_MS,
+				...(signal ? { signal } : {}),
+			},
+			finish,
+		);
+		if (!dialog.displayable) {
+			const reason = dialog.refusalReason;
+			settled = true;
+			dialog.dispose();
+			if (reason) this.showStatus(reason);
+			return "cancel";
+		}
+		this.#mailConsentDialog = dialog;
+		this.closeLinkBrowser();
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+		return promise;
 	}
 
 	rerenderInLinkBrowser(timestamp: number): void {

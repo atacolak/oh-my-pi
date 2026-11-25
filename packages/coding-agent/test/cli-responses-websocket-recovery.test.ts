@@ -29,7 +29,13 @@ async function withCli(
 		events: AgentEvent[];
 		sessionEvents: AgentSessionEvent[];
 	}) => Promise<void>,
-	options: { first?: number; idle?: number; websockets?: boolean | "default"; modelPreference?: boolean } = {},
+	options: {
+		first?: number;
+		idle?: number;
+		websockets?: boolean | "default";
+		modelPreference?: boolean;
+		titleArgs?: readonly string[];
+	} = {},
 ): Promise<void> {
 	using tempDir = TempDir.createSync("@omp-responses-rpc-");
 	const home = tempDir.join("home");
@@ -100,7 +106,15 @@ async function withCli(
 		model: "gpt-5-mini",
 		sessionDir: tempDir.join("sessions"),
 		// Session-reset transport cases own their RPC session, not a shared terminal viewer.
-		args: ["--no-ui", "--no-title", "--no-lsp", "--no-extensions", "--no-context-files", "--tools", "bash"],
+		args: [
+			"--no-ui",
+			...(options.titleArgs ?? []),
+			"--no-lsp",
+			"--no-extensions",
+			"--no-context-files",
+			"--tools",
+			"bash",
+		],
 		spawn: args => ptree.spawn([process.execPath, cliEntry, ...args], { cwd: project, env, stdin: "pipe" }),
 	});
 	const events: AgentEvent[] = [];
@@ -163,6 +177,51 @@ function hasTextDelta(event: AgentEvent, text: string): boolean {
 		event.assistantMessageEvent.delta.includes(text)
 	);
 }
+
+describe("real CLI RPC conversation titles", () => {
+	test.each([
+		{ name: "visible chat", args: ["--auto-title"], titled: true },
+		{ name: "explicit opt-out wins", args: ["--no-title", "--auto-title"], titled: false },
+	])(
+		"$name",
+		async ({ args, titled }) => {
+			const fixture = endpoint(undefined, {
+				httpResponse: (_body, index) =>
+					sse(
+						textEvents(
+							index === 1 ? "The archive has been indexed." : '<title code="INDEX">Index the archive</title>',
+							`resp_${index}`,
+						),
+					),
+			});
+			try {
+				await withCli(
+					`${fixture.server.url.origin}/v1`,
+					async ({ client }) => {
+						await client.promptAndWait("Build a searchable index of the archive", undefined, promptTimeout);
+						if (titled) {
+							await fixture.waitForHttpRequests(2);
+							const deadline = Date.now() + 5_000;
+							let title = (await client.getState()).sessionName;
+							while (!title && Date.now() < deadline) {
+								await Bun.sleep(25);
+								title = (await client.getState()).sessionName;
+							}
+							expect(title).toContain("Index the archive");
+						} else {
+							expect((await client.getState()).sessionName).toBeUndefined();
+							expect(fixture.httpRequests).toHaveLength(1);
+						}
+					},
+					{ titleArgs: args, websockets: false },
+				);
+			} finally {
+				await fixture.server.stop(true);
+			}
+		},
+		testTimeout,
+	);
+});
 
 describe("real CLI Responses WebSocket recovery", () => {
 	test.each([

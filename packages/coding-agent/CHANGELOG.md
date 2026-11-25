@@ -4,18 +4,20 @@
 
 ### Breaking Changes
 
+- Native mail is pull-only and requires recipient consent. Use `agent_mail_post_consented` for authorized socket sends and `agent_mail_list` for reads; never fall back to an old prompt or waking command.
 - Use `/name <name>` instead of `/name actor <name>`; `/name clear` removes only the attach name.
 
 ### Added
 
 - `/name` shows the attach name, `/name clear` removes it without deleting the conversation, and `/title` changes the separate conversation title.
 - `omp sock` can discover, name, rename, inspect context, wake, attach to and control saved conversations by name, UUID or verified owner PID.
-- Native mail tools exchange threaded messages through session sockets, waking sleeping recipients and reporting admission separately from model replies.
+- Review a new contact's proposed message in the sending terminal: cancel, send it once, or allow future mail in that direction. Approved mail stays in the recipient's journal without starting a turn.
 - Detached sessions sleep after one idle hour by default; global, profile and per-session overrides include `0` to disable sleep.
 - Graceful restart asks the model to checkpoint responsibilities and waits for acknowledgment, owned work and saved results before replacing the owner.
 - The [native session API guide](../../docs/native-session-api.md) covers Exocortex integration, context, restart modes and legacy migration boundaries.
 - attached hosts can verify a session's active agent profile, working directory and project memory scope.
 - attached hosts can inspect effective model, thinking level and bounded configuration warnings without opening the terminal.
+- Visible RPC chats can opt into automatic conversation titles with `--auto-title`; ordinary RPC launches stay quiet.
 - RPC clients can now manage MCP servers: `get_mcp_status` lists configured, disabled and plugin servers with their live state, `set_mcp_enabled` persists and applies enablement, and `mcp_reauth` runs the OAuth flow on the calling connection; the `compact` command accepts an explicit `mode` (`soft`, `remote` or `snapcompact`) and refuses unknown values
 - Interactive sessions now publish an owner-only attach endpoint (`~/.omp/run/<session-id>.sock` plus a JSON discovery sidecar) that serves the same RPC command surface as `--mode rpc`, so external clients can attach, negotiate, prompt or steer, receive session events and register host tools; the endpoint moves when the session switches, and a client disconnect detaches only that client instead of ending the session
 - `omp --mode rpc` and `--mode rpc-ui` now run in RPC bridge mode against the same brokered session owner as interactive launches: a live session is reached through a stdio-to-socket bridge, a cold launch starts one detached owner, and closing stdin only closes the bridge, leaving the session, its turn, and its endpoint running; a `bridge-<pid>.json` sidecar lets detached keepers find the bridge, while `--no-ui` and `--no-session` keep the in-process stdio lifecycle; WebUI clients attach to `<session-id>.sock` directly, not through the stdio bridge

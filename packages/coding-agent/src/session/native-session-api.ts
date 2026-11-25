@@ -9,7 +9,13 @@ import type {
 	RpcUpgradeRuntimeResult,
 } from "../modes/rpc/rpc-types";
 import type { AgentSessionEvent } from "./agent-session-events";
-import type { AgentMailReadResult, AgentMailSendParams, AgentMailSendResult } from "./session-mail";
+import type {
+	AgentMailContact,
+	AgentMailReadOptions,
+	AgentMailReadResult,
+	AgentMailSendParams,
+	AgentMailSendResult,
+} from "./session-mail";
 import type { CompactMode } from "./compact-modes";
 import type { NativeSessionInfo, NativeSessionList, NativeSessionListOptions } from "./session-service";
 import type { SessionIdentityPatch, SessionIdentityRecord } from "./session-identity";
@@ -137,13 +143,33 @@ export class NativeSessionApi {
 		});
 	}
 
-	/** The attached sender owner attests provenance, wakes the exact peer and returns admission—not inference completion. */
+	/** Deposit quiet mail in the recipient's journal; never wakes, steers or queues input. */
 	sendMail(params: AgentMailSendParams): Promise<AgentMailSendResult> {
-		return this.#request({ type: "agent_mail_send", ...params });
+		return this.#request({
+			type: "agent_mail_post_consented",
+			to: params.to,
+			message: params.message,
+			...(params.threadId === undefined ? {} : { threadId: params.threadId }),
+			...(params.replyTo === undefined ? {} : { replyTo: params.replyTo }),
+		});
 	}
 
-	readMail(options: { threadId?: string; limit?: number } = {}): Promise<AgentMailReadResult> {
-		return this.#request({ type: "agent_mail_read", ...options });
+	/** Deliberate read of this owner's mail; `folder` defaults to the inbox, never requests. */
+	readMail(options: AgentMailReadOptions = {}): Promise<AgentMailReadResult> {
+		return this.#request({
+			type: "agent_mail_list",
+			...(options.threadId === undefined ? {} : { threadId: options.threadId }),
+			...(options.limit === undefined ? {} : { limit: options.limit }),
+			...(options.folder === undefined ? {} : { folder: options.folder }),
+			...(options.before === undefined ? {} : { before: options.before }),
+		});
+	}
+
+	/** Revoke or block contact. A terminal consent decision, not this RPC, authorizes a new sender. */
+	setMailContact(peer: string, rule: "block" | "reset"): Promise<AgentMailContact> {
+		if (rule !== "block" && rule !== "reset")
+			return Promise.reject(new NativeSessionApiError("Mail consent requires operator review.", "mail_operator_required"));
+		return this.#request({ type: "agent_mail_restrict", peer, rule });
 	}
 
 	observe(listener: (event: AgentSessionEvent) => void): () => void {

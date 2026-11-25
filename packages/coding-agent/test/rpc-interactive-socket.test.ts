@@ -350,7 +350,9 @@ describe("an interactive session's published endpoint", () => {
 				["unknown", { patch: { actor_handle: "misspelled" } }],
 			] as const) {
 				peer.send({ ...command, ...change, id });
-				expect(await frameOf(peer, id)).toMatchObject({ success: false });
+				const response = await frameOf(peer, id);
+				expect(response.success).toBe(false);
+				if (id === "conflict") expect(response.code).toBe("session_identity_conflict");
 				expect(await Bun.file(sessionFile).text()).toBe(before);
 			}
 			expect(fixture.mock.calls).toHaveLength(0);

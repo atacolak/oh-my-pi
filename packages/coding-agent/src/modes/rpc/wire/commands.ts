@@ -122,17 +122,25 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		timeoutMs: 60000,
 	},
 	{
-		name: "agent_mail_send",
-		doc: "Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried.",
+		name: "agent_mail_post_consented",
+		doc: "Deposit quiet mail with existing recipient consent. RPC callers cannot grant consent or open a terminal dialog.",
 		params: {
-			to: "string",
-			message: "string",
+			to: doc("string", "Recipient UUID, unique id prefix or actor handle, resolved by the sending owner."),
+			message: doc("string", "Bounded mail body."),
 			"threadId?": "string",
 			"replyTo?": "string",
-			"delivery?": "AgentMailDelivery",
 		},
 		result: "AgentMailSendResult",
 		timeoutMs: 60000,
+	},
+	{
+		name: "agent_mail_restrict",
+		doc: "Block a sender or reset its rule to default deny. Cannot authorize delivery.",
+		params: {
+			peer: doc("string", "Exact UUID of another native session; the attached recipient decides."),
+			rule: "'block' | 'reset'",
+		},
+		result: { peer: "string", rule: "AgentMailContactRule" },
 	},
 	{
 		name: "set_session_identity",
@@ -565,8 +573,14 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		unwrap: "records",
 	},
 	{
-		name: "agent_mail_deliver",
-		doc: "Deliver one cross-session mail to this owner; the sender capability is verified first.",
+		name: "agent_mail_policy",
+		doc: "Read a recipient's rule for one sender without transmitting a message. A stale journal or boot refuses.",
+		params: { peer: "string", recipientSessionId: "string", recipientSessionFile: "string", recipientBootId: "string" },
+		result: "AgentMailPolicy",
+	},
+	{
+		name: "agent_mail_deliver_consented",
+		doc: "Store quiet mail after verifying the exact sender proof and checking the recipient's current consent.",
 		params: {
 			recipientSessionId: doc("string", "Exact session UUID the sender captured; a mismatch refuses delivery."),
 			recipientSessionFile: "string",
@@ -575,7 +589,7 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 			message: "string",
 			"threadId?": "string",
 			"replyTo?": "string",
-			delivery: "AgentMailDelivery",
+			delivery: "AgentMailInboxDelivery",
 			sentAt: "number.integer",
 			senderSessionId: doc("string", "Claimed source owner; verified through its own socket before admitting."),
 			senderSessionFile: "string",
@@ -596,7 +610,7 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 			message: "string",
 			"threadId?": "string",
 			"replyTo?": "string",
-			delivery: "AgentMailDelivery",
+			delivery: "AgentMailInboxDelivery",
 			sentAt: "number.integer",
 			senderSessionId: "string",
 			senderSessionFile: "string",
@@ -605,9 +619,14 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		result: "AgentMailVerification",
 	},
 	{
-		name: "agent_mail_read",
-		doc: "Read this session's agent-mail inbox, bounded, newest last.",
-		params: { "threadId?": "string", "limit?": "number.integer" },
+		name: "agent_mail_list",
+		doc: "Deliberately read this session's mail, bounded, newest last. The folder defaults to the inbox; requests are never included implicitly.",
+		params: {
+			"threadId?": "string",
+			"limit?": "number.integer",
+			"folder?": "AgentMailFolder",
+			"before?": doc("string", "Exclusive message id from the same folder/thread; reads the next older page."),
+		},
 		result: "AgentMailReadResult",
 	},
 ];

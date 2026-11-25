@@ -2,13 +2,22 @@ import assert from "node:assert/strict";
 import { NativeSessionApi, NativeSessionApiError } from "../../src/session/native-session-api.ts";
 
 assert.equal(typeof globalThis.Bun, "undefined");
-let sends = 0;
+const mailRequests = [];
 const api = new NativeSessionApi({
 	async request(command) {
-		if (command.type === "agent_mail_send") {
-			sends += 1;
+		mailRequests.push(command);
+		if (command.type === "agent_mail_post_consented") {
+			return { type: "response", command: command.type, success: true, data: { status: "unknown",
+				error: "recipient acknowledgement was lost" } };
+		}
+		if (command.type === "agent_mail_list") {
+			return { type: "response", command: command.type, success: true, data: {
+				messages: [], total: 101, truncated: true, nextBefore: "message-80",
+			} };
+		}
+		if (command.type === "agent_mail_restrict") {
 			return { type: "response", command: command.type, success: true,
-				data: { status: "unknown", error: "recipient acknowledgement was lost" } };
+				data: { peer: command.peer, rule: command.rule } };
 		}
 		return { type: "response", command: command.type, success: false,
 			error: "operation is unavailable on this old owner", code: "unsupported_operation" };
@@ -17,8 +26,58 @@ const api = new NativeSessionApi({
 });
 const result = await api.sendMail({ to: "peer", message: "one request only" });
 assert.equal(result.status, "unknown");
-assert.equal(sends, 1);
+assert.deepEqual(mailRequests.pop(), { type: "agent_mail_post_consented", to: "peer", message: "one request only" });
+await api.sendMail({
+	to: "peer", message: "threaded", threadId: "thread-1", replyTo: "message-0",
+	approval: "always", policyRevision: null,
+	delivery: "steer", intent: "request", type: "prompt", prompt: "wake up", images: [{ data: "x" }],
+});
+assert.deepEqual(mailRequests.pop(), {
+	type: "agent_mail_post_consented", to: "peer", message: "threaded", threadId: "thread-1", replyTo: "message-0",
+});
+assert.equal(mailRequests.length, 0);
+
+const firstPage = await api.readMail();
+assert.equal(firstPage.nextBefore, "message-80");
+assert.deepEqual(mailRequests.pop(), { type: "agent_mail_list" });
+await api.readMail({ threadId: "thread-1", limit: 5, folder: "requests", before: "message-9" });
+assert.deepEqual(mailRequests.pop(), {
+	type: "agent_mail_list", threadId: "thread-1", limit: 5, folder: "requests", before: "message-9",
+});
+await api.readMail({ folder: "inbox", type: "prompt", message: "wake up", limit: undefined });
+assert.deepEqual(mailRequests.pop(), { type: "agent_mail_list", folder: "inbox" });
+
+const contact = await api.setMailContact("11111111-1111-4111-8111-111111111111", "block");
+assert.deepEqual(contact, { peer: "11111111-1111-4111-8111-111111111111", rule: "block" });
+assert.deepEqual(mailRequests.pop(), {
+	type: "agent_mail_restrict", peer: "11111111-1111-4111-8111-111111111111", rule: "block",
+});
 await assert.rejects(api.catalog(), error => error instanceof NativeSessionApiError && error.code === "unsupported_operation");
+
+const legacyOnly = new NativeSessionApi({
+	async request(command) {
+		if (command.type === "agent_mail_send") {
+			return { type: "response", command: command.type, success: true,
+				data: { status: "accepted", receipt: { messageId: "old", threadId: "old" }, target: "peer" } };
+		}
+		// Old owners accept extra keys but ignore folder and cursor on their read opcode.
+		if (command.type === "agent_mail_read") {
+			return { type: "response", command: command.type, success: true,
+				data: { messages: [], total: 0, truncated: false } };
+		}
+		return { type: "response", command: command.type, success: false,
+			error: `Unknown command: ${command.type}` };
+	},
+	observe() { return () => {}; },
+});
+await assert.rejects(legacyOnly.sendMail({ to: "peer", message: "no downgrade" }), error =>
+	error instanceof NativeSessionApiError && error.code === undefined &&
+	error.message === "Unknown command: agent_mail_post_consented");
+await assert.rejects(legacyOnly.readMail({ folder: "requests" }), error =>
+	error instanceof NativeSessionApiError && error.code === undefined &&
+	error.message === "Unknown command: agent_mail_list");
+await assert.rejects(api.setMailContact("11111111-1111-4111-8111-111111111111", "allow"), error =>
+	error instanceof NativeSessionApiError && error.code === "mail_operator_required");
 
 const legacy = new NativeSessionApi({
 	async request(command) {

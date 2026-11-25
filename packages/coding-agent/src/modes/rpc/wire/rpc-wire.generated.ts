@@ -405,10 +405,18 @@ export interface NativeSessionInfo {
 	owner?: RuntimeRestartReceipt;
 }
 
+export interface SessionIdentityNameConflict {
+	code: "duplicate_handle";
+	handle: string;
+	sessionIds: string[];
+}
+
 export interface NativeSessionList {
 	sessions: NativeSessionInfo[];
 	total: number;
 	truncated: boolean;
+	/** Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied. */
+	conflicts?: SessionIdentityNameConflict[];
 	nextOffset?: number;
 	attachableSockets?: number;
 	unverifiedSockets?: number;
@@ -513,10 +521,25 @@ export interface SessionIdentityRecord {
 	modifiedAt?: number;
 }
 
-/** Recipient-side input path the sender chose: queue behind the run, or steer into it. */
-export type AgentMailDelivery = "queue" | "steer";
+/** Recorded delivery path. New mail is always `inbox`; `queue` and `steer` appear only in historical records. */
+export type AgentMailDelivery = "inbox" | "queue" | "steer";
 
-export type AgentMailAdmission = "admitted" | "queued" | "steering";
+/** Only inbox storage is accepted; legacy queue/steer envelopes are refused. */
+export type AgentMailInboxDelivery = "inbox";
+
+/** Recorded admission. New mail is always `stored`; older input-admission values appear only in historical records. */
+export type AgentMailAdmission = "stored" | "admitted" | "queued" | "steering";
+
+/** New mail is stored only in inbox. The requests folder is historical. */
+export type AgentMailFolder = "inbox" | "requests";
+
+/** Recipient-owned directional rule. Reset restores default deny. */
+export type AgentMailContactRule = "allow" | "block" | "reset";
+
+export interface AgentMailPolicy {
+	rule: "allow" | "block" | "unknown";
+	revision: string | null;
+}
 
 /** Native addressability of one session end at mail time. */
 export interface AgentMailEndpointIdentity {
@@ -536,6 +559,15 @@ export interface AgentMailIncarnation {
 	bootId: string;
 }
 
+/** Mail destination: a live owner incarnation, or a saved journal with no live owner. */
+export interface AgentMailTarget {
+	sessionId: string;
+	/** Owned canonical session journal. */
+	sessionFile: string;
+	/** Exact owner boot; null only when a saved journal stored the mail without a live owner. */
+	bootId: string | null;
+}
+
 /** Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself. */
 export interface AgentMailVerification {
 	valid: boolean;
@@ -547,42 +579,47 @@ export interface AgentMailVerification {
 	source?: AgentMailIncarnation;
 	/** Exact recipient incarnation bound into the proof. */
 	target?: AgentMailIncarnation;
+	approval?: "once" | "always";
+	policyRevision?: string | null;
 }
 
-/** Bounded inbox read derived from the current journal; newest last. */
+/** Bounded mail read derived from the current journal; newest last. */
 export interface AgentMailReadResult {
 	messages: AgentMailRecord[];
-	/** Admitted records matching the read filter. */
+	/** All records matching the read folder/thread filter; stable across `before` pages. */
 	total: number;
-	/** True when `total` exceeds the returned messages. */
+	/** True when older matches remain before the returned page. */
 	truncated: boolean;
+	/** Pass as `before` to read the next older page in the same folder/thread; absent when no older match exists. */
+	nextBefore?: string;
 }
 
-/** Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it. */
+/** Truthful receipt for one accepted mail: recorded in the recipient journal; never a claim the recipient read or acted on it. */
 export interface AgentMailReceipt {
 	messageId: string;
 	threadId: string;
-	admission: AgentMailAdmission;
-	/** Whether a run was streaming on the recipient when the mail was admitted. */
-	busy: boolean;
+	/** Always `stored`: durable journal admission, not a read or a run. */
+	admission: "stored";
 	recipient: AgentMailEndpointIdentity;
-	target: AgentMailIncarnation;
+	target: AgentMailTarget;
 }
 
-/** One delivered mail record with full sender/recipient/thread provenance. */
+/** One stored mail record with full sender/recipient/thread provenance. */
 export interface AgentMailRecord {
 	messageId: string;
 	threadId: string;
 	sender: AgentMailEndpointIdentity;
 	recipient: AgentMailEndpointIdentity;
 	source: AgentMailIncarnation;
-	target: AgentMailIncarnation;
+	target: AgentMailTarget;
 	body: string;
 	sentAt: number;
 	receivedAt: number;
 	delivery: AgentMailDelivery;
 	admission: AgentMailAdmission;
 	replyTo?: string;
+	/** Absent in records saved before folders existed; those records count as `inbox`. */
+	folder?: AgentMailFolder;
 }
 
 export interface TodoItem {
@@ -1975,12 +2012,24 @@ export interface WakeSessionParams {
 	expectedSessionFile: string;
 }
 
-export interface AgentMailSendParams {
+export interface AgentMailPostConsentedParams {
+	/** Recipient UUID, unique id prefix or actor handle, resolved by the sending owner. */
 	to: string;
+	/** Bounded mail body. */
 	message: string;
 	threadId?: string;
 	replyTo?: string;
-	delivery?: AgentMailDelivery;
+}
+
+export interface AgentMailRestrictParams {
+	/** Exact UUID of another native session; the attached recipient decides. */
+	peer: string;
+	rule: "block" | "reset";
+}
+
+export interface AgentMailRestrictResult {
+	peer: string;
+	rule: AgentMailContactRule;
 }
 
 export interface SetSessionIdentityParams {
@@ -2373,14 +2422,21 @@ export interface GetBtwHistoryResult {
 	records: BtwHistoryRecord[];
 }
 
-export interface AgentMailDeliverParams {
+export interface AgentMailPolicyParams {
+	peer: string;
+	recipientSessionId: string;
+	recipientSessionFile: string;
+	recipientBootId: string;
+}
+
+export interface AgentMailDeliverConsentedParams {
 	/** Exact session UUID the sender captured; a mismatch refuses delivery. */
 	recipientSessionId: string;
 	recipientSessionFile: string;
 	recipientBootId: string;
 	messageId: string;
 	message: string;
-	delivery: AgentMailDelivery;
+	delivery: AgentMailInboxDelivery;
 	sentAt: number;
 	/** Claimed source owner; verified through its own socket before admitting. */
 	senderSessionId: string;
@@ -2399,7 +2455,7 @@ export interface AgentMailVerifySendParams {
 	recipientBootId: string;
 	messageId: string;
 	message: string;
-	delivery: AgentMailDelivery;
+	delivery: AgentMailInboxDelivery;
 	sentAt: number;
 	senderSessionId: string;
 	senderSessionFile: string;
@@ -2408,9 +2464,12 @@ export interface AgentMailVerifySendParams {
 	replyTo?: string;
 }
 
-export interface AgentMailReadParams {
+export interface AgentMailListParams {
 	threadId?: string;
 	limit?: number;
+	folder?: AgentMailFolder;
+	/** Exclusive message id from the same folder/thread; reads the next older page. */
+	before?: string;
 }
 
 /** Every RPC command's parameters and successful response `data`. */
@@ -2431,7 +2490,8 @@ export interface RpcWireCommands {
 	list_sessions: { params: ListSessionsParams; result: NativeSessionList };
 	resolve_session: { params: ResolveSessionParams; result: NativeSessionInfo };
 	wake_session: { params: WakeSessionParams; result: NativeSessionWakeResult };
-	agent_mail_send: { params: AgentMailSendParams; result: AgentMailSendResult };
+	agent_mail_post_consented: { params: AgentMailPostConsentedParams; result: AgentMailSendResult };
+	agent_mail_restrict: { params: AgentMailRestrictParams; result: AgentMailRestrictResult };
 	set_session_identity: { params: SetSessionIdentityParams; result: SessionIdentityRecord };
 	get_refresh_preflight: { params: undefined; result: RefreshPreflight };
 	exit_session: { params: ExitSessionParams; result: ExitSessionResult };
@@ -2503,7 +2563,8 @@ export interface RpcWireCommands {
 	btw: { params: BtwParams; result: BtwResult };
 	btw_cancel: { params: BtwCancelParams; result: BtwCancelResult };
 	get_btw_history: { params: undefined; result: GetBtwHistoryResult };
-	agent_mail_deliver: { params: AgentMailDeliverParams; result: AgentMailReceipt };
+	agent_mail_policy: { params: AgentMailPolicyParams; result: AgentMailPolicy };
+	agent_mail_deliver_consented: { params: AgentMailDeliverConsentedParams; result: AgentMailReceipt };
 	agent_mail_verify_send: { params: AgentMailVerifySendParams; result: AgentMailVerification };
-	agent_mail_read: { params: AgentMailReadParams; result: AgentMailReadResult };
+	agent_mail_list: { params: AgentMailListParams; result: AgentMailReadResult };
 }

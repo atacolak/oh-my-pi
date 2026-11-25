@@ -39,6 +39,7 @@ import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
+import type { AgentMailApproval, AgentMailApprovalRequest } from "../session/session-mail";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import type { DictationTarget } from "../stt";
@@ -104,6 +105,13 @@ export type SubmittedUserInput = {
 	followUps?: string[];
 	/** Set by `submitInteractiveInput` for a custom-message submission: the session took it (started a turn or queued it into one). */
 	dispatched?: boolean;
+	/**
+	 * The local editor message Enter's original typed text. It arms the mail
+	 * approval scope for this turn, so an outgoing first message can be put to
+	 * the operator in the native consent selector. Programmatic, loop, goal,
+	 * follow-up, mail-driven and RPC submissions never set it.
+	 */
+	operatorText?: string;
 	cancelled: boolean;
 	started: boolean;
 };
@@ -462,6 +470,13 @@ export interface InteractiveModeContext {
 	/** Show the ctrl+p role chip track above the editor, `activeIndex` filled. */
 	showModelCycleTrack(segments: readonly TrackSegment[], activeIndex: number): void;
 	showError(message: string): void;
+	/**
+	 * Put one outgoing mail to the local operator in the native consent
+	 * selector. Only a trusted local submission calls it; it denies when the
+	 * review cannot be shown completely or the request belongs to a different
+	 * session.
+	 */
+	requestMailSendApproval(request: AgentMailApprovalRequest, signal?: AbortSignal): Promise<AgentMailApproval>;
 	showPinnedError(message: string): void;
 	clearPinnedError(): void;
 	showWarning(message: string, options?: { hideWithToolActivity?: boolean }): void;
@@ -504,6 +519,7 @@ export interface InteractiveModeContext {
 			display?: boolean;
 			streamingBehavior?: "steer" | "followUp";
 			followUps?: string[];
+			operatorText?: string;
 		},
 		options?: { preserveDraft?: boolean; clearEditor?: boolean },
 	): SubmittedUserInput;

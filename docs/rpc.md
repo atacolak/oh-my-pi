@@ -26,7 +26,7 @@ Behavior notes:
 
 - `@file` CLI arguments are rejected in RPC mode.
 - `--no-ui` (with `--mode rpc` or `--mode rpc-ui`) runs extensions headless: `ctx.hasUI` is `false`, dialogs resolve to their defaults, and extension presentation updates are dropped. With `rpc-ui`, tool UI such as `ask` remains enabled. With `rpc`, no UI requests are emitted except for a host-issued `login`. See [Extension UI Sub-Protocol](#extension-ui-sub-protocol) for the exact boundaries.
-- CLI RPC modes disable automatic session title generation (`PI_NO_TITLE=1`) to avoid an extra model call. `rpc-ui` also sets `PI_NO_PTY=1`.
+- RPC launches skip automatic titles by default to avoid an extra model call. For a user-visible chat, launch `omp --mode rpc --auto-title` (also supported with `rpc-ui`). This opts the new owner into OMP's normal title generation and refresh policy. An explicit `--no-title` or inherited `PI_NO_TITLE=1` still disables it. Attaching to an existing owner does not change its policy. `rpc-ui` also sets `PI_NO_PTY=1`.
 - RPC/ACP pin neutral defaults for settings declaring the corresponding `protocolDefault`, including task isolation/execution, memory, advisor, and advisor tier settings. RPC additionally pins async-job and bash/eval auto-background defaults. Explicit project/global config, `--config`, and isolated settings remain authoritative; on-disk config changes are watched in long-lived CLI RPC processes. Todo settings are not host-defaulted.
 - The in-process RPC runner claims stdin before extension discovery, then parses it one non-empty JSONL line at a time. Malformed JSON emits a recoverable `command: "parse"` failure and does not terminate the loop. A brokered launch also claims stdin before discovery, but forwards every line to the owner's session socket.
 - At startup it writes a `ready` frame before processing commands. The frame advertises supported protocol versions and transport limits.
@@ -187,6 +187,19 @@ Important edge behavior from runtime:
 - `{ id?, type: "cancel_subagent", subagentId: string }`
 - `{ id?, type: "steer_subagent", subagentId: string, message: string }`
 
+### Agent mail
+
+Mail is deposited and read; no command here wakes, steers, queues or starts peer input.
+
+- `{ id?, type: "agent_mail_post_consented", to: string, message: string, threadId?: string, replyTo?: string }` — post from the connected, mail-enabled sender with existing recipient consent. No wire argument can authorize a send or open the terminal review dialog. Never fall back to a pre-consent command.
+- `{ id?, type: "agent_mail_restrict", peer: string, rule: "block" | "reset" }` — block future mail or reset to default deny. The authenticated recipient attachment is scoped to that session; it cannot grant permission through this command.
+- `{ id?, type: "agent_mail_list", threadId?: string, limit?: number, folder?: "inbox" | "requests", before?: string }` — deliberate bounded read, newest last; `requests` is historical only.
+- Internal live handshake: `agent_mail_policy` reads one rule and its revision for an exact journal and boot without transmitting the message. `agent_mail_deliver_consented` verifies the exact envelope through `agent_mail_verify_send`, then checks current recipient policy at storage. Offline storage uses the same policy under the journal lease without waking an owner.
+
+An accepted send receipt is `{ messageId, threadId, admission: "stored", recipient, target }` with `target.bootId` `null` only for offline journal storage. It reports durable journal admission, not a read or a run, and carries no busy flag. `status: "unknown"` means the outcome is unproved; do not automatically resend.
+
+`agent_mail_list` returns `{ messages, total, truncated, nextBefore? }`. `total` counts all matches for the folder/thread and is stable across pages; `truncated` means older matches remain before the returned page; when `nextBefore` is present, pass it as `before` with the same folder/thread. Records keep historical `delivery`/`admission` values for old journals, and a missing `folder` means inbox.
+
 ### Model
 
 - `{ id?, type: "set_model", provider: string, modelId: string }`
@@ -288,6 +301,8 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 - `{ id?, type: "get_last_assistant_text" }`
 - `{ id?, type: "set_session_name", name: string }`
 - `{ id?, type: "handoff", customInstructions?: string }`
+
+Native session discovery, identity/naming, wake/attach and the native mail commands (`list_sessions`, `resolve_session`, `wake_session`, `set_session_identity`, `agent_mail_send`, `agent_mail_read`) have their own consumer contract: see [Native sessions: consumer card and API guide](./native-session-api.md) (`omp://native-session-api.md`). That page owns name-conflict diagnostics, the borrowed-host transport, and what a catalog consumer may and may not assume.
 
 `handoff` fails while a response is streaming. On success, its payload is `{ savedPath? }` or `null` when no handoff was produced. Session transitions (`new_session`, `switch_session`, `branch`, `fork`, `open_session`) report cancellation when an extension prevents the transition.
 

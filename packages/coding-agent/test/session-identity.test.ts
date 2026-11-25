@@ -22,6 +22,7 @@ import {
 	assignSessionIdentity,
 	createOrOpenSessionIdentity,
 	listSessionIdentities,
+	listSessionIdentityInventory,
 	resolveSessionIdentity,
 	SessionIdentityAmbiguousError,
 	SessionIdentityConflictError,
@@ -48,6 +49,7 @@ import {
 	isSessionLeaseHeld,
 	SessionReservationBusyError,
 	SessionReservationUnavailableError,
+	tryAcquireSessionLease,
 } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import {
 	getConfigRootDir,
@@ -573,16 +575,137 @@ describe("native session identity catalog", () => {
 		expect((await resolveSessionIdentity("OTHER")).sessionId).toBe(second.id);
 	});
 
-	it("refuses historical case-colliding journals instead of advertising or selecting either owner", async () => {
+	it("reports historical case-colliding name claims without selecting either claimant", async () => {
 		const first = await create("old-name");
 		const second = await create("Old-Name-two");
 		second.manager.appendSessionIdentityMetadata({ version: 1, actorHandle: "OLD-NAME" });
 		await second.manager.flush();
 		const before = await Bun.file(second.file).text();
-		await expect(listSessionIdentities()).rejects.toBeInstanceOf(SessionIdentityConflictError);
+		const inventory = await listSessionIdentityInventory();
+		expect(inventory.records.map(record => record.sessionId).sort()).toEqual([first.id, second.id].sort());
+		expect(inventory.records.filter(record => record.actorHandle?.toLowerCase() === "old-name")).toHaveLength(2);
+		expect(inventory.conflicts).toEqual([
+			{ code: "duplicate_handle", handle: "old-name", sessionIds: [first.id, second.id].sort() },
+		]);
+		expect((await listSessionIdentities()).map(record => record.sessionId).sort()).toEqual(
+			[first.id, second.id].sort(),
+		);
 		await expect(resolveSessionIdentity("old-name")).rejects.toBeInstanceOf(SessionIdentityConflictError);
 		expect(await Bun.file(second.file).text()).toBe(before);
 		expect(first.manager.getSessionIdentityMetadata()?.actorHandle).toBe("old-name");
+	});
+
+	it("keeps multiple legacy name claims visible without redirecting an unaffected session", async () => {
+		const first = await create("legacy");
+		const second = await create("second-legacy-owner");
+		second.manager.appendSessionIdentityMetadata({ version: 1, actorHandle: "LEGACY" });
+		await second.manager.flush();
+		const unaffected = await create("unaffected");
+		const unaffectedBytes = await Bun.file(unaffected.file).text();
+		const expectedIds = [first.id, second.id].sort();
+
+		const inventory = await listSessionIdentityInventory();
+		expect(inventory.records.map(record => record.sessionId).sort()).toEqual(
+			[first.id, second.id, unaffected.id].sort(),
+		);
+		expect(inventory.conflicts).toEqual([{ code: "duplicate_handle", handle: "legacy", sessionIds: expectedIds }]);
+		expect((await listSessionIdentities()).map(record => record.sessionId).sort()).toEqual(
+			[first.id, second.id, unaffected.id].sort(),
+		);
+
+		await expect(resolveSessionIdentity("LeGaCy")).rejects.toBeInstanceOf(SessionIdentityConflictError);
+		expect(await resolveSessionIdentity(first.id)).toMatchObject({ sessionId: first.id, actorHandle: "legacy" });
+		expect(await resolveSessionIdentity(second.id)).toMatchObject({ sessionId: second.id, actorHandle: "LEGACY" });
+		expect((await resolveSessionIdentity("unaffected")).sessionId).toBe(unaffected.id);
+
+		await expect(assignSessionIdentity(unaffected.manager, { actorHandle: "lEgAcY" })).rejects.toBeInstanceOf(
+			SessionIdentityConflictError,
+		);
+		const count = (await listSessionIdentities()).length;
+		await expect(createOrOpenSessionIdentity({ cwd, actorHandle: "LeGaCy" })).rejects.toBeInstanceOf(
+			SessionIdentityConflictError,
+		);
+		expect((await listSessionIdentities()).length).toBe(count);
+		expect(await Bun.file(unaffected.file).text()).toBe(unaffectedBytes);
+
+		const fresh = await createOrOpenSessionIdentity({ cwd });
+		managers.push(fresh.manager);
+		expect(fresh.identity.actorHandle).toBeNull();
+		expect((await listSessionIdentities()).length).toBe(count + 1);
+	});
+
+	it("repairs one ambiguous claimant by exact UUID while an independent conflict stays contained", async () => {
+		const first = await create("dup");
+		const second = await create("second-dup-owner");
+		second.manager.appendSessionIdentityMetadata({ version: 1, actorHandle: "DUP" });
+		await second.manager.flush();
+		await create("side");
+		const sideTwo = await create("second-side-owner");
+		sideTwo.manager.appendSessionIdentityMetadata({ version: 1, actorHandle: "SIDE" });
+		await sideTwo.manager.flush();
+		const unaffected = await create("unaffected-repair");
+		const unaffectedBytes = await Bun.file(unaffected.file).text();
+
+		const inventory = await listSessionIdentityInventory();
+		expect(inventory.conflicts.map(conflict => conflict.handle)).toEqual(["dup", "side"]);
+		expect(inventory.conflicts.every(conflict => conflict.code === "duplicate_handle")).toBe(true);
+		const projection = listSessionIdentityProjection(sessionsRoot);
+		expect(projection.some(row => row.actorHandle?.toLowerCase() === "dup")).toBe(false);
+		expect(projection.some(row => row.actorHandle?.toLowerCase() === "side")).toBe(false);
+
+		await first.manager.close();
+		const reopened = await createOrOpenSessionIdentity({ cwd, reference: first.id });
+		managers.push(reopened.manager);
+		expect(reopened.created).toBe(false);
+		expect(reopened.identity.actorHandle).toBe("dup");
+		await assignSessionIdentity(reopened.manager, { actorHandle: "repaired" });
+		expect((await resolveSessionIdentity("repaired")).sessionId).toBe(first.id);
+		expect((await resolveSessionIdentity("dup")).sessionId).toBe(second.id);
+		await expect(assignSessionIdentity(unaffected.manager, { actorHandle: "DUP" })).rejects.toBeInstanceOf(
+			SessionIdentityConflictError,
+		);
+
+		await second.manager.close();
+		const cleared = await createOrOpenSessionIdentity({ cwd, reference: second.id });
+		managers.push(cleared.manager);
+		await assignSessionIdentity(cleared.manager, { actorHandle: null });
+		await expect(resolveSessionIdentity("dup")).rejects.toBeInstanceOf(SessionIdentityNotFoundError);
+
+		const reclaimed = await createOrOpenSessionIdentity({ cwd, actorHandle: "DUP" });
+		managers.push(reclaimed.manager);
+		expect(reclaimed.identity.actorHandle).toBe("DUP");
+		expect(reclaimed.identity.sessionId).not.toBe(second.id);
+
+		closeSessionIndex();
+		expect((await resolveSessionIdentity(first.id)).actorHandle).toBe("repaired");
+		expect((await resolveSessionIdentity(second.id)).actorHandle).toBeNull();
+		expect(await Bun.file(unaffected.file).text()).toBe(unaffectedBytes);
+		expect((await listSessionIdentities()).map(record => record.sessionId)).toEqual(
+			expect.arrayContaining([first.id, second.id, unaffected.id, reclaimed.identity.sessionId]),
+		);
+	});
+
+	it("refuses opening or pinning by an ambiguous name while exact UUIDs still open", async () => {
+		const first = await create("shared-name");
+		const second = await create("second-shared-owner");
+		second.manager.appendSessionIdentityMetadata({ version: 1, actorHandle: "SHARED-NAME" });
+		await second.manager.flush();
+		await first.manager.close();
+		const before = (await listSessionIdentities()).length;
+		await expect(createOrOpenSessionIdentity({ cwd, actorHandle: "Shared-Name" })).rejects.toBeInstanceOf(
+			SessionIdentityConflictError,
+		);
+		await expect(
+			createOrOpenSessionIdentity({ cwd, reference: second.id, actorHandle: "shared-name" }),
+		).rejects.toBeInstanceOf(SessionIdentityConflictError);
+		expect((await listSessionIdentities()).length).toBe(before);
+
+		const opened = await createOrOpenSessionIdentity({ cwd, reference: first.id });
+		managers.push(opened.manager);
+		expect(opened.created).toBe(false);
+		expect(opened.identity.sessionId).toBe(first.id);
+		expect(opened.identity.actorHandle).toBe("shared-name");
+		expect((await resolveSessionIdentity(second.id)).actorHandle).toBe("SHARED-NAME");
 	});
 
 	it("lets exactly one of two concurrent claims win", async () => {
@@ -664,6 +787,25 @@ describe("native session identity catalog", () => {
 		await expect(resolveSessionIdentity("before-rename")).rejects.toBeInstanceOf(SessionIdentityNotFoundError);
 		expect((await resolveSessionIdentity(created.id)).actorHandle).toBe("after-rename");
 		expect((await resolveSessionIdentity("after-rename")).sessionId).toBe(created.id);
+	});
+
+	it("keeps a named session uniquely addressable when a competing writer continues under a new UUID", async () => {
+		const parent = await create("games");
+		await parent.manager.close();
+		const writer = await SessionManager.open(parent.file, path.dirname(parent.file));
+		managers.push(writer);
+		const lease = tryAcquireSessionLease(parent.id);
+		if (!lease) throw new Error("fixture could not reserve the original journal");
+		try {
+			writer.appendMessage({ role: "user", content: "continue here", timestamp: 1 });
+			await writer.rewriteEntries();
+			expect(writer.getHeader()?.continuationOf).toBe(parent.id);
+			expect((await resolveSessionIdentity("GAMES")).sessionId).toBe(parent.id);
+			expect((await resolveSessionIdentity(writer.getSessionId())).actorHandle).toBeNull();
+			expect(writer.getBranch().some(entry => entry.type === "message" && entry.message.role === "user")).toBe(true);
+		} finally {
+			lease.release();
+		}
 	});
 
 	it("strips exclusive identity entries from forks", async () => {
@@ -769,25 +911,27 @@ describe("native session identity catalog", () => {
 		await expect(listSessionIdentities()).rejects.toBeInstanceOf(SessionIdentityConflictError);
 	});
 
-	it("refuses a rewritten copy that keeps the handle under a new session id", async () => {
+	it("keeps a rewritten copy's raw name claim out of the unique handle projection", async () => {
 		const created = await create("cloned-actor");
 		const lines = (await fsp.readFile(created.file, "utf8")).split("\n");
 		const headerIndex = lines.findIndex(line => line && JSON.parse(line).type === "session");
 		if (headerIndex < 0) throw new Error("missing source session header");
 		const header = JSON.parse(lines[headerIndex]) as { id: string };
-		header.id = "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000";
+		const clonedId = "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000";
+		header.id = clonedId;
 		lines[headerIndex] = JSON.stringify(header);
 		const copyBucket = path.join(sessionsRoot, "rewritten-bucket");
 		fs.mkdirSync(copyBucket, { recursive: true });
-		await fsp.writeFile(path.join(copyBucket, "rewritten.jsonl"), lines.join("\n"));
+		const copyFile = path.join(copyBucket, "rewritten.jsonl");
+		await fsp.writeFile(copyFile, lines.join("\n"));
 
-		try {
-			await listSessionIdentities();
-			throw new Error("expected the catalog to refuse the cloned handle");
-		} catch (error) {
-			expect(error).toBeInstanceOf(SessionIdentityConflictError);
-			expect((error as SessionIdentityConflictError).actorHandle).toBe("cloned-actor");
-		}
+		const inventory = await listSessionIdentityInventory();
+		expect(inventory.records.filter(record => record.actorHandle === "cloned-actor")).toHaveLength(2);
+		expect(inventory.conflicts).toEqual([
+			{ code: "duplicate_handle", handle: "cloned-actor", sessionIds: [created.id, clonedId].sort() },
+		]);
+		expect(listSessionIdentityProjection(sessionsRoot).some(row => row.actorHandle === "cloned-actor")).toBe(false);
+		await expect(resolveSessionIdentity("cloned-actor")).rejects.toBeInstanceOf(SessionIdentityConflictError);
 	});
 	it("refuses names that also identify a different session UUID", async () => {
 		const first = await create();

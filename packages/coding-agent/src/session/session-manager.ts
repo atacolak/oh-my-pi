@@ -1584,6 +1584,16 @@ export class SessionManager {
 		return contested;
 	}
 
+	/** Reidentify this in-memory history without copying the old UUID's exclusive claims. */
+	#startCopiedHistory(): void {
+		const stripped = stripExclusiveIdentityEntries(this.#entries, this.#index.leafId());
+		this.#entries = stripped.entries;
+		this.#index.rebuild(stripped.entries);
+		this.#index.setLeaf(stripped.activeLeafId);
+		this.#sessionId = mintSessionId();
+		this.#taskSiblingCandidate = undefined;
+	}
+
 	/**
 	 * Leave `#sessionFile` untouched and continue as a fresh session in a
 	 * sibling file. It gets a new session id whose header points back through
@@ -1606,8 +1616,7 @@ export class SessionManager {
 		const from = this.#sessionFile as string;
 		const previousSessionId = this.#sessionId;
 		const timestamp = nowIso();
-		this.#sessionId = mintSessionId();
-		this.#taskSiblingCandidate = undefined;
+		this.#startCopiedHistory();
 		const to = path.join(path.dirname(from), `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
 		// The marker goes before the carried-over fields: the session listing
 		// reads only the first 4 KB of a file, and a header grows with them.
@@ -2957,8 +2966,7 @@ export class SessionManager {
 
 		const timestamp = nowIso();
 		this.#leaveSessionForExplicitTransition();
-		this.#sessionId = mintSessionId();
-		this.#taskSiblingCandidate = undefined;
+		this.#startCopiedHistory();
 		this.#sessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
 		this.#expectedDiskSize = null;
 		this.#header = {
@@ -2988,11 +2996,6 @@ export class SessionManager {
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
-
-		const stripped = stripExclusiveIdentityEntries(this.#entries, this.#index.leafId());
-		this.#entries = stripped.entries;
-		this.#index.rebuild(stripped.entries);
-		this.#index.setLeaf(stripped.activeLeafId);
 
 		await this.#rewriteAtomically();
 		return { oldSessionFile, newSessionFile: this.#sessionFile };
@@ -5249,7 +5252,81 @@ export class SessionManager {
 		if (!path.isAbsolute(cwd)) throw new TypeError("Session working directory must be absolute");
 		const rootAgent = profile.trim();
 		if (!rootAgent) throw new TypeError("Root agent profile must be nonempty");
+		let alreadyBound = false;
+		return SessionManager.#withReservedJournal(
+			sessionPath,
+			sessionId,
+			cwd,
+			storage,
+			header => {
+				if (!header) throw new Error(`Session transcript ${sessionPath} has no session header`);
+				if (header.id !== sessionId) {
+					throw new Error(`Session transcript ${sessionPath} identifies "${header.id}", not "${sessionId}"`);
+				}
+				if (!header.cwd || normalizePathForComparison(header.cwd) !== normalizePathForComparison(cwd)) {
+					throw new Error(`Session ${sessionId} is recorded in a different working directory`);
+				}
+				const bound = readRootAgentProfile(header);
+				if (bound !== undefined && bound !== rootAgent) {
+					throw new Error(`Session ${sessionId} is already bound to a different root agent profile`);
+				}
+				alreadyBound = bound === rootAgent;
+			},
+			async manager => {
+				if (!alreadyBound) await manager.setRootAgent(rootAgent);
+				return !alreadyBound;
+			},
+		);
+	}
 
+	/**
+	 * Append to one saved journal that no live session owns, without creating,
+	 * forking, continuing, or publishing an owner for it.
+	 *
+	 * The journal must exist and its header must identify `sessionId`; a live
+	 * owner — in this process or another — refuses the call before any bytes
+	 * change. The operation runs while this process holds the session's
+	 * ownership lease, its appends are flushed before the lease is released, and
+	 * the lease is released on failure too. A journal holding only its header
+	 * (and title slot) is valid.
+	 */
+	static async withOfflineJournal<T>(
+		sessionId: string,
+		sessionFile: string,
+		operation: (manager: SessionManager) => Promise<T>,
+	): Promise<T> {
+		return SessionManager.#withReservedJournal(
+			sessionFile,
+			sessionId,
+			undefined,
+			new FileSessionStorage(),
+			header => {
+				if (!header) throw new Error(`Session transcript ${sessionFile} has no session header`);
+				if (header.id !== sessionId) {
+					throw new Error(`Session transcript ${sessionFile} identifies "${header.id}", not "${sessionId}"`);
+				}
+			},
+			operation,
+		);
+	}
+
+	/**
+	 * Open `sessionPath` as exactly `sessionId` under its strict ownership lease
+	 * and hand it to `operation`. The strict owner policy keeps the opened
+	 * manager on that journal: it never forks, relocates, or republishes, and a
+	 * lost lease or a foreign header refuses the call. The lease stays held
+	 * through the operation, the flush of its appends, and `close`.
+	 */
+	static async #withReservedJournal<T>(
+		sessionPath: string,
+		sessionId: string,
+		initialCwd: string | undefined,
+		storage: FileSessionStorage,
+		validateHeader: (header: SessionHeader | undefined) => void,
+		operation: (manager: SessionManager) => Promise<T>,
+	): Promise<T> {
+		if (!path.isAbsolute(sessionPath)) throw new TypeError("Session transcript path must be absolute");
+		if (!sessionId.trim()) throw new TypeError("Session id must be nonempty");
 		const held = isSessionLeaseHeld(sessionId);
 		if (held === null) {
 			throw new SessionReservationUnavailableError(sessionId, "the ownership lease could not be probed");
@@ -5266,37 +5343,37 @@ export class SessionManager {
 		}
 		let manager: SessionManager | undefined;
 		try {
-			let alreadyBound = false;
-			manager = await SessionManager.open(sessionPath, path.dirname(path.resolve(sessionPath)), storage, {
-				initialCwd: cwd,
-				throwIfMissing: true,
-				suppressBreadcrumb: true,
-				ownershipPolicy: "require-owner",
-				ownershipReservation: reservation,
-				validateHeader: header => {
-					if (!header) throw new Error(`Session transcript ${sessionPath} has no session header`);
-					if (header.id !== sessionId) {
-						throw new Error(`Session transcript ${sessionPath} identifies "${header.id}", not "${sessionId}"`);
-					}
-					if (!header.cwd || normalizePathForComparison(header.cwd) !== normalizePathForComparison(cwd)) {
-						throw new Error(`Session ${sessionId} is recorded in a different working directory`);
-					}
-					const bound = readRootAgentProfile(header);
-					if (bound !== undefined && bound !== rootAgent) {
-						throw new Error(`Session ${sessionId} is already bound to a different root agent profile`);
-					}
-					alreadyBound = bound === rootAgent;
+			const opened = await SessionManager.open(
+				sessionPath,
+				path.dirname(path.resolve(sessionPath)),
+				storage,
+				{
+					...(initialCwd === undefined ? {} : { initialCwd }),
+					throwIfMissing: true,
+					suppressBreadcrumb: true,
+					ownershipPolicy: "require-owner",
+					ownershipReservation: reservation,
+					validateHeader,
 				},
-			});
-			if (!alreadyBound) await manager.setRootAgent(rootAgent);
-			if (
-				manager.getSessionId() !== sessionId ||
-				manager.getSessionFile() !== path.resolve(sessionPath) ||
-				!manager.hasSessionOwnership()
-			) {
-				throw new Error(`Session ${sessionId} lost its exact transcript or ownership lease during binding`);
-			}
-			return !alreadyBound;
+			);
+			manager = opened;
+			const assertExactJournal = (): void => {
+				if (
+					opened.getSessionId() !== sessionId ||
+					opened.getSessionFile() !== path.resolve(sessionPath) ||
+					!opened.hasSessionOwnership()
+				) {
+					throw new Error(
+						`Session ${sessionId} lost its exact transcript or ownership lease during the journal operation`,
+					);
+				}
+			};
+			assertExactJournal();
+			const result = await operation(opened);
+			assertExactJournal();
+			await opened.flush();
+			assertExactJournal();
+			return result;
 		} finally {
 			try {
 				await manager?.close();

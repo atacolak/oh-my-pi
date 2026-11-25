@@ -14,9 +14,10 @@ import type {
 } from "../modes/rpc/rpc-types";
 import type { CompactMode } from "./compact-modes";
 import {
-	listSessionIdentities,
+	listSessionIdentityInventory,
 	resolveSessionIdentity,
 	resolveSessionIdentityReference,
+	type SessionIdentityNameConflict,
 	type SessionResponsibilityAssignment,
 } from "./session-identity";
 import { lookupSessionTitle } from "./session-index";
@@ -62,6 +63,8 @@ export interface NativeSessionList {
 	total: number;
 	truncated: boolean;
 	nextOffset?: number;
+	/** Historical name claims in this catalog; no claimant is selected as the owner. */
+	conflicts?: SessionIdentityNameConflict[];
 	/** Verified live session sockets publishing terminal coordinates across the catalog. */
 	attachableSockets?: number;
 	unverifiedSockets?: number;
@@ -117,8 +120,8 @@ export class NativeSessionService {
 	static readonly #listProbeConcurrency = 32;
 	constructor(readonly options: { sessionsRoot?: string; endpointDir?: string; timeoutMs?: number } = {}) {}
 
-	async #entries(): Promise<NativeSessionInfo[]> {
-		const records = await listSessionIdentities({ sessionsRoot: this.options.sessionsRoot });
+	async #entries(): Promise<{ entries: NativeSessionInfo[]; conflicts: SessionIdentityNameConflict[] }> {
+		const { records, conflicts } = await listSessionIdentityInventory({ sessionsRoot: this.options.sessionsRoot });
 		const entries = new Map<string, NativeSessionInfo>();
 		for (const record of records) {
 			entries.set(record.sessionId, {
@@ -167,7 +170,7 @@ export class NativeSessionService {
 				terminal: publication.terminal ?? null,
 			});
 		}
-		return [...entries.values()];
+		return { entries: [...entries.values()], conflicts };
 	}
 
 	async #savedProfile(session: NativeSessionInfo): Promise<NativeSessionInfo> {
@@ -182,7 +185,7 @@ export class NativeSessionService {
 	}
 
 	async resolve(selector: NativeSessionSelector): Promise<NativeSessionInfo> {
-		const entries = await this.#entries();
+		const { entries } = await this.#entries();
 		let matches: NativeSessionInfo[];
 		if (typeof selector !== "string") {
 			if (!Number.isSafeInteger(selector.pid) || selector.pid <= 0)
@@ -275,7 +278,7 @@ export class NativeSessionService {
 		)
 			throw new TypeError("unnamedLimit must be a nonnegative integer");
 		const query = options.query?.trim().toLowerCase();
-		const allEntries = await this.#entries();
+		const { entries: allEntries, conflicts } = await this.#entries();
 		const entries = allEntries.filter(
 			entry =>
 				!query ||
@@ -327,6 +330,7 @@ export class NativeSessionService {
 			sessions: page,
 			total: matched.length,
 			truncated,
+			...(conflicts.length ? { conflicts } : {}),
 			...(truncated ? { nextOffset: offset + page.length } : {}),
 			...(options.probe === false
 				? {}

@@ -2011,14 +2011,43 @@ func (v *NativeSessionInfoState) UnmarshalJSON(data []byte) error {
 	return unknownValue("NativeSessionInfoState", s)
 }
 
+type SessionIdentityNameConflict struct {
+	Handle     string   `json:"handle"`
+	SessionIds []string `json:"sessionIds"`
+}
+
+func (v *SessionIdentityNameConflict) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionIdentityNameConflict", v.decodeFrom)
+}
+
+func (v *SessionIdentityNameConflict) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionIdentityNameConflict
+	d := fieldDecoder{raw: raw, owner: "SessionIdentityNameConflict"}
+	d.constant("code", "duplicate_handle")
+	d.required("handle", &out.Handle)
+	d.required("sessionIds", &out.SessionIds)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v SessionIdentityNameConflict) MarshalJSON() ([]byte, error) {
+	type plain SessionIdentityNameConflict
+	return encodeObject(plain(v), `"code":"duplicate_handle"`, nil)
+}
+
 type NativeSessionList struct {
-	Sessions          []NativeSessionInfo `json:"sessions"`
-	Total             int64               `json:"total"`
-	Truncated         bool                `json:"truncated"`
-	NextOffset        *int64              `json:"nextOffset,omitempty"`
-	AttachableSockets *int64              `json:"attachableSockets,omitempty"`
-	UnverifiedSockets *int64              `json:"unverifiedSockets,omitempty"`
-	OmittedUnnamed    *int64              `json:"omittedUnnamed,omitempty"`
+	Sessions  []NativeSessionInfo `json:"sessions"`
+	Total     int64               `json:"total"`
+	Truncated bool                `json:"truncated"`
+	// Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied.
+	Conflicts         []SessionIdentityNameConflict `json:"conflicts,omitempty"`
+	NextOffset        *int64                        `json:"nextOffset,omitempty"`
+	AttachableSockets *int64                        `json:"attachableSockets,omitempty"`
+	UnverifiedSockets *int64                        `json:"unverifiedSockets,omitempty"`
+	OmittedUnnamed    *int64                        `json:"omittedUnnamed,omitempty"`
 }
 
 func (v *NativeSessionList) UnmarshalJSON(data []byte) error {
@@ -2031,6 +2060,7 @@ func (v *NativeSessionList) decodeFrom(raw map[string]json.RawMessage) error {
 	d.required("sessions", &out.Sessions)
 	d.required("total", &out.Total)
 	d.required("truncated", &out.Truncated)
+	d.optional("conflicts", &out.Conflicts)
 	d.optional("nextOffset", &out.NextOffset)
 	d.optional("attachableSockets", &out.AttachableSockets)
 	d.optional("unverifiedSockets", &out.UnverifiedSockets)
@@ -2668,10 +2698,11 @@ func (v *SessionIdentityRecord) decodeFrom(raw map[string]json.RawMessage) error
 	return nil
 }
 
-// Recipient-side input path the sender chose: queue behind the run, or steer into it.
+// Recorded delivery path. New mail is always `inbox`; `queue` and `steer` appear only in historical records.
 type AgentMailDelivery string
 
 const (
+	AgentMailDeliveryInbox AgentMailDelivery = "inbox"
 	AgentMailDeliveryQueue AgentMailDelivery = "queue"
 	AgentMailDeliverySteer AgentMailDelivery = "steer"
 )
@@ -2682,16 +2713,38 @@ func (v *AgentMailDelivery) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	switch value := AgentMailDelivery(s); value {
-	case AgentMailDeliveryQueue, AgentMailDeliverySteer:
+	case AgentMailDeliveryInbox, AgentMailDeliveryQueue, AgentMailDeliverySteer:
 		*v = value
 		return nil
 	}
 	return unknownValue("AgentMailDelivery", s)
 }
 
+// Only inbox storage is accepted; legacy queue/steer envelopes are refused.
+type AgentMailInboxDelivery string
+
+const (
+	AgentMailInboxDeliveryInbox AgentMailInboxDelivery = "inbox"
+)
+
+func (v *AgentMailInboxDelivery) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailInboxDelivery")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailInboxDelivery(s); value {
+	case AgentMailInboxDeliveryInbox:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailInboxDelivery", s)
+}
+
+// Recorded admission. New mail is always `stored`; older input-admission values appear only in historical records.
 type AgentMailAdmission string
 
 const (
+	AgentMailAdmissionStored   AgentMailAdmission = "stored"
 	AgentMailAdmissionAdmitted AgentMailAdmission = "admitted"
 	AgentMailAdmissionQueued   AgentMailAdmission = "queued"
 	AgentMailAdmissionSteering AgentMailAdmission = "steering"
@@ -2703,11 +2756,96 @@ func (v *AgentMailAdmission) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	switch value := AgentMailAdmission(s); value {
-	case AgentMailAdmissionAdmitted, AgentMailAdmissionQueued, AgentMailAdmissionSteering:
+	case AgentMailAdmissionStored, AgentMailAdmissionAdmitted, AgentMailAdmissionQueued, AgentMailAdmissionSteering:
 		*v = value
 		return nil
 	}
 	return unknownValue("AgentMailAdmission", s)
+}
+
+// New mail is stored only in inbox. The requests folder is historical.
+type AgentMailFolder string
+
+const (
+	AgentMailFolderInbox    AgentMailFolder = "inbox"
+	AgentMailFolderRequests AgentMailFolder = "requests"
+)
+
+func (v *AgentMailFolder) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailFolder")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailFolder(s); value {
+	case AgentMailFolderInbox, AgentMailFolderRequests:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailFolder", s)
+}
+
+// Recipient-owned directional rule. Reset restores default deny.
+type AgentMailContactRule string
+
+const (
+	AgentMailContactRuleAllow AgentMailContactRule = "allow"
+	AgentMailContactRuleBlock AgentMailContactRule = "block"
+	AgentMailContactRuleReset AgentMailContactRule = "reset"
+)
+
+func (v *AgentMailContactRule) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailContactRule")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailContactRule(s); value {
+	case AgentMailContactRuleAllow, AgentMailContactRuleBlock, AgentMailContactRuleReset:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailContactRule", s)
+}
+
+type AgentMailPolicy struct {
+	Rule     AgentMailPolicyRule `json:"rule"`
+	Revision *string             `json:"revision"`
+}
+
+func (v *AgentMailPolicy) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailPolicy", v.decodeFrom)
+}
+
+func (v *AgentMailPolicy) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailPolicy
+	d := fieldDecoder{raw: raw, owner: "AgentMailPolicy"}
+	d.required("rule", &out.Rule)
+	d.nullable("revision", &out.Revision)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type AgentMailPolicyRule string
+
+const (
+	AgentMailPolicyRuleAllow   AgentMailPolicyRule = "allow"
+	AgentMailPolicyRuleBlock   AgentMailPolicyRule = "block"
+	AgentMailPolicyRuleUnknown AgentMailPolicyRule = "unknown"
+)
+
+func (v *AgentMailPolicyRule) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailPolicyRule")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailPolicyRule(s); value {
+	case AgentMailPolicyRuleAllow, AgentMailPolicyRuleBlock, AgentMailPolicyRuleUnknown:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailPolicyRule", s)
 }
 
 // Native addressability of one session end at mail time.
@@ -2762,6 +2900,32 @@ func (v *AgentMailIncarnation) decodeFrom(raw map[string]json.RawMessage) error 
 	return nil
 }
 
+// Mail destination: a live owner incarnation, or a saved journal with no live owner.
+type AgentMailTarget struct {
+	SessionID string `json:"sessionId"`
+	// Owned canonical session journal.
+	SessionFile string `json:"sessionFile"`
+	// Exact owner boot; null only when a saved journal stored the mail without a live owner.
+	BootID *string `json:"bootId"`
+}
+
+func (v *AgentMailTarget) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailTarget", v.decodeFrom)
+}
+
+func (v *AgentMailTarget) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailTarget
+	d := fieldDecoder{raw: raw, owner: "AgentMailTarget"}
+	d.required("sessionId", &out.SessionID)
+	d.required("sessionFile", &out.SessionFile)
+	d.nullable("bootId", &out.BootID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 // Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself.
 type AgentMailVerification struct {
 	Valid bool `json:"valid"`
@@ -2772,7 +2936,9 @@ type AgentMailVerification struct {
 	// Source owner incarnation; present when valid.
 	Source *AgentMailIncarnation `json:"source,omitempty"`
 	// Exact recipient incarnation bound into the proof.
-	Target *AgentMailIncarnation `json:"target,omitempty"`
+	Target         *AgentMailIncarnation          `json:"target,omitempty"`
+	Approval       *AgentMailVerificationApproval `json:"approval,omitempty"`
+	PolicyRevision *string                        `json:"policyRevision,omitempty"`
 }
 
 func (v *AgentMailVerification) UnmarshalJSON(data []byte) error {
@@ -2787,6 +2953,8 @@ func (v *AgentMailVerification) decodeFrom(raw map[string]json.RawMessage) error
 	d.optional("sender", &out.Sender)
 	d.optional("source", &out.Source)
 	d.optional("target", &out.Target)
+	d.optional("approval", &out.Approval)
+	d.optional("policyRevision", &out.PolicyRevision)
 	if d.err != nil {
 		return d.err
 	}
@@ -2794,13 +2962,35 @@ func (v *AgentMailVerification) decodeFrom(raw map[string]json.RawMessage) error
 	return nil
 }
 
-// Bounded inbox read derived from the current journal; newest last.
+type AgentMailVerificationApproval string
+
+const (
+	AgentMailVerificationApprovalOnce   AgentMailVerificationApproval = "once"
+	AgentMailVerificationApprovalAlways AgentMailVerificationApproval = "always"
+)
+
+func (v *AgentMailVerificationApproval) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailVerificationApproval")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailVerificationApproval(s); value {
+	case AgentMailVerificationApprovalOnce, AgentMailVerificationApprovalAlways:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailVerificationApproval", s)
+}
+
+// Bounded mail read derived from the current journal; newest last.
 type AgentMailReadResult struct {
 	Messages []AgentMailRecord `json:"messages"`
-	// Admitted records matching the read filter.
+	// All records matching the read folder/thread filter; stable across `before` pages.
 	Total int64 `json:"total"`
-	// True when `total` exceeds the returned messages.
+	// True when older matches remain before the returned page.
 	Truncated bool `json:"truncated"`
+	// Pass as `before` to read the next older page in the same folder/thread; absent when no older match exists.
+	NextBefore *string `json:"nextBefore,omitempty"`
 }
 
 func (v *AgentMailReadResult) UnmarshalJSON(data []byte) error {
@@ -2813,6 +3003,7 @@ func (v *AgentMailReadResult) decodeFrom(raw map[string]json.RawMessage) error {
 	d.required("messages", &out.Messages)
 	d.required("total", &out.Total)
 	d.required("truncated", &out.Truncated)
+	d.optional("nextBefore", &out.NextBefore)
 	if d.err != nil {
 		return d.err
 	}
@@ -2820,15 +3011,12 @@ func (v *AgentMailReadResult) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
-// Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it.
+// Truthful receipt for one accepted mail: recorded in the recipient journal; never a claim the recipient read or acted on it.
 type AgentMailReceipt struct {
-	MessageID string             `json:"messageId"`
-	ThreadID  string             `json:"threadId"`
-	Admission AgentMailAdmission `json:"admission"`
-	// Whether a run was streaming on the recipient when the mail was admitted.
-	Busy      bool                      `json:"busy"`
+	MessageID string                    `json:"messageId"`
+	ThreadID  string                    `json:"threadId"`
 	Recipient AgentMailEndpointIdentity `json:"recipient"`
-	Target    AgentMailIncarnation      `json:"target"`
+	Target    AgentMailTarget           `json:"target"`
 }
 
 func (v *AgentMailReceipt) UnmarshalJSON(data []byte) error {
@@ -2840,8 +3028,7 @@ func (v *AgentMailReceipt) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "AgentMailReceipt"}
 	d.required("messageId", &out.MessageID)
 	d.required("threadId", &out.ThreadID)
-	d.required("admission", &out.Admission)
-	d.required("busy", &out.Busy)
+	d.constant("admission", "stored")
 	d.required("recipient", &out.Recipient)
 	d.required("target", &out.Target)
 	if d.err != nil {
@@ -2851,20 +3038,27 @@ func (v *AgentMailReceipt) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
-// One delivered mail record with full sender/recipient/thread provenance.
+func (v AgentMailReceipt) MarshalJSON() ([]byte, error) {
+	type plain AgentMailReceipt
+	return encodeObject(plain(v), `"admission":"stored"`, nil)
+}
+
+// One stored mail record with full sender/recipient/thread provenance.
 type AgentMailRecord struct {
 	MessageID  string                    `json:"messageId"`
 	ThreadID   string                    `json:"threadId"`
 	Sender     AgentMailEndpointIdentity `json:"sender"`
 	Recipient  AgentMailEndpointIdentity `json:"recipient"`
 	Source     AgentMailIncarnation      `json:"source"`
-	Target     AgentMailIncarnation      `json:"target"`
+	Target     AgentMailTarget           `json:"target"`
 	Body       string                    `json:"body"`
 	SentAt     int64                     `json:"sentAt"`
 	ReceivedAt int64                     `json:"receivedAt"`
 	Delivery   AgentMailDelivery         `json:"delivery"`
 	Admission  AgentMailAdmission        `json:"admission"`
 	ReplyTo    *string                   `json:"replyTo,omitempty"`
+	// Absent in records saved before folders existed; those records count as `inbox`.
+	Folder *AgentMailFolder `json:"folder,omitempty"`
 }
 
 func (v *AgentMailRecord) UnmarshalJSON(data []byte) error {
@@ -2886,6 +3080,7 @@ func (v *AgentMailRecord) decodeFrom(raw map[string]json.RawMessage) error {
 	d.required("delivery", &out.Delivery)
 	d.required("admission", &out.Admission)
 	d.optional("replyTo", &out.ReplyTo)
+	d.optional("folder", &out.Folder)
 	if d.err != nil {
 		return d.err
 	}
@@ -8563,6 +8758,27 @@ func (v *SessionControlResultAction) UnmarshalJSON(data []byte) error {
 	return unknownValue("SessionControlResultAction", s)
 }
 
+type AgentMailRestrictResult struct {
+	Peer string               `json:"peer"`
+	Rule AgentMailContactRule `json:"rule"`
+}
+
+func (v *AgentMailRestrictResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentMailRestrictResult", v.decodeFrom)
+}
+
+func (v *AgentMailRestrictResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentMailRestrictResult
+	d := fieldDecoder{raw: raw, owner: "AgentMailRestrictResult"}
+	d.required("peer", &out.Peer)
+	d.required("rule", &out.Rule)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SetSlowModeResult struct {
 	Enabled bool `json:"enabled"`
 }
@@ -9408,20 +9624,55 @@ func (c Commands) WakeSession(ctx context.Context, p WakeSessionCommand) (Native
 	return out, err
 }
 
-// AgentMailSendCommand holds the parameters of "agent_mail_send".
-type AgentMailSendCommand struct {
-	To       string             `json:"to"`
-	Message  string             `json:"message"`
-	ThreadID *string            `json:"threadId,omitempty"`
-	ReplyTo  *string            `json:"replyTo,omitempty"`
-	Delivery *AgentMailDelivery `json:"delivery,omitempty"`
+// AgentMailPostConsentedCommand holds the parameters of "agent_mail_post_consented".
+type AgentMailPostConsentedCommand struct {
+	// Recipient UUID, unique id prefix or actor handle, resolved by the sending owner.
+	To string `json:"to"`
+	// Bounded mail body.
+	Message  string  `json:"message"`
+	ThreadID *string `json:"threadId,omitempty"`
+	ReplyTo  *string `json:"replyTo,omitempty"`
 }
 
-// AgentMailSend sends "agent_mail_send": Send through this sender owner, waking the exact peer when needed; unknown outcomes are never retried.
-func (c Commands) AgentMailSend(ctx context.Context, p AgentMailSendCommand) (AgentMailSendResult, error) {
+// AgentMailPostConsented sends "agent_mail_post_consented": Deposit quiet mail with existing recipient consent. RPC callers cannot grant consent or open a terminal dialog.
+func (c Commands) AgentMailPostConsented(ctx context.Context, p AgentMailPostConsentedCommand) (AgentMailSendResult, error) {
 	var out AgentMailSendResult
-	err := c.call(ctx, "agent_mail_send", p, 60*time.Second, &out)
+	err := c.call(ctx, "agent_mail_post_consented", p, 60*time.Second, &out)
 	return out, err
+}
+
+// AgentMailRestrictCommand holds the parameters of "agent_mail_restrict".
+type AgentMailRestrictCommand struct {
+	// Exact UUID of another native session; the attached recipient decides.
+	Peer string                       `json:"peer"`
+	Rule AgentMailRestrictCommandRule `json:"rule"`
+}
+
+// AgentMailRestrict sends "agent_mail_restrict": Block a sender or reset its rule to default deny. Cannot authorize delivery.
+func (c Commands) AgentMailRestrict(ctx context.Context, p AgentMailRestrictCommand) (AgentMailRestrictResult, error) {
+	var out AgentMailRestrictResult
+	err := c.call(ctx, "agent_mail_restrict", p, 0, &out)
+	return out, err
+}
+
+type AgentMailRestrictCommandRule string
+
+const (
+	AgentMailRestrictCommandRuleBlock AgentMailRestrictCommandRule = "block"
+	AgentMailRestrictCommandRuleReset AgentMailRestrictCommandRule = "reset"
+)
+
+func (v *AgentMailRestrictCommandRule) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AgentMailRestrictCommandRule")
+	if err != nil {
+		return err
+	}
+	switch value := AgentMailRestrictCommandRule(s); value {
+	case AgentMailRestrictCommandRuleBlock, AgentMailRestrictCommandRuleReset:
+		*v = value
+		return nil
+	}
+	return unknownValue("AgentMailRestrictCommandRule", s)
 }
 
 // SetSessionIdentityCommand holds the parameters of "set_session_identity".
@@ -10194,16 +10445,31 @@ func (c Commands) GetBtwHistory(ctx context.Context) ([]BtwHistoryRecord, error)
 	return out.Records, err
 }
 
-// AgentMailDeliverCommand holds the parameters of "agent_mail_deliver".
-type AgentMailDeliverCommand struct {
+// AgentMailPolicyCommand holds the parameters of "agent_mail_policy".
+type AgentMailPolicyCommand struct {
+	Peer                 string `json:"peer"`
+	RecipientSessionID   string `json:"recipientSessionId"`
+	RecipientSessionFile string `json:"recipientSessionFile"`
+	RecipientBootID      string `json:"recipientBootId"`
+}
+
+// AgentMailPolicy sends "agent_mail_policy": Read a recipient's rule for one sender without transmitting a message. A stale journal or boot refuses.
+func (c Commands) AgentMailPolicy(ctx context.Context, p AgentMailPolicyCommand) (AgentMailPolicy, error) {
+	var out AgentMailPolicy
+	err := c.call(ctx, "agent_mail_policy", p, 0, &out)
+	return out, err
+}
+
+// AgentMailDeliverConsentedCommand holds the parameters of "agent_mail_deliver_consented".
+type AgentMailDeliverConsentedCommand struct {
 	// Exact session UUID the sender captured; a mismatch refuses delivery.
-	RecipientSessionID   string            `json:"recipientSessionId"`
-	RecipientSessionFile string            `json:"recipientSessionFile"`
-	RecipientBootID      string            `json:"recipientBootId"`
-	MessageID            string            `json:"messageId"`
-	Message              string            `json:"message"`
-	Delivery             AgentMailDelivery `json:"delivery"`
-	SentAt               int64             `json:"sentAt"`
+	RecipientSessionID   string                 `json:"recipientSessionId"`
+	RecipientSessionFile string                 `json:"recipientSessionFile"`
+	RecipientBootID      string                 `json:"recipientBootId"`
+	MessageID            string                 `json:"messageId"`
+	Message              string                 `json:"message"`
+	Delivery             AgentMailInboxDelivery `json:"delivery"`
+	SentAt               int64                  `json:"sentAt"`
 	// Claimed source owner; verified through its own socket before admitting.
 	SenderSessionID   string `json:"senderSessionId"`
 	SenderSessionFile string `json:"senderSessionFile"`
@@ -10214,28 +10480,28 @@ type AgentMailDeliverCommand struct {
 	ReplyTo         *string `json:"replyTo,omitempty"`
 }
 
-// AgentMailDeliver sends "agent_mail_deliver": Deliver one cross-session mail to this owner; the sender capability is verified first.
-func (c Commands) AgentMailDeliver(ctx context.Context, p AgentMailDeliverCommand) (AgentMailReceipt, error) {
+// AgentMailDeliverConsented sends "agent_mail_deliver_consented": Store quiet mail after verifying the exact sender proof and checking the recipient's current consent.
+func (c Commands) AgentMailDeliverConsented(ctx context.Context, p AgentMailDeliverConsentedCommand) (AgentMailReceipt, error) {
 	var out AgentMailReceipt
-	err := c.call(ctx, "agent_mail_deliver", p, 0, &out)
+	err := c.call(ctx, "agent_mail_deliver_consented", p, 0, &out)
 	return out, err
 }
 
 // AgentMailVerifySendCommand holds the parameters of "agent_mail_verify_send".
 type AgentMailVerifySendCommand struct {
-	CapabilityToken      string            `json:"capabilityToken"`
-	RecipientSessionID   string            `json:"recipientSessionId"`
-	RecipientSessionFile string            `json:"recipientSessionFile"`
-	RecipientBootID      string            `json:"recipientBootId"`
-	MessageID            string            `json:"messageId"`
-	Message              string            `json:"message"`
-	Delivery             AgentMailDelivery `json:"delivery"`
-	SentAt               int64             `json:"sentAt"`
-	SenderSessionID      string            `json:"senderSessionId"`
-	SenderSessionFile    string            `json:"senderSessionFile"`
-	SenderBootID         string            `json:"senderBootId"`
-	ThreadID             *string           `json:"threadId,omitempty"`
-	ReplyTo              *string           `json:"replyTo,omitempty"`
+	CapabilityToken      string                 `json:"capabilityToken"`
+	RecipientSessionID   string                 `json:"recipientSessionId"`
+	RecipientSessionFile string                 `json:"recipientSessionFile"`
+	RecipientBootID      string                 `json:"recipientBootId"`
+	MessageID            string                 `json:"messageId"`
+	Message              string                 `json:"message"`
+	Delivery             AgentMailInboxDelivery `json:"delivery"`
+	SentAt               int64                  `json:"sentAt"`
+	SenderSessionID      string                 `json:"senderSessionId"`
+	SenderSessionFile    string                 `json:"senderSessionFile"`
+	SenderBootID         string                 `json:"senderBootId"`
+	ThreadID             *string                `json:"threadId,omitempty"`
+	ReplyTo              *string                `json:"replyTo,omitempty"`
 }
 
 // AgentMailVerifySend sends "agent_mail_verify_send": Verify (and consume) one send capability for exactly this envelope; reveals only validity and owner identity.
@@ -10245,15 +10511,18 @@ func (c Commands) AgentMailVerifySend(ctx context.Context, p AgentMailVerifySend
 	return out, err
 }
 
-// AgentMailReadCommand holds the parameters of "agent_mail_read".
-type AgentMailReadCommand struct {
-	ThreadID *string `json:"threadId,omitempty"`
-	Limit    *int64  `json:"limit,omitempty"`
+// AgentMailListCommand holds the parameters of "agent_mail_list".
+type AgentMailListCommand struct {
+	ThreadID *string          `json:"threadId,omitempty"`
+	Limit    *int64           `json:"limit,omitempty"`
+	Folder   *AgentMailFolder `json:"folder,omitempty"`
+	// Exclusive message id from the same folder/thread; reads the next older page.
+	Before *string `json:"before,omitempty"`
 }
 
-// AgentMailRead sends "agent_mail_read": Read this session's agent-mail inbox, bounded, newest last.
-func (c Commands) AgentMailRead(ctx context.Context, p AgentMailReadCommand) (AgentMailReadResult, error) {
+// AgentMailList sends "agent_mail_list": Deliberately read this session's mail, bounded, newest last. The folder defaults to the inbox; requests are never included implicitly.
+func (c Commands) AgentMailList(ctx context.Context, p AgentMailListCommand) (AgentMailReadResult, error) {
 	var out AgentMailReadResult
-	err := c.call(ctx, "agent_mail_read", p, 0, &out)
+	err := c.call(ctx, "agent_mail_list", p, 0, &out)
 	return out, err
 }

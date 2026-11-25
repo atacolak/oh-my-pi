@@ -404,6 +404,10 @@ import {
 import { IdleMaintenance, type IdleMaintenanceOptions } from "./idle-maintenance";
 import { IrcBridge, type IrcBridgeHost } from "./irc-bridge";
 import {
+	type AgentMailContact,
+	type AgentMailPolicy,
+	type AgentMailSendOptions,
+	type AgentMailReadOptions,
 	type AgentMailDiscoveryResult,
 	type AgentMailEndpointIdentity,
 	type AgentMailEnvelope,
@@ -2321,11 +2325,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const mailHost: SessionMailHost = {
 			sessionManager: this.sessionManager,
 			isDisposed: () => this.#isDisposed,
-			isStreaming: () => this.isStreaming,
-			prompt: (text, options) => this.prompt(text, options),
+			canSend: () => this.hasBuiltInTool("agent_mail") && this.getEnabledToolNames().includes("agent_mail"),
 			identity: () => this.agentMailIdentity(),
 			incarnation: () => this.agentMailIncarnation(),
-			emitSessionEvent: event => void this.#emitSessionEvent(event),
 		};
 		this.#mail = new SessionMail(mailHost);
 		this.registerSessionChangeCallback(() => this.#mail.clearTransient());
@@ -13996,17 +13998,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		};
 	}
 
-	/**
-	 * Send one cross-session mail over the recipient's native socket. The
-	 * receipt settles on the recipient's observed admission, never on inference;
-	 * a transport failure after the send is `unknown` and is never resent.
-	 */
-	sendAgentMail(params: AgentMailSendParams, options?: { responseTimeoutMs?: number }): Promise<AgentMailSendResult> {
+	/** Deposit quiet mail; a receipt never proves it was read. */
+	sendAgentMail(params: AgentMailSendParams, options?: AgentMailSendOptions): Promise<AgentMailSendResult> {
 		return this.#mail.send(params, options);
 	}
 
-	/** Bounded read of this session's admitted mail history from the current journal; newest last. */
-	readAgentMail(options: { threadId?: string; limit?: number } = {}): AgentMailReadResult {
+	setAgentMailContact(contact: AgentMailContact): Promise<AgentMailContact> {
+		return this.#mail.setContact(contact);
+	}
+
+	getAgentMailPolicy(peer: string): AgentMailPolicy {
+		return this.#mail.policy(peer);
+	}
+
+	/** Bounded, explicit inbox read; no input is consumed or generated. */
+	readAgentMail(options: AgentMailReadOptions = {}): AgentMailReadResult {
 		return this.#mail.read(options);
 	}
 
@@ -14032,16 +14038,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#mail.verifySendCapability(claim);
 	}
 
-	/**
-	 * Receive one verified cross-session mail: admit it through the normal
-	 * input path, journal its provenance durably, and settle the receipt once
-	 * admission is observed — without awaiting inference.
-	 */
+	/** Journal verified peer data without entering the conversation input path. */
 	deliverAgentMail(claim: {
 		envelope: AgentMailEnvelope;
 		sender: AgentMailEndpointIdentity;
 		source: AgentMailIncarnation;
 		target: AgentMailIncarnation;
+		approval?: "once" | "always";
+		policyRevision?: string | null;
 	}): Promise<AgentMailReceipt> {
 		return this.#mail.receive(claim);
 	}

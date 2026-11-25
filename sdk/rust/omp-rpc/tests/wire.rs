@@ -12,7 +12,7 @@ fn native_terminal_version_and_unknown_mail_outcome_are_checked() {
 	let mut unsupported = raw;
 	unsupported["protocolVersion"] = json!(2);
 	assert!(serde_json::from_value::<NativeSessionTerminal>(unsupported).is_err());
-	let result = AgentMailSendCommand::decode(Some(json!({"status": "unknown", "error": "receipt timed out"}))).unwrap();
+	let result = AgentMailPostConsentedCommand::decode(Some(json!({"status": "unknown", "error": "receipt timed out"}))).unwrap();
 	assert!(matches!(result, AgentMailSendResult::Unknown(AgentMailUnknownResult { error }) if error == "receipt timed out"));
 }
 

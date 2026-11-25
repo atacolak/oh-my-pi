@@ -33,10 +33,15 @@ const NATIVE_SESSION_INFO = {
 export const stateDefs = {
 	NativeSessionTerminal: { protocolVersion: "1", projectDir: "string", name: "string", id: "string" },
 	NativeSessionInfo: NATIVE_SESSION_INFO,
+	SessionIdentityNameConflict: { code: "'duplicate_handle'", handle: "string", sessionIds: "string[]" },
 	NativeSessionList: {
 		sessions: "NativeSessionInfo[]",
 		total: "number.integer",
 		truncated: "boolean",
+		"conflicts?": doc(
+			"SessionIdentityNameConflict[]",
+			"Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied.",
+		),
 		"nextOffset?": "number.integer",
 		"attachableSockets?": "number.integer",
 		"unverifiedSockets?": "number.integer",
@@ -91,10 +96,26 @@ export const stateDefs = {
 		"modifiedAt?": "number",
 	},
 	AgentMailDelivery: doc(
-		"'queue' | 'steer'",
-		"Recipient-side input path the sender chose: queue behind the run, or steer into it.",
+		"'inbox' | 'queue' | 'steer'",
+		"Recorded delivery path. New mail is always `inbox`; `queue` and `steer` appear only in historical records.",
 	),
-	AgentMailAdmission: "'admitted' | 'queued' | 'steering'",
+	AgentMailInboxDelivery: doc(
+		"'inbox'",
+		"Only inbox storage is accepted; legacy queue/steer envelopes are refused.",
+	),
+	AgentMailAdmission: doc(
+		"'stored' | 'admitted' | 'queued' | 'steering'",
+		"Recorded admission. New mail is always `stored`; older input-admission values appear only in historical records.",
+	),
+	AgentMailFolder: doc(
+		"'inbox' | 'requests'",
+		"New mail is stored only in inbox. The requests folder is historical.",
+	),
+	AgentMailContactRule: doc(
+		"'allow' | 'block' | 'reset'",
+		"Recipient-owned directional rule. Reset restores default deny.",
+	),
+	AgentMailPolicy: { rule: "'allow' | 'block' | 'unknown'", revision: "string | null" },
 	AgentMailEndpointIdentity: doc(
 		{
 			sessionId: "string",
@@ -111,6 +132,17 @@ export const stateDefs = {
 		},
 		"Exact incarnation of one session owner; a change invalidates bound capabilities.",
 	),
+	AgentMailTarget: doc(
+		{
+			sessionId: "string",
+			sessionFile: doc("string", "Owned canonical session journal."),
+			bootId: doc(
+				"string | null",
+				"Exact owner boot; null only when a saved journal stored the mail without a live owner.",
+			),
+		},
+		"Mail destination: a live owner incarnation, or a saved journal with no live owner.",
+	),
 	AgentMailVerification: doc(
 		{
 			valid: "boolean",
@@ -118,27 +150,32 @@ export const stateDefs = {
 			"sender?": doc("AgentMailEndpointIdentity", "Owner-attested sender identity; present when valid."),
 			"source?": doc("AgentMailIncarnation", "Source owner incarnation; present when valid."),
 			"target?": doc("AgentMailIncarnation", "Exact recipient incarnation bound into the proof."),
+			"approval?": "'once' | 'always'",
+			"policyRevision?": "string | null",
 		},
 		"Verdict of `agent_mail_verify_send`: validity plus owner identity, never the capability itself.",
 	),
 	AgentMailReadResult: doc(
 		{
 			messages: "AgentMailRecord[]",
-			total: doc("number.integer", "Admitted records matching the read filter."),
-			truncated: doc("boolean", "True when `total` exceeds the returned messages."),
+			total: doc("number.integer", "All records matching the read folder/thread filter; stable across `before` pages."),
+			truncated: doc("boolean", "True when older matches remain before the returned page."),
+			"nextBefore?": doc(
+				"string",
+				"Pass as `before` to read the next older page in the same folder/thread; absent when no older match exists.",
+			),
 		},
-		"Bounded inbox read derived from the current journal; newest last.",
+		"Bounded mail read derived from the current journal; newest last.",
 	),
 	AgentMailReceipt: doc(
 		{
 			messageId: "string",
 			threadId: "string",
-			admission: "AgentMailAdmission",
-			busy: doc("boolean", "Whether a run was streaming on the recipient when the mail was admitted."),
+			admission: doc("'stored'", "Always `stored`: durable journal admission, not a read or a run."),
 			recipient: "AgentMailEndpointIdentity",
-			target: "AgentMailIncarnation",
+			target: "AgentMailTarget",
 		},
-		"Truthful receipt for one accepted mail: recorded and admitted through the recipient's normal input path; never a claim the recipient model read it.",
+		"Truthful receipt for one accepted mail: recorded in the recipient journal; never a claim the recipient read or acted on it.",
 	),
 	AgentMailRecord: doc(
 		{
@@ -148,14 +185,18 @@ export const stateDefs = {
 			sender: "AgentMailEndpointIdentity",
 			recipient: "AgentMailEndpointIdentity",
 			source: "AgentMailIncarnation",
-			target: "AgentMailIncarnation",
+			target: "AgentMailTarget",
 			body: "string",
 			sentAt: "number.integer",
 			receivedAt: "number.integer",
 			delivery: "AgentMailDelivery",
 			admission: "AgentMailAdmission",
+			"folder?": doc(
+				"AgentMailFolder",
+				"Absent in records saved before folders existed; those records count as `inbox`.",
+			),
 		},
-		"One delivered mail record with full sender/recipient/thread provenance.",
+		"One stored mail record with full sender/recipient/thread provenance.",
 	),
 	TodoItem: {
 		content: "string",

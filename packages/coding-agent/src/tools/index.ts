@@ -38,6 +38,9 @@ import type { UsageStatistics } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type {
 	AgentMailDiscoveryResult,
+	AgentMailReadOptions,
+	AgentMailSendOptions,
+	AgentMailSendParams,
 	AgentMailReadResult,
 	AgentMailSendResult,
 } from "../session/session-mail";
@@ -431,23 +434,10 @@ export interface ToolSession {
 	 * transport or hold mail state. Absent when the owner exposes no mail.
 	 */
 	agentMail?: {
-		/**
-		 * Resolve a peer, issue a capability and deliver over the recipient's
-		 * native socket. A refusal is definite; a transport failure after the
-		 * send is `unknown` and is never resent.
-		 */
-		send(
-			params: {
-				to: string;
-				message: string;
-				delivery?: "queue" | "steer";
-				threadId?: string;
-				replyTo?: string;
-			},
-			options?: { responseTimeoutMs?: number },
-		): Promise<AgentMailSendResult>;
-		/** Bounded read of this session's admitted mail history; newest last. */
-		read(options?: { threadId?: string; limit?: number }): AgentMailReadResult;
+		/** Deposit without waking or sending input; an unknown result is not retried. */
+		send(params: AgentMailSendParams, options?: AgentMailSendOptions): Promise<AgentMailSendResult>;
+		/** Deliberate bounded read of the recipient's journal. */
+		read(options?: AgentMailReadOptions): AgentMailReadResult;
 		/** Bounded peer discovery through the native authorities with live handshakes. */
 		discover(options?: { query?: string; liveOnly?: boolean; limit?: number }): Promise<AgentMailDiscoveryResult>;
 	};
@@ -750,14 +740,6 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			requestedTools.push("checkpoint");
 		}
 	}
-		if (requestedTools && !restrictToolNames) {
-			// Mail discovery pairs with mail sending (like checkpoint/rewind): an
-			// explicit `agent_mail` grant without `agent_sessions` still lets the
-			// agent discover peers. Restricted lists own their roster and stay exact.
-			if (requestedTools.includes("agent_mail") && !requestedTools.includes("agent_sessions")) {
-				requestedTools.push("agent_sessions");
-			}
-		}
 	// Auto-include AST counterparts when their text-based sibling is present.
 	// Restricted callers own the active list and must not have it widened.
 	if (requestedTools && !restrictToolNames) {

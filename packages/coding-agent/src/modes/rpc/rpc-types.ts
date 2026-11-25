@@ -40,6 +40,9 @@ import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
 import type { BtwHistoryRecord } from "../../session/btw-history";
 import type { NativeSessionInfo, NativeSessionList } from "../../session/session-service";
 import type {
+	AgentMailContact,
+	AgentMailPolicy,
+	AgentMailReadOptions,
 	AgentMailReadResult,
 	AgentMailReceipt,
 	AgentMailVerification,
@@ -98,7 +101,9 @@ export type RpcCommand =
 	| { id?: string; type: "list_sessions"; query?: string; limit?: number; offset?: number }
 	| { id?: string; type: "resolve_session"; reference: string }
 	| { id?: string; type: "wake_session"; expectedSessionId: string; expectedSessionFile: string }
-	| ({ id?: string; type: "agent_mail_send" } & AgentMailSendParams)
+	| ({ id?: string; type: "agent_mail_post_consented" } & AgentMailSendParams)
+	| { id?: string; type: "agent_mail_restrict"; peer: string; rule: "block" | "reset" }
+	| { id?: string; type: "agent_mail_policy"; peer: string; recipientSessionId: string; recipientSessionFile: string; recipientBootId: string }
 	| { id?: string; type: "get_refresh_preflight" }
 	| {
 			id?: string;
@@ -247,7 +252,7 @@ export type RpcCommand =
 	// Agent mail (cross-session, delivered over the recipient's session socket)
 	| {
 			id?: string;
-			type: "agent_mail_deliver";
+			type: "agent_mail_deliver_consented";
 			/** Exact session UUID the sender captured for this owner; a mismatch refuses delivery. */
 			recipientSessionId: string;
 			recipientSessionFile: string;
@@ -256,7 +261,7 @@ export type RpcCommand =
 			message: string;
 			threadId?: string;
 			replyTo?: string;
-			delivery: "queue" | "steer";
+			delivery: "inbox";
 			sentAt: number;
 			/** Claimed source owner; the recipient verifies the capability with that owner before admitting. */
 			senderSessionId: string;
@@ -276,13 +281,13 @@ export type RpcCommand =
 			message: string;
 			threadId?: string;
 			replyTo?: string;
-			delivery: "queue" | "steer";
+			delivery: "inbox";
 			sentAt: number;
 			senderSessionId: string;
 			senderSessionFile: string;
 			senderBootId: string;
 	  }
-	| { id?: string; type: "agent_mail_read"; threadId?: string; limit?: number };
+	| ({ id?: string; type: "agent_mail_list" } & AgentMailReadOptions);
 
 // ============================================================================
 // RPC State
@@ -695,7 +700,9 @@ export type RpcResponse =
 			success: true;
 			data: NativeSessionInfo & { revived: boolean };
 	  }
-	| { id?: string; type: "response"; command: "agent_mail_send"; success: true; data: AgentMailSendResult }
+	| { id?: string; type: "response"; command: "agent_mail_post_consented"; success: true; data: AgentMailSendResult }
+	| { id?: string; type: "response"; command: "agent_mail_restrict"; success: true; data: AgentMailContact }
+	| { id?: string; type: "response"; command: "agent_mail_policy"; success: true; data: AgentMailPolicy }
 	| {
 			id?: string;
 			type: "response";
@@ -907,9 +914,9 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "dictation_stop"; success: true; data: { text: string } }
 	| { id?: string; type: "response"; command: "handoff"; success: true; data: RpcHandoffResult | null }
 	// Agent mail
-	| { id?: string; type: "response"; command: "agent_mail_deliver"; success: true; data: AgentMailReceipt }
+	| { id?: string; type: "response"; command: "agent_mail_deliver_consented"; success: true; data: AgentMailReceipt }
 	| { id?: string; type: "response"; command: "agent_mail_verify_send"; success: true; data: AgentMailVerification }
-	| { id?: string; type: "response"; command: "agent_mail_read"; success: true; data: AgentMailReadResult }
+	| { id?: string; type: "response"; command: "agent_mail_list"; success: true; data: AgentMailReadResult }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

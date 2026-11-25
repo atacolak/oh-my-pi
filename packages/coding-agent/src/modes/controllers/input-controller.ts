@@ -51,6 +51,7 @@ import { ComposerDraftPersistence } from "../draft-persistence";
 import { openLocalFileInEditor } from "../local-file-editor";
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import { withMailApprovalContext } from "../../session/mail-approval-context";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { PINNED_HUD_TOGGLE_ID } from "../../task/output-manager";
 import { pickRecentFocusableAgentId } from "./session-focus-controller";
@@ -1494,6 +1495,7 @@ export class InputController {
 						images,
 						imageLinks: inputImageLinks,
 						streamingBehavior: "steer",
+						operatorText: submittedText,
 					},
 					{ clearEditor: false },
 				);
@@ -1513,7 +1515,13 @@ export class InputController {
 				try {
 					const forwarded = await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() =>
+							withMailApprovalContext(
+								submittedText,
+								(request, signal) => this.ctx.requestMailSendApproval(request, signal),
+								() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+								{ sourceSessionId: this.ctx.sessionManager.getSessionId() },
+							),
 						{
 							imageCount: images?.length ?? 0,
 						},

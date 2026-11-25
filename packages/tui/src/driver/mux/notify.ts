@@ -2,11 +2,11 @@
  * Notification delivery inside multiplexers that would swallow the terminal's
  * own sequence.
  *
- * Notifiers are tried innermost target first: a pane notifier addresses the
- * exact pane through the multiplexer's CLI (Herdr), a surface notifier the
- * containing app surface (cmux), and in-band notifiers rewrite the terminal
- * sequence (tmux, then Zellij). A notifier that cannot deliver leaves the
- * notification to the next one and finally to the terminal sequence.
+ * Notifiers are tried innermost target first: Herdr's pane reports its own
+ * Idle/Blocked toast, a surface notifier addresses the containing app surface
+ * through its CLI (cmux), and in-band notifiers rewrite the terminal sequence
+ * (tmux, then Zellij). A notifier that cannot deliver leaves the notification
+ * to the next one and finally to the terminal sequence.
  */
 import type { TerminalNotification } from "../notify";
 import { type Env, hasMultiplexerSession, type MultiplexerId } from "./detect";
@@ -41,11 +41,6 @@ function spawnNotifier(cmd: string[]): boolean {
 }
 
 const HERDR_PANE_ID = /^[0-9A-Za-z:_-]{1,64}$/u;
-/**
- * `herdr notification show` reads exactly these titles (its first positional)
- * as a help request and has no `--` terminator; any other text is a title.
- */
-const HERDR_USAGE_TOKENS: Readonly<Record<string, true>> = { help: true, "--help": true, "-h": true };
 const CMUX_SURFACE_ID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu;
 
 const NOTIFIERS: ReadonlyArray<{
@@ -53,23 +48,14 @@ const NOTIFIERS: ReadonlyArray<{
 	send(request: MultiplexerNotificationRequest): boolean;
 }> = [
 	{
-		// Herdr swallows bare OSC 9/99, has no passthrough envelope, and its bell relay does not
-		// flag a backgrounded tab: only its CLI reaches the user. A question or an error needs
-		// the human (`request`), a settled turn rings `done`, anything else stays silent.
+		// Herdr already toasts Finished on Idle and NeedsAttention on Blocked from its pane's
+		// agent-state report, so `herdr notification show` only adds a duplicate session-title
+		// card. Claiming still suppresses the OSC 9/99 sequence Herdr swallows.
 		id: "herdr",
-		send({ message, env }) {
+		send({ env }) {
 			const pane = env.HERDR_PANE_ID?.trim();
 			if (!pane || !HERDR_PANE_ID.test(pane)) return false;
-			const parsed = titleAndBody(message);
-			const title = Object.hasOwn(HERDR_USAGE_TOKENS, parsed.title) ? DEFAULT_TITLE : parsed.title;
-			const kinds = typeof message === "string" ? [] : [message.type ?? []].flat();
-			const sound =
-				kinds.includes("ask") || kinds.includes("error")
-					? "request"
-					: kinds.includes("completion")
-						? "done"
-						: "none";
-			return spawnNotifier(["herdr", "notification", "show", title, "--body", parsed.body, "--sound", sound]);
+			return true;
 		},
 	},
 	{

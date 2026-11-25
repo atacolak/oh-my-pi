@@ -164,52 +164,46 @@ describe("multiplexer notification routing", () => {
 		expect(writes).toEqual([]);
 	});
 
-	it("routes a Herdr pane notification through the CLI instead of a swallowed OSC", () => {
-		const unref = vi.fn();
-		const spawn = vi.spyOn(Bun, "spawn").mockImplementation((..._args: unknown[]) => ({ unref }) as never);
+	it("claims Herdr delivery without spawning a session-title card", () => {
+		const { argv } = mockSpawn();
 
 		const writes = send(
 			{ title: "session", body: "Waiting for input", type: "ask" },
 			{ HERDR_ENV: "1", HERDR_PANE_ID: "w6:p1" },
 		);
 
-		expect(spawn).toHaveBeenCalledTimes(1);
-		expect(spawn).toHaveBeenCalledWith({
-			cmd: ["herdr", "notification", "show", "session", "--body", "Waiting for input", "--sound", "request"],
-			stdin: "ignore",
-			stdout: "ignore",
-			stderr: "ignore",
-		});
-		expect(unref).toHaveBeenCalledTimes(1);
+		// Herdr toasts Idle/Blocked from the pane's own agent-state report, so the CLI card
+		// would be a duplicate; claiming still keeps the swallowed OSC from being written.
+		expect(argv).toEqual([]);
 		expect(writes).toEqual([]);
 	});
 
-	it("routes through the CLI when a launcher dropped HERDR_ENV but kept the pane id", () => {
+	it("claims delivery when a launcher dropped HERDR_ENV but kept the pane id", () => {
 		const { argv } = mockSpawn();
 		expect(send({ title: "session", body: "Waiting", type: "ask" }, { HERDR_PANE_ID: "w6:p1" })).toEqual([]);
-		expect(argv).toHaveLength(1);
+		expect(argv).toEqual([]);
 	});
 
-	it("rings done for a settled turn, request for an error, and stays silent otherwise", () => {
+	it("skips the session-title spawn for done, request, and none", () => {
 		const { argv } = mockSpawn();
 		const env = { HERDR_ENV: "1", HERDR_PANE_ID: "w6:p1" };
 
-		send({ title: "session", body: "Complete", type: "completion" }, env);
-		send({ title: "session", body: "Stopped with error", type: "error" }, env);
-		send({ title: "session", body: "Reminder", type: "info" }, env);
+		expect(send({ title: "session", body: "Complete", type: "completion" }, env)).toEqual([]);
+		expect(send({ title: "session", body: "Stopped with error", type: "error" }, env)).toEqual([]);
+		expect(send({ title: "session", body: "Reminder", type: "info" }, env)).toEqual([]);
 
-		const sounds = argv.map(cmd => cmd[cmd.indexOf("--sound") + 1]);
-		expect(sounds).toEqual(["done", "request", "none"]);
+		expect(argv).toEqual([]);
 	});
 
-	it("never hands Herdr a title it would read as a help request", () => {
+	it("claims a Bell-protocol notification without ringing BEL or a D-Bus toast", () => {
 		const { argv } = mockSpawn();
-		const env = { HERDR_ENV: "1", HERDR_PANE_ID: "w6:p1" };
+		vi.spyOn(desktopNotify, "shouldDeliverDesktopNotification").mockReturnValue(true);
+		const dbus = vi.spyOn(desktopNotify, "sendDesktopNotification").mockImplementation(() => {});
 
-		send({ title: "--help", body: "Complete", type: "completion" }, env);
-		send({ title: "-x session", body: "Complete", type: "completion" }, env);
+		expect(send("Complete", { HERDR_ENV: "1", HERDR_PANE_ID: "w6:p1" }, "bell")).toEqual([]);
 
-		expect(argv.map(cmd => cmd[3])).toEqual(["omp", "-x session"]);
+		expect(argv).toEqual([]);
+		expect(dbus).not.toHaveBeenCalled();
 	});
 
 	it("keeps the OSC fallback when the Herdr pane id is absent", () => {
@@ -233,13 +227,13 @@ describe("multiplexer notification routing", () => {
 			CMUX_SOCKET_PATH: "/tmp/cmux.sock",
 		};
 		expect(send({ title: "session", body: "Waiting", type: "ask" }, env)).toEqual([]);
-		expect(argv.map(cmd => cmd[0])).toEqual(["herdr"]);
+		expect(argv).toEqual([]);
 	});
 
 	// Delivery tries the innermost pane notifier, then the containing surface,
 	// then in-band rewrites (tmux before Zellij), then the terminal fallback.
 	it.each([
-		["a Herdr pane over tmux", { HERDR_PANE_ID: "w6:p1", TMUX }, "herdr", []],
+		["a Herdr pane over tmux", { HERDR_PANE_ID: "w6:p1", TMUX }, undefined, []],
 		["a cmux surface over tmux", { CMUX_SURFACE_ID: CMUX_SURFACE, TMUX }, "cmux", []],
 		["a cmux surface over Zellij", { CMUX_SURFACE_ID: CMUX_SURFACE, ZELLIJ: "0" }, "cmux", []],
 		[
@@ -260,12 +254,12 @@ describe("multiplexer notification routing", () => {
 		expect(argv.map(cmd => cmd[0])).toEqual(binary === undefined ? [] : [binary]);
 	});
 
-	it("keeps the OSC fallback when the herdr binary is missing", () => {
+	it("claims Herdr delivery without needing the herdr binary", () => {
 		const spawn = vi.spyOn(Bun, "spawn").mockImplementation(() => {
 			throw new Error("spawn herdr ENOENT");
 		});
-		expect(send("no binary", { HERDR_ENV: "1", HERDR_PANE_ID: "w6:p1" })).toEqual(["\x1b]99;;no binary\x1b\\"]);
-		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(send("no binary", { HERDR_ENV: "1", HERDR_PANE_ID: "w6:p1" })).toEqual([]);
+		expect(spawn).not.toHaveBeenCalled();
 	});
 
 	it("keeps the existing OSC fallback for cmux workspace or socket state without a surface", () => {

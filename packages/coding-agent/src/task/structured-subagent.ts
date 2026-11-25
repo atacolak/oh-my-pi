@@ -8,7 +8,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
-import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import { shortenPath } from "../utils/render-utils";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import {
 	resolveAgentModelSelection,
@@ -36,14 +36,15 @@ import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.m
 import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-hint.md" with { type: "text" };
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
-import { AUTO_THINKING, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
+import { journalCompletion } from "../session/model-usage-journal";
+import { AUTO_THINKING, type TaskEffort } from "../thinking/levels";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { renderStepPrompts } from "./steps";
-import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
+import { type ExecutorOptions, runSubprocess, type SubagentToolResult, usesYield } from "./executor";
 import {
 	applyEligibleNestedPatches,
 	type IsolationContext,
@@ -67,7 +68,7 @@ import type {
 	StructuredSubagentOutput,
 	StructuredSubagentSchemaMode,
 	StructuredSubagentSchemaSource,
-} from "@oh-my-pi/pi-tui/tools/task";
+} from "./task-details";
 import type { WorkPoolYieldItem } from "./workpool-yield";
 import { parseIsolationBackend } from "./worktree";
 
@@ -78,7 +79,6 @@ import {
 	cfgTaskAgentModelOverrides,
 	cfgTaskAgentServiceTierOverrides,
 	cfgTaskDisabledAgents,
-	cfgTaskEnableLsp,
 	cfgTaskIsolationApply,
 	cfgTaskIsolationEnabled,
 	cfgTaskIsolationMerge,
@@ -151,9 +151,10 @@ export interface StructuredSubagentRequest {
 	outputSchema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
 	/**
-	 * `false` = no output schema (caller, agent, or session) and no `yield` tool:
-	 * the child's final assistant message is its result. An agent declaring
-	 * `structured: true` keeps both, resolved as if this were `true`. Default `true`.
+	 * `false` = ignore caller, agent, and session output schemas (`task.structured`
+	 * off); an agent declaring `structured: true` keeps them. Default `true`.
+	 * Without a resolved schema the child has no `yield` tool and its final
+	 * assistant message is its result.
 	 */
 	structured?: boolean;
 	/** Per-spawn thinking effort mapped onto the resolved model's supported range; overrides the agent's default selector. */
@@ -216,7 +217,7 @@ export interface EffectiveSubagentPolicy {
 	oauthAccountPools?: OAuthAccountPools;
 	/** Absent for a per-call `model`: a requested model that cannot run fails instead of falling back to the parent's. */
 	parentActiveModelPattern?: string;
-	/** Whether the child gets the `yield` tool; see {@link StructuredSubagentRequest.structured}. */
+	/** Whether the child gets the `yield` tool: exactly when {@link schema} resolved one (see {@link usesYield}). */
 	structured: boolean;
 	/** Present for a per-call `model`: every model the child sends to must stay approved by these grants. */
 	perCallModelGrants?: PerCallModelGrants;
@@ -270,10 +271,25 @@ const ASSIGNMENT_SLOT = "\u0000assignment\u0000";
  * padding), so inline and file-backed instructions reach the subagent identically.
  */
 export function renderSubagentUserPrompt(assignment: string): string {
-	const text = assignment.trim().replace(/\r\n?/g, "\n");
 	return prompt
 		.render(subagentUserPromptTemplate, { assignment: ASSIGNMENT_SLOT })
-		.replace(ASSIGNMENT_SLOT, () => text);
+		.replace(ASSIGNMENT_SLOT, () => assignment.trim().replace(/\r\n?/g, "\n"));
+}
+
+/**
+ * The prompts a spawn goes out in: `task` first, then the executor sends each later `steps` prompt
+ * once the previous one was delivered. A lone step is the whole assignment: it goes out verbatim,
+ * without step framing or the assignment wrapper.
+ */
+function spawnPrompts(
+	request: StructuredSubagentRequest,
+	structured: boolean,
+): Pick<ExecutorOptions, "task" | "steps"> {
+	const steps = request.steps ?? [];
+	if (steps.length === 1) return { task: steps[0].trim().replace(/\r\n?/g, "\n") };
+	if (steps.length === 0) return { task: renderSubagentUserPrompt(request.assignment) };
+	const prompts = renderStepPrompts(steps, structured);
+	return { task: renderSubagentUserPrompt(prompts[0]), steps: prompts };
 }
 
 function trimToUndefined(value: string | undefined): string | undefined {
@@ -284,10 +300,10 @@ function trimToUndefined(value: string | undefined): string | undefined {
 function resolveSchema(
 	request: StructuredSubagentRequest,
 	agent: AgentDefinition,
-	structured: boolean,
+	schemasAllowed: boolean,
 ): StructuredSubagentSchemaResolution {
 	const mode = request.schemaMode ?? request.session.outputSchemaMode ?? "permissive";
-	if (!structured) {
+	if (!schemasAllowed) {
 		return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
 	}
 	if (Object.hasOwn(request, "outputSchema")) {
@@ -538,8 +554,12 @@ export async function resolveEffectiveSubagentPolicy(
 	}
 	const effectiveAgent = planMode ? createPlanModeAgent(agent) : agent;
 	// An agent declaring `structured: true` keeps its result contract when the caller opts out (`task.structured` off).
-	const structured = request.structured !== false || effectiveAgent.structured === true;
-	const schema = resolveSchema(request, effectiveAgent, structured);
+	const schema = resolveSchema(
+		request,
+		effectiveAgent,
+		request.structured !== false || effectiveAgent.structured === true,
+	);
+	const structured = usesYield(schema.schema);
 	if (schema.source === "caller" || (schema.source !== "none" && schema.mode === "strict")) {
 		const { error } = buildOutputValidator(schema.schema);
 		if (error) {
@@ -628,9 +648,7 @@ export async function resolveEffectiveSubagentPolicy(
 		applyChanges:
 			request.isolation?.apply ??
 			(request.invocationKind === "task" ? cfgTaskIsolationApply.get(request.session.settings) : true),
-		enableLsp:
-			!planMode &&
-			(request.enableLsp ?? ((request.session.enableLsp ?? true) && cfgTaskEnableLsp.get(request.session.settings))),
+		enableLsp: !planMode && (request.enableLsp ?? request.session.enableLsp ?? true),
 		enableIrc:
 			!planMode &&
 			(request.enableIrc ??
@@ -682,7 +700,9 @@ export async function reserveStructuredSubagentId(
 	identity: StructuredSubagentIdentity | undefined,
 ): Promise<string> {
 	if (identity?.id) return identity.id;
-	const manager = session.agentOutputManager ?? new AgentOutputManager(session.getArtifactsDir ?? (() => null));
+	const manager =
+		session.agentOutputManager ??
+		new AgentOutputManager(session.getArtifactsDir ?? (() => null), { settings: session.settings });
 	session.agentOutputManager ??= manager;
 	return manager.allocate(sanitizeAgentId(identity?.label) ?? generateTaskName());
 }
@@ -744,7 +764,6 @@ function buildExecutorOptions(
 	const localProtocolOptions = sessionLocalProtocolOptions(session);
 	const restrictToolNames = policy.planMode || session.restrictToolNames === true;
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
-	const steps = request.steps?.length ? renderStepPrompts(request.steps, policy.structured) : undefined;
 	return {
 		cwd: session.cwd,
 		costGate: session.costGate,
@@ -752,9 +771,7 @@ function buildExecutorOptions(
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
-		// A stepped spawn starts on its first step prompt; the executor sends the rest.
-		task: renderSubagentUserPrompt(steps ? steps[0] : request.assignment),
-		steps,
+		...spawnPrompts(request, policy.structured),
 		assignment: request.assignment.trim(),
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
@@ -776,11 +793,11 @@ function buildExecutorOptions(
 		oauthAccountPools: policy.oauthAccountPools,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
 		parentActiveProvider: session.getActiveModel?.()?.provider,
+		journalTaskLabel: journalCompletion(session.sessionManager, { purpose: "task-label" }),
 		perCallModelGrants: policy.perCallModelGrants,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: policy.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
-		structured: policy.structured,
 		...(policy.schema.source === "none"
 			? {}
 			: {

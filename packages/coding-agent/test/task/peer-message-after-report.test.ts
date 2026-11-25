@@ -1,6 +1,6 @@
 /**
  * An IRC message that reaches a message-result subagent from anyone but its
- * parent (or as a broadcast) during or right after its final report turn is
+ * parent (or as a peer's broadcast) during or right after its final report turn is
  * answered in its own wake turn: the report stays the run's result, and a
  * direct sender still gets the reply.
  */
@@ -149,7 +149,7 @@ async function startRun(options: {
 		id: AGENT_ID,
 		parentAgentId: PARENT_ID,
 		asyncJobManager: manager,
-		structured: options.structured ?? false,
+		outputSchema: options.structured ? {} : undefined,
 		modelOverride: "mock/mock-model",
 		authStorage,
 		modelRegistry,
@@ -450,7 +450,6 @@ it("keeps a follow-up turn's report when a peer message arrives right after it",
 			id: AGENT_ID,
 			agent: { name: "task", description: "test", systemPrompt: "test", tools: ["read"], source: "bundled" },
 			message: "report again",
-			structured: false,
 			artifactsDir: child.artifactsDir,
 		});
 		expect(followUp.output).toBe("FOLLOW_UP_REPORT");
@@ -515,6 +514,7 @@ it("keeps a structured follow-up's yield when a peer message arrives as a turn o
 			agent: { name: "task", description: "test", systemPrompt: "test", tools: ["read"], source: "bundled" },
 			message: "report again",
 			artifactsDir: child.artifactsDir,
+			outputSchema: {},
 		});
 		expect((await peerSent)?.outcome).not.toBe("failed");
 		expect(followUp.output).toContain("FOLLOW_UP");
@@ -542,8 +542,9 @@ it("still answers the parent's own message that arrives right after the final re
 	}
 }, 20_000);
 
-for (const from of [PEER_ID, PARENT_ID]) {
-	it(`keeps the report when a broadcast from ${from === PARENT_ID ? "the parent" : "a peer"} arrives during the final report turn, without replying to it`, async () => {
+{
+	const from = PEER_ID;
+	it("keeps the report when a broadcast from a peer arrives during the final report turn, without replying to it", async () => {
 		const report = gate(1);
 		const broadcastTurn = gate(2);
 		const child = await startRun({

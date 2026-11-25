@@ -84,6 +84,21 @@ export interface SessionIdentityMutationOptions extends SessionIdentityCatalogOp
 	expected?: { sessionId: string; sessionFile: string };
 }
 
+/** Historical name claims held by more than one session; no claimant is the owner. */
+export interface SessionIdentityNameConflict {
+	code: "duplicate_handle";
+	/** Lowercased, so case-only collisions report the same name. */
+	handle: string;
+	/** Sorted claimant session ids. */
+	sessionIds: string[];
+}
+
+/** One locked catalog scan: every raw claim plus the names that cannot select a session. */
+export interface SessionIdentityInventory {
+	records: SessionIdentityRecord[];
+	conflicts: SessionIdentityNameConflict[];
+}
+
 /** Create-or-open a real header and identity metadata without starting an inference turn. */
 export interface CreateOrOpenSessionIdentityOptions {
 	cwd: string;
@@ -181,6 +196,7 @@ interface IdentityCatalog {
 	root: string;
 	journals: Map<string, JournalIdentity>;
 	records: SessionIdentityRecord[];
+	conflicts: SessionIdentityNameConflict[];
 }
 
 function normalizeReference(reference: string): string {
@@ -534,22 +550,35 @@ async function readJournals(
 	return journals.filter((journal): journal is JournalIdentity => journal !== undefined);
 }
 
-function assertUniqueHandles(journals: readonly JournalIdentity[], limit: number): void {
-	const owners = new Map<string, string[]>();
-	for (const { record } of journals) {
+function collectNameConflicts(records: readonly SessionIdentityRecord[]): SessionIdentityNameConflict[] {
+	const owners = new Map<string, Set<string>>();
+	for (const record of records) {
 		if (!record.actorHandle) continue;
 		const handle = record.actorHandle.toLowerCase();
-		const ids = owners.get(handle);
-		if (ids) ids.push(record.sessionId);
-		else owners.set(handle, [record.sessionId]);
+		const ids = owners.get(handle) ?? new Set<string>();
+		ids.add(record.sessionId);
+		owners.set(handle, ids);
 	}
-	for (const [handle, ids] of owners) {
-		if (ids.length < 2) continue;
-		throw new SessionIdentityConflictError(
-			`Actor handle "${handle}" is claimed by more than one session: ${bounded(ids, limit).join(", ")}.`,
-			{ sessionIds: [...ids].sort(), actorHandle: handle },
-		);
-	}
+	return [...owners.entries()]
+		.filter(([, ids]) => ids.size > 1)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+		.map(([handle, ids]) => ({
+			code: "duplicate_handle" as const,
+			handle,
+			sessionIds: [...ids].sort(),
+		}));
+}
+
+function conflictingHandleError(
+	handle: string,
+	sessionIds: readonly string[],
+	limit: number,
+): SessionIdentityConflictError {
+	const ids = [...new Set(sessionIds)].sort();
+	return new SessionIdentityConflictError(
+		`Actor handle "${handle}" is claimed by more than one session: ${bounded(ids, limit).join(", ")}.`,
+		{ sessionIds: ids, actorHandle: handle },
+	);
 }
 
 function toProjection(root: string, journal: JournalIdentity): SessionIdentityProjection {
@@ -599,9 +628,12 @@ function sameProjection(
  * differ are written, and only this catalog scope's rows are rebuilt.
  */
 function reconcileProjection(catalog: IdentityCatalog): void {
+	const conflicted = new Set(catalog.conflicts.flatMap(conflict => conflict.sessionIds));
 	const expected = new Map<string, SessionIdentityProjection>();
-	for (const journal of catalog.journals.values())
+	for (const journal of catalog.journals.values()) {
+		if (conflicted.has(journal.record.sessionId)) continue;
 		expected.set(journal.record.sessionId, toProjection(catalog.root, journal));
+	}
 	const projected = listSessionIdentityProjection(catalog.root);
 	if (sameProjection(projected, expected)) return;
 	replaceSessionIdentityProjection(catalog.root, [...expected.values()]);
@@ -624,8 +656,8 @@ async function scanCatalog(root: string, limit: number): Promise<IdentityCatalog
 		}
 		byId.set(journal.record.sessionId, journal);
 	}
-	assertUniqueHandles(journals, limit);
-	return { root, journals: byId, records: [...byId.values()].map(journal => journal.record) };
+	const records = [...byId.values()].map(journal => journal.record);
+	return { root, journals: byId, records, conflicts: collectNameConflicts(records) };
 }
 
 async function loadCatalog(root: string, limit: number): Promise<IdentityCatalog> {
@@ -656,6 +688,9 @@ export function resolveSessionIdentityReference(
 ): string {
 	const normalized = normalizeReference(reference);
 	const lowered = normalized.toLowerCase();
+	const handleClaimants = records.filter(record => record.actorHandle?.toLowerCase() === lowered);
+	const claimantIds = [...new Set(handleClaimants.map(record => record.sessionId))].sort();
+	if (claimantIds.length > 1) throw conflictingHandleError(lowered, claimantIds, limit);
 	const matches = records.filter(
 		record => record.actorHandle?.toLowerCase() === lowered || record.sessionId.toLowerCase().startsWith(lowered),
 	);
@@ -673,14 +708,15 @@ function resolveInCatalog(catalog: IdentityCatalog, reference: string, limit: nu
 
 function assertHandleAvailable(
 	catalog: IdentityCatalog,
-	sessionId: string,
+	excludeSessionId: string | undefined,
 	actorHandle: string | null,
 	limit: number,
 ): void {
 	if (!actorHandle) return;
 	const claimants = catalog.records
 		.filter(
-			record => record.actorHandle?.toLowerCase() === actorHandle.toLowerCase() && record.sessionId !== sessionId,
+			record =>
+				record.actorHandle?.toLowerCase() === actorHandle.toLowerCase() && record.sessionId !== excludeSessionId,
 		)
 		.map(record => record.sessionId);
 	if (claimants.length === 0) return;
@@ -788,23 +824,37 @@ function validateExistingPins(
 }
 
 /**
- * Every session identity in the catalog, discovered cold from journals.
- * Conflicting claims in the journals refuse the whole catalog instead of
- * advertising one arbitrary owner.
+ * Every raw identity claim in the catalog plus the names that several sessions
+ * claim, from one locked scan. Duplicate names are reported, not resolved;
+ * duplicate session ids and malformed claims still refuse.
  */
-export async function listSessionIdentities(
+export async function listSessionIdentityInventory(
 	options: SessionIdentityCatalogOptions = {},
-): Promise<SessionIdentityRecord[]> {
+): Promise<SessionIdentityInventory> {
 	const limit = candidateLimit(options);
 	return withCatalogRoot(options, async root => {
 		const catalog = await loadCatalog(root, limit);
-		return catalog.records.map(cloneRecord);
+		return {
+			records: catalog.records.map(cloneRecord),
+			conflicts: catalog.conflicts.map(conflict => ({ ...conflict, sessionIds: [...conflict.sessionIds] })),
+		};
 	});
 }
 
 /**
+ * Every session identity in the catalog, discovered cold from journals.
+ * Historical duplicate names stay visible; addressing one of them refuses.
+ */
+export async function listSessionIdentities(
+	options: SessionIdentityCatalogOptions = {},
+): Promise<SessionIdentityRecord[]> {
+	return (await listSessionIdentityInventory(options)).records;
+}
+
+/**
  * Resolve one session by full id, unique id prefix, or actor handle. Ambiguous
- * and missing references fail closed with bounded candidates.
+ * and missing references fail closed with bounded candidates, and a historical
+ * name claimed by several sessions refuses instead of selecting one.
  */
 export async function resolveSessionIdentity(
 	reference: string,
@@ -899,7 +949,7 @@ export async function assignSessionIdentity(
 		);
 		catalog.journals.set(sessionId, durable);
 		catalog.records = [...catalog.journals.values()].map(journal => journal.record);
-		assertUniqueHandles([...catalog.journals.values()], limit);
+		catalog.conflicts = collectNameConflicts(catalog.records);
 		reconcileProjection(catalog);
 		return cloneRecord(durable.record);
 	});
@@ -909,7 +959,8 @@ export async function assignSessionIdentity(
  * Converge one session at `cwd`: open the session named by `reference` (or the
  * one already claiming `actorHandle`) or materialize a new header with identity
  * metadata. No inference turn runs. A missing reference never creates a session,
- * and a live or unobservable owner refuses the cold open.
+ * and a live or unobservable owner refuses the cold open. A reference or handle
+ * pin naming a claim that several sessions hold refuses instead of choosing one.
  */
 export async function createOrOpenSessionIdentity(
 	options: CreateOrOpenSessionIdentityOptions,
@@ -922,32 +973,26 @@ export async function createOrOpenSessionIdentity(
 	}
 	const cwd = path.resolve(requestedCwd);
 	const reference = options.reference === undefined ? undefined : normalizeReference(options.reference);
-	const actorHandle = options.actorHandle === undefined ? undefined : normalizeActorHandle(options.actorHandle, false);
+	const actorHandle =
+		options.actorHandle === undefined ? undefined : (normalizeActorHandle(options.actorHandle, false) ?? undefined);
 	const pins = {
 		rootAgent: options.rootAgent === undefined ? undefined : normalizePin("rootAgent", options.rootAgent),
 		generation: options.generation === undefined ? undefined : normalizePin("generation", options.generation),
-		actorHandle: actorHandle ?? undefined,
+		actorHandle,
 	};
 	const limit = candidateLimit(options.catalog);
 	return withCatalogRoot(options.catalog, async root => {
 		const catalog = await loadCatalog(root, limit);
+		const nameConflict =
+			actorHandle === undefined
+				? undefined
+				: catalog.conflicts.find(conflict => conflict.handle === actorHandle.toLowerCase());
+		if (nameConflict) throw conflictingHandleError(nameConflict.handle, nameConflict.sessionIds, limit);
 		let target: SessionIdentityRecord | undefined;
 		if (reference !== undefined) {
 			target = resolveInCatalog(catalog, reference, limit);
-		} else if (actorHandle !== undefined && actorHandle !== null) {
-			const claimants = catalog.records.filter(
-				record => record.actorHandle?.toLowerCase() === actorHandle.toLowerCase(),
-			);
-			if (claimants.length > 1) {
-				throw new SessionIdentityConflictError(
-					`Actor handle "${actorHandle}" is claimed by more than one session: ${bounded(
-						claimants.map(record => record.sessionId),
-						limit,
-					).join(", ")}.`,
-					{ sessionIds: claimants.map(record => record.sessionId).sort(), actorHandle },
-				);
-			}
-			target = claimants[0];
+		} else if (actorHandle !== undefined) {
+			target = catalog.records.find(record => record.actorHandle?.toLowerCase() === actorHandle.toLowerCase());
 		}
 		if (target) {
 			validateExistingPins(target, cwd, pins);
@@ -1033,6 +1078,8 @@ async function createFreshIdentity(
 	catalog: IdentityCatalog,
 	limit: number,
 ): Promise<{ manager: SessionManager; identity: SessionIdentityRecord; created: boolean }> {
+	const actorHandle = options.actorHandle === undefined ? null : normalizeActorHandle(options.actorHandle, false);
+	assertHandleAvailable(catalog, undefined, actorHandle, limit);
 	const storage: SessionStorage = new FileSessionStorage();
 	const sessionDir = computeDefaultSessionDir(cwd, storage, root);
 	const manager = SessionManager.create(cwd, sessionDir, storage);
@@ -1040,7 +1087,7 @@ async function createFreshIdentity(
 		if (options.rootAgent !== undefined) await manager.setRootAgent(options.rootAgent);
 		const metadata = parseSessionIdentityMetadata({
 			version: SESSION_IDENTITY_VERSION,
-			actorHandle: options.actorHandle === undefined ? null : normalizeActorHandle(options.actorHandle, false),
+			actorHandle,
 			assignments: (options.assignments ?? []).map(assignment => ({ ...assignment })),
 			generation: options.generation === undefined ? null : normalizePin("generation", options.generation),
 		});
@@ -1058,7 +1105,7 @@ async function createFreshIdentity(
 		);
 		catalog.journals.set(sessionId, durable);
 		catalog.records = [...catalog.journals.values()].map(journal => journal.record);
-		assertUniqueHandles([...catalog.journals.values()], limit);
+		catalog.conflicts = collectNameConflicts(catalog.records);
 		reconcileProjection(catalog);
 		return { manager, identity: cloneRecord(durable.record), created: true };
 	} catch (error) {

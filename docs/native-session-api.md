@@ -1,107 +1,185 @@
-# Native sessions: API cheatsheet
+# Native sessions: consumer card and API guide
 
-Use this guide when connecting Exocortex, a plugin, or an agent to OMP sessions. These interfaces belong to the native socket capability; a source checkout or a new viewer does not upgrade an already-running owner. Check the loaded owner, not just the version selected for the next launch.
+Canonical location: repo `docs/native-session-api.md`; read it as `omp://native-session-api.md`. The RPC protocol reference (`docs/rpc.md`, `omp://rpc.md`) owns wire framing, negotiation and event payloads; this page owns session discovery, identity, naming, attachment, control and their consumer contract. When the two disagree, the loaded owner and the generated wire schema win.
+
+## Consumer card
+
+| Field | Contract |
+|---|---|
+| **Owner** | One OMP process holds the lease on each live session's journal and serves its commands. Name changes across a sessions root use the same catalog lock. The host owns its connection; plugins borrow it. Installing a new generation does not upgrade an already-running owner. |
+| **Provides** | `NativeSessionApi` (Node/Bun facade), the `omp sock` CLI, the native RPC command family, the generated wire schema plus TypeScript/Python/Rust/Go clients, and name-conflict diagnostics. |
+| **Consumes** | `NativeSessionApi` takes a transport with `request` and `observe`. Exocortex supplies it from its existing attachment; the facade does not open sockets or keep a roster. |
+| **Entry** | `@oh-my-pi/pi-coding-agent/session/native-session-api` for the facade, `omp sock` for the CLI, and the [wire schema](../packages/coding-agent/src/modes/rpc/wire/rpc-wire.schema.json) for independent clients. |
+| **Authorization** | The caller's existing authenticated host session scope. Borrowing a transport grants nothing new, and the catalog is metadata read-only. Do not add a second authorization or identity store beside it. |
+| **Freshness** | The catalog is metadata-only: the RPC `list_sessions` handler passes `probe: false`, so it never opens peer connections or refreshes live state. Live state comes from **your** existing attachment (`get_state`, events) or an explicit `omp sock status`/`context` inspect. No wrapping poll loop. |
+| **Errors** | Typed codes on the response (`session_identity_conflict`, `ambiguous_session_reference`, `session_not_found`, plus bounded request codes). Code-less legacy refusal text stays code-less. `unknown` is never idle, and an accepted mail/control receipt is admission, not completion. |
+| **Version** | Three separate versions: the generation you installed, the loaded owner's capabilities (probe with `get_refresh_preflight`), and the wire protocol (`protocolVersion` + `negotiate_protocol`). New wire fields are additive and optional, so a peer that does not know `conflicts` still parses the list. Older owners may refuse newer commands; show unsupported, do not simulate it. |
+
+Hard rules for consumers: do not add another socket, parser, roster, daemon, registry, HTTP surface or polling loop. Do not spawn `omp` as a subprocess to fake a missing native operation. Do not edit journals. Do not delete or auto-repair sessions or names.
 
 ## The model
 
 - **Session UUID:** the durable conversation ID. Keep it across naming, sleep, wake and restart.
-- **Native name:** an optional, unique friendly address for that UUID. Names match case-insensitively while preserving their display spelling, including sleeping sessions. A name is not a conversation title, profile, model or permission grant. Rename changes the address, not the conversation.
-- **Journal:** the canonical persisted conversation. Do not edit a live journal yourself.
-- **Owner:** the single process holding the journal lease and publishing its RPC socket. Multiple views may attach; they do not create another owner.
+- **Native name:** an optional, unique friendly address for that UUID, matched case-insensitively while preserving display spelling, including for sleeping sessions. A name is **not** a conversation title, profile, model or permission grant. `/rename` and `set_session_name` change the title; they never change the address. Names are unique **within one OMP sessions root** (the catalog root that owner scans), not across unrelated roots, and a name is not an authorization token.
+- **Copied history:** a fork or automatic continuation with a new UUID starts unnamed. Its parent keeps its name. History links do not transfer name ownership.
+- **Journal:** the canonical persisted conversation at `sessionFile`. Do not edit a live journal yourself.
+- **Owner:** the single process holding the journal lease and publishing its RPC socket. Multiple views may attach; they do not create another owner. A saved session need not have a live socket.
 - **Boot ID:** one owner incarnation. A restart changes this even if the operating-system PID stays the same.
-- **Profile and working directories:** saved launch policy and discovery scope. Naming does not change them or move memory into a new silo.
+- **Profile, generation and working directories:** saved launch policy and discovery scope. Naming does not change them or move memory into a new silo.
 
-A saved session need not have a live socket. Discovery is read-only. Wake and attach deliberately revive that exact saved conversation, or refuse; they never substitute a new conversation.
+Discovery is read-only. Wake and attach deliberately revive that exact saved conversation, or refuse; they never substitute a new conversation.
+
+## Name conflicts are data, never a winner
+
+Two journals in one catalog root may already claim the same name (any case). That is a historical fact, not a request to pick an owner:
+
+```json
+{
+  "sessions": [],
+  "total": 0,
+  "truncated": false,
+  "conflicts": [
+    { "code": "duplicate_handle", "handle": "repository-owner", "sessionIds": ["<uuid-a>", "<uuid-b>"] }
+  ]
+}
+```
+
+- `conflicts` is optional and **omitted when empty**. Present, it is `{ code: "duplicate_handle", handle, sessionIds }` where `handle` is lowercased and `sessionIds` is the stable sorted claimant list.
+- It is computed over the whole catalog **before** `query`, `limit` and `offset`, so a filtered or paged view still reports every historical collision. `total`, `truncated` and `nextOffset` describe sessions only. Older clients that predate the field simply parse without it, so a consumer that needs the diagnostics must use a client generated from a schema that includes `conflicts`.
+- It does not fail the list, does not hide the raw claims, and does not authorize selecting a winner. A collided name cannot select a session: resolve or naming with it refuses `session_identity_conflict`.
+- Resolution compares the reference case-insensitively as a name **and** as a session-ID prefix. One match resolves; a duplicated name is `session_identity_conflict`; any other multiple match is `ambiguous_session_reference`; no match is `session_not_found`. There is no precedence: a full UUID that also equals another session's literal name stays ambiguous rather than silently winning.
+
+Resolution is a human/host decision, expressed by UUID:
+
+```bash
+# Rename only the intended conversation, by full UUID, to an unused name.
+omp sock name <uuid-a> repository-owner-main
+
+# Clear only that conversation's claim: in-session /name clear, or an exact identity
+# patch from an attached client — the same UUID, journal, profile and memory access remain.
+# {"type":"set_session_identity","expectedSessionId":"<uuid-a>","expectedSessionFile":"<abs journal path>","patch":{"actorHandle":null}}
+```
+
+The rename is scoped by UUID **and** canonical journal. Only the chosen session records the change; the other journals stay untouched. This is not a boot fence: fetch a new owner receipt after a restart. Another session's existing name is unavailable even while that session sleeps.
+
+Malformed journals and the same UUID claimed by two journals remain fail-closed: the catalog refuses instead of guessing which file is real. Fix such a collision at its source owner before relying on the catalog.
+
+## Native RPC, SDK and CLI
+
+Three layers over one wire contract:
+
+| Layer | What it is | Reach for it when |
+|---|---|---|
+| Raw RPC | JSONL frames (`{id, type, ...}` → `{type:"response", command, success, data\|error, code?}`) on stdio or the session socket. | You are debugging, or already hold a framed connection. |
+| SDK | `NativeSessionApi` narrows the same frames into typed methods; `NativeSessionApiError` carries `code`. | You are a Node/Bun host (Exocortex, plugin) with a borrowed transport. |
+| CLI | `omp sock` is the terminal interface. `list --json` prints the inventory; `raw` prints the complete RPC response envelope. | An operator or script inspects or controls a session. |
+
+`omp sock raw <selector> '<json command>'` is the escape hatch that sends one raw command over the native path. Cross-session scanning still belongs to `list`/`where`, never to guessed paths.
+
+### Native commands and exact request shapes
+
+| Command | Request fields | Response data |
+|---|---|---|
+| `list_sessions` | `query?`, `limit?` (default 25, 1–1000), `offset?` | `NativeSessionList` with optional `conflicts` |
+| `resolve_session` | `reference` (≤256 chars) | `NativeSessionInfo` |
+| `wake_session` | `expectedSessionId`, `expectedSessionFile` | `NativeSessionInfo & { revived }` |
+| `set_session_identity` | `expectedSessionId`, `expectedSessionFile`, `patch` (`actorHandle`, `assignments`, `generation`, `idleSleepSeconds`) | `SessionIdentityRecord` |
+| `get_state` | — | attached owner's prompt, tools, queues, runtime state |
+| `get_refresh_preflight` | — | owner receipt (`sessionId`, `sessionFile`, `bootId`) and refresh capabilities |
+| `agent_mail_send` / `agent_mail_read` | mail params / read options | admission receipt / mail records |
+
+Invalid input is refused with a bounded code: `invalid_catalog_query`, `invalid_session_reference`, `invalid_wake_target`, `session_target_mismatch`. Both the socket and stdio dispatchers also map the typed identity failures to `session_identity_conflict`, `ambiguous_session_reference` and `session_not_found` instead of prose only.
+
+```json
+{"id":"c1","type":"list_sessions","query":"repository","limit":50}
+{"id":"c2","type":"resolve_session","reference":"<full-uuid>"}
+{"id":"c3","type":"set_session_identity","expectedSessionId":"<uuid>","expectedSessionFile":"/abs/path/<uuid>.jsonl","patch":{"actorHandle":"repository-owner"}}
+```
+
+```json
+{"id":"c2","type":"response","command":"resolve_session","success":false,"error":"Session reference \"…\" matches more than one session…","code":"ambiguous_session_reference"}
+```
+
+`wake_session` never creates: it re-resolves the expected UUID, refuses `session_target_mismatch` if the saved journal moved, and starts only that saved conversation's owner. Whatever you render after it must come from the returned identity, not from the name you asked for.
 
 ## Terminal quick reference
 
-Replace `atlas` with a full UUID, an unambiguous UUID prefix, or a native name.
+Replace `<selector>` with a full UUID (preferred when a name collides), an unambiguous UUID prefix, or a non-colliding native name.
 
 | Want | Command | Meaning |
 |---|---|---|
-| Discover | `omp sock list` | All native names plus eight recent unnamed sessions; includes verified attachable socket count. |
-| Enumerate everything | `omp sock list --all --json` | Include all saved unnamed sessions. |
-| Locate without waking | `omp sock where atlas` | UUID, canonical journal and saved binding. |
-| Inspect live availability | `omp sock status atlas` | Unknown/unavailable is not idle. |
-| Inspect actual context | `omp sock context atlas --json` | The attached owner's `get_state`: effective system prompt, tool inventory, queues and runtime state. Does not wake sleepers. |
-| Name or rename | `omp sock name atlas repository-owner` | Same UUID/history; wakes the saved owner if necessary. `rename` is an equivalent spelling. Conflicts refuse. |
-| Wake a saved session | `omp sock wake atlas` | Starts only the saved conversation's owner. |
-| Open its terminal | `omp sock attach atlas` | Attach to the existing owner or wake the saved session; Ctrl-C detaches only the viewer. |
-| Read history | `omp sock read atlas -n 40` | Read the journal without waking the owner. `--full` includes all display messages. |
-| Follow | `omp sock read atlas --follow` | Observe the live conversation; Ctrl-C detaches. |
-| Observe native events | `omp sock tap atlas` | JSONL session/core events over the existing native RPC path. |
-| Stop the current turn | `omp sock stop atlas` | An alias for `abort`; it does not kill or retire the session. |
-| Sleep | `omp sock sleep atlas` | Cooperative idle owner exit. Saved conversation remains discoverable and revivable. |
-| Normal restart | `omp sock restart atlas` | Refresh to the selected generation when settled, without asking the model to write a checkpoint. |
-| Graceful restart | `omp sock restart atlas --graceful` | Steer a checkpoint request, require model acknowledgment, then wait for all owned work/results. |
-| Compact before restarting | `omp sock restart atlas --graceful --compact` | Compaction failure leaves the current owner running. |
-| Hard kill | `omp sock kill atlas` | Kill only the broker-verified current owner. Can destroy in-memory work. No checkpoint conversation. |
+| Discover | `omp sock list` | Native names plus eight recent unnamed sessions, attachable socket count, and any name-conflict lines. |
+| Enumerate everything | `omp sock list --all --json` | Include all saved unnamed sessions; JSON keeps `conflicts`. |
+| Filter | `omp sock list --query <text> [--live]` | `--live` keeps only owners that prove their identity. Conflicts remain catalog-wide. |
+| Locate without waking | `omp sock where <selector>` | UUID, canonical journal and saved binding. |
+| Inspect live availability | `omp sock status <selector>` | Unknown/unavailable is not idle. |
+| Inspect actual context | `omp sock context <selector> --json` | The attached owner's `get_state`; does not wake sleepers. |
+| Name or rename | `omp sock name <selector> <new-name>` | Same UUID/history; wakes the saved owner if necessary. `rename` is an equivalent spelling. Conflicts refuse. |
+| Wake a saved session | `omp sock wake <selector>` | Starts only the saved conversation's owner. |
+| Open its terminal | `omp sock attach <selector>` | Attach to the existing owner or wake the saved session; Ctrl-C detaches only the viewer. |
+| Read history | `omp sock read <selector> -n 40` | Read the journal from disk without waking the owner. `--full` includes all display messages. |
+| Follow | `omp sock read <selector> --follow` | Observe a live owner's conversation; Ctrl-C detaches. Does not wake. |
+| Observe native events | `omp sock tap <selector>` | JSONL session/core events from the live owner over the existing native RPC path. Does not wake. |
+| Send one raw command | `omp sock raw <selector> '<json>'` | Escape hatch to the live owner; exit code 1 on a failed response. Does not wake. |
+| Stop the current turn | `omp sock stop <selector>` | Alias for `abort`; it does not kill or retire the session. |
+| Sleep | `omp sock sleep <selector>` | Cooperative idle owner exit. Saved conversation remains discoverable and revivable. |
+| Normal restart | `omp sock restart <selector>` | Refresh to the selected generation when settled, without asking the model to write a checkpoint. |
+| Graceful restart | `omp sock restart <selector> --graceful` | Steer a checkpoint request, require model acknowledgment, then wait for all owned work/results. |
+| Compact before restarting | `omp sock restart <selector> --graceful --compact` | Compaction failure leaves the current owner running. |
+| Hard kill | `omp sock kill <selector>` | Kill only the broker-verified current owner. Can destroy in-memory work. No checkpoint conversation. |
 | Select a published PID | `omp sock status --pid 12345` | PID is a selector, not authority. Kill revalidates session, boot, broker generation and spawned process handle. |
-| Inspect a resource path | `omp sock where atlas` | Prefer paths in this result to guessing a profile or journal location. |
-| Open a resource | `omp sock open atlas profile` | `profile`, `transcript` or `folder`; uses the configured editor. |
+| Open a resource | `omp sock open <selector> profile` | `profile`, `transcript` or `folder`; uses the configured editor. |
 
 Inside the existing OMP terminal:
 
 | Command | Meaning |
 |---|---|
 | `/name` | Show the current attach name. |
-| `/name repository-owner` | Set or change the attach name, with visible confirmation. |
+| `/name <name>` | Set or change the attach name, with visible confirmation. |
 | `/name clear` | Remove only the name; the same UUID, history, profile and memory access remain. `clear` is a reserved action, not a name argument. |
-| `/title Working on the repository` | Change the conversation title, not its attach name. `/rename` remains an equivalent title command. |
+| `/rename <title>` (`/title`) | Change the conversation title, not its attach name. |
 
-Names differing only by case cannot belong to different sessions. Historical case-colliding claims refuse instead of selecting or rewriting either conversation. `/context` opens OMP's context browser, and `/restart` runs the ordinary local restart path. Use the explicit graceful API/CLI for checkpoint-before-restart behavior; `/restart` is not that handshake. Already-running owners need a controlled upgrade before new slash commands are available.
+Names differing only by case cannot belong to different sessions. Historical case-colliding claims are reported, refuse selection, and are never rewritten automatically. `/context` opens OMP's context browser, and `/restart` runs the ordinary local restart path; the explicit graceful API/CLI is the checkpoint handshake. Already-running owners need a controlled upgrade before new slash commands are available.
 
-**Starting a genuinely new conversation is different from waking:** launch `omp` normally, optionally with `--agent PROFILE --agent-cwd /definition/root`. The existing CLI/host launch owner creates its UUID. `wake_session` does not create, and RPC `new_session` switches the current owner rather than creating an independent actor. An Exocortex host must use its authoritative session-creation seam; do not spawn a second client or use a Bun subprocess shim from a leaf plugin.
+**Starting a genuinely new conversation is different from waking:** launch `omp` normally, optionally with `--agent PROFILE --agent-cwd /definition/root`. The existing CLI/host launch owner creates its UUID. `wake_session` does not create, and RPC `new_session` switches the current owner rather than creating an independent actor. An Exocortex host must use its authoritative session-creation seam; do not spawn a second client or a Bun subprocess shim from a leaf plugin.
 
 ## Exocortex / Node: borrow the existing connection
 
-```ts
-import {
-  NativeSessionApi,
-  type NativeSessionApiTransport,
-} from "@oh-my-pi/pi-coding-agent/session/native-session-api";
+DSH bridge candidate `705718c8e5` exposes `ctx.ompRpc.nativeSessionTransport(sessionId: SessionId): OmpNativeSessionTransport | undefined` from `@deepseek-ai/dsh-omp-rpc`. Check that the installed host exposes it. Its `request(command: OmpRpcCommand): Promise<unknown>` returns the parsed envelope; `observe(listener: (event: unknown) => void): () => void` returns the unsubscribe function.
 
-export function nativeSessionApi(transport: NativeSessionApiTransport) {
-  return new NativeSessionApi(transport);
+- `sessionId` is the **host/DSH `SessionId`** of the session your caller already attached and is authorized to operate. It is not a guessed native UUID, a native name, or a catalog lookup.
+- The call never attaches, wakes, spawns or reconnects. No live attachment returns `undefined` — render "not attached", do not wake.
+- The returned object is frozen and covers that one attachment; **detach/rebind invalidates it** (requests reject). Acquire a new transport and a fresh native owner receipt rather than silently following another owner.
+- `request` preserves the whole response envelope including refusal codes. `observe` starts at subscription time: it is not a replay source, and stopping it releases only that observer (a throwing listener stops only itself). Unsubscribe in your Cordis lifecycle; never close the shared connection.
+
+This read-only example runs with an existing attachment. A catalog match is not enough: the connected owner must prove it serves the selected conversation.
+
+```ts
+import { NativeSessionApi, type NativeSessionApiTransport } from "@oh-my-pi/pi-coding-agent/session/native-session-api";
+
+export async function inspectAttached(transport: NativeSessionApiTransport, name: string) {
+  const api = new NativeSessionApi(transport);
+  const saved = await api.resolve(name);
+  const { restartReceipt: owner } = await api.preflight();
+  const state = await api.state();
+  if (!owner || !saved.sessionFile ||
+      owner.sessionId !== saved.sessionId || owner.sessionFile !== saved.sessionFile ||
+      state.sessionId !== owner.sessionId || state.sessionFile !== owner.sessionFile) {
+    throw new Error("The attachment does not match the selected session");
+  }
+  return { sessionId: owner.sessionId, sessionFile: owner.sessionFile, bootId: owner.bootId };
 }
 ```
 
-`transport.request(command)` returns the host's parsed response envelope. `transport.observe(listener)` returns an unsubscribe function. Exocortex supplies these from its existing exact-session OmpBridge attachment (`ctx.ompRpc.nativeSessionTransport(...)` where mounted). OMP narrows responses/events. Do not add another socket, parser, roster, daemon, registry or polling loop. Unsubscribe when the plugin's owning context is disposed; do not close the host's connection.
+From the host, call `const transport = ctx.ompRpc.nativeSessionTransport(dshSessionId)`; if it is absent, show “not attached”. Otherwise call `await inspectAttached(transport, name)`. On a mismatch, do not issue a mutation or create a replacement. `api.wake({ sessionId, sessionFile })` is an explicit action; it does **not** retarget the caller's transport. After waking, obtain the selected conversation's attachment from the host.
 
-```ts
-const api = nativeSessionApi(transport);
-const page = await api.catalog({ query: "repository", limit: 25, offset: 0 });
-const saved = await api.resolve("atlas");
-if (!saved.sessionFile) throw new Error("No canonical saved journal");
-// Wake is an explicit action, not part of rendering a list.
-await api.wake({ sessionId: saved.sessionId, sessionFile: saved.sessionFile });
-```
-
-Catalog live state belongs to existing host attachments; the metadata-only RPC does not open connections to peers. After wake, the host rebinds its existing session connection to the same selected UUID/journal and verifies the returned identity. Never call a generic create fallback because attach or wake failed.
-
-Operate on the selected session's own borrowed attachment:
-
-```ts
-const preflight = await api.preflight();
-const owner = preflight.restartReceipt;
-if (!owner) throw new Error("Native owner identity unavailable");
-
-await api.setIdentity(owner, { actorHandle: "repository-owner" });
-const context = await api.state(); // effective systemPrompt and mounted dumpTools
-
-// Normal restart: no checkpoint steer. Busy owners schedule at idle.
-await api.control(owner, "restart");
-
-// Graceful restart: capability comes from this loaded owner.
-if (!preflight.refreshModes.graceful) throw new Error("Graceful restart unavailable");
-await api.control(owner, "restart", { graceful: true, compactBeforeRestart: true });
-```
+For a deliberate rename or clear on the verified attachment, use `api.setIdentity(owner, { actorHandle: newName })` or `{ actorHandle: null }`. For a restart, choose **one** operation: `api.control(owner, "restart")` for normal restart, or `api.control(owner, "restart", { graceful: true, compactBeforeRestart: true })` if preflight reports `refreshModes.graceful` and the operator wants a checkpoint.
 
 These restart examples are alternatives, not a sequence: after a restart request, do not issue another using the old receipt. `control` also supports `abort`, `compact` and cooperative `sleep`. Exact refresh does not support force; refusal never falls back to signalling a PID.
 
 **Hard kill is intentionally not a Node facade method yet.** Native CLI and the Bun-side `NativeSessionService.control(selector, "kill")` use the existing broker's stable spawned-process handle. The Node bridge currently has no equivalent authenticated supervisor operation. Exocortex must expose that operation through its existing authoritative host/broker seam before wiring a kill button; do not substitute `process.kill`, shell out to `omp`, or invent a transport. The same distinction applies to creating an independent new owner: use the host's actual creation API, not `wake` or `new_session`.
 
-## Graceful restart is a handshake, not “kill later”
+## Graceful restart is a handshake, not "kill later"
 
 1. Read `get_refresh_preflight`; capture UUID, canonical journal and `restartReceipt.bootId`. Unknown work inventories are not proof of idle.
 2. Send `upgrade_runtime` with those three expected owner fields, `refresh: true`, and `graceful: true`. Add `compactBeforeRestart: true` if wanted.
@@ -141,9 +219,16 @@ const unsubscribe = api.observe(event => {
 
 `renderMail` is the application's renderer, not an OMP API. Use the host's existing event stream for core tool/message events and the native facade for its owned session events. Unknown event kinds stay unknown; do not forge success or idle.
 
+### Correlation, reconnect and replay
+
+- Responses correlate by the request `id` the host preserved; events are not responses and never resolve a pending request. See the protocol reference's Request/Response Correlation and Event Stream Schema (`docs/rpc.md`), and the payload fields in `wire/events.ts`.
+- A newly attached or newly subscribed observer receives events from that moment. It is **not** sent earlier frames, and detaching is not cancellation. Rebuild state from the canonical history (`omp sock read`, `get_entries`, `get_state`), which is the replay authority — the live stream is not.
+- A `tool_execution_end` you cannot match to a start you observed is missing correlation: report it as unknown provenance. Do not attribute it to the next call, and do not execute anything to "repair" history.
+- Reconnect means re-acquire through the host pipeline and re-verify UUID/journal/boot. It does not mean reconnecting a private socket or resending a prompt.
+
 ## Context and the old `actor` CLI
 
-OMP now provides native session context inspection through `omp sock context`, `api.state()` and in-session `/context`, all backed by the session owner. `systemPrompt` is the effective text; `dumpTools` is the owner's mounted inventory. Keep inspection authenticated and session-scoped.
+OMP provides native session context inspection through `omp sock context`, `api.state()` and in-session `/context`, all backed by the session owner. `systemPrompt` is the effective text; `dumpTools` is the owner's mounted inventory. Keep inspection authenticated and session-scoped.
 
 A composition that also provides `get_context` can expose ordered **base-source** layer metadata. Feature-detect it; match session/boot/generation/effective revision before joining it to `get_state`. Base source character counts are not a partition of effective prompt size. Preserve partial/unattributed/unavailable states; do not parse prompt text or sum layer weights into invented token totals.
 
@@ -151,9 +236,26 @@ This is **not yet full parity with Worlds' `actor context`**: its disk-wide capa
 
 The native `omp sock` command set replaces the socket-specific discovery/read/attach/control paths. It does not authorize deleting `actor`, `actors.json`, or non-socket project/cockpit/profile operations. Remove the old path only after its callers and saved bindings are migrated with parity proof. UUID-first use and optional on-demand naming do **not** require bulk migration first.
 
+## Where the authoritative details live
+
+| Topic | Source |
+|---|---|
+| Wire schema (generated) | `packages/coding-agent/src/modes/rpc/wire/rpc-wire.schema.json`; regenerate with `bun run gen:rpc` in `packages/coding-agent` (writes `rpc-wire.generated.ts` and the SDK wire modules) |
+| Commands and responses | `packages/coding-agent/src/modes/rpc/rpc-types.ts`; `docs/rpc.md#command-schema-canonical` |
+| Events | `packages/coding-agent/src/modes/rpc/wire/events.ts`; `docs/rpc.md#event-stream-schema` and `#request-response-correlation` |
+| Generated clients | `sdk/python/omp-rpc`, `sdk/rust/omp-rpc`, `sdk/go/omp-rpc` (`*_wire`/`wire.*` generated from that schema) |
+| Node facade | `packages/coding-agent/src/session/native-session-api.ts` (exported as `@oh-my-pi/pi-coding-agent/session/native-session-api` via the package's `./*` export) |
+| Negotiation and framing | `docs/rpc.md#transport-and-framing` (`ready` frame, `negotiate_protocol`, v2 chunking) |
+| Tool registration and scoping | `docs/rpc.md#set_host_tools-payload` and `#set_host_uri_schemes-payload`; per-connection host tools, replaced by the host, never a global plugin registry |
+| Cancellation | `abort`/`abort_and_prompt` for turns, `cancel_subagent` for subagents, `omp sock stop`/`abort` for a turn, cooperative `sleep` for an owner; none of them selects or creates a session |
+| Lifecycle and compatibility | this page's restart/sleep/persistence sections plus `get_refresh_preflight` capabilities; legacy owner refusals remain code-less |
+| Name conflicts | `SessionIdentityNameConflict` in the generated schema; `list_sessions` → `conflicts`; typed errors above |
+| CLI surface | `omp sock --help` / `omp sock <action> --help`; `packages/coding-agent/src/cli/sock-cli.ts` |
+
 ## Failure rules
 
 - Old owners may refuse newer commands. `NativeSessionApiError.code` is preserved when supplied; code-less legacy refusal text remains code-less. Show unsupported/unavailable rather than healthy/idle.
-- Name conflicts, ambiguous UUID prefixes, wrong journals, changed boot IDs and held leases refuse. Do not retry under a different name or create a replacement conversation.
+- A duplicated historical name refuses **selection**, as do mixed name/UUID ambiguity, ambiguous UUID prefixes, wrong journals, changed boot IDs and held leases. Do not retry under a different name, guess a claimant, or create a replacement conversation.
+- A name conflict in the list is a diagnostic, not permission to mutate another session. Only an explicit UUID-scoped rename or clear changes a claim; nothing is deleted automatically.
 - Sleep/restart scheduling is not completion. Verify actual owner exit or a fresh native boot receipt.
 - One-hour detached idle sleep is the default (`session.idleSleepSeconds: 3600`); profiles and per-session metadata can override it, and `0` disables it. Pending work and attached viewers prevent idle retirement. Installing new code alone does not change already-running owners.

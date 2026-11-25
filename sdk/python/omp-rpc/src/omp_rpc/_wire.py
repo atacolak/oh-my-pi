@@ -620,10 +620,19 @@ class NativeSessionInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class SessionIdentityNameConflict:
+    code: Literal["duplicate_handle"] = "duplicate_handle"
+    handle: str
+    session_ids: tuple[str, ...]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class NativeSessionList:
     sessions: tuple[NativeSessionInfo, ...]
     total: int
     truncated: bool
+    conflicts: tuple[SessionIdentityNameConflict, ...] | None = None
+    """Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied."""
     next_offset: int | None = None
     attachable_sockets: int | None = None
     unverified_sockets: int | None = None
@@ -2340,12 +2349,22 @@ def parse_native_session_info(value: object, path: str = "NativeSessionInfo") ->
     )
 
 
+def parse_session_identity_name_conflict(value: object, path: str = "SessionIdentityNameConflict") -> SessionIdentityNameConflict:
+    payload = expect_object(value, path)
+    required(payload, "code", cast('Decoder[Literal["duplicate_handle"]]', literal(frozenset({"duplicate_handle"}))), path)
+    return SessionIdentityNameConflict(
+        handle=required(payload, "handle", decode_str, path),
+        session_ids=required(payload, "sessionIds", array(decode_str), path),
+    )
+
+
 def parse_native_session_list(value: object, path: str = "NativeSessionList") -> NativeSessionList:
     payload = expect_object(value, path)
     return NativeSessionList(
         sessions=required(payload, "sessions", array(parse_native_session_info), path),
         total=required(payload, "total", decode_int, path),
         truncated=required(payload, "truncated", decode_bool, path),
+        conflicts=optional(payload, "conflicts", array(parse_session_identity_name_conflict), path),
         next_offset=optional(payload, "nextOffset", decode_int, path),
         attachable_sockets=optional(payload, "attachableSockets", decode_int, path),
         unverified_sockets=optional(payload, "unverifiedSockets", decode_int, path),
@@ -5089,6 +5108,7 @@ __all__ = [
     "SessionExecution",
     "SessionExecutionMemory",
     "SessionIdentityAssignment",
+    "SessionIdentityNameConflict",
     "SessionIdentityPatch",
     "SessionIdentityRecord",
     "SessionInfoUpdateEvent",
@@ -5302,6 +5322,7 @@ __all__ = [
     "parse_session_execution",
     "parse_session_execution_memory",
     "parse_session_identity_assignment",
+    "parse_session_identity_name_conflict",
     "parse_session_identity_patch",
     "parse_session_identity_record",
     "parse_session_info_update_event",

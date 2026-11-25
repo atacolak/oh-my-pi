@@ -30,6 +30,8 @@
 
 ### Fixed
 
+- Native session inventory stays usable when saved names collide: `omp sock list --json` reports all claimants so you can rename the intended session by UUID.
+- Automatic continuations no longer duplicate their parent's attach name and break session lookup.
 - Native session names match case-insensitively and refuse case-only duplicate claims, including sleeping sessions.
 - Naming and clearing show muted status confirmations instead of looking like part of the assistant's reply; rejected name changes explain the conflict.
 - Attaching by UUID works with older running sessions that omit the newer profile-binding diagnostic.

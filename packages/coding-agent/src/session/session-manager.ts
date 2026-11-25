@@ -1541,6 +1541,16 @@ export class SessionManager {
 		return contested;
 	}
 
+	/** Reidentify this in-memory history without copying the old UUID's exclusive claims. */
+	#startCopiedHistory(): void {
+		const stripped = stripExclusiveIdentityEntries(this.#entries, this.#index.leafId());
+		this.#entries = stripped.entries;
+		this.#index.rebuild(stripped.entries);
+		this.#index.setLeaf(stripped.activeLeafId);
+		this.#sessionId = mintSessionId();
+		this.#taskSiblingCandidate = undefined;
+	}
+
 	/**
 	 * Leave `#sessionFile` untouched and continue as a fresh session in a
 	 * sibling file. It gets a new session id whose header points back through
@@ -1563,8 +1573,7 @@ export class SessionManager {
 		const from = this.#sessionFile as string;
 		const previousSessionId = this.#sessionId;
 		const timestamp = nowIso();
-		this.#sessionId = mintSessionId();
-		this.#taskSiblingCandidate = undefined;
+		this.#startCopiedHistory();
 		const to = path.join(path.dirname(from), `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
 		// The marker goes before the carried-over fields: the session listing
 		// reads only the first 4 KB of a file, and a header grows with them.
@@ -2796,8 +2805,7 @@ export class SessionManager {
 
 		const timestamp = nowIso();
 		this.#leaveSessionForExplicitTransition();
-		this.#sessionId = mintSessionId();
-		this.#taskSiblingCandidate = undefined;
+		this.#startCopiedHistory();
 		this.#sessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
 		this.#expectedDiskSize = null;
 		this.#header = {
@@ -2827,11 +2835,6 @@ export class SessionManager {
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
-
-		const stripped = stripExclusiveIdentityEntries(this.#entries, this.#index.leafId());
-		this.#entries = stripped.entries;
-		this.#index.rebuild(stripped.entries);
-		this.#index.setLeaf(stripped.activeLeafId);
 
 		await this.#rewriteAtomically();
 		return { oldSessionFile, newSessionFile: this.#sessionFile };

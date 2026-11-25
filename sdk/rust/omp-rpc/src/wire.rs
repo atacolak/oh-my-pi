@@ -2687,10 +2687,21 @@ pub struct NativeSessionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionIdentityNameConflict {
+	pub code: LitDuplicateHandle,
+	pub handle: String,
+	#[serde(rename = "sessionIds")]
+	pub session_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NativeSessionList {
 	pub sessions: Vec<NativeSessionInfo>,
 	pub total: i64,
 	pub truncated: bool,
+	/// Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub conflicts: Option<Vec<SessionIdentityNameConflict>>,
 	#[serde(rename = "nextOffset", default, skip_serializing_if = "Option::is_none")]
 	pub next_offset: Option<i64>,
 	#[serde(rename = "attachableSockets", default, skip_serializing_if = "Option::is_none")]
@@ -6793,6 +6804,27 @@ impl NativeSessionInfoState {
 			Self::Idle => "idle",
 			Self::Sleeping => "sleeping",
 			Self::Unknown => "unknown",
+		}
+	}
+}
+
+/// The constant `"duplicate_handle"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitDuplicateHandle;
+
+impl Serialize for LitDuplicateHandle {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("duplicate_handle")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitDuplicateHandle {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("duplicate_handle") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"duplicate_handle\", got {value}")))
 		}
 	}
 }

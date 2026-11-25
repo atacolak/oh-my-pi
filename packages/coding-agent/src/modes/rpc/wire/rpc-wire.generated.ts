@@ -405,10 +405,18 @@ export interface NativeSessionInfo {
 	owner?: RuntimeRestartReceipt;
 }
 
+export interface SessionIdentityNameConflict {
+	code: "duplicate_handle";
+	handle: string;
+	sessionIds: string[];
+}
+
 export interface NativeSessionList {
 	sessions: NativeSessionInfo[];
 	total: number;
 	truncated: boolean;
+	/** Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied. */
+	conflicts?: SessionIdentityNameConflict[];
 	nextOffset?: number;
 	attachableSockets?: number;
 	unverifiedSockets?: number;

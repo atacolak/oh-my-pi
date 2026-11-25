@@ -107,6 +107,11 @@ export async function runSockCommand(args: SockCommandArgs): Promise<void> {
 					`${cell(session.handle, 22)} ${cell(session.state, 10)} ${cell(session.model, 34)} ${cell(session.pid === null ? null : String(session.pid), 9)} ${session.sessionId}\n`,
 				);
 			}
+			for (const conflict of result.conflicts ?? []) {
+				process.stdout.write(
+					`Name conflict: ${sanitizeText(conflict.handle)} (${conflict.sessionIds.map(id => sanitizeText(id)).join(", ")}). Select a UUID to rename; no owner was chosen.\n`,
+				);
+			}
 			process.stdout.write(
 				`${result.attachableSockets ?? 0} attachable sockets; ${result.sessions.length} sessions shown${
 					result.unverifiedSockets ? `; ${result.unverifiedSockets} sockets unverified` : ""

@@ -61,7 +61,12 @@ import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
 import { findCompactMode } from "../../session/compact-modes";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { findMostRecentNonEmptySession, findRecentSessionContinuation } from "../../session/session-listing";
-import { assignSessionIdentity } from "../../session/session-identity";
+import {
+	assignSessionIdentity,
+	SessionIdentityAmbiguousError,
+	SessionIdentityConflictError,
+	SessionIdentityNotFoundError,
+} from "../../session/session-identity";
 import { isSessionSettled } from "../../session/session-settle";
 import { probeSessionLeases } from "../../session/session-storage";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
@@ -1651,7 +1656,16 @@ export class RpcCommandSurface {
 
 	/** Serve one command; the caller owns the response sink (stdio) or receives it here (socket). */
 	async handleCommand(command: RpcCommand, conn?: RpcClientConn): Promise<RpcResponse> {
-		const run = () => this.#handleCommandImpl(command, conn);
+		const run = () =>
+			this.#handleCommandImpl(command, conn).catch((error: unknown) => {
+				if (error instanceof SessionIdentityConflictError)
+					return rpcError(command.id, command.type, error.message, "session_identity_conflict");
+				if (error instanceof SessionIdentityAmbiguousError)
+					return rpcError(command.id, command.type, error.message, "ambiguous_session_reference");
+				if (error instanceof SessionIdentityNotFoundError)
+					return rpcError(command.id, command.type, error.message, "session_not_found");
+				throw error;
+			});
 		const response =
 			this.#host && Object.hasOwn(SESSION_CHANGE_TYPES, command.type)
 				? await this.#host.withSessionChange(run)

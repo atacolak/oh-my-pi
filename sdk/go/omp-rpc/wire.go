@@ -2011,14 +2011,43 @@ func (v *NativeSessionInfoState) UnmarshalJSON(data []byte) error {
 	return unknownValue("NativeSessionInfoState", s)
 }
 
+type SessionIdentityNameConflict struct {
+	Handle     string   `json:"handle"`
+	SessionIds []string `json:"sessionIds"`
+}
+
+func (v *SessionIdentityNameConflict) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionIdentityNameConflict", v.decodeFrom)
+}
+
+func (v *SessionIdentityNameConflict) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionIdentityNameConflict
+	d := fieldDecoder{raw: raw, owner: "SessionIdentityNameConflict"}
+	d.constant("code", "duplicate_handle")
+	d.required("handle", &out.Handle)
+	d.required("sessionIds", &out.SessionIds)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v SessionIdentityNameConflict) MarshalJSON() ([]byte, error) {
+	type plain SessionIdentityNameConflict
+	return encodeObject(plain(v), `"code":"duplicate_handle"`, nil)
+}
+
 type NativeSessionList struct {
-	Sessions          []NativeSessionInfo `json:"sessions"`
-	Total             int64               `json:"total"`
-	Truncated         bool                `json:"truncated"`
-	NextOffset        *int64              `json:"nextOffset,omitempty"`
-	AttachableSockets *int64              `json:"attachableSockets,omitempty"`
-	UnverifiedSockets *int64              `json:"unverifiedSockets,omitempty"`
-	OmittedUnnamed    *int64              `json:"omittedUnnamed,omitempty"`
+	Sessions  []NativeSessionInfo `json:"sessions"`
+	Total     int64               `json:"total"`
+	Truncated bool                `json:"truncated"`
+	// Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied.
+	Conflicts         []SessionIdentityNameConflict `json:"conflicts,omitempty"`
+	NextOffset        *int64                        `json:"nextOffset,omitempty"`
+	AttachableSockets *int64                        `json:"attachableSockets,omitempty"`
+	UnverifiedSockets *int64                        `json:"unverifiedSockets,omitempty"`
+	OmittedUnnamed    *int64                        `json:"omittedUnnamed,omitempty"`
 }
 
 func (v *NativeSessionList) UnmarshalJSON(data []byte) error {
@@ -2031,6 +2060,7 @@ func (v *NativeSessionList) decodeFrom(raw map[string]json.RawMessage) error {
 	d.required("sessions", &out.Sessions)
 	d.required("total", &out.Total)
 	d.required("truncated", &out.Truncated)
+	d.optional("conflicts", &out.Conflicts)
 	d.optional("nextOffset", &out.NextOffset)
 	d.optional("attachableSockets", &out.AttachableSockets)
 	d.optional("unverifiedSockets", &out.UnverifiedSockets)

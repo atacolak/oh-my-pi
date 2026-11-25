@@ -33,10 +33,15 @@ const NATIVE_SESSION_INFO = {
 export const stateDefs = {
 	NativeSessionTerminal: { protocolVersion: "1", projectDir: "string", name: "string", id: "string" },
 	NativeSessionInfo: NATIVE_SESSION_INFO,
+	SessionIdentityNameConflict: { code: "'duplicate_handle'", handle: "string", sessionIds: "string[]" },
 	NativeSessionList: {
 		sessions: "NativeSessionInfo[]",
 		total: "number.integer",
 		truncated: "boolean",
+		"conflicts?": doc(
+			"SessionIdentityNameConflict[]",
+			"Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied.",
+		),
 		"nextOffset?": "number.integer",
 		"attachableSockets?": "number.integer",
 		"unverifiedSockets?": "number.integer",

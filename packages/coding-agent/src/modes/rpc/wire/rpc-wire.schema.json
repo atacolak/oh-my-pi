@@ -2601,6 +2601,28 @@
 				"terminal"
 			]
 		},
+		"SessionIdentityNameConflict": {
+			"type": "object",
+			"properties": {
+				"code": {
+					"const": "duplicate_handle"
+				},
+				"handle": {
+					"type": "string"
+				},
+				"sessionIds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"code",
+				"handle",
+				"sessionIds"
+			]
+		},
 		"NativeSessionList": {
 			"type": "object",
 			"properties": {
@@ -2615,6 +2637,13 @@
 				},
 				"truncated": {
 					"type": "boolean"
+				},
+				"conflicts": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/SessionIdentityNameConflict"
+					},
+					"description": "Historical name conflicts across the catalog, independent of pagination. Resolve explicitly by UUID; no winner is implied."
 				},
 				"nextOffset": {
 					"type": "integer"

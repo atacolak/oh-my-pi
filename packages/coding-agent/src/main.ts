@@ -42,7 +42,12 @@ import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-fla
 import { assertActorProfileBinding } from "./cli/flag-tables";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
-import { resolveLaunchAgent, rootAgentModelSelector, rootAgentToolNames } from "./cli/launch-agent";
+import {
+	resolveLaunchAgent,
+	rootAgentModelSelector,
+	rootAgentToolNames,
+	rootAgentToolProfile,
+} from "./cli/launch-agent";
 import { formatKeyHint, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { SessionPickerOptions } from "@oh-my-pi/pi-tui/apps/session-picker";
 import { fetchBuild } from "./cli/build-service";
@@ -2053,7 +2058,11 @@ export async function buildSessionOptions(
 		options.toolNames = parsed.tools;
 	} else if (launchAgent) {
 		const tools = rootAgentToolNames(launchAgent);
-		if (tools) options.toolNames = tools;
+		if (tools) {
+			options.toolNames = tools;
+			const profile = rootAgentToolProfile(launchAgent, tools);
+			if (profile) options.rootAgentProfile = profile;
+		}
 	}
 	if (launchAgent) {
 		// Reuse the selected definition, including --agent-cwd; an execution-root namesake owns no policy here.

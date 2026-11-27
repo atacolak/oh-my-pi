@@ -7,6 +7,7 @@ import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { isSessionInheritedAgentPattern } from "../config/model-resolver";
 import { discoverAgents, getAgent } from "../task/discovery";
 import type { AgentDefinition } from "../task/types";
+import type { RootAgentToolProfile } from "../session/role-tool-refresh";
 import { CliUsageError } from "./usage-error";
 
 /** Look up a launch agent by name, or `undefined` when `--agent` was omitted. */
@@ -39,6 +40,11 @@ export async function resolveLaunchAgent(
 export function rootAgentToolNames(agent: AgentDefinition): string[] | undefined {
 	if (agent.tools === undefined) return undefined;
 	return agent.tools.filter(toolName => toolName !== "yield");
+}
+
+export function rootAgentToolProfile(agent: AgentDefinition, toolNames: string[]): RootAgentToolProfile | undefined {
+	if (agent.filePath === undefined) return undefined;
+	return { filePath: agent.filePath, source: agent.source, name: agent.name, toolNames: [...toolNames] };
 }
 
 /** First agent model selector, or `undefined` when the yaml means "inherit session model". */

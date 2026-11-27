@@ -303,6 +303,12 @@ import type { VibeModeState } from "../vibe/state";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
 import { type AgentViewSession, isLocalAgentSession } from "./agent-session-handle";
 import {
+	buildActorToolChangeNotice,
+	latestActorToolOverride,
+	type ActorToolChangeNoticeDetails,
+	type ActorToolOverrideSnapshot,
+} from "./actor-tool-change";
+import {
 	asyncJobSnapshot,
 	asyncJobTree,
 	cancelOwnedAsyncJob,
@@ -531,7 +537,7 @@ import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
-import { promptDigestOfEntry, SessionTools, type SessionToolsHost } from "./session-tools";
+import { promptDigestOfEntry, SessionTools, type ActorToolChange, type ActorToolFactory, type ActorToolState, type SessionToolsHost } from "./session-tools";
 import { sessionWorkspaceDirectories } from "./session-workspace";
 import { resolveWebsocketPreference } from "./settings-stream-fn";
 import type { ShakeMode, ShakeResult } from "./shake-types";
@@ -1149,6 +1155,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	#pendingNextTurnMessages: CustomMessage[] = [];
+	/** Committed `actor-tool-change` notices whose live run predates them. The next model
+	 *  request receives each once through the context sink; the journal entry already
+	 *  exists, so they are never re-emitted or persisted again. */
+	#pendingActorToolChangeNotices: CustomMessage<ActorToolChangeNoticeDetails>[] = [];
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	/** Queued messages a session path took out of the agent queues to put back later (follow-ups
 	 *  parked behind an IRC wake turn, a session switch's rollback snapshot), in queue order. */
@@ -2796,9 +2806,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			cancel: toolCallId => this.#ttsr.cancelBridgedToolCall(toolCallId),
 		});
 		this.agent.setOnBeforeYield(() => this.#ttsr.settleJudgments());
-		this.agent.setOnModelCallSystemPrompt(prompt => {
+		this.agent.setOnModelCallSystemPrompt((prompt, appendInput) => {
 			this.#tools.recordPrimaryModelCall(prompt);
 			this.#recordModelCallSystemPrompt(prompt);
+			const notice = this.#tools.takePendingToolRosterNotice({ baseDelivered: prompt === this.#tools.baseSystemPrompt });
+			if (notice) appendInput(notice);
+			for (const pending of this.#takePendingActorToolChangeNotices()) {
+				appendInput(pending, { transcript: false });
+			}
 		});
 		this.#obfuscator = config.obfuscator;
 		const providerBoundaryHost: SessionProviderBoundaryHost = {
@@ -3254,6 +3269,74 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Registers teardown to run when this session is disposed (e.g. handle listeners bound to it). */
 	addDisposer(dispose: () => void): void {
 		this.#disposers.push(dispose);
+	}
+
+	/**
+	 * Commits one operator tool-selection change as a visible `actor-tool-change`
+	 * message. The atomic journal entry is the only record of the persistent
+	 * override (`details.override`) that resume restores, and it is painted inline
+	 * without a turn. A live run that predates the change receives the notice at
+	 * its next model request through the context sink: never steering, never a
+	 * second journal entry, never a duplicate event.
+	 *
+	 * The journal entry becomes durable before any model or UI state is published.
+	 * Once it is, a later presentation failure is reported through a notice instead
+	 * of rejecting: the caller must not roll back a selection the journal committed.
+	 */
+	async recordActorToolChange(
+		added: readonly string[],
+		removed: readonly string[],
+		override: ActorToolOverrideSnapshot,
+	): Promise<void> {
+		const publish = await this.#persistActorToolChange(added, removed, override);
+		await publish();
+	}
+
+	async #persistActorToolChange(
+		added: readonly string[],
+		removed: readonly string[],
+		override: ActorToolOverrideSnapshot,
+	): Promise<() => Promise<void>> {
+		const notice = buildActorToolChangeNotice({
+			sessionId: this.sessionManager.getSessionId(),
+			added,
+			removed,
+			override,
+			timestamp: Date.now(),
+		});
+		await this.sessionManager.appendEntriesAtomically(() => {
+			this.sessionManager.appendCustomMessageEntry(
+				notice.customType,
+				notice.content,
+				notice.display,
+				notice.details,
+				notice.attribution,
+				notice.timestamp,
+			);
+		});
+		return () => this.#publishActorToolChange(notice);
+	}
+
+	async #publishActorToolChange(notice: CustomMessage<ActorToolChangeNoticeDetails>): Promise<void> {
+		try {
+			this.agent.appendMessage(notice);
+			this.#pendingActorToolChangeNotices.push(notice);
+			await this.#emitSessionEvent({ type: "message_start", message: notice }, { detachExtensions: true });
+			await this.#emitSessionEvent({ type: "message_end", message: notice }, { detachExtensions: true });
+		} catch (error) {
+			this.emitNotice(
+				"warning",
+				`Session ${notice.details?.sessionId ?? "unknown"} journaled its tool change, but the inline notice could not be published: ${error instanceof Error ? error.message : String(error)}. The selection is already committed; do not roll it back.`,
+				"actor-tool-change",
+			);
+		}
+	}
+
+	#takePendingActorToolChangeNotices(): CustomMessage<ActorToolChangeNoticeDetails>[] {
+		if (this.#pendingActorToolChangeNotices.length === 0) return [];
+		const pending = this.#pendingActorToolChangeNotices;
+		this.#pendingActorToolChangeNotices = [];
+		return pending;
 	}
 
 	/**
@@ -6525,7 +6608,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#transcriptPinHolders > 0 || Boolean(identity?.actorHandle || identity?.assignments?.length);
 	}
 
-	#assertTranscriptNotPinned(action: string): void {
+	#assertTranscriptNotPinned(action: string, options: { allowActorToolOverrides?: boolean } = {}): void {
+		if (!options.allowActorToolOverrides && this.#tools.hasActorToolOverrides)
+			throw new Error(`Cannot ${action}: this actor has session-specific tool overrides`);
 		if (!this.isTranscriptPinned) return;
 		const reason = this.#transcriptPinHolders > 0 ? "a named viewer" : "an exclusive session identity";
 		throw new Error(`Cannot ${action}: ${reason} pins this transcript`);
@@ -7765,6 +7850,37 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	reconcileBuiltinTools(options?: { refreshPrompt?: boolean }): Promise<void> {
 		return this.#tools.reconcileBuiltinTools(options);
+	}
+
+	getActorToolState(): ActorToolState {
+		return this.#tools.getActorToolState();
+	}
+
+	actorToolAllowedByOverride(name: string): boolean {
+		return this.#tools.actorToolAllowedByOverride(name);
+	}
+
+	async configureActorTools(factory: ActorToolFactory): Promise<void> {
+		const saved = latestActorToolOverride(this.sessionManager.getEntries(), this.sessionManager.getSessionId());
+		await this.#tools.configureActorTools(
+			factory,
+			saved ? { added: [...saved.added], removed: [...saved.removed] } : undefined,
+		);
+	}
+
+	async applyActorToolChange(change: ActorToolChange, assertTarget?: () => void): Promise<ActorToolState> {
+		const manager = this.sessionManager;
+		const id = manager.getSessionId();
+		const guard = () => {
+			if (this.#isDisposed || this.isSessionTransitioning || manager.getSessionId() !== id ||
+				this.getPlanModeState()?.enabled || this.getVibeModeState()?.enabled || this.#agentKind !== "main") throw new Error("Actor tool target changed or is restricted");
+			assertTarget?.();
+		};
+		guard();
+		using _identity = manager.beginIdentityMutation();
+		if (manager.getSessionFile()) await manager.prepareIdentityJournal();
+		return await this.#tools.applyActorToolChange(change, guard, (added, removed, override) =>
+			this.#persistActorToolChange(added, removed, override));
 	}
 
 	/** Updates source provenance when a live registry entry is replaced or restored. */
@@ -10009,27 +10125,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// A mount delta or catalog rebuild during the await invalidates it: any
 			// additions carried by the delivered base are recorded as announced,
 			// while remaining notice content waits for the next context check.
-			// The roster notice is re-derived from the live delta here and always
-			// delivered, keeping the model's stated availability in lockstep with
-			// the wire tool list even when a roster change landed during maintenance.
 			const xdevMountNotice = previewXdevMountNotice
 				? this.#tools.takePendingXdevMountNotice({
 						baseCatalogDelivered: baseXdevCatalogDelivered,
 						expectedContentKey: previewXdevMountNotice.contentKey,
 					})
 				: undefined;
-			const toolRosterNotice = isUserQueuedMessage(message)
-				? this.#tools.takePendingToolRosterNotice({ baseDelivered: baseXdevCatalogDelivered })
-				: undefined;
 			const evalPreludeNotice = isUserQueuedMessage(message) ? this.#tools.takeEvalPreludeNotice() : undefined;
 			const sessionAgentNotice = isUserQueuedMessage(message) ? this.#tools.takeSessionAgentNotice() : undefined;
 			const skillNotice = isUserQueuedMessage(message) ? this.#tools.takeSkillNotice() : undefined;
-			if (xdevMountNotice || toolRosterNotice || evalPreludeNotice || sessionAgentNotice || skillNotice) {
+			if (xdevMountNotice || evalPreludeNotice || sessionAgentNotice || skillNotice) {
 				messages.splice(
 					xdevMountNoticeIndex,
 					0,
 					...(xdevMountNotice ? [xdevMountNotice] : []),
-					...(toolRosterNotice ? [toolRosterNotice] : []),
 					...(evalPreludeNotice ? [evalPreludeNotice] : []),
 					...(sessionAgentNotice ? [sessionAgentNotice] : []),
 					...(skillNotice ? [skillNotice] : []),
@@ -14474,6 +14583,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		if (!switched) throw new Error("Session reload cancelled");
 	}
+	#actorToolJournalSwitchRefusal(targetSessionId: string | undefined): Error {
+		const target = targetSessionId ? `conversation ${targetSessionId}` : "another journal";
+		const resume = targetSessionId ? `omp --resume ${targetSessionId}` : "omp --resume";
+		return new Error(
+			`Cannot switch to ${target}: a session-specific tool selection belongs to its own journal. Reopen that exact saved session with ${resume} instead.`,
+		);
+	}
 	#assertResumeProfile(profile: string | undefined): void {
 		if (profile === this.#rootAgentName) return;
 		throw new Error(
@@ -14527,8 +14643,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
 			: true;
 		if (switchingToDifferentSession) {
-			this.#assertTranscriptNotPinned("switch sessions");
 			const header = await readSessionHeader(sessionPath);
+			const sharesJournalIdentity = header?.id === this.sessionManager.getSessionId();
+			if (!sharesJournalIdentity && this.#tools.hasActorToolOverrides) {
+				throw this.#actorToolJournalSwitchRefusal(header?.id);
+			}
+			this.#assertTranscriptNotPinned("switch sessions", { allowActorToolOverrides: sharesJournalIdentity });
 			if (header) this.#assertResumeProfile(header.rootAgent);
 		}
 		// Emit session_before_switch event (can be cancelled)
@@ -14630,6 +14750,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#sessionInit = undefined;
 			await this.sessionManager.setSessionFile(sessionPath);
 			this.#assertResumeProfile(this.sessionManager.getHeader()?.rootAgent);
+			const adoptedSessionId = this.sessionManager.getSessionId();
+			if (adoptedSessionId !== previousSessionState.sessionId) {
+				if (this.#tools.hasActorToolOverrides) throw this.#actorToolJournalSwitchRefusal(adoptedSessionId);
+				const adopted = latestActorToolOverride(this.sessionManager.getEntries(), adoptedSessionId);
+				if (adopted && (adopted.added.length > 0 || adopted.removed.length > 0)) {
+					throw this.#actorToolJournalSwitchRefusal(adoptedSessionId);
+				}
+			}
 			this.#bash.markSessionTransition(bashTransition);
 			const newCwd = this.sessionManager.getCwd();
 			const recordedCwd = this.sessionManager.getRecordedCwd() ?? previousSessionState.cwd;

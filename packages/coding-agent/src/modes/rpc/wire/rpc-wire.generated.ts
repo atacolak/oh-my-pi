@@ -845,6 +845,19 @@ export interface ModelRolesState {
 	bootId: string;
 }
 
+export interface ActorToolState {
+	/** Tools the running model can call now, sorted. */
+	active: string[];
+	/** Tools this conversation may select, including registered tools that are currently off, sorted. */
+	available: string[];
+	/** Saved per-conversation additions relative to the role, sorted. */
+	added: string[];
+	/** Saved per-conversation removals relative to the role, sorted. */
+	removed: string[];
+	/** Opaque snapshot revision; pass it to apply_actor_tools. */
+	revision: string;
+}
+
 export interface SessionState {
 	sessionId: string;
 	currentRole?: string | null;
@@ -1997,6 +2010,15 @@ export interface OpenSessionParams {
 	modelId?: string;
 }
 
+export interface ApplyActorToolsParams {
+	expectedSessionId: string;
+	expectedSessionFile: string;
+	expectedBootId: string;
+	revision: string;
+	add: string[];
+	remove: string[];
+}
+
 export interface ListSessionsParams {
 	query?: string;
 	limit?: number;
@@ -2487,6 +2509,8 @@ export interface RpcWireCommands {
 	new_session: { params: NewSessionParams; result: CancellationResult };
 	open_session: { params: OpenSessionParams; result: OpenSessionResult };
 	get_state: { params: undefined; result: SessionState };
+	get_actor_tools: { params: undefined; result: ActorToolState };
+	apply_actor_tools: { params: ApplyActorToolsParams; result: ActorToolState };
 	list_sessions: { params: ListSessionsParams; result: NativeSessionList };
 	resolve_session: { params: ResolveSessionParams; result: NativeSessionInfo };
 	wake_session: { params: WakeSessionParams; result: NativeSessionWakeResult };

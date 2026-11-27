@@ -340,6 +340,7 @@
 ## [18.18.0] - 2026-11-07
 
 ## [18.18.0] - 2026-11-07
+- Change one actor’s tools with `/tools add <name>` or `/tools remove <name>` without restarting or editing its shared role. The change appears in the conversation history.
 - `/name` shows the attach name, `/name clear` removes it without deleting the conversation, and `/title` changes the separate conversation title.
 - `omp sock` can discover, name, rename, inspect context, wake, attach to and control saved conversations by name, UUID or verified owner PID.
 - Review a new contact's proposed message in the sending terminal: cancel, send it once, or allow future mail in that direction. Approved mail stays in the recipient's journal without starting a turn.

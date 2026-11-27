@@ -28,6 +28,7 @@ import type { CompactMode } from "../../session/compact-modes";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
 import type { SessionIdentityPatch, SessionIdentityRecord } from "../../session/session-identity";
+import type { ActorToolState } from "../../session/session-tools";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
 import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import type { SubagentEventPayload, SubagentLifecyclePayload, SubagentProgressPayload } from "../../task";
@@ -98,12 +99,30 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_actor_tools" }
+	| {
+			id?: string;
+			type: "apply_actor_tools";
+			expectedSessionId: string;
+			expectedSessionFile: string;
+			expectedBootId: string;
+			revision: string;
+			add: string[];
+			remove: string[];
+	  }
 	| { id?: string; type: "list_sessions"; query?: string; limit?: number; offset?: number }
 	| { id?: string; type: "resolve_session"; reference: string }
 	| { id?: string; type: "wake_session"; expectedSessionId: string; expectedSessionFile: string }
 	| ({ id?: string; type: "agent_mail_post_consented" } & AgentMailSendParams)
 	| { id?: string; type: "agent_mail_restrict"; peer: string; rule: "block" | "reset" }
-	| { id?: string; type: "agent_mail_policy"; peer: string; recipientSessionId: string; recipientSessionFile: string; recipientBootId: string }
+	| {
+			id?: string;
+			type: "agent_mail_policy";
+			peer: string;
+			recipientSessionId: string;
+			recipientSessionFile: string;
+			recipientBootId: string;
+	  }
 	| { id?: string; type: "get_refresh_preflight" }
 	| {
 			id?: string;
@@ -688,6 +707,8 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "get_actor_tools"; success: true; data: ActorToolState }
+	| { id?: string; type: "response"; command: "apply_actor_tools"; success: true; data: ActorToolState }
 	| { id?: string; type: "response"; command: "get_refresh_preflight"; success: true; data: RpcRefreshPreflight }
 	| { id?: string; type: "response"; command: "set_session_identity"; success: true; data: SessionIdentityRecord }
 	| { id?: string; type: "response"; command: "session_control"; success: true; data: RpcSessionControlResult }

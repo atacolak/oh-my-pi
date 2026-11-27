@@ -53,6 +53,7 @@ import type {
 	AgentBeforeModelCall,
 	AgentContext,
 	AgentEvent,
+	AgentInputSink,
 	AgentLoopConfig,
 	AgentMessage,
 	AgentState,
@@ -513,7 +514,7 @@ export class Agent {
 	#onHarmonyLeak?: (event: HarmonyAuditEvent) => void | Promise<void>;
 	#onBeforeYield?: () => Promise<void> | void;
 	#onTurnEnd?: (messages: AgentMessage[], signal?: AbortSignal, context?: AgentTurnEndContext) => Promise<void> | void;
-	#onModelCallSystemPrompt?: (systemPrompt: string[]) => void;
+	#onModelCallSystemPrompt?: (systemPrompt: string[], appendInput: AgentInputSink) => void;
 	#beforeModelCall?: AgentBeforeModelCall;
 	#additionalBeforeModelCalls = new Set<AgentBeforeModelCall>();
 	#asideMessageProvider?: (boundary: AsideBoundary) => AsideMessage[] | Promise<AsideMessage[]>;
@@ -1246,8 +1247,12 @@ export class Agent {
 		this.#onTurnEnd = fn;
 	}
 
-	/** Called with the exact system prompt each model call is built from, after before-model-call hooks. */
-	setOnModelCallSystemPrompt(fn: ((systemPrompt: string[]) => void) | undefined): void {
+	/**
+	 * Synchronous snapshot of the outgoing prompt and tools. `appendInput`
+	 * accompanies this request: with `transcript: false` the message is already
+	 * recorded by the host, so only this run's context receives it.
+	 */
+	setOnModelCallSystemPrompt(fn: ((systemPrompt: string[], appendInput: AgentInputSink) => void) | undefined): void {
 		this.#onModelCallSystemPrompt = fn;
 	}
 
@@ -2052,13 +2057,13 @@ export class Agent {
 			onSseEvent: this.#onSseEvent,
 			getApiKey: this.getApiKey,
 			getToolContext: this.#getToolContext,
-			syncContextBeforeModelCall: async (context, signal) => {
+			syncContextBeforeModelCall: async (context, signal, appendInput) => {
 				await this.#runBeforeModelCallHooks(signal, context);
 				if (this.#listeners.size > 0) {
 					await Bun.sleep(0);
 				}
 				context.systemPrompt = this.#state.systemPrompt;
-				this.#onModelCallSystemPrompt?.(context.systemPrompt);
+				if (!signal?.aborted) this.#onModelCallSystemPrompt?.(context.systemPrompt, appendInput);
 				context.tools = this.#toolsForModel(this.#state.model ?? model);
 			},
 			beforeModelCall:

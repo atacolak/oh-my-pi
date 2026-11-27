@@ -3,6 +3,7 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../judgment";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
+import type { ActorToolState } from "../session/session-tools";
 import {
 	getChangelogPath,
 	parseChangelog,
@@ -201,6 +202,63 @@ function launchSessionStatsDashboard(
 		cache: sharedJudgmentCache(),
 	});
 	return launchStatsDashboard(args, async () => judge);
+}
+
+interface ToolsChangeOutcome {
+	ok: boolean;
+	message: string;
+}
+
+function parseToolNames(rest: string): string[] {
+	return [...new Set(rest.split(/[\s,]+/).filter(Boolean))];
+}
+
+function describeToolChange(
+	action: "add" | "remove",
+	names: readonly string[],
+	before: ActorToolState,
+	after: ActorToolState,
+): string {
+	const wasActive = new Set(before.active);
+	const isActive = new Set(after.active);
+	const changed: string[] = [];
+	const alreadyActive: string[] = [];
+	const alreadyInactive: string[] = [];
+	for (const name of names) {
+		if (wasActive.has(name) !== isActive.has(name)) changed.push(name);
+		else if (isActive.has(name)) alreadyActive.push(name);
+		else alreadyInactive.push(name);
+	}
+	const sentences: string[] = [];
+	if (changed.length > 0) {
+		sentences.push(
+			action === "add"
+				? `Added ${changed.join(", ")} to this conversation.`
+				: `Removed ${changed.join(", ")} from this conversation.`,
+		);
+		sentences.push("Other sessions are unchanged.");
+	}
+	if (alreadyActive.length > 0) sentences.push(`Already active in this conversation: ${alreadyActive.join(", ")}.`);
+	if (alreadyInactive.length > 0) sentences.push(`Already inactive in this conversation: ${alreadyInactive.join(", ")}.`);
+	return sentences.join(" ");
+}
+
+async function applyToolChange(
+	action: "add" | "remove",
+	names: readonly string[],
+	session: AgentSession,
+): Promise<ToolsChangeOutcome> {
+	const before = session.getActorToolState();
+	try {
+		const after = await session.applyActorToolChange({
+			add: action === "add" ? [...names] : [],
+			remove: action === "remove" ? [...names] : [],
+			expectedRevision: before.revision,
+		});
+		return { ok: true, message: describeToolChange(action, names, before, after) };
+	} catch (error) {
+		return { ok: false, message: `Tools unchanged: ${errorMessage(error)}` };
+	}
 }
 
 export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -522,14 +580,26 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "tools",
 		icon: "tools",
-		description: "Show tools currently visible to the agent",
+		description: "Show tools, or add and remove one for this conversation",
 		acpDescription: "Show available tools",
+		inlineHint: "[add|remove <tool>]",
+		allowArgs: true,
+		subcommandOptional: true,
+		subcommands: [
+			{ name: "add", description: "Enable a tool in this conversation", usage: "<tool>" },
+			{ name: "remove", description: "Disable a tool in this conversation", usage: "<tool>" },
+		],
 		getTuiAutocompleteDescription: runtime => {
 			const active = runtime.ctx.session.getActiveToolNames().length;
 			const all = runtime.ctx.session.getAllToolNames().length;
 			return all === 0 ? "Tools: none available" : `Tools: ${active} active / ${all} available`;
 		},
-		handle: async (_command, runtime) => {
+		handle: async (command, runtime) => {
+			const { verb } = parseSubcommand(command.args);
+			if (verb === "add" || verb === "remove") {
+				return usage("Changing tools requires the local operator console; run /tools add|remove there.", runtime);
+			}
+			if (verb) return usage("Usage: /tools [add|remove <tool>]", runtime);
 			const active = runtime.session.getActiveToolNames();
 			const all = runtime.session.getAllToolNames();
 			if (all.length === 0) {
@@ -543,7 +613,26 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			await runtime.output(lines.join("\n"));
 			return commandConsumed();
 		},
-		handleTui: (_command, runtime) => {
+		handleTui: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args);
+			if (verb === "add" || verb === "remove") {
+				const names = parseToolNames(rest);
+				if (names.length === 0) {
+					runtime.ctx.showWarning(`Usage: /tools ${verb} <tool>`);
+					clearSubmittedText(runtime);
+					return;
+				}
+				const outcome = await applyToolChange(verb, names, runtime.ctx.session);
+				if (outcome.ok) runtime.ctx.showStatus(outcome.message);
+				else runtime.ctx.showWarning(outcome.message);
+				clearSubmittedText(runtime);
+				return;
+			}
+			if (verb) {
+				runtime.ctx.showWarning("Usage: /tools [add|remove <tool>]");
+				clearSubmittedText(runtime);
+				return;
+			}
 			runtime.ctx.handleToolsCommand();
 			clearSubmittedText(runtime);
 		},

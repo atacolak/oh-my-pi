@@ -471,6 +471,31 @@ describe("brokered rpc launch", () => {
 		await fs.rm(harness.root, { recursive: true, force: true });
 	});
 
+	test.skipIf(!hasPtyHarness)("local /tools changes one live owner's callable roster and paints both notices", async () => {
+		harness = await createHarness();
+		await Bun.write(path.join(harness.project, ".omp/agents/roster-probe.md"),
+			"---\nname: roster-probe\ndescription: Local tool selection test\ntools: [read, glob]\n---\nTest profile.");
+		interactive = new LaunchedInteractive(["--agent", "roster-probe", ...baseArgs()], harness.project, harness.env);
+		owner = await waitForPublication(harness);
+		const client = await connectSocket(path.join(harness.runDir, `${owner.sessionId}.sock`));
+		try {
+			await client.feed.wait(frame => frame.type === "ready", 10_000, "owner did not publish ready");
+			for (const [verb, expected] of [["remove", false], ["add", true]] as const) {
+				interactive.write(`/tools ${verb} glob\r`);
+				await client.feed.wait(frame => frame.type === "message_end" && isRecord(frame.message) &&
+					frame.message.customType === "actor-tool-change" && isRecord(frame.message.details) &&
+					JSON.stringify(frame.message.details[expected ? "added" : "removed"]) === '["glob"]',
+					20_000, `no visible receipt for /tools ${verb} glob`);
+				client.send({ id: verb, type: "get_actor_tools" });
+				const state = await client.feed.wait(frame => frame.type === "response" && frame.id === verb, 5_000, "no tool state");
+				expect(isRecord(state.data) && Array.isArray(state.data.active) && state.data.active.includes("glob")).toBe(expected);
+			}
+			await interactive.waitForText("Tool access updated");
+		} finally {
+			client.close();
+		}
+	}, 90_000);
+
 	test("a cold rpc launch boots one interactive owner that survives bridge EOF", async () => {
 		harness = await createHarness();
 		bridge = new LaunchedBridge(["--mode", "rpc", ...baseArgs()], harness.project, harness.env);

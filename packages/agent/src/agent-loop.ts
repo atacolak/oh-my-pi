@@ -1406,7 +1406,15 @@ async function runLoopBody(
 				};
 				try {
 					if (config.syncContextBeforeModelCall) {
-						await config.syncContextBeforeModelCall(currentContext, signal);
+						await config.syncContextBeforeModelCall(currentContext, signal, (message, options) => {
+							if (options?.transcript === false) {
+								if (!currentContext.messages.includes(message)) currentContext.messages.push(message);
+								return;
+							}
+							currentContext.messages.push(message);
+							newMessages.push(message);
+							turnMessages.push(message);
+						});
 					}
 					if (signal?.aborted && (await endAbortedBeforeModel(turnMessages, turnOpen))) return;
 

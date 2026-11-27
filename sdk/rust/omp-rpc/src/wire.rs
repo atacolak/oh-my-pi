@@ -3680,6 +3680,20 @@ pub struct SessionDiagnostics {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActorToolState {
+	/// Tools the running model can call now, sorted.
+	pub active: Vec<String>,
+	/// Tools this conversation may select, including registered tools that are currently off, sorted.
+	pub available: Vec<String>,
+	/// Saved per-conversation additions relative to the role, sorted.
+	pub added: Vec<String>,
+	/// Saved per-conversation removals relative to the role, sorted.
+	pub removed: Vec<String>,
+	/// Opaque snapshot revision; pass it to apply_actor_tools.
+	pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
@@ -6011,6 +6025,19 @@ pub struct OpenSessionParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApplyActorToolsParams {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	#[serde(rename = "expectedBootId")]
+	pub expected_boot_id: String,
+	pub revision: String,
+	pub add: Vec<String>,
+	pub remove: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListSessionsParams {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub query: Option<String>,
@@ -7651,6 +7678,44 @@ impl Command for GetStateCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<SessionState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Read this conversation's saved tool overrides, effective and available tools, and snapshot revision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetActorToolsCommand {}
+
+impl Command for GetActorToolsCommand {
+	const NAME: &'static str = "get_actor_tools";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ActorToolState;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ActorToolState>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Change this conversation's saved tool overrides after the host asks the operator to approve the exact change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApplyActorToolsCommand {
+	#[serde(rename = "expectedSessionId")]
+	pub expected_session_id: String,
+	#[serde(rename = "expectedSessionFile")]
+	pub expected_session_file: String,
+	#[serde(rename = "expectedBootId")]
+	pub expected_boot_id: String,
+	pub revision: String,
+	pub add: Vec<String>,
+	pub remove: Vec<String>,
+}
+
+impl Command for ApplyActorToolsCommand {
+	const NAME: &'static str = "apply_actor_tools";
+	const TIMEOUT_MS: Option<u64> = Some(180000);
+	type Output = ActorToolState;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ActorToolState>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

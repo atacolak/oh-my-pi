@@ -103,6 +103,25 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 
 	{ name: "get_state", doc: "Snapshot the session state.", result: "SessionState" },
 	{
+		name: "get_actor_tools",
+		doc: "Read this conversation's saved tool overrides, effective and available tools, and snapshot revision.",
+		result: "ActorToolState",
+	},
+	{
+		name: "apply_actor_tools",
+		doc: "Change this conversation's saved tool overrides after the host asks the operator to approve the exact change.",
+		params: {
+			expectedSessionId: "string",
+			expectedSessionFile: "string",
+			expectedBootId: "string",
+			revision: "string",
+			add: "string[]",
+			remove: "string[]",
+		},
+		result: "ActorToolState",
+		timeoutMs: 180000,
+	},
+	{
 		name: "list_sessions",
 		doc: "Read a bounded page of native session metadata without waking or opening peer connections.",
 		params: { "query?": "string", "limit?": "number.integer", "offset?": "number.integer" },
@@ -550,7 +569,12 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{
 		name: "agent_mail_policy",
 		doc: "Read a recipient's rule for one sender without transmitting a message. A stale journal or boot refuses.",
-		params: { peer: "string", recipientSessionId: "string", recipientSessionFile: "string", recipientBootId: "string" },
+		params: {
+			peer: "string",
+			recipientSessionId: "string",
+			recipientSessionFile: "string",
+			recipientBootId: "string",
+		},
 		result: "AgentMailPolicy",
 	},
 	{

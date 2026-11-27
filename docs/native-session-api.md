@@ -85,11 +85,13 @@ Three layers over one wire contract:
 | `wake_session` | `expectedSessionId`, `expectedSessionFile` | `NativeSessionInfo & { revived }` |
 | `set_session_identity` | `expectedSessionId`, `expectedSessionFile`, `patch` (`actorHandle`, `assignments`, `generation`, `idleSleepSeconds`) | `SessionIdentityRecord` |
 | `get_state` | — | attached owner's prompt, tools, queues, runtime state |
+| `get_actor_tools` | — | saved per-conversation tool overrides, effective and available tools, revision |
+| `apply_actor_tools` | `expectedSessionId`, `expectedSessionFile`, `expectedBootId`, `revision`, `add`, `remove` | actual post-change `ActorToolState` after operator confirmation |
 | `get_refresh_preflight` | — | owner receipt (`sessionId`, `sessionFile`, `bootId`) and refresh capabilities |
 | `agent_mail_post_consented` / `agent_mail_list` | recipient and message / bounded inbox options | stored receipt / peer messages; neither starts a recipient turn |
 | `agent_mail_restrict` | peer UUID, `block` or `reset` | restrict or revoke recipient-side consent; never grants it |
 
-Invalid input is refused with a bounded code: `invalid_catalog_query`, `invalid_session_reference`, `invalid_wake_target`, `session_target_mismatch`. Both the socket and stdio dispatchers also map the typed identity failures to `session_identity_conflict`, `ambiguous_session_reference` and `session_not_found` instead of prose only.
+Invalid input is refused with a bounded code: `invalid_catalog_query`, `invalid_session_reference`, `invalid_wake_target`, `session_target_mismatch`. Both the socket and stdio dispatchers also map the typed identity failures to `session_identity_conflict`, `ambiguous_session_reference` and `session_not_found` instead of prose only. Actor tool failures use their own codes, listed below.
 
 ```json
 {"id":"c1","type":"list_sessions","query":"repository","limit":50}
@@ -102,6 +104,35 @@ Invalid input is refused with a bounded code: `invalid_catalog_query`, `invalid_
 ```
 
 `wake_session` never creates: it re-resolves the expected UUID, refuses `session_target_mismatch` if the saved journal moved, and starts only that saved conversation's owner. Whatever you render after it must come from the returned identity, not from the name you asked for.
+
+## Actor tools: change one conversation, not the role
+
+`get_actor_tools` is read-only and always available on the attached owner. It returns the saved per-conversation overrides (`added`, `removed`), the effective `active` set, every selectable `available` name, and an opaque `revision`. `apply_actor_tools` asks that owner to change those overrides.
+
+- **Scope.** The overrides belong to this conversation (its UUID and journal). The saved role/profile file, the model, and every other session keep their tools. A tool the role keeps but this conversation overrides off stays in `available`, so it can be added back. A change that alters nothing returns the current state without asking the operator.
+- **Journal switching.** A running owner never carries one journal's selection into another UUID. Switching its activity to a journal that saves its own tool selection is refused, and the refusal names the target so the caller reopens that exact saved session with `omp --resume <id>`; the running conversation keeps its own selection. Adopting a journal that carries the same UUID keeps the live selection rather than re-reading an older entry.
+- **Authority.** The stdio owning host confirms through its own RPC dialog. A proposal from an attached socket is accepted only when the interactive owner wired `confirmActorToolChange(title, message)` and that owner confirms the exact target named in the message; without that callback the socket is refused with `actor_tool_operator_required`. A requester never confirms its own change, and no broadcast UI or `extension_ui_request` sent back to the requester stands in for the operator. No wire flag, token or `set_host_tools` registration substitutes for the confirmation: approval fields on the command are refused, and registered host tools are not permission. A host that cannot present the dialog refuses the mutation while still serving `get_actor_tools`.
+- **Recorded change.** A committed change writes exactly one visible `actor-tool-change` custom message to the journal and publishes it through the normal `message_start`/`message_end` events. Its typed `details` are `{ sessionId, added, removed, override: { added, removed }, origin: "system", scope: "session" }`; `added`/`removed` are the delta this commit applied and `override` is the full selection resume restores. `content` is the `<system-notice id="actor-tool-change" origin="system" scope="session">` body the model reads at its next request, and the TUI renders one inline "Tool access updated +…/-…" row. Render that message; do not synthesize a second message, attribute it to user input, or inject a separate model-side notice.
+- **Exact target.** The request carries the receipt from `get_refresh_preflight` (`expectedSessionId`, canonical `expectedSessionFile`, `expectedBootId`) plus the `revision` observed from `get_actor_tools`. A different or changed session, journal, boot or revision is refused before anything is written, and the owner re-checks the target after the operator answers and again while applying. Read state again immediately before applying; do not reuse an old revision or receipt after a restart or session switch.
+- **Result.** The response is the actual post-change state, not the request. Render `active`, `added` and `removed` from it, and use its `revision` for the next operation.
+- **Refusals.** `actor_tool_operator_required` (a caller-supplied approval field, or a socket proposal with no interactive owner confirmation), `actor_tool_approval_unavailable`, `actor_tool_approval_declined` (declined or unanswered before the prompt times out), `actor_tool_target_unavailable`, `actor_tool_target_mismatch`, `actor_tool_revision_stale`, `invalid_actor_tool_selection` (malformed, duplicate, overlapping, unknown or over-limit names) and `actor_tool_apply_failed`. A refusal changes nothing; re-read the state instead of retrying blindly.
+- **Version.** These commands were added after the first protocol release. An older owner answers `unsupported_command`; feature-detect with `get_actor_tools`, and never simulate a change from a caller-side list or a role-file edit.
+
+An attached host can offer the same flow to an Actor View. The caller only proposes the change; the operator's confirmation is the Apply. Over a socket publication the owner supplies `confirmActorToolChange(title, message)`, which must show the message's exact session, journal, boot and tool delta before resolving `true`.
+
+```ts
+const { restartReceipt: owner } = await api.preflight();
+if (!owner) throw new Error("Not attached to an owning host connection");
+const current = await api.getActorToolState();
+const next = await api.applyActorToolChange(
+  owner,
+  { add: ["glob"], remove: ["find"], expectedRevision: current.revision },
+  () => assertStillSelected(owner),
+);
+// next.active / next.added / next.removed are what actually changed.
+```
+
+`assertStillSelected` is the caller's own target check (a UI selection or another owner receipt); it runs before the request and after its response. A mismatch means discard the answer and re-read state; do not apply the same change to a different session.
 
 ## Terminal quick reference
 
@@ -279,5 +310,6 @@ The native `omp sock` command set replaces the socket-specific discovery/read/at
 - Old owners may refuse newer commands. `NativeSessionApiError.code` is preserved when supplied; code-less legacy refusal text remains code-less. Show unsupported/unavailable rather than healthy/idle.
 - A duplicated historical name refuses **selection**, as do mixed name/UUID ambiguity, ambiguous UUID prefixes, wrong journals, changed boot IDs and held leases. Do not retry under a different name, guess a claimant, or create a replacement conversation.
 - A name conflict in the list is a diagnostic, not permission to mutate another session. Only an explicit UUID-scoped rename or clear changes a claim; nothing is deleted automatically.
+- An actor-tool mutation is not an approval channel. It applies only on the owning host connection after the operator confirms the exact change; a declined, unavailable or stale approval changes nothing. Read-only tool state works without that approval.
 - Sleep/restart scheduling is not completion. Verify actual owner exit or a fresh native boot receipt.
 - One-hour detached idle sleep is the default (`session.idleSleepSeconds: 3600`); profiles and per-session metadata can override it, and `0` disables it. Pending work and attached viewers prevent idle retirement. Installing new code alone does not change already-running owners.

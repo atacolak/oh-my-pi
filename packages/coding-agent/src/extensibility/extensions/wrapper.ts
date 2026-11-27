@@ -213,6 +213,8 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 	declare label: string;
 	declare strict: boolean;
 	readonly #agent: ExtensionAgentIdentity | undefined;
+	#roleGrantRevoked = false;
+	#actorGrantAllowed?: () => boolean;
 
 	constructor(
 		private tool: AgentTool<TParameters, TDetails>,
@@ -221,6 +223,19 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 	) {
 		this.#agent = agent;
 		applyToolProxy(tool, this);
+	}
+
+	/** Queued calls may still hold this instance after its role grant is withdrawn. */
+	revokeRoleGrant(): void {
+		this.#roleGrantRevoked = true;
+	}
+
+	setActorGrantCheck(check: () => boolean): void {
+		this.#actorGrantAllowed = check;
+	}
+
+	#assertRoleGrant(): void {
+		if (this.#roleGrantRevoked || this.#actorGrantAllowed?.() === false) throw new Error(`Tool permission revoked: ${this.name}`);
 	}
 
 	/**
@@ -239,6 +254,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<TDetails, TParameters>> {
+		this.#assertRoleGrant();
 		return withToolApprovalScope(() => this.#execute(toolCallId, params, signal, onUpdate, context));
 	}
 
@@ -515,9 +531,10 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			// trigger. `sdk.ts` wraps the whole tool registry with this class whenever
 			// a runner exists.
 			result = await this.runner.runScoped(() =>
-				withFileMutationSession(this.runner.sessionId, () =>
-					this.tool.execute(toolCallId, effectiveParams, signal, onUpdate, context),
-				),
+				withFileMutationSession(this.runner.sessionId, () => {
+					this.#assertRoleGrant();
+					return this.tool.execute(toolCallId, effectiveParams, signal, onUpdate, context);
+				}),
 			);
 		} catch (err) {
 			executionError = toError(err);

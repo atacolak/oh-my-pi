@@ -3781,6 +3781,38 @@ func (v *SessionDiagnostics) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type ActorToolState struct {
+	// Tools the running model can call now, sorted.
+	Active []string `json:"active"`
+	// Tools this conversation may select, including registered tools that are currently off, sorted.
+	Available []string `json:"available"`
+	// Saved per-conversation additions relative to the role, sorted.
+	Added []string `json:"added"`
+	// Saved per-conversation removals relative to the role, sorted.
+	Removed []string `json:"removed"`
+	// Opaque snapshot revision; pass it to apply_actor_tools.
+	Revision string `json:"revision"`
+}
+
+func (v *ActorToolState) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ActorToolState", v.decodeFrom)
+}
+
+func (v *ActorToolState) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ActorToolState
+	d := fieldDecoder{raw: raw, owner: "ActorToolState"}
+	d.required("active", &out.Active)
+	d.required("available", &out.Available)
+	d.required("added", &out.Added)
+	d.required("removed", &out.Removed)
+	d.required("revision", &out.Revision)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
 	SessionID     string         `json:"sessionId"`
 	Model         *ModelInfo     `json:"model,omitempty"`
@@ -9451,6 +9483,30 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 func (c Commands) GetState(ctx context.Context) (SessionState, error) {
 	var out SessionState
 	err := c.call(ctx, "get_state", nil, 0, &out)
+	return out, err
+}
+
+// GetActorTools sends "get_actor_tools": Read this conversation's saved tool overrides, effective and available tools, and snapshot revision.
+func (c Commands) GetActorTools(ctx context.Context) (ActorToolState, error) {
+	var out ActorToolState
+	err := c.call(ctx, "get_actor_tools", nil, 0, &out)
+	return out, err
+}
+
+// ApplyActorToolsCommand holds the parameters of "apply_actor_tools".
+type ApplyActorToolsCommand struct {
+	ExpectedSessionID   string   `json:"expectedSessionId"`
+	ExpectedSessionFile string   `json:"expectedSessionFile"`
+	ExpectedBootID      string   `json:"expectedBootId"`
+	Revision            string   `json:"revision"`
+	Add                 []string `json:"add"`
+	Remove              []string `json:"remove"`
+}
+
+// ApplyActorTools sends "apply_actor_tools": Change this conversation's saved tool overrides after the host asks the operator to approve the exact change.
+func (c Commands) ApplyActorTools(ctx context.Context, p ApplyActorToolsCommand) (ActorToolState, error) {
+	var out ActorToolState
+	err := c.call(ctx, "apply_actor_tools", p, 180*time.Second, &out)
 	return out, err
 }
 

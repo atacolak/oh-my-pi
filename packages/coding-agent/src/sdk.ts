@@ -252,11 +252,13 @@ import { buildCallContext } from "./spotlight/context";
 import { type CalledToolShaper, shapeCalledTool } from "./spotlight";
 import { SPOTLIGHT_INTENT_DESCRIPTION, SPOTLIGHT_INTENT_GUIDANCE, startSpotlightExperiment } from "./spotlight/session";
 import {
+	type ActorToolFactory,
 	collectMountedMCPToolRoutes,
 	projectMountedMCPXdevGuidance,
 	type SettingsGatedToolDelta,
 	type SystemPromptRebuilder,
 } from "./session/session-tools";
+import type { RootAgentToolProfile } from "./session/role-tool-refresh";
 import { anthropicSlowModeHasNoSiblingHeadroom } from "./session/anthropic-slow-mode";
 import { CacheWarmer } from "./session/cache-warmer";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
@@ -318,6 +320,7 @@ import {
 	SETTINGS_GATED_BUILTIN_TOOL_NAMES,
 	supportsExternalThinking,
 	type Tool,
+	type ToolFactory,
 	type ToolSession,
 	WebSearchTool,
 	WriteTool,
@@ -874,6 +877,7 @@ export interface CreateAgentSessionOptions {
 	skipPythonPreflight?: boolean;
 	/** Tool names explicitly requested (enables disabled-by-default tools) */
 	toolNames?: string[];
+	rootAgentProfile?: RootAgentToolProfile;
 	/** Names from `toolNames` that a fork inherits as `xd://` devices rather than explicit top-level tools. */
 	mountedToolNames?: string[];
 	/** Limit the session to explicitly supplied tool names, without discovered extras. */
@@ -3947,6 +3951,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// the override loop so the map holds the natives, not the extension replacements. The context
 		// factory is the loop's own tool context, so a delegated native call sees ordinary session state.
 		extensionRunner.setNativeToolResolver(name => {
+			if (hasSession && !session.actorToolAllowedByOverride(name)) return undefined;
 			const tool = nativeToolsByName.get(name);
 			return tool ? { tool, makeContext: () => toolContextStore.getContext() } : undefined;
 		});
@@ -5396,6 +5401,47 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// `find.enabled: auto` follows the judge role; a role change only touches
 			// the prompt when it actually adds or removes `find`.
 			cfgModelRoles.listen(session, () => reconcileGatedTools({ refreshPrompt: false }));
+		}
+		const roleProfile = options.rootAgentProfile;
+		const startupRoleToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
+		const profileToolNames = roleProfile ? normalizeToolNames(roleProfile.toolNames) : undefined;
+		if (
+			agentKind === "main" &&
+			!restrictToolNames &&
+			roleProfile !== undefined &&
+			startupRoleToolNames !== undefined &&
+			profileToolNames !== undefined &&
+			startupRoleToolNames.length === profileToolNames.length &&
+			startupRoleToolNames.every((name, index) => name === profileToolNames[index])
+		) {
+			const roleToolFactories: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
+			const pendingActorTools = new Map<string, Tool>();
+			const actorToolCandidates = [
+				...new Set([...Object.keys(BUILTIN_TOOLS), ...Object.keys(HIDDEN_TOOLS)]),
+			].filter(name => name !== "yield");
+			const plan = await resolveBuiltinToolPlan(toolSession, [...profileToolNames, ...actorToolCandidates]);
+			const actorToolAvailable = actorToolCandidates.filter(name => plan.isAllowed(name));
+			const actorToolFactory: ActorToolFactory = {
+				available: () => {
+					if (!session.isDisposed) {
+						for (const [name, native] of pendingActorTools) {
+							if (!session.hasBuiltInTool(name)) continue;
+							builtInRegistryToolNames.add(name);
+							if (!nativeToolsByName.has(name)) nativeToolsByName.set(name, native);
+						}
+					}
+					return actorToolAvailable;
+				},
+				createTool: async name => {
+					if (!actorToolAvailable.includes(name)) return null;
+					const currentPlan = await resolveBuiltinToolPlan(toolSession, [...profileToolNames, name]);
+					if (!currentPlan.isAllowed(name)) return null;
+					const tool = await roleToolFactories[name]?.(toolSession);
+					if (tool) pendingActorTools.set(name, tool);
+					return tool ?? null;
+				},
+			};
+			await session.configureActorTools(actorToolFactory);
 		}
 		// Backfill the resumed advisor spend without blocking startup: the scan
 		// runs after the session is live, so `--resume` no longer scales with the

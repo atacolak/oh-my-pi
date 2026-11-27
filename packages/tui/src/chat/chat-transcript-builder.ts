@@ -16,6 +16,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { type Component, type TUI } from "../tui";
 import type { AdvisorMessageDetails } from "./messages";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "./messages";
+import { ACTOR_TOOL_CHANGE_MESSAGE_TYPE } from "./messages";
 import { chatTranscriptDisplayPreferences as displayPreferences } from "./display-preferences";
 import type { AssistantTextRenderer, MessageRenderer } from "./extension-types";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "./messages";
@@ -47,6 +48,7 @@ import {
 	splitAssistantMessageToolTimeline,
 } from "./transcript-render-helpers";
 import { createAdvisorMessageCard } from "./advisor-message";
+import { createActorToolChangeBlock } from "./actor-tool-change-message";
 import { AssistantMessageComponent } from "./assistant-message";
 import { createBackgroundTanDispatchBlock } from "./background-tan-message";
 import { BashExecutionComponent } from "./bash-execution";
@@ -672,6 +674,10 @@ export class ChatTranscriptBuilder {
 		}
 		if (message.customType === LAUNCH_COMPLETION_MESSAGE_TYPE) {
 			this.container.addChild(buildLaunchCompletionBlock(message));
+			return;
+		}
+		if (message.customType === ACTOR_TOOL_CHANGE_MESSAGE_TYPE) {
+			this.container.addChild(createActorToolChangeBlock(message as CustomMessage<unknown>));
 			return;
 		}
 		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {

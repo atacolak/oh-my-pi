@@ -153,6 +153,28 @@
 				"clientOmit": []
 			},
 			{
+				"name": "get_actor_tools",
+				"doc": "Read this conversation's saved tool overrides, effective and available tools, and snapshot revision.",
+				"params": null,
+				"result": "ActorToolState",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "apply_actor_tools",
+				"doc": "Change this conversation's saved tool overrides after the host asks the operator to approve the exact change.",
+				"params": "ApplyActorToolsParams",
+				"result": "ActorToolState",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": 180000,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "list_sessions",
 				"doc": "Read a bounded page of native session metadata without waking or opening peer connections.",
 				"params": "ListSessionsParams",
@@ -4147,6 +4169,50 @@
 				"warningsTruncated"
 			]
 		},
+		"ActorToolState": {
+			"type": "object",
+			"properties": {
+				"active": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Tools the running model can call now, sorted."
+				},
+				"available": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Tools this conversation may select, including registered tools that are currently off, sorted."
+				},
+				"added": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Saved per-conversation additions relative to the role, sorted."
+				},
+				"removed": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Saved per-conversation removals relative to the role, sorted."
+				},
+				"revision": {
+					"type": "string",
+					"description": "Opaque snapshot revision; pass it to apply_actor_tools."
+				}
+			},
+			"required": [
+				"active",
+				"available",
+				"added",
+				"removed",
+				"revision"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
@@ -7936,6 +8002,43 @@
 			},
 			"required": [
 				"sessionDir"
+			]
+		},
+		"ApplyActorToolsParams": {
+			"type": "object",
+			"properties": {
+				"expectedSessionId": {
+					"type": "string"
+				},
+				"expectedSessionFile": {
+					"type": "string"
+				},
+				"expectedBootId": {
+					"type": "string"
+				},
+				"revision": {
+					"type": "string"
+				},
+				"add": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"remove": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"expectedSessionId",
+				"expectedSessionFile",
+				"expectedBootId",
+				"revision",
+				"add",
+				"remove"
 			]
 		},
 		"ListSessionsParams": {

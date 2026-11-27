@@ -1020,6 +1020,20 @@ class SessionDiagnostics:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class ActorToolState:
+    active: tuple[str, ...]
+    """Tools the running model can call now, sorted."""
+    available: tuple[str, ...]
+    """Tools this conversation may select, including registered tools that are currently off, sorted."""
+    added: tuple[str, ...]
+    """Saved per-conversation additions relative to the role, sorted."""
+    removed: tuple[str, ...]
+    """Saved per-conversation removals relative to the role, sorted."""
+    revision: str
+    """Opaque snapshot revision; pass it to apply_actor_tools."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
     model: ModelInfo | None = None
@@ -2808,6 +2822,17 @@ def parse_session_diagnostics(value: object, path: str = "SessionDiagnostics") -
     )
 
 
+def parse_actor_tool_state(value: object, path: str = "ActorToolState") -> ActorToolState:
+    payload = expect_object(value, path)
+    return ActorToolState(
+        active=required(payload, "active", array(decode_str), path),
+        available=required(payload, "available", array(decode_str), path),
+        added=required(payload, "added", array(decode_str), path),
+        removed=required(payload, "removed", array(decode_str), path),
+        revision=required(payload, "revision", decode_str, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
@@ -4249,6 +4274,22 @@ class WireClient:
         params: dict[str, object] = {}
         return parse_session_state(self._command("get_state", params), "get_state")
 
+    def get_actor_tools(self) -> ActorToolState:
+        """Read this conversation's saved tool overrides, effective and available tools, and snapshot revision."""
+        params: dict[str, object] = {}
+        return parse_actor_tool_state(self._command("get_actor_tools", params), "get_actor_tools")
+
+    def apply_actor_tools(self, expected_session_id: str, expected_session_file: str, expected_boot_id: str, revision: str, add: Sequence[str], remove: Sequence[str]) -> ActorToolState:
+        """Change this conversation's saved tool overrides after the host asks the operator to approve the exact change."""
+        params: dict[str, object] = {}
+        params["expectedSessionId"] = expected_session_id
+        params["expectedSessionFile"] = expected_session_file
+        params["expectedBootId"] = expected_boot_id
+        params["revision"] = revision
+        params["add"] = list(add)
+        params["remove"] = list(remove)
+        return parse_actor_tool_state(self._command("apply_actor_tools", params, timeout=180), "apply_actor_tools")
+
     def list_sessions(self, *, query: str | None = None, limit: int | None = None, offset: int | None = None) -> NativeSessionList:
         """Read a bounded page of native session metadata without waking or opening peer connections."""
         params: dict[str, object] = {}
@@ -5017,6 +5058,7 @@ class WireClient:
 
 __all__ = [
     "AbortAndRestoreQueueResult",
+    "ActorToolState",
     "AdvisorCostChangedEvent",
     "AdvisorYieldedEvent",
     "AgentEndEvent",
@@ -5266,6 +5308,7 @@ __all__ = [
     "UserMessage",
     "WidgetPlacement",
     "parse_abort_and_restore_queue_result",
+    "parse_actor_tool_state",
     "parse_advisor_cost_changed_event",
     "parse_advisor_yielded_event",
     "parse_agent_end_event",

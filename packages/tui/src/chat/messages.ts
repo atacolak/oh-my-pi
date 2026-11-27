@@ -310,3 +310,22 @@ export interface AdvisorMessageDetails {
 
 /** Custom message type for supervised process completions. */
 export const LAUNCH_COMPLETION_MESSAGE_TYPE = "launch-completion";
+
+/** Custom message type for an operator tool-selection change committed to the session. */
+export const ACTOR_TOOL_CHANGE_MESSAGE_TYPE = "actor-tool-change";
+
+/**
+ * Details persisted with {@link ACTOR_TOOL_CHANGE_MESSAGE_TYPE}. `added` and
+ * `removed` are the delta this commit granted or revoked; `override` is the
+ * full persistent selection the session resumes with.
+ */
+export interface ActorToolChangeNoticeDetails {
+	readonly sessionId: string;
+	readonly added: readonly string[];
+	readonly removed: readonly string[];
+	readonly override: { readonly added: readonly string[]; readonly removed: readonly string[] };
+	/** The change came from the operator's tool selection, not from a peer or the model. */
+	readonly origin: "system";
+	/** The override applies to this session only. */
+	readonly scope: "session";
+}

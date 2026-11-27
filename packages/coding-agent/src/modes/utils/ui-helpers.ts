@@ -17,6 +17,7 @@ import { continuesConversation } from "./conversation-position";
 import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { readMediaPath } from "@oh-my-pi/pi-tui/native/blobs";
+import { createActorToolChangeBlock } from "@oh-my-pi/pi-tui/chat/actor-tool-change-message";
 import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { detectCacheInvalidation } from "@oh-my-pi/pi-tui/chat/cache-invalidation-marker";
@@ -77,6 +78,7 @@ import type {
 } from "../../modes/types";
 import { extractVisibleAssistantText } from "../rpc/rpc-live";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
+import { ACTOR_TOOL_CHANGE_MESSAGE_TYPE } from "../../session/actor-tool-change";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
@@ -342,6 +344,10 @@ export class UiHelpers {
 						const component = new PresentedBlock(buildLaunchCompletionBlock(message), messageBlock(message));
 						component.setExpanded(this.ctx.toolOutputExpanded);
 						this.ctx.chatContainer.addChild(component);
+						break;
+					}
+					if (message.customType === ACTOR_TOOL_CHANGE_MESSAGE_TYPE) {
+						this.ctx.chatContainer.addChild(createActorToolChangeBlock(message as CustomMessage<unknown>));
 						break;
 					}
 					if (message.customType === COLLAB_PROMPT_MESSAGE_TYPE) {

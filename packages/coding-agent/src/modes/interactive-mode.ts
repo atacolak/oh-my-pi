@@ -8369,6 +8369,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			upgradeRuntime: (target, canRestart, options) => void this.restart(target, canRestart, options),
 			exitSession: canExit => this.exitIdleSession(canExit),
 			hasPendingHostWork: () => this.hasPendingTerminalWork(),
+			// The local terminal decides. Never broadcast this question to RPC viewers,
+			// including the connection that proposed the change.
+			confirmActorToolChange: (title, message) =>
+				this.#extensionUiController.showHookConfirm(title, message, {
+					signal: AbortSignal.any([this.#dialogLifetime.signal, AbortSignal.timeout(60_000)]),
+					initialIndex: 1,
+				}),
 			modelRuntimeUpgrade,
 			...(generation ? { terminalControl: { generation, refresh: () => this.refreshTerminalAttachment() } } : {}),
 		});

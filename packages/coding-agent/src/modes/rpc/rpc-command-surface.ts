@@ -826,6 +826,23 @@ const HOST_COMMANDS: Readonly<Record<string, true>> = {
 
 const NO_SCHEDULED_TURN = () => false;
 
+const ACTOR_TOOL_NAME = /^[A-Za-z0-9_.:-]{1,128}$/;
+const MAX_ACTOR_TOOL_SELECTION = 256;
+const ACTOR_TOOL_APPROVAL_TIMEOUT_MS = 120_000;
+const ACTOR_TOOL_AUTHORITY_FIELDS = ["approval", "approve", "authorized", "operator", "hostTools"] as const;
+
+function readActorToolSelection(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const names: string[] = [];
+	const seen = new Set<string>();
+	for (const entry of value) {
+		if (typeof entry !== "string" || !ACTOR_TOOL_NAME.test(entry) || seen.has(entry)) return undefined;
+		seen.add(entry);
+		names.push(entry);
+	}
+	return names;
+}
+
 /**
  * Orders user input and decides whether an accepted frame is still wanted.
  *
@@ -978,6 +995,13 @@ export interface RpcCommandSurfaceOptions {
 	 * `clients` either way.
 	 */
 	subagents?: RpcSubagentRegistry;
+	/**
+	 * Interactive owner confirmation for an actor tool change proposed from an
+	 * attached socket. The stdio host path asks its own RPC dialog instead.
+	 * Absent: a socket proposal is refused, because the requester must not
+	 * confirm its own change and no broadcast UI may stand in for the operator.
+	 */
+	confirmActorToolChange?: (title: string, message: string) => Promise<boolean>;
 }
 
 /**
@@ -1007,6 +1031,7 @@ export class RpcCommandSurface {
 	readonly #mcpManager: MCPManager | undefined;
 	readonly #upgradeRuntime: RpcCommandSurfaceOptions["upgradeRuntime"];
 	readonly #exitSession: RpcCommandSurfaceOptions["exitSession"];
+	readonly #confirmActorToolChange: RpcCommandSurfaceOptions["confirmActorToolChange"];
 	#exitPending = false;
 	readonly #modelRuntimeUpgrade: ModelRuntimeUpgrade | undefined;
 	#unbindModelRuntimeUpgrade: (() => void) | undefined;
@@ -1044,6 +1069,7 @@ export class RpcCommandSurface {
 		this.#mcpManager = options.mcpManager ?? options.host?.mcpManager;
 		this.#upgradeRuntime = options.upgradeRuntime;
 		this.#exitSession = options.exitSession;
+		this.#confirmActorToolChange = options.confirmActorToolChange;
 		this.#modelRuntimeUpgrade = options.modelRuntimeUpgrade;
 		this.#unbindModelRuntimeUpgrade = options.modelRuntimeUpgrade?.bind(this.#session, request => {
 			const pending = this.#pendingGracefulUpgrade;
@@ -2192,6 +2218,155 @@ export class RpcCommandSurface {
 				);
 			}
 
+			case "get_actor_tools":
+				return rpcSuccess(id, command.type, session.getActorToolState());
+
+			case "apply_actor_tools": {
+				if (ACTOR_TOOL_AUTHORITY_FIELDS.some(field => field in (command as unknown as Record<string, unknown>)))
+					return rpcError(
+						id,
+						command.type,
+						"Actor tool approval is not a wire argument; the loaded host asks the operator.",
+						"actor_tool_operator_required",
+					);
+				const add = readActorToolSelection(command.add);
+				const remove = readActorToolSelection(command.remove);
+				if (
+					!add ||
+					!remove ||
+					add.length + remove.length === 0 ||
+					add.length + remove.length > MAX_ACTOR_TOOL_SELECTION ||
+					add.some(name => remove.includes(name)) ||
+					typeof command.revision !== "string" ||
+					command.revision.length === 0 ||
+					command.revision.length > 128 ||
+					typeof command.expectedSessionId !== "string" ||
+					command.expectedSessionId.length === 0 ||
+					command.expectedSessionId.length > 128 ||
+					typeof command.expectedSessionFile !== "string" ||
+					command.expectedSessionFile.length === 0 ||
+					command.expectedSessionFile.length > 4096 ||
+					!path.isAbsolute(command.expectedSessionFile) ||
+					typeof command.expectedBootId !== "string" ||
+					command.expectedBootId.length === 0 ||
+					command.expectedBootId.length > 128
+				)
+					return rpcError(
+						id,
+						command.type,
+						"Actor tool change requires bounded add/remove names, the current revision and the exact owner receipt.",
+						"invalid_actor_tool_selection",
+					);
+
+				const receipt = await getRpcRuntimeRestartReceipt(session);
+				if (!receipt)
+					return rpcError(
+						id,
+						command.type,
+						"This conversation has no persisted owner receipt.",
+						"actor_tool_target_unavailable",
+					);
+				if (
+					receipt.sessionId !== command.expectedSessionId ||
+					receipt.sessionFile !== command.expectedSessionFile ||
+					receipt.bootId !== command.expectedBootId
+				)
+					return rpcError(
+						id,
+						command.type,
+						"The expected session, journal or owner boot is not this loaded conversation.",
+						"actor_tool_target_mismatch",
+					);
+
+				const expectedTarget = { sessionId: receipt.sessionId, sessionFile: receipt.sessionFile };
+				const assertTarget = (): void => {
+					if (!isRpcRuntimeRestartOwner(this.#session, expectedTarget, receipt.bootId))
+						throw new Error("The actor tool target changed");
+				};
+				const rejectStale = (): RpcResponse =>
+					rpcError(
+						id,
+						command.type,
+						"The tool selection changed; read the current revision and apply again.",
+						"actor_tool_revision_stale",
+					);
+				const rejectUnavailable = (names: string[]): RpcResponse =>
+					rpcError(
+						id,
+						command.type,
+						`Unavailable tool selection: ${names.join(", ")}`,
+						"invalid_actor_tool_selection",
+					);
+
+				const before = session.getActorToolState();
+				if (before.revision !== command.revision) return rejectStale();
+				const unavailableBefore = [...add, ...remove].filter(name => !before.available.includes(name));
+				if (unavailableBefore.length > 0) return rejectUnavailable(unavailableBefore);
+				const granted = add.filter(name => !before.active.includes(name));
+				const revoked = remove.filter(name => before.active.includes(name));
+				if (granted.length === 0 && revoked.length === 0) return rpcSuccess(id, command.type, before);
+				const title = "Change this conversation's tools?";
+				const approvalMessage = `Session ${receipt.sessionId}\n${receipt.sessionFile}\nOwner boot ${receipt.bootId}\n\nAdd: ${granted.join(", ") || "none"}\nRemove: ${revoked.join(", ") || "none"}\n\nThis changes only this running conversation. Other sessions and the saved role keep their tools.`;
+				let approved: boolean;
+				if (conn) {
+					const confirm = this.#confirmActorToolChange;
+					if (!confirm)
+						return rpcError(
+							id,
+							command.type,
+							"An attached connection cannot confirm its own tool change without the owner's interactive approval.",
+							"actor_tool_operator_required",
+						);
+					try {
+						approved = await confirm(title, approvalMessage);
+					} catch {
+						approved = false;
+					}
+				} else {
+					if (!this.#defaultConn.supportsUi)
+						return rpcError(
+							id,
+							command.type,
+							"This host cannot present the operator approval an actor tool change requires; the read-only tool state remains available.",
+							"actor_tool_approval_unavailable",
+						);
+					approved = await requestRpcConfirm(
+						this.#pendingExtensionRequests,
+						this.#output,
+						title,
+						approvalMessage,
+						{ timeout: ACTOR_TOOL_APPROVAL_TIMEOUT_MS },
+					);
+				}
+				if (!approved)
+					return rpcError(
+						id,
+						command.type,
+						"The operator did not approve the actor tool change.",
+						"actor_tool_approval_declined",
+					);
+
+				const confirmed = session.getActorToolState();
+				if (confirmed.revision !== command.revision) return rejectStale();
+				const unavailableAfter = [...add, ...remove].filter(name => !confirmed.available.includes(name));
+				if (unavailableAfter.length > 0) return rejectUnavailable(unavailableAfter);
+				try {
+					assertTarget();
+					const applied = await session.applyActorToolChange(
+						{ add, remove, expectedRevision: command.revision },
+						assertTarget,
+					);
+					return rpcSuccess(id, command.type, applied);
+				} catch (error) {
+					return rpcError(
+						id,
+						command.type,
+						error instanceof Error ? error.message : String(error),
+						"actor_tool_apply_failed",
+					);
+				}
+			}
+
 			case "get_refresh_preflight": {
 				const restartReceipt = await getRpcRuntimeRestartReceipt(session);
 				return rpcSuccess(id, "get_refresh_preflight", {
@@ -3303,6 +3478,12 @@ export async function serveInteractiveSessionSocket(options: {
 	/** Present only when this publication owns a broker PTY that a mirror can attach to. */
 	terminalControl?: InteractiveTerminalControl;
 	/**
+	 * Interactive owner confirmation for an actor tool change proposed over this
+	 * publication. Absent: socket proposals are refused; the stdio host path is
+	 * unaffected.
+	 */
+	confirmActorToolChange?: (title: string, message: string) => Promise<boolean>;
+	/**
 	 * The session tree's own subagent event bus, so a client sees exactly the
 	 * roster the terminal sees. Absent means this publication serves no
 	 * subagent read/control and refuses those commands.
@@ -3449,6 +3630,7 @@ export async function serveInteractiveSessionSocket(options: {
 		upgradeRuntime: options.upgradeRuntime,
 		exitSession: options.exitSession,
 		modelRuntimeUpgrade: options.modelRuntimeUpgrade,
+		...(options.confirmActorToolChange ? { confirmActorToolChange: options.confirmActorToolChange } : {}),
 		refusedCommands: SHARED_SESSION_REFUSED_COMMANDS,
 		eventFilter: (conn, events, messageUpdates) => eventView(conn ?? defaultConn).setFilter(events, messageUpdates),
 		host: {

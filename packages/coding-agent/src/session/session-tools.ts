@@ -329,6 +329,28 @@ interface ToolRosterNoticeDetails {
 	removed: string[];
 }
 
+export interface ActorToolFactory {
+	available(): string[];
+	createTool(name: string): Promise<AgentTool | null>;
+}
+
+export interface ActorToolOverride {
+	added: string[];
+	removed: string[];
+}
+
+export interface ActorToolState extends ActorToolOverride {
+	active: string[];
+	available: string[];
+	revision: string;
+}
+
+export interface ActorToolChange {
+	add: string[];
+	remove: string[];
+	expectedRevision: string;
+}
+
 interface XdevMountNoticeDetails {
 	added: string[];
 	removed: string[];
@@ -414,6 +436,9 @@ export class SessionTools {
 	#mcpManagerToolNames = new Set<string>();
 	#extensionMcpTools = new Map<string, AgentTool>();
 	#xdev: XdevState | undefined;
+	#actorFactory?: ActorToolFactory;
+	#actorAdded = new Set<string>();
+	#actorRemoved = new Set<string>();
 	#pendingToolRosterDelta: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingToolRosterDeltaAfterBase: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
@@ -987,6 +1012,110 @@ export class SessionTools {
 		}
 	}
 
+	get hasActorToolOverrides(): boolean {
+		return this.#actorAdded.size !== 0 || this.#actorRemoved.size !== 0;
+	}
+
+	actorToolAllowedByOverride(name: string): boolean {
+		return !this.#actorRemoved.has(name);
+	}
+
+	getActorToolState(): ActorToolState {
+		const active = this.getEnabledToolNames().sort();
+		const available = [...new Set([...this.getAllToolNames(), ...(this.#actorFactory?.available() ?? [])])].sort();
+		const added = [...this.#actorAdded].sort();
+		const removed = [...this.#actorRemoved].sort();
+		const revision = new Bun.CryptoHasher("sha256")
+			.update(JSON.stringify([this.#host.sessionManager.getSessionId(), active, available, added, removed]))
+			.digest("hex");
+		return { active, available, added, removed, revision };
+	}
+
+	async configureActorTools(factory: ActorToolFactory, saved?: ActorToolOverride): Promise<void> {
+		this.#actorFactory = factory;
+		for (const [name, tool] of this.#toolRegistry) {
+			if (tool instanceof ExtensionToolWrapper) tool.setActorGrantCheck(() => this.actorToolAllowedByOverride(name));
+		}
+		if (!saved) return;
+		await this.runToolRegistryMutation(() => this.#installActorOverride(saved, () => {}));
+	}
+
+	async applyActorToolChange(
+		change: ActorToolChange,
+		assertTarget: () => void,
+		record: (added: string[], removed: string[], override: ActorToolOverride) => Promise<() => Promise<void>>,
+	): Promise<ActorToolState> {
+		return this.runToolRegistryMutation(async () => {
+			assertTarget();
+			if (!this.#actorFactory || this.#host.agentKind() !== "main") throw new Error("Actor tool changes unavailable");
+			const before = this.getActorToolState();
+			if (before.revision !== change.expectedRevision) throw new Error("Stale tool selection; inspect tools again");
+			const { add, remove } = change;
+			if (add.length + remove.length > 256 || [...add, ...remove].some(name => !before.available.includes(name)) ||
+				add.some(name => remove.includes(name))) throw new Error("Invalid or unavailable tool selection");
+			const granted = [...new Set(add.filter(name => !before.active.includes(name)))];
+			const revoked = [...new Set(remove.filter(name => before.active.includes(name)))];
+			if (!granted.length && !revoked.length) return before;
+			const added = new Set(before.added);
+			const removed = new Set(before.removed);
+			for (const name of granted) {
+				removed.delete(name);
+				added.add(name);
+			}
+			for (const name of revoked) {
+				added.delete(name);
+				removed.add(name);
+			}
+			const override = { added: [...added], removed: [...removed] };
+			let notify: (() => Promise<void>) | undefined;
+			await this.#installActorOverride(override, assertTarget, granted, revoked, async () => {
+				notify = await record(granted, revoked, override);
+			});
+			await notify?.();
+			return this.getActorToolState();
+		});
+	}
+
+	async #installActorOverride(
+		override: ActorToolOverride, assertTarget: () => void, grant = override.added, revoke = override.removed,
+		persist?: () => Promise<void>,
+	): Promise<void> {
+		const factory = this.#actorFactory;
+		if (!factory) throw new Error("Actor tool changes unavailable");
+		const created: AgentTool[] = [];
+		for (const name of grant) {
+			if (this.#toolRegistry.has(name)) continue;
+			const tool = await factory.createTool(name);
+			if (!tool || tool.name !== name) throw new Error(`Tool unavailable: ${name}`);
+			created.push(this.#wrapRuntimeTool(tool));
+		}
+		assertTarget();
+		const registry = new Map(this.#toolRegistry);
+		const builtIns = new Set(this.#builtInToolNames);
+		for (const tool of created) {
+			registry.set(tool.name, tool);
+			builtIns.add(tool.name);
+		}
+		const next = new Set(this.getEnabledToolNames());
+		for (const name of grant) next.add(name);
+		for (const name of revoke) next.delete(name);
+		await this.#applyActiveToolsByName([...next], false, undefined, false, {
+			registry, builtIns, added: new Set(override.added), removed: new Set(override.removed),
+			beforePublish: async () => {
+				assertTarget();
+				await persist?.();
+			},
+			publish: () => {
+				for (const tool of created) {
+					this.#toolRegistry.set(tool.name, tool);
+					this.#builtInToolNames.add(tool.name);
+				}
+				this.#actorAdded = new Set(override.added);
+				this.#actorRemoved = new Set(override.removed);
+			},
+		});
+	}
+
 	/** Serializes every registry and presentation mutation for this session. */
 	runToolRegistryMutation<T>(mutation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 		if (this.#toolRegistryMutationScope.getStore()) return untilAborted(signal, mutation);
@@ -1433,15 +1562,22 @@ export class SessionTools {
 		);
 	}
 
-	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
+	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal, announceRoleChange = false, actorCommit?: {
+		registry: Map<string, AgentTool>; builtIns: Set<string>; added: Set<string>; removed: Set<string>;
+		beforePublish(): Promise<void>; publish(): void;
+	}): Promise<void> {
 		signal?.throwIfAborted();
-		toolNames = normalizeToolNames(toolNames);
-		let builtInWriteAvailable = this.#builtInToolNames.has("write");
+		const registry = actorCommit?.registry ?? this.#toolRegistry;
+		const builtIns = actorCommit?.builtIns ?? this.#builtInToolNames;
+		const removed = actorCommit?.removed ?? this.#actorRemoved;
+		const added = actorCommit?.added ?? this.#actorAdded;
+		toolNames = normalizeToolNames(toolNames).filter(name => !removed.has(name));
+		let builtInWriteAvailable = builtIns.has("write");
 		const fullWriteSelected =
 			toolNames.includes("write") &&
-			(this.#presentationPinnedToolNames?.has("write") === true ||
+			(added.has("write") || this.#presentationPinnedToolNames?.has("write") === true ||
 				this.#runtimeSelectedToolNames?.has("write") === true);
-		if (fullWriteSelected) {
+		if (fullWriteSelected && !actorCommit) {
 			const writeRegistration = this.#ensureWriteRegistered?.();
 			if (writeRegistration) {
 				builtInWriteAvailable = (await untilAborted(signal, writeRegistration)) === true;
@@ -1458,20 +1594,20 @@ export class SessionTools {
 		// registry without `goal`. Register it before resolving the selection so
 		// `#enterGoalMode`'s `[...tools, "goal"]` request is honored instead of
 		// silently dropped (issue #9444).
-		if (toolNames.includes("goal") && !this.#toolRegistry.has("goal")) {
+		if (!actorCommit && toolNames.includes("goal") && !registry.has("goal")) {
 			const goalRegistration = this.#ensureGoalRegistered?.();
 			if (goalRegistration) await untilAborted(signal, goalRegistration);
 		}
 		const selectedTools = toolNames.flatMap(name => {
-			const tool = this.#toolRegistry.get(name);
+			const tool = registry.get(name);
 			return tool ? [{ name, tool }] : [];
 		});
-		const xdevReadAvailable = this.#builtInToolNames.has("read") && selectedTools.some(({ name }) => name === "read");
+		const xdevReadAvailable = builtIns.has("read") && selectedTools.some(({ name }) => name === "read");
 		const xdevWriteAvailable =
 			builtInWriteAvailable &&
 			(selectedTools.some(({ name }) => name === "write") || this.#deviceOnlyWriteTransportAvailable);
 		const isPresentationPinned = (name: string): boolean =>
-			this.#presentationPinnedToolNames?.has(name) === true || this.#runtimeSelectedToolNames?.has(name) === true;
+			added.has(name) || this.#presentationPinnedToolNames?.has(name) === true || this.#runtimeSelectedToolNames?.has(name) === true;
 		const mountCandidates = selectedTools.filter(
 			({ name, tool }) =>
 				this.#xdev !== undefined &&
@@ -1484,6 +1620,7 @@ export class SessionTools {
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
 		for (const { name, tool } of selectedTools) {
+			if (tool instanceof ExtensionToolWrapper) tool.setActorGrantCheck(() => this.actorToolAllowedByOverride(name));
 			if (mountNames.has(name)) continue;
 			tools.push(this.#wrapToolForAcpPermission(tool));
 			validToolNames.push(name);
@@ -1493,12 +1630,13 @@ export class SessionTools {
 		const activeDeferrableTool = tools.some(tool => tool.deferrable === true);
 		const transportNeeded = mountNames.size > 0 || activeDeferrableTool || this.#host.planModeEnabled();
 		if (transportNeeded && !builtInWriteAvailable) {
+			if (actorCommit) throw new Error("The selected tools require the write transport; add write in the same change");
 			const writeRegistration = this.#ensureWriteRegistered?.();
 			builtInWriteAvailable = writeRegistration ? (await untilAborted(signal, writeRegistration)) === true : false;
 			if (builtInWriteAvailable) this.#builtInToolNames.add("write");
 		}
 		if (transportNeeded && builtInWriteAvailable) {
-			const write = this.#toolRegistry.get("write");
+			const write = registry.get("write");
 			if (write && !validToolNames.includes("write")) {
 				tools.push(this.#wrapToolForAcpPermission(write));
 				validToolNames.push("write");
@@ -1508,11 +1646,14 @@ export class SessionTools {
 			(this.#presentationPinnedToolNames !== undefined || this.#runtimeSelectedToolNames !== undefined)
 		) {
 			const writeNameIndex = validToolNames.indexOf("write");
-			if (writeNameIndex >= 0 && this.#builtInToolNames.has("write")) validToolNames.splice(writeNameIndex, 1);
-			const writeToolIndex = tools.findIndex(tool => tool.name === "write" && this.#builtInToolNames.has("write"));
+			if (writeNameIndex >= 0 && builtIns.has("write")) validToolNames.splice(writeNameIndex, 1);
+			const writeToolIndex = tools.findIndex(tool => tool.name === "write" && builtIns.has("write"));
 			if (writeToolIndex >= 0) tools.splice(writeToolIndex, 1);
 		}
 
+		if (removed.has("write") && validToolNames.includes("write")) {
+			throw new Error("The selected tools require the write transport; remove those tools first");
+		}
 		const restrictDeviceOnlyWrite =
 			validToolNames.includes("write") &&
 			!fullWriteSelected &&
@@ -1533,9 +1674,12 @@ export class SessionTools {
 		const previousMounted = new Set(this.#xdev?.mountedNames ?? []);
 		const previousActiveToolNames = this.getActiveToolNames();
 		const previousEnabledToolNames = this.#enabledToolNames;
-		this.#enabledToolNames = new Set([...validToolNames, ...mountNames]);
-		this.#setMountedNames(mountNames);
-		this.#setActiveToolNames?.(validToolNames);
+		const publishSelection = () => {
+			this.#enabledToolNames = new Set([...validToolNames, ...mountNames]);
+			this.#setMountedNames(mountNames);
+			this.#setActiveToolNames?.(validToolNames);
+		};
+		if (!actorCommit) publishSelection();
 
 		let rebuiltSystemPrompt: string[] | undefined;
 		let rebuiltSignature: string | undefined;
@@ -1545,13 +1689,13 @@ export class SessionTools {
 		let rebuiltXdevCatalogNames: readonly string[] | undefined;
 		let candidateSurface: PromptSurface | undefined;
 		try {
-			if (restrictDeviceOnlyWrite) this.#setDeviceOnlyWrite?.(true);
+			if (!actorCommit && restrictDeviceOnlyWrite) this.#setDeviceOnlyWrite?.(true);
 			if (upgradeDeviceOnlyWrite) this.#setPendingFullWriteDescription?.(true);
 			if (this.#rebuildSystemPrompt) {
 				// Local alias: closures below cannot observe the field narrowing.
 				const rebuildSystemPrompt = this.#rebuildSystemPrompt;
 				const mountedSignatureTools = [...mountNames].flatMap(name => {
-					const tool = this.#toolRegistry.get(name);
+					const tool = registry.get(name);
 					return tool ? [tool] : [];
 				});
 				// Derive the candidate surface and run both the signature
@@ -1585,7 +1729,7 @@ export class SessionTools {
 					const built = await untilAborted(
 						signal,
 						this.#promptSurfaceScope.run(candidate, () =>
-							rebuildSystemPrompt(validToolNames, this.#toolRegistry, this.#xdev),
+							rebuildSystemPrompt(validToolNames, registry, actorCommit && this.#xdev ? { ...this.#xdev, mountedNames: mountNames } : this.#xdev),
 						),
 					);
 					rebuiltSystemPrompt = built.systemPrompt;
@@ -1596,6 +1740,12 @@ export class SessionTools {
 				}
 			}
 			signal?.throwIfAborted();
+			if (actorCommit) {
+				await actorCommit.beforePublish();
+				actorCommit.publish();
+				publishSelection();
+				if (restrictDeviceOnlyWrite) this.#setDeviceOnlyWrite?.(true);
+			}
 		} catch (error) {
 			if (restrictDeviceOnlyWrite) this.#setDeviceOnlyWrite?.(false);
 			if (upgradeDeviceOnlyWrite) this.#setPendingFullWriteDescription?.(false);
@@ -1658,10 +1808,11 @@ export class SessionTools {
 				// re-derive from live settings, which could diverge mid-flight.
 				this.#promptSurface = candidateSurface ?? this.#promptSurface;
 			} else if (frozenSignature) {
-				this.#notifyToolRosterDelta(previousActiveToolNames, validToolNames);
 				this.#lastAppliedToolSignature = frozenSignature;
 				this.#promptRosterHeld = true;
 			}
+			// An explicit role edit needs a notice even if the rebuilt prompt already lists the new tools.
+			if (!actorCommit && (frozenSignature || announceRoleChange)) this.#notifyToolRosterDelta(previousActiveToolNames, validToolNames);
 			if (restoreDormantDeviceOnlyWrite) {
 				this.#setDeviceOnlyWrite?.(true);
 			} else if (upgradeDeviceOnlyWrite || deactivateDeviceOnlyWrite) {

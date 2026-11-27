@@ -19,6 +19,7 @@ import type {
 import type { CompactMode } from "./compact-modes";
 import type { NativeSessionInfo, NativeSessionList, NativeSessionListOptions } from "./session-service";
 import type { SessionIdentityPatch, SessionIdentityRecord } from "./session-identity";
+import type { ActorToolChange, ActorToolState } from "./session-tools";
 
 /**
  * Supplied by the authenticated host's existing exact-session attachment.
@@ -75,6 +76,38 @@ export class NativeSessionApi {
 	/** Inspect the actual attached owner's prompt, tools, queues and runtime state without waking peers. */
 	state(): Promise<RpcSessionState> {
 		return this.#request({ type: "get_state" });
+	}
+
+	/** Read this conversation's saved tool overrides, effective and available tools, and snapshot revision. */
+	getActorToolState(): Promise<ActorToolState> {
+		return this.#request({ type: "get_actor_tools" });
+	}
+
+	/**
+	 * Ask the loaded owner to change this conversation's tool overrides. The owner
+	 * presents the exact change for operator approval; a headless host that cannot
+	 * ask refuses the mutation and keeps `getActorToolState` available.
+	 * `assertTarget` runs before the request and again after its response so a
+	 * caller never mistakes another owner's result for this target's.
+	 */
+	applyActorToolChange(
+		owner: Pick<RpcRuntimeRestartReceipt, "sessionId" | "sessionFile" | "bootId">,
+		change: ActorToolChange,
+		assertTarget?: () => void,
+	): Promise<ActorToolState> {
+		assertTarget?.();
+		return this.#request<ActorToolState>({
+			type: "apply_actor_tools",
+			expectedSessionId: owner.sessionId,
+			expectedSessionFile: owner.sessionFile,
+			expectedBootId: owner.bootId,
+			revision: change.expectedRevision,
+			add: change.add,
+			remove: change.remove,
+		}).then(state => {
+			assertTarget?.();
+			return state;
+		});
 	}
 
 	preflight(): Promise<RpcRefreshPreflight> {
@@ -168,7 +201,9 @@ export class NativeSessionApi {
 	/** Revoke or block contact. A terminal consent decision, not this RPC, authorizes a new sender. */
 	setMailContact(peer: string, rule: "block" | "reset"): Promise<AgentMailContact> {
 		if (rule !== "block" && rule !== "reset")
-			return Promise.reject(new NativeSessionApiError("Mail consent requires operator review.", "mail_operator_required"));
+			return Promise.reject(
+				new NativeSessionApiError("Mail consent requires operator review.", "mail_operator_required"),
+			);
 		return this.#request({ type: "agent_mail_restrict", peer, rule });
 	}
 

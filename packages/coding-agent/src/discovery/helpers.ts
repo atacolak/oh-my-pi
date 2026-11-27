@@ -370,8 +370,22 @@ export function parseAgentFields(rawFrontmatter: Record<string, unknown>): Parse
 
 	// Only absent or null tools select defaults; malformed restrictions must not widen access.
 	const rawTools = frontmatter.tools;
-	let tools = rawTools == null ? undefined : (parseArrayOrCSV(rawTools) ?? []);
-	if (tools?.length === 0 && !(Array.isArray(rawTools) && rawTools.length === 0)) {
+	const toolFields =
+		rawTools !== null && typeof rawTools === "object" && !Array.isArray(rawTools)
+			? (rawTools as Record<string, unknown>)
+			: undefined;
+	const eagerTools = toolFields ? parseArrayOrCSV(toolFields.eager) : undefined;
+	const discoverableTools = toolFields ? parseArrayOrCSV(toolFields.discoverable) : undefined;
+	let tools = toolFields
+		? [...(eagerTools ?? []), ...(discoverableTools ?? [])]
+		: rawTools == null
+			? undefined
+			: (parseArrayOrCSV(rawTools) ?? []);
+	if (
+		tools?.length === 0 &&
+		!(Array.isArray(rawTools) && rawTools.length === 0) &&
+		!(toolFields !== undefined && Object.keys(toolFields).length === 0)
+	) {
 		const valueType = Array.isArray(rawTools) ? "array" : typeof rawTools;
 		logger.warn("Agent tools declaration names no tools; using an empty built-in allowlist", {
 			agent: name,

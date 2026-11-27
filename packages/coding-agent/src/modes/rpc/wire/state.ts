@@ -98,18 +98,12 @@ export const stateDefs = {
 		"'inbox' | 'queue' | 'steer'",
 		"Recorded delivery path. New mail is always `inbox`; `queue` and `steer` appear only in historical records.",
 	),
-	AgentMailInboxDelivery: doc(
-		"'inbox'",
-		"Only inbox storage is accepted; legacy queue/steer envelopes are refused.",
-	),
+	AgentMailInboxDelivery: doc("'inbox'", "Only inbox storage is accepted; legacy queue/steer envelopes are refused."),
 	AgentMailAdmission: doc(
 		"'stored' | 'admitted' | 'queued' | 'steering'",
 		"Recorded admission. New mail is always `stored`; older input-admission values appear only in historical records.",
 	),
-	AgentMailFolder: doc(
-		"'inbox' | 'requests'",
-		"New mail is stored only in inbox. The requests folder is historical.",
-	),
+	AgentMailFolder: doc("'inbox' | 'requests'", "New mail is stored only in inbox. The requests folder is historical."),
 	AgentMailContactRule: doc(
 		"'allow' | 'block' | 'reset'",
 		"Recipient-owned directional rule. Reset restores default deny.",
@@ -157,7 +151,10 @@ export const stateDefs = {
 	AgentMailReadResult: doc(
 		{
 			messages: "AgentMailRecord[]",
-			total: doc("number.integer", "All records matching the read folder/thread filter; stable across `before` pages."),
+			total: doc(
+				"number.integer",
+				"All records matching the read folder/thread filter; stable across `before` pages.",
+			),
 			truncated: doc("boolean", "True when older matches remain before the returned page."),
 			"nextBefore?": doc(
 				"string",
@@ -341,6 +338,16 @@ export const stateDefs = {
 		configWarnings: "string[]",
 		warningsTruncated: "boolean",
 		"execution?": "SessionExecution",
+	},
+	ActorToolState: {
+		active: doc("string[]", "Tools the running model can call now, sorted."),
+		available: doc(
+			"string[]",
+			"Tools this conversation may select, including registered tools that are currently off, sorted.",
+		),
+		added: doc("string[]", "Saved per-conversation additions relative to the role, sorted."),
+		removed: doc("string[]", "Saved per-conversation removals relative to the role, sorted."),
+		revision: doc("string", "Opaque snapshot revision; pass it to apply_actor_tools."),
 	},
 	SessionState: {
 		"model?": "ModelInfo",

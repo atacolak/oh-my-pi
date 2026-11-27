@@ -186,6 +186,13 @@ export interface SteeringQueueState {
 }
 
 /**
+ * Adds one message to the model request being prepared.
+ * `transcript: false` keeps a host-recorded message out of this turn's emitted
+ * events (and therefore out of journal persistence and live painting).
+ */
+export type AgentInputSink = (message: AgentMessage, options?: { readonly transcript?: boolean }) => void;
+
+/**
  * Configuration for the agent loop.
  */
 export interface AgentLoopConfig extends SimpleStreamOptions {
@@ -422,10 +429,16 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Use this when tool availability or the system prompt can change mid-turn.
 	 *
 	 * Runs after pending messages are folded in and before provider conversion.
-	 * Mutate the agent context here; use `beforeModelCall` to inspect the
-	 * provider-bound context.
+	 * `appendInput` adds a message to this request and its normal turn transcript,
+	 * without scheduling another request; pass `transcript: false` for input the
+	 * host already recorded and painted, so only this run's context carries it.
+	 * Use the sink only during this hook.
 	 */
-	syncContextBeforeModelCall?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
+	syncContextBeforeModelCall?: (
+		context: AgentContext,
+		signal: AbortSignal | undefined,
+		appendInput: AgentInputSink,
+	) => void | Promise<void>;
 
 	/**
 	 * Asked after the complete provider context has been built, including

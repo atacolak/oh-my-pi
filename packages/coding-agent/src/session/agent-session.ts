@@ -7722,8 +7722,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const manager = this.sessionManager;
 		const id = manager.getSessionId();
 		const guard = () => {
-			if (this.#isDisposed || this.isSessionTransitioning || manager.getSessionId() !== id ||
-				this.getPlanModeState()?.enabled || this.getVibeModeState()?.enabled || this.#agentKind !== "main") throw new Error("Actor tool target changed or is restricted");
+			if (this.#isDisposed) throw new Error("This conversation is closed. Open it before changing its tools.");
+			if (this.isSessionTransitioning) {
+				throw new Error("The conversation is switching or navigating history. Wait for it to finish, then retry.");
+			}
+			if (manager.getSessionId() !== id) {
+				throw new Error("The selected conversation changed. Check which chat is open before retrying.");
+			}
+			if (this.getPlanModeState()?.enabled) throw new Error("Leave Plan mode before changing this chat's tools.");
+			if (this.getVibeModeState()?.enabled) throw new Error("Leave Vibe mode before changing this chat's tools.");
+			if (this.#agentKind !== "main") throw new Error("Tools can only be changed on the main chat, not a subagent.");
 			assertTarget?.();
 		};
 		guard();

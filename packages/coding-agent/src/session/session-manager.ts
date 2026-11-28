@@ -2420,7 +2420,7 @@ export class SessionManager {
 		}
 	}
 
-	#recordEntry(entry: SessionEntry): void {
+	#recordEntry(entry: SessionEntry, alreadyOnDisk = false): void {
 		if (this.#released) {
 			logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
 			return;
@@ -2437,7 +2437,7 @@ export class SessionManager {
 			// An off-branch entry replays to the leaf it captured, not to itself.
 			batch.externalLeafId = sessionEntryLeafId(entry);
 		}
-		this.#appendToSessionFile(entry);
+		if (!alreadyOnDisk) this.#appendToSessionFile(entry);
 		if (batch) batch.deferredNotifications.push(entry);
 		else this.#notifyEntryAppended(entry);
 	}
@@ -4162,6 +4162,42 @@ export class SessionManager {
 	}
 
 	/**
+	 * Publish a single notice before exposing it to journal subscribers. On an
+	 * owned, current file this needs only one guarded line, not a full rewrite.
+	 * Other backends and cold journals keep the existing atomic batch semantics.
+	 */
+	async appendCustomMessageAtomically(message: CustomMessage): Promise<void> {
+		const makeEntry = () => this.#buildCustomMessageEntry(
+			message.customType, message.content, message.display, message.details, message.attribution, message.timestamp,
+		);
+		await this.#withAtomicPersistenceLock(async () => {
+			await this.flush();
+			if (this.#released) throw new Error("Cannot publish a notice to a released session");
+			const storage = this.#storage;
+			const file = this.#sessionFile;
+			if (!(storage instanceof FileSessionStorage) || !file || !this.#identityMutationActive ||
+				!this.hasSessionOwnership() || !this.#fileIsCurrent || this.#rewriteRequired ||
+				this.#atomicRewriteFenceEpoch !== null || this.#draftOnlySessionCleanupArmed ||
+				this.#expectedDiskSize === null) {
+				await this.#appendEntriesAtomicallyLocked(() => this.#recordEntry(makeEntry()));
+				return;
+			}
+			const entry = makeEntry();
+			const line = this.#lineFor(entry);
+			try {
+				storage.appendLineIfCurrentSync(file, line, this.#expectedDiskSize, this.#sessionId);
+			} catch (error) {
+				// The file writer rolls back a partial line. If even that failed,
+				// no later append may treat the old durable size as confirmed.
+				if (error instanceof AggregateError) throw this.#latchIndeterminate(toError(error), error.errors.map(toError));
+				throw error;
+			}
+			this.#recordDurableAppend(line);
+			this.#recordEntry(entry, true);
+		});
+	}
+
+	/**
 	 * Append a custom message entry (for extensions) that participates in LLM context.
 	 * @param customType Hook identifier for filtering on reload
 	 * @param content Message content (string or TextContent/ImageContent array)
@@ -4177,9 +4213,22 @@ export class SessionManager {
 		attribution: MessageAttribution | undefined = "agent",
 		timestamp?: number,
 	): string {
+		const entry = this.#buildCustomMessageEntry(customType, content, display, details, attribution, timestamp);
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	#buildCustomMessageEntry<T>(
+		customType: string | undefined,
+		content: string | (TextContent | ImageContent)[] | undefined,
+		display: boolean | undefined,
+		details?: T,
+		attribution: MessageAttribution | undefined = "agent",
+		timestamp?: number,
+	): CustomMessageEntry<T> {
 		const normalized = normalizeCustomMessagePayload<T>({ customType, content, display, details, attribution });
 		const fresh = this.#freshEntryFields();
-		const entry: CustomMessageEntry<T> = {
+		return {
 			type: "custom_message",
 			customType: normalized.customType,
 			content: normalized.content,
@@ -4193,8 +4242,6 @@ export class SessionManager {
 			// preparation / hook time from the prompt→yield anchor.
 			timestamp: timestamp !== undefined ? new Date(timestamp).toISOString() : fresh.timestamp,
 		};
-		this.#recordEntry(entry);
-		return entry.id;
 	}
 
 	/** Append a TTSR injection entry recording which rules were injected. */

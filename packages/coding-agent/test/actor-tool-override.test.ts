@@ -126,7 +126,7 @@ describe("operator actor tool overrides", () => {
 		const change = { add: ["write"], remove: [], expectedRevision: session.getActorToolState().revision };
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const save = spyOn(session.sessionManager, "appendEntriesAtomically").mockImplementationOnce(async () => {
+		const save = spyOn(session.sessionManager, "appendCustomMessageAtomically").mockImplementationOnce(async () => {
 			entered.resolve();
 			await release.promise;
 			throw new Error("fixture: journal unavailable");
@@ -171,6 +171,26 @@ describe("operator actor tool overrides", () => {
 		expect(session.agent.state.tools.map(tool => tool.name)).toContain("grep");
 	});
 
+	it("leaves a concurrent journal append intact and refuses the unsaved tool change", async () => {
+		const name = "actor-tool-journal-conflict";
+		await writeRole(name, ["read", "glob"]);
+		const profile = (await resolveLaunchAgent(name, tempDir.path()))!;
+		const manager = SessionManager.create(tempDir.path(), tempDir.join("sessions"));
+		const session = await makeSession(profile, { sessionManager: manager });
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile()!;
+		const original = await Bun.file(file).text();
+		const extra = `${JSON.stringify({ type: "custom", id: "external", parentId: null, timestamp: new Date().toISOString(), customType: "other" })}\n`;
+		await fs.appendFile(file, extra);
+
+		await expect(session.applyActorToolChange({
+			remove: ["glob"], add: [], expectedRevision: session.getActorToolState().revision,
+		})).rejects.toThrow();
+		expect(await Bun.file(file).text()).toBe(original + extra);
+		expect(session.getActorToolState().active).toContain("glob");
+		expect(manager.getEntries().filter(entry => entry.type === "custom_message" && entry.customType === "actor-tool-change")).toHaveLength(0);
+	});
+
 	it("removes glob only from this actor, refuses its queued call, restores the choice at boot, and can grant it back", async () => {
 		const name = "scoped-glob";
 		await writeRole(name, ["read", "glob"]);
@@ -181,14 +201,21 @@ describe("operator actor tool overrides", () => {
 		const glob = target.agent.state.tools.find(tool => tool.name === "glob");
 		if (!glob) throw new Error("Expected a callable glob before revocation");
 		const revision = target.getActorToolState().revision;
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile()!;
+		// A reader tailing the original file must see the new notice, not an
+		// orphaned inode left behind by a full-history replace.
+		await using reader = await fs.open(file, "r");
+		const previousEnd = (await reader.stat()).size;
 		const off = await target.applyActorToolChange({ remove: ["glob"], add: [], expectedRevision: revision });
+		const suffix = Buffer.alloc(4096);
+		const { bytesRead } = await reader.read(suffix, 0, suffix.length, previousEnd);
+		expect(suffix.toString("utf8", 0, bytesRead)).toContain('"customType":"actor-tool-change"');
 		expect(off.active).not.toContain("glob");
 		expect(sibling.getActorToolState().active).toContain("glob");
 		expect(target.getToolForEvalBridge("glob")).toBeUndefined();
 		await expect(glob.execute("late-glob", { path: "*.md" })).rejects.toThrow(/revoked/);
 		await expect(target.applyActorToolChange({ remove: [], add: ["glob"], expectedRevision: revision })).rejects.toThrow(/stale/i);
-		const file = manager.getSessionFile();
-		if (!file) throw new Error("Missing persisted target");
 		await target.dispose();
 		sessions.splice(sessions.indexOf(target), 1);
 		const resumed = await makeSession(profile, { sessionManager: await SessionManager.open(file) });

@@ -3304,16 +3304,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			override,
 			timestamp: Date.now(),
 		});
-		await this.sessionManager.appendEntriesAtomically(() => {
-			this.sessionManager.appendCustomMessageEntry(
-				notice.customType,
-				notice.content,
-				notice.display,
-				notice.details,
-				notice.attribution,
-				notice.timestamp,
-			);
-		});
+		await this.sessionManager.appendCustomMessageAtomically(notice);
 		return () => this.#publishActorToolChange(notice);
 	}
 

@@ -503,6 +503,12 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 
 	async close(): Promise<void> {
 		if (this.#closed) return;
+		this[Symbol.dispose]();
+		if (this.#error) throw this.#error;
+	}
+
+	[Symbol.dispose](): void {
+		if (this.#closed) return;
 		this.#closed = true;
 		// Unregister from finalization - we're closing properly
 		writerRegistry.unregister(this);
@@ -511,7 +517,6 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 		} catch {
 			// Ignore close errors
 		}
-		if (this.#error) throw this.#error;
 	}
 
 	getError(): Error | undefined {
@@ -1387,6 +1392,18 @@ export class FileSessionStorage implements SessionStorage {
 		// File writes complete synchronously in-body via fs.writeFileSync /
 		// fs.renameSync, so there is no queued work to await.
 		return Promise.resolve();
+	}
+
+	/** Commit one complete record to the existing journal. Check both identity and
+	 * length under the same publish lock used by full-file replacements. */
+	appendLineIfCurrentSync(fpath: string, line: string, expectedSize: number, expectedSessionId: string): void {
+		this.#withPublishLock(fpath, () => {
+			this.#assertWritePreconditions(fpath, { expectedSize, expectedSessionId });
+			// Already holding the lock. The normal file writer handles short writes
+			// and truncates back to the original size on a failed append.
+			using writer = new FileSessionStorageWriter(fpath, { expectedSessionId });
+			writer.appendSync(line);
+		});
 	}
 
 	openWriter(

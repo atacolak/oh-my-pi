@@ -364,6 +364,7 @@
 
 ### Fixed
 
+- Changing one chat’s tools no longer rewrites its entire saved history on each add or remove.
 - Native session inventory stays usable when saved names collide: `omp sock list --json` reports all claimants so you can rename the intended session by UUID.
 - Automatic continuations no longer duplicate their parent's attach name and break session lookup.
 - Native session names match case-insensitively and refuse case-only duplicate claims, including sleeping sessions.

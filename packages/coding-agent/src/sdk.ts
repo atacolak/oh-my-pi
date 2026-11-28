@@ -5452,21 +5452,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const roleProfile = options.rootAgentProfile;
 		const startupRoleToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
 		const profileToolNames = roleProfile ? normalizeToolNames(roleProfile.toolNames) : undefined;
-		if (
-			agentKind === "main" &&
-			!restrictToolNames &&
-			roleProfile !== undefined &&
-			startupRoleToolNames !== undefined &&
+		const matchesRole =
 			profileToolNames !== undefined &&
+			startupRoleToolNames !== undefined &&
 			startupRoleToolNames.length === profileToolNames.length &&
-			startupRoleToolNames.every((name, index) => name === profileToolNames[index])
-		) {
+			startupRoleToolNames.every((name, index) => name === profileToolNames[index]);
+		// A normal root chat has no role file and uses the default roster. An
+		// explicit CLI/SDK list (including []) is not a default roster.
+		const usesBaseRoster =
+			roleProfile === undefined && startupRoleToolNames === undefined && options.bindProcessState !== false;
+		if (agentKind === "main" && !restrictToolNames && (matchesRole || usesBaseRoster)) {
+			const baseToolNames = startupRoleToolNames ?? [];
 			const roleToolFactories: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 			const pendingActorTools = new Map<string, Tool>();
 			const actorToolCandidates = [
 				...new Set([...Object.keys(BUILTIN_TOOLS), ...Object.keys(HIDDEN_TOOLS)]),
 			].filter(name => name !== "yield");
-			const plan = await resolveBuiltinToolPlan(toolSession, [...profileToolNames, ...actorToolCandidates]);
+			const plan = await resolveBuiltinToolPlan(toolSession, [...baseToolNames, ...actorToolCandidates]);
 			const actorToolAvailable = actorToolCandidates.filter(name => plan.isAllowed(name));
 			const actorToolFactory: ActorToolFactory = {
 				available: () => {
@@ -5481,7 +5483,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				},
 				createTool: async name => {
 					if (!actorToolAvailable.includes(name)) return null;
-					const currentPlan = await resolveBuiltinToolPlan(toolSession, [...profileToolNames, name]);
+					const currentPlan = await resolveBuiltinToolPlan(toolSession, [...baseToolNames, name]);
 					if (!currentPlan.isAllowed(name)) return null;
 					const tool = await roleToolFactories[name]?.(toolSession);
 					if (tool) pendingActorTools.set(name, tool);

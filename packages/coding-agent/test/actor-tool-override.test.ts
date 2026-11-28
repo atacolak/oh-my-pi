@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { resolveLaunchAgent, rootAgentToolNames } from "@oh-my-pi/pi-coding-agent/cli/launch-agent";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -57,8 +58,8 @@ describe("operator actor tool overrides", () => {
 		return { filePath: agent.filePath, source: agent.source, name: agent.name, toolNames: [...toolNames] };
 	}
 
-	async function makeSession(agent: AgentDefinition, extra: Partial<CreateAgentSessionOptions> = {}) {
-		const toolNames = rootAgentToolNames(agent) ?? [];
+	async function makeSession(agent?: AgentDefinition, extra: Partial<CreateAgentSessionOptions> = {}) {
+		const toolNames = agent ? (rootAgentToolNames(agent) ?? []) : undefined;
 		const { session } = await createAgentSession({
 			cwd: tempDir.path(),
 			agentDir: tempDir.path(),
@@ -81,14 +82,63 @@ describe("operator actor tool overrides", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			agentName: agent.name,
-			toolNames,
-			rootAgentProfile: profileOf(agent, toolNames),
+			...(agent && toolNames && { agentName: agent.name, toolNames, rootAgentProfile: profileOf(agent, toolNames) }),
 			...extra,
 		});
 		sessions.push(session);
 		return session;
 	}
+
+	it("applies a removal and grant while an unprofiled main chat is working, without another user turn", async () => {
+		const session = await makeSession(undefined, {
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.join("sessions")),
+		});
+		const file = tempDir.join("roster-probe.txt");
+		await Bun.write(file, "test file");
+		const read = { type: "toolCall" as const, name: "read", arguments: { path: file } };
+		const change = async (enabled: boolean) => {
+			expect(session.isStreaming).toBe(true);
+			await session.applyActorToolChange({
+				add: enabled ? ["glob"] : [],
+				remove: enabled ? [] : ["glob"],
+				expectedRevision: session.getActorToolState().revision,
+			});
+			return { content: [read] };
+		};
+		const mock = createMockModel({
+			responses: [
+				() => change(false),
+				() => change(true),
+				{ content: [{ type: "toolCall", name: "glob", arguments: { path: "roster-*.txt" } }] },
+				{ content: ["done"] },
+			],
+		});
+		const requests: { glob: boolean; added: boolean; removed: boolean }[] = [];
+		session.agent.streamFn = (model, context, options) => {
+			const messages = JSON.stringify(context.messages);
+			requests.push({
+				glob: context.tools?.some(tool => tool.name === "glob") === true,
+				added: messages.includes("Now available: glob."),
+				removed: messages.includes("No longer available: glob."),
+			});
+			return mock.stream(model, context, options);
+		};
+		await session.prompt("Find the roster probe.");
+		expect(requests).toEqual([
+			{ glob: true, added: false, removed: false },
+			{ glob: false, added: false, removed: true },
+			{ glob: true, added: true, removed: true },
+			{ glob: true, added: true, removed: true },
+		]);
+		const result = session.agent.state.messages.find(m => m.role === "toolResult" && m.toolName === "glob");
+		expect(result).toMatchObject({ isError: false });
+		expect(JSON.stringify(result)).toContain("roster-probe.txt");
+		const notices = session.sessionManager.getEntries().filter(e => e.type === "custom_message" && e.customType === "actor-tool-change");
+		expect(notices).toMatchObject([
+			{ display: true, details: { removed: ["glob"], added: [] } },
+			{ display: true, details: { removed: [], added: ["glob"] } },
+		]);
+	});
 
 	it("removes and restores a role tool on the configured root", async () => {
 		const name = "actor-override-glob";
@@ -116,6 +166,27 @@ describe("operator actor tool overrides", () => {
 		expect(restored.active).toContain("glob");
 		expect(session.getEnabledToolNames()).toContain("glob");
 		expect(session.agent.state.tools.map(tool => tool.name)).toContain("glob");
+	});
+
+	it("names the mode blocking a tool edit and allows the same edit after leaving it", async () => {
+		const name = "actor-tool-mode-refusal";
+		await writeRole(name, ["read", "glob"]);
+		const profile = (await resolveLaunchAgent(name, tempDir.path()))!;
+		const session = await makeSession(profile);
+		const before = session.getActorToolState();
+		const change = { add: [], remove: ["glob"], expectedRevision: before.revision };
+
+		session.setPlanModeState({ enabled: true, planFilePath: tempDir.join("plan.md") });
+		await expect(session.applyActorToolChange(change)).rejects.toThrow(/plan mode/i);
+		session.setPlanModeState(undefined);
+		session.setVibeModeState({ enabled: true });
+		await expect(session.applyActorToolChange(change)).rejects.toThrow(/vibe mode/i);
+		expect(session.getActorToolState()).toEqual(before);
+
+		session.setVibeModeState(undefined);
+		const applied = await session.applyActorToolChange(change);
+		expect(applied.active).not.toContain("glob");
+		expect(applied.removed).toEqual(["glob"]);
 	});
 
 	it("cannot use a new write grant until its journal commit succeeds", async () => {

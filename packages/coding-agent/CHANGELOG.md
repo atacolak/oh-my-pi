@@ -364,6 +364,8 @@
 
 ### Fixed
 
+- `/tools add` and `/tools remove` now work in a default chat without a role file, including during an active turn.
+- `/tools add` and `/tools remove` now say why a change was refused instead of reporting that the target changed or is restricted.
 - Changing one chat’s tools no longer rewrites its entire saved history on each add or remove.
 - Native session inventory stays usable when saved names collide: `omp sock list --json` reports all claimants so you can rename the intended session by UUID.
 - Automatic continuations no longer duplicate their parent's attach name and break session lookup.
